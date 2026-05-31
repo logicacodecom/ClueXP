@@ -1,7 +1,7 @@
 "use client";
 
 import { Car, Home, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
 
 type Screen =
@@ -38,6 +38,11 @@ const emptyGuards: TicketGuards = {
   may_show_eta: false,
   may_show_live_tracking: false
 };
+
+const SESSION_KEY = "cluexp_session";
+const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
+const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
+const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final"];
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -214,6 +219,38 @@ export default function HomePage() {
       setScreen("handoff");
     });
   }
+
+  // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    let saved: { ticketId?: string; screen?: Screen };
+    try {
+      saved = JSON.parse(raw);
+    } catch {
+      window.localStorage.removeItem(SESSION_KEY);
+      return;
+    }
+    if (!saved.ticketId) return;
+    (async () => {
+      try {
+        const envelope = await api<TicketEnvelope>(`/tickets/${saved.ticketId}`);
+        sync(envelope);
+        if (saved.screen) setScreen(saved.screen);
+      } catch {
+        window.localStorage.removeItem(SESSION_KEY); // ticket gone — start fresh
+      }
+    })();
+  }, []);
+
+  // Persist the active ticket id + screen so the session survives a reload.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (ticket?.ticket_id) {
+      window.localStorage.setItem(SESSION_KEY, JSON.stringify({ ticketId: ticket.ticket_id, screen }));
+    }
+  }, [ticket?.ticket_id, screen]);
 
   const content = (() => {
     if (screen === "opener") {
@@ -614,7 +651,9 @@ export default function HomePage() {
           <div className="big-number">Sam Reyes</div>
           <p className="fine">Plain-language support for this request. No app install required.</p>
         </div>
-        <button className="primary" type="button">Call now</button>
+        <a className="primary" href={`tel:${DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+          Call now
+        </a>
       </>
     );
   })();
@@ -624,6 +663,11 @@ export default function HomePage() {
       <TopBar />
       <main className="main">
         <StepPipes screen={screen} />
+        {DEMO && DEMO_SCREENS.includes(screen) ? (
+          <div className="demo-banner" role="status">
+            Demo — simulated dispatch. Not a real technician, ETA, or charge.
+          </div>
+        ) : null}
         {content}
         {busy ? <p className="fine">Working...</p> : null}
         {error ? <p className="error">{error}</p> : null}

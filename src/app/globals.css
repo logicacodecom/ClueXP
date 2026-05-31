@@ -318,6 +318,18 @@ textarea.field {
   color: var(--danger);
 }
 
+.demo-banner {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 191, 0, 0.08);
+  color: var(--primary-soft);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
 @media (min-width: 720px) {
   .main {
     padding-top: 32px;
