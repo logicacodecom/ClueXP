@@ -52,6 +52,19 @@ Open:
 - Frontend: http://127.0.0.1:3000
 - API docs: http://127.0.0.1:8000/docs
 
+Without `DATABASE_URL` the API uses an in-memory store, so no database is needed
+for local work. If you *do* run locally against Supabase Postgres **on Windows**,
+the selector event loop must be set in the *same* process that starts uvicorn —
+psycopg's async driver cannot use Windows' default `ProactorEventLoop`:
+
+```powershell
+$env:DATABASE_URL = "postgresql://postgres:PASSWORD@HOST:5432/postgres"
+uv run python -c "import asyncio, sys, uvicorn; sys.platform=='win32' and asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy()); uvicorn.run('api.main:app', host='127.0.0.1', port=8000)"
+```
+
+This only affects local Windows + Postgres; Vercel's Linux runtime and the
+in-memory fallback are unaffected. Percent-encode any `@` in the password as `%40`.
+
 ## Current Sprint Deployment
 
 The intake sprint deploys on:
