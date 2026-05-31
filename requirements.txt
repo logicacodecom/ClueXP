@@ -1,0 +1,5 @@
+# Python deps for the Vercel serverless function (api/main.py).
+# Mirrors pyproject.toml; psycopg drives the Supabase Postgres store.
+fastapi>=0.121.0
+pydantic>=2.12.0
+psycopg[binary]>=3.2.0

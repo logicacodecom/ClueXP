@@ -297,5 +297,6 @@ class Ticket(BaseModel):
             and self.situation is not None
             and self.location.raw_text is not None
             and (self.price_quote is not None and self.price_quote.accepted_by_customer)
-            and self.payment_method is not None
+            # Sprint 1: payment-on-file is deferred. Restore this precondition
+            # (`and self.payment_method is not None`) before any real launch.
         )

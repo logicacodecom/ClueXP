@@ -14,6 +14,20 @@ ClueXP Emergency Access is a mobile-web-first dispatch service for emergency phy
 
 **This build:** a Next.js + TypeScript front end + a minimal FastAPI + Pydantic back end with **stub** dispatch / pricing / payment / OTP services. Real vendors get wired in later; the goal of this build is a working end-to-end system whose contract between layers is honest and stable.
 
+### Current sprint scope: live intake → matched technician
+
+The current sprint deploys the intake system online using **Vercel** for the Next.js frontend plus FastAPI Python runtime, and **Supabase Postgres** for ticket persistence.
+
+**In scope:** the full INTAKE collection flow, backend-supplied price estimate + commercial price acceptance, `commit`, technician **dispatch**, and the MATCHED screen (technician name, role, rating, ETA). The FULFILLMENT screens (live tracking, arrival verification, payment/review) remain wired and reachable for demo, sourced only from backend values via the trust-state guards.
+
+**Deferred this sprint:** OTP verification (§7.12) and payment-method capture (§7.10). Because payment-on-file is skipped, `commit` and `Ticket.is_dispatchable()` temporarily **drop the payment-method precondition** — price acceptance remains the commercial consent gate. ⚠️ This means a technician is matched without a payment method on file; restore the payment precondition before any real launch.
+
+**Persistence:** tickets and state-transition events persist in **Supabase Postgres** (see §6.1), not in-process memory. A `DATABASE_URL` enables the Postgres store; with it unset the API falls back to an in-memory store for local development.
+
+The trust-state contract is unchanged: technician name, role, rating, and ETA appear **only** at `trust_state = MATCHED` or later, gated by `may_show_technician()` / `may_show_eta()`. Live tracking appears only at FULFILLMENT. Nothing operational is shown during INTAKE.
+
+This addendum narrows the implementation scope for the sprint (OTP + payment deferred); it does not remove the full build requirements below.
+
 ---
 
 ## 2. Non-negotiable architectural principles
@@ -182,7 +196,7 @@ The Stitch HTML/PNG files attached to this spec are the second-pass output. They
 
 - **FastAPI** + Pydantic v2.
 - The schema is `schema.py` — import and use directly (it is already Pydantic).
-- Storage for the initial build: SQLite via SQLAlchemy or simply Pydantic objects in memory (the agent may choose; in-memory is acceptable for a stub build, but tickets must persist across requests within a session).
+- Storage: **Supabase Postgres** for the live sprint. Each `Ticket` persists as a single JSONB row keyed by `ticket_id`; state transitions append to an `events` table (the seed of the audit log). The API selects the store from `DATABASE_URL` (Postgres when set, in-memory fallback when unset for local dev). Tickets must persist across requests; with Postgres they also survive restarts.
 - Use Pydantic models as both request/response schemas and storage objects — FastAPI handles serialization automatically.
 
 ### 6.2 Endpoints (stub services for now)

@@ -7,7 +7,7 @@ Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md
 - `SPEC.md` - product and architecture source of truth.
 - `assets/schema.py` - canonical Pydantic ticket schema. Do not duplicate it by hand.
 - `assets/ui/` - visual references and design tokens from the Stitch output.
-- `api/main.py` - FastAPI stub backend with in-memory tickets and trust-state guards.
+- `api/main.py` - FastAPI stub backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
 - `src/app/page.tsx` - mobile-first intake and fulfillment flow.
 - `src/types/schema.generated.ts` - generated TypeScript contract derived from `assets/schema.py`.
 - `scripts/generate_types.py` - local schema-to-TypeScript generator.
@@ -51,6 +51,35 @@ Open:
 
 - Frontend: http://127.0.0.1:3000
 - API docs: http://127.0.0.1:8000/docs
+
+## Current Sprint Deployment
+
+The intake sprint deploys on:
+
+- **Vercel** for the Next.js frontend and FastAPI Python runtime.
+- **Supabase Postgres** for live ticket persistence.
+
+For this sprint, **OTP verification and payment-method capture are deferred** (§7.10, §7.12). The flow runs intake → price acceptance → `commit` → technician **dispatch**, transitioning `trust_state` INTAKE → MATCHED and showing the assigned technician (name, role, rating, ETA) on the MATCHED screen. Live tracking, arrival verification, and payment/review remain reachable for demo. Because payment-on-file is skipped, `commit` and `is_dispatchable()` temporarily drop the payment precondition — price acceptance is the commercial-consent gate. Technician data is still shown **only** at MATCHED or later, gated by the trust-state guards.
+
+Vercel production traffic should call the API through the same deployment at `/api/...`. Local development rewrites `/api/...` to `LOCAL_API_BASE_URL`, which defaults to `http://127.0.0.1:8000`.
+
+Use Supabase's transaction pooler connection string for Vercel serverless Python:
+
+```env
+DATABASE_URL=postgres://postgres.PROJECT_REF:YOUR_PASSWORD@aws-REGION.pooler.supabase.com:6543/postgres
+```
+
+Copy `.env.example` into the relevant Vercel project environment variables rather than committing real secrets.
+
+## Live Setup Checklist
+
+1. Create a Supabase project.
+2. Copy the transaction pooler Postgres URL into Vercel as `DATABASE_URL`.
+3. Import the GitHub repo into Vercel.
+4. Set the Vercel framework to Next.js.
+5. Confirm Python functions are detected from `api/main.py`.
+6. Deploy from `main`.
+7. Smoke test on mobile: create ticket, submit intake, confirm the record persists.
 
 ## Verification
 

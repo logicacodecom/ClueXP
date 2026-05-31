@@ -1,6 +1,6 @@
 "use client";
 
-import { Car, Home, KeyRound, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
+import { Car, Home, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
 
@@ -13,9 +13,7 @@ type Screen =
   | "photos"
   | "identity"
   | "price"
-  | "payment"
   | "commit"
-  | "otp"
   | "assigned"
   | "tracking"
   | "arrival"
@@ -31,9 +29,7 @@ const intakeSteps: Partial<Record<Screen, number>> = {
   photos: 4,
   identity: 5,
   price: 5,
-  payment: 6,
   commit: 6,
-  otp: 6,
   handoff: 6
 };
 
@@ -150,8 +146,6 @@ export default function HomePage() {
   const [guards, setGuards] = useState<TicketGuards>(emptyGuards);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [otpCode, setOtpCode] = useState("");
-  const [devOtp, setDevOtp] = useState("");
   const [arrivalCode, setArrivalCode] = useState("");
   const [form, setForm] = useState({
     address: "",
@@ -486,7 +480,7 @@ export default function HomePage() {
                         price_quote: { accepted_by_customer: true, accepted_at: new Date().toISOString() },
                         cancellation_policy: { accepted_by_customer: true, accepted_at: new Date().toISOString() }
                       });
-                      setScreen("payment");
+                      setScreen("commit");
                     })
                   }
                 >
@@ -499,40 +493,10 @@ export default function HomePage() {
       );
     }
 
-    if (screen === "payment") {
-      return (
-        <>
-          <AgentMessage support="You are not charged until service is completed, or if an accepted cancellation or no-show fee applies.">
-            Add a secure payment method on file.
-          </AgentMessage>
-          <div className="stack">
-            <button
-              className="primary"
-              type="button"
-              onClick={() =>
-                run(async () => {
-                  const current = await ensureTicket();
-                  const envelope = await api<TicketEnvelope>(`/tickets/${current.ticket_id}/payment-method`, {
-                    method: "POST",
-                    body: JSON.stringify({ processor: "stub", token: "tok_secure_wallet", brand: "Secure wallet" })
-                  });
-                  sync(envelope);
-                  setScreen("commit");
-                })
-              }
-            >
-              Continue to secure payment step
-            </button>
-            <p className="fine">Card details are handled by the processor. ClueXP stores only an opaque token.</p>
-          </div>
-        </>
-      );
-    }
-
     if (screen === "commit") {
       return (
         <>
-          <AgentMessage support="This button commits the request. Technician details still appear only after the backend assigns someone.">
+          <AgentMessage support="This commits your request and matches a specialist. Technician details appear only after the backend assigns someone.">
             Ready to request help?
           </AgentMessage>
           <button
@@ -541,47 +505,14 @@ export default function HomePage() {
             onClick={() =>
               run(async () => {
                 const current = await ensureTicket();
-                sync(await api<TicketEnvelope>(`/tickets/${current.ticket_id}/commit`, { method: "POST" }));
-                const otp = await api<{ dev_code: string }>(`/tickets/${current.ticket_id}/otp/send`, { method: "POST" });
-                setDevOtp(otp.dev_code);
-                setScreen("otp");
+                await api<TicketEnvelope>(`/tickets/${current.ticket_id}/commit`, { method: "POST" });
+                sync(await api<TicketEnvelope>(`/tickets/${current.ticket_id}/dispatch`, { method: "POST" }));
+                setScreen("assigned");
               })
             }
           >
             Confirm request
           </button>
-        </>
-      );
-    }
-
-    if (screen === "otp") {
-      return (
-        <>
-          <AgentMessage support="This does not block help. Keep this page open while matching continues.">
-            Verify your phone.
-          </AgentMessage>
-          <div className="stack">
-            <div className="otp" aria-label="One time code">
-              {Array.from({ length: 6 }).map((_, index) => <div className="otp-box" key={index}>{otpCode[index] || ""}</div>)}
-            </div>
-            <input className="field" inputMode="numeric" maxLength={6} placeholder="Enter code" value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
-            {devOtp ? <p className="fine">Development code: {devOtp}</p> : null}
-            <button
-              className="primary"
-              type="button"
-              onClick={() =>
-                run(async () => {
-                  const current = await ensureTicket();
-                  await api<TicketEnvelope>(`/tickets/${current.ticket_id}/otp/verify`, { method: "POST", body: JSON.stringify({ code: otpCode }) });
-                  sync(await api<TicketEnvelope>(`/tickets/${current.ticket_id}/dispatch`, { method: "POST" }));
-                  setScreen("assigned");
-                })
-              }
-            >
-              Verify and continue
-            </button>
-            <button className="ghost" type="button" onClick={() => run(async () => { const current = await ensureTicket(); const otp = await api<{ dev_code: string }>(`/tickets/${current.ticket_id}/otp/send`, { method: "POST" }); setDevOtp(otp.dev_code); })}>Resend code</button>
-          </div>
         </>
       );
     }
