@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -28,6 +29,13 @@ from assets.schema import (
 
 store = make_store()
 
+# Env-driven CORS. Set ALLOWED_ORIGINS to a comma-separated list in production;
+# unset falls back to "*" for local dev. (In prod the Next.js rewrite proxies
+# /api server-side, so cross-origin CORS is rarely exercised — this is belt-and-
+# suspenders for any direct API calls.)
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()] or ["*"]
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -39,7 +47,7 @@ app = FastAPI(title="ClueXP Emergency Access API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -102,6 +110,45 @@ def deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+# Fields a public client may set on POST/PATCH. Everything else (trust_state,
+# status, technician_assignment, final_charge, payment_method, price/fee amounts,
+# dispatch signals, ids/timestamps) is server-owned and stripped from input.
+CLIENT_FIELDS = frozenset(
+    {
+        "access_type",
+        "situation",
+        "urgency",
+        "safety_flag",
+        "location",
+        "automotive",
+        "property",
+        "identity",
+        "additional_details",
+        "channel",
+    }
+)
+# On these objects the client may only flip acceptance; the amounts come from the
+# pricing engine (POST /price-quote), never from the browser.
+CLIENT_ACCEPTANCE_ONLY = {
+    "price_quote": frozenset({"accepted_by_customer", "accepted_at"}),
+    "cancellation_policy": frozenset({"accepted_by_customer", "accepted_at"}),
+}
+
+
+def sanitize_client_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only client-editable fields; drop server-owned ones so the browser
+    cannot forge trust_state, technician data, charges, or prices."""
+    clean: dict[str, Any] = {}
+    for key, value in (payload or {}).items():
+        if key in CLIENT_FIELDS:
+            clean[key] = value
+        elif key in CLIENT_ACCEPTANCE_ONLY and isinstance(value, dict):
+            allowed = {k: v for k, v in value.items() if k in CLIENT_ACCEPTANCE_ONLY[key]}
+            if allowed:
+                clean[key] = allowed
+    return clean
+
+
 async def save(ticket: Ticket) -> Ticket:
     await store.save(ticket)
     return ticket
@@ -114,7 +161,7 @@ async def log_transition(ticket: Ticket, event: str) -> None:
 @app.post("/tickets", response_model=TicketEnvelope)
 async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
-    ticket = Ticket.model_validate(payload or {})
+    ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket)
     await log_transition(ticket, "created")
     return envelope(ticket)
@@ -130,7 +177,7 @@ async def get_ticket(ticket_id: UUID) -> TicketEnvelope:
 async def patch_ticket(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelope:
     await latency()
     ticket = await require_ticket(ticket_id)
-    merged = deep_merge(ticket.model_dump(mode="python"), payload)
+    merged = deep_merge(ticket.model_dump(mode="python"), sanitize_client_payload(payload))
     updated = Ticket.model_validate(merged)
     await save(updated)
     await log_transition(updated, "patched")
