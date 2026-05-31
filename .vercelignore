@@ -1,0 +1,10 @@
+.venv
+node_modules
+.next
+.git
+__pycache__
+*.pyc
+.claude
+.env
+.env*.local
+assets/ui
