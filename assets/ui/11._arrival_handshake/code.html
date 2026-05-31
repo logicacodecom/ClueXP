@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Arrival Handshake | ClueXP</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-secondary-fixed": "#00174b",
+                    "on-primary-fixed": "#261a00",
+                    "tertiary-fixed-dim": "#00d9fc",
+                    "surface-tint": "#fbbc00",
+                    "secondary-fixed-dim": "#b4c5ff",
+                    "on-primary-fixed-variant": "#5c4300",
+                    "on-surface-variant": "#d4c5ab",
+                    "on-primary-container": "#6d5000",
+                    "surface-container-low": "#1c1b1b",
+                    "tertiary-container": "#04dcff",
+                    "surface-variant": "#353535",
+                    "primary-fixed": "#ffdfa0",
+                    "error": "#ffb4ab",
+                    "surface-bright": "#393939",
+                    "outline": "#9c8f78",
+                    "tertiary-fixed": "#aaedff",
+                    "surface-container": "#20201f",
+                    "on-secondary-fixed-variant": "#003ea8",
+                    "surface-container-highest": "#353535",
+                    "on-tertiary-fixed-variant": "#004e5c",
+                    "inverse-surface": "#e5e2e1",
+                    "on-secondary": "#002a78",
+                    "surface-container-high": "#2a2a2a",
+                    "on-error": "#690005",
+                    "secondary": "#b4c5ff",
+                    "surface-dim": "#131313",
+                    "on-background": "#e5e2e1",
+                    "tertiary": "#b4efff",
+                    "error-container": "#93000a",
+                    "on-error-container": "#ffdad6",
+                    "secondary-container": "#0053db",
+                    "inverse-primary": "#795900",
+                    "on-primary": "#402d00",
+                    "surface-container-lowest": "#0e0e0e",
+                    "secondary-fixed": "#dbe1ff",
+                    "on-tertiary-fixed": "#001f26",
+                    "on-tertiary-container": "#005d6d",
+                    "on-secondary-container": "#cdd7ff",
+                    "on-tertiary": "#003640",
+                    "outline-variant": "#504532",
+                    "on-surface": "#e5e2e1",
+                    "inverse-on-surface": "#313030",
+                    "primary-fixed-dim": "#fbbc00",
+                    "primary-container": "#ffbf00",
+                    "background": "#131313",
+                    "primary": "#ffe2ab",
+                    "surface": "#131313"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "margin-desktop": "32px",
+                    "intake-gap": "12px",
+                    "fulfillment-gap": "24px",
+                    "margin-mobile": "16px",
+                    "gutter": "16px"
+            },
+            "fontFamily": {
+                    "headline-sm": ["Archivo Narrow"],
+                    "button-text": ["Archivo Narrow"],
+                    "body-lg": ["Archivo Narrow"],
+                    "display-lg": ["Archivo Narrow"],
+                    "headline-md": ["Archivo Narrow"],
+                    "body-md": ["Archivo Narrow"],
+                    "label-caps": ["Archivo Narrow"]
+            },
+            "fontSize": {
+                    "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                    "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Archivo Narrow', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .shake-subtle {
+            animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
+            animation-iteration-count: infinite;
+        }
+        @keyframes shake {
+            10%, 90% { transform: translate3d(-1px, 0, 0); }
+            20%, 80% { transform: translate3d(2px, 0, 0); }
+            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+            40%, 60% { transform: translate3d(4px, 0, 0); }
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background selection:bg-primary-container selection:text-on-primary-container">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-background border-b border-outline-variant">
+<div class="flex items-center justify-between px-margin-mobile h-16 max-w-[600px] mx-auto">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield">shield</span>
+<span class="font-headline-md text-headline-md font-bold text-on-background uppercase tracking-tighter">ClueXP</span>
+</div>
+<div class="text-right">
+<p class="font-label-caps text-label-caps text-primary uppercase">Emergency Access</p>
+</div>
+</div>
+</header>
+<main class="pt-24 pb-32 px-margin-mobile max-w-[600px] mx-auto min-h-screen flex flex-col">
+<!-- Fulfillment Phase: Progress Tracker -->
+<div class="flex gap-1 mb-8">
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+</div>
+<!-- Narrative Section -->
+<section class="mb-fulfillment-gap">
+<h1 class="font-display-lg text-display-lg uppercase mb-2">Specialist David has arrived.</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">Identity confirmed. Initiate proximity verification protocol.</p>
+</section>
+<!-- Identification Handshake Card -->
+<section class="bg-surface-container-low border border-outline p-6 rounded-lg mb-fulfillment-gap relative overflow-hidden">
+<!-- Timestamp Ornament -->
+<span class="absolute top-4 right-4 font-label-caps text-label-caps text-outline">LOC_SYNC: 12:44:02</span>
+<div class="flex flex-col items-center py-8">
+<p class="font-label-caps text-label-caps text-on-surface-variant mb-4 uppercase tracking-[0.2em]">Verification Token</p>
+<div class="bg-surface-container-highest p-8 border-2 border-primary-container w-full text-center">
+<span class="font-display-lg text-[64px] leading-none tracking-[0.25em] text-primary-fixed-dim">8821</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface mt-6 text-center">
+                    Show this code to your specialist.
+                </p>
+</div>
+</section>
+<!-- Sub-narrative / Safety Warnings -->
+<section class="space-y-4 mb-fulfillment-gap">
+<div class="flex gap-4 items-start bg-surface-variant/30 p-4 border-l-4 border-primary-container">
+<span class="material-symbols-outlined text-primary-container" data-icon="lock_open">lock_open</span>
+<div>
+<h3 class="font-headline-sm text-headline-sm uppercase text-primary">Mutual Verification</h3>
+<p class="font-body-md text-body-md text-on-surface-variant">
+                        The specialist will also show a matching code on their device. Do not proceed until codes are verified.
+                    </p>
+</div>
+</div>
+<!-- Specialist ID Mockup -->
+<div class="flex items-center gap-4 bg-surface-container p-4 border border-outline-variant">
+<div class="w-16 h-16 rounded-full overflow-hidden border border-primary grayscale">
+<img alt="Specialist Portrait" class="w-full h-full object-cover" data-alt="A professional headshot of a middle-aged male specialist with a serious, trustworthy expression. He is wearing a dark tactical-style uniform with high-visibility accents. The lighting is dramatic and low-key, emphasizing structural facial features. The overall aesthetic is dark-mode, cinematic, and industrial, focused on security and professional competence." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCz6PV9PNq_MQCixHX8bu-uGhZiHGyZB6fl7bbdl2XioJr3MVSPcA8-exWKi1Qu651iRKnJBV8XBffFtEtzv0ORxxvQJ__ergnsH8ojO_dithiuZ6jQe9eA4ygChohU0rROZ0qBkcQX4b0B4lxDbOS_OHDIxeGA0U0fK88El3kxcK8nc8VO-LiK6iVvqzla0IhTj7CryGuemFmxNNZm1iWjY13bE_hgqRQr9WT6LjMywgm4nqYywBC1ixmdswnEBfau0dBzVbTCgs8"/>
+</div>
+<div>
+<p class="font-label-caps text-label-caps text-outline uppercase">Credential ID</p>
+<p class="font-headline-sm text-headline-sm text-on-surface">DAVID MILLER</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Level 4 Emergency Response</p>
+</div>
+</div>
+</section>
+<!-- Spacer for footer -->
+<div class="flex-grow"></div>
+<!-- Secondary Action Link -->
+<div class="text-center mb-8">
+<button class="font-button-text text-button-text text-primary-container underline underline-offset-4 hover:text-primary transition-colors">
+                Having issues with verification?
+            </button>
+</div>
+</main>
+<!-- Emergency Footer -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 bg-secondary-container flex items-center justify-center max-w-[600px] left-1/2 -translate-x-1/2 px-margin-mobile">
+<button class="w-full h-full flex items-center justify-center gap-3 font-button-text text-button-text text-on-secondary-container uppercase active:scale-[0.98] transition-transform">
+<span class="material-symbols-outlined" data-icon="call">call</span>
+            Call a person instead
+        </button>
+</footer>
+<script>
+        // Micro-interaction for code flashing/atmosphere
+        document.addEventListener('DOMContentLoaded', () => {
+            const tokenContainer = document.querySelector('.bg-surface-container-highest');
+            
+            // Subtle glow pulse logic
+            setInterval(() => {
+                tokenContainer.classList.toggle('border-primary-fixed-dim');
+                tokenContainer.classList.toggle('border-primary-container');
+            }, 2000);
+
+            // Mock interactivity for the call button
+            const footerBtn = document.querySelector('footer button');
+            footerBtn.addEventListener('click', () => {
+                const originalText = footerBtn.innerHTML;
+                footerBtn.innerHTML = `<span class="material-symbols-outlined" data-icon="pending">pending</span> INITIATING CALL...`;
+                setTimeout(() => {
+                    footerBtn.innerHTML = originalText;
+                }, 2000);
+            });
+        });
+    </script>
+</body></html>

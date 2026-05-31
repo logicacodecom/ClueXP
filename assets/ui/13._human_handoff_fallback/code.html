@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Human Handoff - ClueXP</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-secondary-fixed": "#00174b",
+                    "on-primary-fixed": "#261a00",
+                    "tertiary-fixed-dim": "#00d9fc",
+                    "surface-tint": "#fbbc00",
+                    "secondary-fixed-dim": "#b4c5ff",
+                    "on-primary-fixed-variant": "#5c4300",
+                    "on-surface-variant": "#d4c5ab",
+                    "on-primary-container": "#6d5000",
+                    "surface-container-low": "#1c1b1b",
+                    "tertiary-container": "#04dcff",
+                    "surface-variant": "#353535",
+                    "primary-fixed": "#ffdfa0",
+                    "error": "#ffb4ab",
+                    "surface-bright": "#393939",
+                    "outline": "#9c8f78",
+                    "tertiary-fixed": "#aaedff",
+                    "surface-container": "#20201f",
+                    "on-secondary-fixed-variant": "#003ea8",
+                    "surface-container-highest": "#353535",
+                    "on-tertiary-fixed-variant": "#004e5c",
+                    "inverse-surface": "#e5e2e1",
+                    "on-secondary": "#002a78",
+                    "surface-container-high": "#2a2a2a",
+                    "on-error": "#690005",
+                    "secondary": "#b4c5ff",
+                    "surface-dim": "#131313",
+                    "on-background": "#e5e2e1",
+                    "tertiary": "#b4efff",
+                    "error-container": "#93000a",
+                    "on-error-container": "#ffdad6",
+                    "secondary-container": "#0053db",
+                    "inverse-primary": "#795900",
+                    "on-primary": "#402d00",
+                    "surface-container-lowest": "#0e0e0e",
+                    "secondary-fixed": "#dbe1ff",
+                    "on-tertiary-fixed": "#001f26",
+                    "on-tertiary-container": "#005d6d",
+                    "on-secondary-container": "#cdd7ff",
+                    "on-tertiary": "#003640",
+                    "outline-variant": "#504532",
+                    "on-surface": "#e5e2e1",
+                    "inverse-on-surface": "#313030",
+                    "primary-fixed-dim": "#fbbc00",
+                    "primary-container": "#ffbf00",
+                    "background": "#131313",
+                    "primary": "#ffe2ab",
+                    "surface": "#131313"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "margin-desktop": "32px",
+                    "intake-gap": "12px",
+                    "fulfillment-gap": "24px",
+                    "margin-mobile": "16px",
+                    "gutter": "16px"
+            },
+            "fontFamily": {
+                    "headline-sm": ["Archivo Narrow"],
+                    "button-text": ["Archivo Narrow"],
+                    "body-lg": ["Archivo Narrow"],
+                    "display-lg": ["Archivo Narrow"],
+                    "headline-md": ["Archivo Narrow"],
+                    "body-md": ["Archivo Narrow"],
+                    "label-caps": ["Archivo Narrow"]
+            },
+            "fontSize": {
+                    "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                    "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .filling-pipe {
+            animation: pulse-amber 2s infinite ease-in-out;
+        }
+        @keyframes pulse-amber {
+            0%, 100% { opacity: 0.2; }
+            50% { opacity: 1; }
+        }
+        .glass-effect {
+            background: rgba(26, 26, 26, 0.8);
+            backdrop-filter: blur(8px);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background font-body-md overflow-x-hidden">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-background border-b border-outline-variant flex items-center justify-between px-margin-mobile h-16 max-w-[600px] left-1/2 -translate-x-1/2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield">shield</span>
+<div class="flex flex-col">
+<span class="font-headline-md text-headline-md font-bold text-on-background tracking-tighter uppercase">ClueXP</span>
+<span class="font-label-caps text-label-caps text-primary uppercase">Emergency Access</span>
+</div>
+</div>
+<button class="p-2 hover:bg-surface-variant transition-colors duration-200 rounded">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="more_vert">more_vert</span>
+</button>
+</header>
+<main class="pt-24 pb-32 px-margin-mobile max-w-[600px] mx-auto min-h-screen flex flex-col">
+<!-- Progress Indicator (6-pipe horizontal meter) -->
+<div class="flex gap-1 mb-8">
+<div class="h-1 flex-1 bg-primary-container rounded-full"></div>
+<div class="h-1 flex-1 bg-primary-container rounded-full"></div>
+<div class="h-1 flex-1 bg-primary-container rounded-full"></div>
+<div class="h-1 flex-1 bg-primary-container rounded-full"></div>
+<div class="h-1 flex-1 bg-primary-container rounded-full"></div>
+<div class="h-1 flex-1 bg-white/20 rounded-full overflow-hidden">
+<div class="h-full bg-primary-container filling-pipe w-full"></div>
+</div>
+</div>
+<!-- Fulfillment Phase Header -->
+<section class="mb-fulfillment-gap">
+<h1 class="font-display-lg text-display-lg text-on-background mb-2">Specialist Escalation</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">Connecting you to a human who can help faster...</p>
+</section>
+<!-- Specialist UI Bento-style Card -->
+<div class="grid grid-cols-1 gap-intake-gap mb-fulfillment-gap">
+<div class="bg-surface-container-low border border-outline-variant p-margin-mobile rounded-lg flex items-center gap-4">
+<div class="relative">
+<div class="w-16 h-16 bg-surface-variant rounded-full flex items-center justify-center overflow-hidden border border-outline">
+<img alt="Specialist Avatar" class="w-full h-full object-cover grayscale opacity-80" data-alt="A professional headshot of a female emergency dispatcher in a high-tech communication center. She wears a neutral grey uniform and a slim headset. The lighting is low-key with cool blue ambient glows from monitors in the background, creating a mood of absolute professional focus and calm reliability in an industrial-minimal setting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDdAPc-JYHShHX05Ay-qnVB9_QucPOpfAUxciXnLJQynRE79JmgLNklLKx7JdgADRRhmGdtVfCN3oGjVJzWp0i0P2Um-onVpz0i8V0Csp-VrA0CHH0Jwb3Pj_poe3NgsI2zRg3gVW9AG3SosaF6Z3OEh4XQEVw49eritzU-_MdUU_DqSk_zz5lTVtR-tGkRAPoI81yDnLTxGvWsbJeG0uRkCWAXI5lGKMlCvki2WUaEeNRt8Y0izFT-hK56o5-tSRnpKw90_JGhCjM"/>
+</div>
+<div class="absolute bottom-0 right-0 w-4 h-4 bg-tertiary-container rounded-full border-2 border-surface-container-low"></div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-primary uppercase mb-1">Assigned specialist</div>
+<h2 class="font-headline-sm text-headline-sm text-on-background">Dispatcher #DX-9921</h2>
+<p class="font-body-md text-body-md text-on-surface-variant">Sector: Emergency Response</p>
+</div>
+</div>
+<!-- Status Card -->
+<div class="bg-surface-container-low border border-outline-variant p-margin-mobile rounded-lg relative overflow-hidden">
+<div class="absolute top-margin-mobile right-margin-mobile font-label-caps text-label-caps text-on-surface-variant">14:02 GMT</div>
+<div class="flex items-center gap-3 mb-2">
+<span class="material-symbols-outlined text-tertiary" data-icon="verified_user">verified_user</span>
+<span class="font-button-text text-button-text text-on-background uppercase">Connection Secure</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface-variant">A human operator has been notified of your location and case status. They are standing by to initiate contact.</p>
+</div>
+</div>
+<!-- Action Section -->
+<div class="mt-auto flex flex-col gap-intake-gap">
+<button class="w-full bg-secondary-container text-white h-[64px] rounded-lg font-button-text text-button-text flex items-center justify-center gap-3 active:scale-[0.98] transition-transform shadow-lg shadow-secondary-container/20">
+<span class="material-symbols-outlined" data-icon="call" data-weight="fill" style="font-variation-settings: 'FILL' 1;">call</span>
+                CALL SPECIALIST NOW
+            </button>
+<button class="w-full bg-surface-container-highest text-on-background h-[56px] rounded-lg font-button-text text-button-text flex items-center justify-center gap-3 border border-outline-variant hover:bg-surface-variant transition-colors">
+<span class="material-symbols-outlined" data-icon="dialpad">dialpad</span>
+                Exit to phone dialer
+            </button>
+</div>
+</main>
+<!-- Footer Component -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 bg-secondary-container left-1/2 -translate-x-1/2 max-w-[600px] flex items-center justify-center px-margin-mobile active:scale-[0.98] transition-transform cursor-pointer hover:brightness-110">
+<div class="flex items-center gap-2 text-on-secondary-container font-button-text text-button-text">
+<span class="material-symbols-outlined" data-icon="support_agent">support_agent</span>
+<span>Call a person instead</span>
+</div>
+</footer>
+<script>
+        // Micro-interaction: Ripple effect on the primary call button
+        document.querySelector('.bg-secondary-container').addEventListener('click', function(e) {
+            console.log('Initiating specialist connection...');
+            // Simulating connection feedback
+            this.innerHTML = '<span class="material-symbols-outlined animate-spin" data-icon="progress_activity">progress_activity</span> CONNECTING...';
+            setTimeout(() => {
+                this.innerHTML = '<span class="material-symbols-outlined" data-icon="call">call</span> CALL SPECIALIST NOW';
+            }, 2000);
+        });
+
+        // Atmospheric effect: Subtle movement of the avatar border
+        const avatarGlow = document.querySelector('.bg-tertiary-container');
+        setInterval(() => {
+            avatarGlow.classList.toggle('opacity-50');
+        }, 1000);
+    </script>
+</body></html>

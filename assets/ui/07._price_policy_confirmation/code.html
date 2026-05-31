@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-secondary-fixed": "#00174b",
+                    "on-primary-fixed": "#261a00",
+                    "tertiary-fixed-dim": "#00d9fc",
+                    "surface-tint": "#fbbc00",
+                    "secondary-fixed-dim": "#b4c5ff",
+                    "on-primary-fixed-variant": "#5c4300",
+                    "on-surface-variant": "#d4c5ab",
+                    "on-primary-container": "#6d5000",
+                    "surface-container-low": "#1c1b1b",
+                    "tertiary-container": "#04dcff",
+                    "surface-variant": "#353535",
+                    "primary-fixed": "#ffdfa0",
+                    "error": "#ffb4ab",
+                    "surface-bright": "#393939",
+                    "outline": "#9c8f78",
+                    "tertiary-fixed": "#aaedff",
+                    "surface-container": "#20201f",
+                    "on-secondary-fixed-variant": "#003ea8",
+                    "surface-container-highest": "#353535",
+                    "on-tertiary-fixed-variant": "#004e5c",
+                    "inverse-surface": "#e5e2e1",
+                    "on-secondary": "#002a78",
+                    "surface-container-high": "#2a2a2a",
+                    "on-error": "#690005",
+                    "secondary": "#b4c5ff",
+                    "surface-dim": "#131313",
+                    "on-background": "#e5e2e1",
+                    "tertiary": "#b4efff",
+                    "error-container": "#93000a",
+                    "on-error-container": "#ffdad6",
+                    "secondary-container": "#0053db",
+                    "inverse-primary": "#795900",
+                    "on-primary": "#402d00",
+                    "surface-container-lowest": "#0e0e0e",
+                    "secondary-fixed": "#dbe1ff",
+                    "on-tertiary-fixed": "#001f26",
+                    "on-tertiary-container": "#005d6d",
+                    "on-secondary-container": "#cdd7ff",
+                    "on-tertiary": "#003640",
+                    "outline-variant": "#504532",
+                    "on-surface": "#e5e2e1",
+                    "inverse-on-surface": "#313030",
+                    "primary-fixed-dim": "#fbbc00",
+                    "primary-container": "#ffbf00",
+                    "background": "#131313",
+                    "primary": "#ffe2ab",
+                    "surface": "#131313"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "margin-desktop": "32px",
+                    "intake-gap": "12px",
+                    "fulfillment-gap": "24px",
+                    "margin-mobile": "16px",
+                    "gutter": "16px"
+            },
+            "fontFamily": {
+                    "headline-sm": ["Archivo Narrow"],
+                    "button-text": ["Archivo Narrow"],
+                    "body-lg": ["Archivo Narrow"],
+                    "display-lg": ["Archivo Narrow"],
+                    "headline-md": ["Archivo Narrow"],
+                    "body-md": ["Archivo Narrow"],
+                    "label-caps": ["Archivo Narrow"]
+            },
+            "fontSize": {
+                    "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                    "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      body {
+        background-color: #0E0E0E;
+        color: #e5e2e1;
+        -webkit-font-smoothing: antialiased;
+      }
+      .intake-scroll {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .intake-scroll::-webkit-scrollbar {
+        display: none;
+      }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="font-body-md text-body-md overflow-x-hidden">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-background dark:bg-background border-b border-outline-variant flex items-center justify-between px-margin-mobile h-16 max-w-[600px] left-1/2 -translate-x-1/2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield">shield</span>
+<div class="flex flex-col leading-none">
+<span class="font-headline-md text-headline-md font-bold text-on-background tracking-tighter uppercase">ClueXP</span>
+<span class="font-label-caps text-label-caps text-primary-fixed-dim">EMERGENCY ACCESS</span>
+</div>
+</div>
+<div class="h-8 w-8 flex items-center justify-center rounded-full hover:bg-surface-variant transition-colors duration-200 cursor-pointer">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="close">close</span>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="relative pt-20 pb-32 px-margin-mobile max-w-[600px] mx-auto min-h-screen flex flex-col gap-intake-gap">
+<!-- Progress Indicator -->
+<div class="flex gap-1 w-full mb-2">
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-primary-container"></div>
+<div class="h-1 flex-1 bg-white/20"></div>
+</div>
+<!-- Narrative Intro -->
+<section class="mb-4">
+<h1 class="font-display-lg text-display-lg text-on-background mb-1">Finalize Request</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">Review the estimate and policies to proceed with emergency dispatch.</p>
+</section>
+<!-- Price Estimate Block (Industrial/Bento Style) -->
+<div class="grid grid-cols-1 gap-intake-gap">
+<div class="bg-surface-container-lowest border border-outline-variant p-5 rounded-lg flex flex-col gap-2 relative overflow-hidden">
+<!-- Atmospheric visual element -->
+<div class="absolute top-0 right-0 p-4 opacity-10">
+<span class="material-symbols-outlined text-[80px]" data-icon="payments">payments</span>
+</div>
+<span class="font-label-caps text-label-caps text-primary-fixed-dim">ESTIMATED PRICE RANGE</span>
+<div class="flex items-baseline gap-2">
+<span class="font-display-lg text-display-lg text-on-background tracking-tight">$85 - $150</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface-variant border-t border-outline-variant/30 pt-3 mt-2">
+                    Includes service call and basic entry labor. Final price depends on lock type and complexity.
+                </p>
+</div>
+<!-- Policies Section -->
+<div class="bg-surface-container border border-outline-variant rounded-lg overflow-hidden">
+<div class="px-5 py-4 border-b border-outline-variant bg-surface-container-high flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="policy">policy</span>
+<h2 class="font-headline-sm text-headline-sm uppercase tracking-tighter">Cancellation &amp; No-Show</h2>
+</div>
+<div class="p-5 flex flex-col gap-4">
+<div class="flex gap-4">
+<span class="material-symbols-outlined text-on-surface-variant flex-shrink-0" data-icon="check_circle">check_circle</span>
+<div>
+<p class="font-button-text text-button-text text-on-background">Free Cancellation</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Before technician is assigned to your request.</p>
+</div>
+</div>
+<div class="flex gap-4">
+<span class="material-symbols-outlined text-error flex-shrink-0" data-icon="warning">warning</span>
+<div>
+<p class="font-button-text text-button-text text-on-background">Cancellation Fee</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Applies after a technician has been dispatched to your location.</p>
+</div>
+</div>
+<div class="flex gap-4">
+<span class="material-symbols-outlined text-error flex-shrink-0" data-icon="no_accounts">no_accounts</span>
+<div>
+<p class="font-button-text text-button-text text-on-background">No-Show Fee</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Applies if technician arrives and you are unavailable or unreachable.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Identity/Legal Check -->
+<div class="mt-4 p-5 bg-surface-container-lowest border border-outline-variant rounded-lg">
+<label class="flex items-start gap-4 cursor-pointer group">
+<div class="relative flex items-center justify-center mt-1">
+<input class="peer appearance-none w-6 h-6 border-2 border-outline rounded bg-transparent checked:bg-primary-container checked:border-primary-container transition-all" id="legal-consent" required="" type="checkbox"/>
+<span class="material-symbols-outlined absolute text-on-primary-container scale-0 peer-checked:scale-100 transition-transform pointer-events-none" data-icon="check" style="font-variation-settings: 'wght' 700;">check</span>
+</div>
+<div class="flex-1">
+<p class="font-button-text text-button-text text-on-background transition-colors group-hover:text-primary">Legal Authority Confirmation</p>
+<p class="font-body-md text-body-md text-on-surface-variant">I confirm legal authority to access this location and agree to the terms listed above.</p>
+</div>
+</label>
+</div>
+<!-- Primary Action Button -->
+<div class="mt-4 mb-8">
+<button class="w-full h-[64px] bg-primary-container text-on-primary-container font-button-text text-button-text flex items-center justify-center gap-3 rounded-lg opacity-50 cursor-not-allowed transition-all active:scale-[0.98] hover:brightness-110" disabled="" id="submit-btn">
+<span class="material-symbols-outlined" data-icon="electric_bolt" style="font-variation-settings: 'FILL' 1;">electric_bolt</span>
+                ACCEPT &amp; REQUEST TECH
+            </button>
+<p class="text-center mt-3 font-label-caps text-label-caps text-on-surface-variant opacity-60">ENCRYPTED TRANSACTION SECURED BY CLUEXP</p>
+</div>
+</main>
+<!-- Footer - Emergency Call -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 left-1/2 -translate-x-1/2 max-w-[600px] bg-secondary-container flex items-center justify-center px-margin-mobile active:scale-[0.98] transition-transform hover:brightness-110 cursor-pointer">
+<div class="flex items-center gap-3 text-on-secondary-container">
+<span class="material-symbols-outlined" data-icon="phone_in_talk" style="font-variation-settings: 'FILL' 1;">phone_in_talk</span>
+<span class="font-button-text text-button-text">Call a person instead</span>
+</div>
+</footer>
+<script>
+        const checkbox = document.getElementById('legal-consent');
+        const submitBtn = document.getElementById('submit-btn');
+
+        checkbox.addEventListener('change', () => {
+            if (checkbox.checked) {
+                submitBtn.disabled = false;
+                submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            } else {
+                submitBtn.disabled = true;
+                submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+        });
+
+        submitBtn.addEventListener('click', () => {
+            if (!submitBtn.disabled) {
+                submitBtn.innerHTML = `
+                    <svg class="animate-spin h-5 w-5 text-on-primary-container" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    DISPATCHING...
+                `;
+                setTimeout(() => {
+                    alert('Emergency Request Dispatched. Connecting to nearest technician.');
+                }, 1500);
+            }
+        });
+    </script>
+</body></html>

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ClueXP - Additional Details</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind Configuration -->
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+                  "on-secondary-fixed": "#00174b",
+                  "on-primary-fixed": "#261a00",
+                  "tertiary-fixed-dim": "#00d9fc",
+                  "surface-tint": "#fbbc00",
+                  "secondary-fixed-dim": "#b4c5ff",
+                  "on-primary-fixed-variant": "#5c4300",
+                  "on-surface-variant": "#d4c5ab",
+                  "on-primary-container": "#6d5000",
+                  "surface-container-low": "#1c1b1b",
+                  "tertiary-container": "#04dcff",
+                  "surface-variant": "#353535",
+                  "primary-fixed": "#ffdfa0",
+                  "error": "#ffb4ab",
+                  "surface-bright": "#393939",
+                  "outline": "#9c8f78",
+                  "tertiary-fixed": "#aaedff",
+                  "surface-container": "#20201f",
+                  "on-secondary-fixed-variant": "#003ea8",
+                  "surface-container-highest": "#353535",
+                  "on-tertiary-fixed-variant": "#004e5c",
+                  "inverse-surface": "#e5e2e1",
+                  "on-secondary": "#002a78",
+                  "surface-container-high": "#2a2a2a",
+                  "on-error": "#690005",
+                  "secondary": "#b4c5ff",
+                  "surface-dim": "#131313",
+                  "on-background": "#e5e2e1",
+                  "tertiary": "#b4efff",
+                  "error-container": "#93000a",
+                  "on-error-container": "#ffdad6",
+                  "secondary-container": "#0053db",
+                  "inverse-primary": "#795900",
+                  "on-primary": "#402d00",
+                  "surface-container-lowest": "#0e0e0e",
+                  "secondary-fixed": "#dbe1ff",
+                  "on-tertiary-fixed": "#001f26",
+                  "on-tertiary-container": "#005d6d",
+                  "on-secondary-container": "#cdd7ff",
+                  "on-tertiary": "#003640",
+                  "outline-variant": "#504532",
+                  "on-surface": "#e5e2e1",
+                  "inverse-on-surface": "#313030",
+                  "primary-fixed-dim": "#fbbc00",
+                  "primary-container": "#ffbf00",
+                  "background": "#131313",
+                  "primary": "#ffe2ab",
+                  "surface": "#131313"
+          },
+          "borderRadius": {
+                  "DEFAULT": "0.125rem",
+                  "lg": "0.25rem",
+                  "xl": "0.5rem",
+                  "full": "0.75rem"
+          },
+          "spacing": {
+                  "unit": "4px",
+                  "margin-desktop": "32px",
+                  "intake-gap": "12px",
+                  "fulfillment-gap": "24px",
+                  "margin-mobile": "16px",
+                  "gutter": "16px"
+          },
+          "fontFamily": {
+                  "headline-sm": ["Archivo Narrow"],
+                  "button-text": ["Archivo Narrow"],
+                  "body-lg": ["Archivo Narrow"],
+                  "display-lg": ["Archivo Narrow"],
+                  "headline-md": ["Archivo Narrow"],
+                  "body-md": ["Archivo Narrow"],
+                  "label-caps": ["Archivo Narrow"]
+          },
+          "fontSize": {
+                  "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                  "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                  "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                  "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                  "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                  "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                  "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    body {
+      background-color: #0E0E0E;
+      color: #e5e2e1;
+      -webkit-font-smoothing: antialiased;
+    }
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    }
+    .intake-transition {
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="font-body-md overflow-x-hidden">
+<!-- TopAppBar [STRICT JSON MAPPING] -->
+<header class="fixed top-0 w-full z-50 bg-background dark:bg-background border-b border-outline-variant flat no shadows">
+<div class="flex items-center justify-between px-margin-mobile h-16 max-w-[600px] mx-auto">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield">shield</span>
+<h1 class="font-headline-md text-headline-md font-bold text-on-background">ClueXP</h1>
+</div>
+<div class="text-right">
+<span class="font-label-caps text-label-caps text-primary-container block uppercase tracking-wider">Emergency Access</span>
+</div>
+</div>
+</header>
+<main class="pt-24 pb-32 px-margin-mobile max-w-[600px] mx-auto min-h-screen flex flex-col">
+<!-- Progress Indicator [5-segment, Step 4/5] -->
+<div class="mb-intake-gap">
+<div class="flex gap-1 h-1 w-full mb-2">
+<div class="h-full flex-1 bg-primary-container"></div>
+<div class="h-full flex-1 bg-primary-container"></div>
+<div class="h-full flex-1 bg-primary-container"></div>
+<div class="h-full flex-1 bg-primary-container"></div>
+<div class="h-full flex-1 bg-white/20"></div>
+</div>
+<span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Phase 04: Contextual Details</span>
+</div>
+<!-- Narrative Section -->
+<section class="mt-8 mb-intake-gap">
+<h2 class="font-display-lg text-display-lg text-on-surface mb-2">Anything else we should know?</h2>
+<p class="font-body-lg text-body-lg text-on-surface-variant">Your extra information helps us deploy the right specialized team immediately.</p>
+</section>
+<!-- Intake Field: Multi-line -->
+<div class="flex-grow space-y-gutter">
+<div class="group relative">
+<label class="sr-only" for="details">Additional Context</label>
+<textarea class="w-full bg-surface-container border-2 border-outline-variant rounded-none p-4 font-body-md text-on-surface placeholder:text-outline focus:border-primary-container focus:ring-0 transition-colors duration-200 resize-none" id="details" placeholder="e.g. Child locked inside, Vehicle is running, Gate code required, Parking garage level 3" rows="6"></textarea>
+<div class="absolute bottom-4 right-4 pointer-events-none text-outline">
+<span class="material-symbols-outlined text-[18px]" data-icon="edit_note">edit_note</span>
+</div>
+</div>
+<!-- Quick-Add Chips (Enhancing UX for emergency speed) -->
+<div class="flex flex-wrap gap-2">
+<button class="px-3 py-2 bg-surface-container-high border border-outline-variant font-label-caps text-label-caps uppercase text-on-surface hover:bg-surface-variant transition-colors" onclick="document.getElementById('details').value += 'Hazardous location. ';">Hazardous</button>
+<button class="px-3 py-2 bg-surface-container-high border border-outline-variant font-label-caps text-label-caps uppercase text-on-surface hover:bg-surface-variant transition-colors" onclick="document.getElementById('details').value += 'Gate code: ';">Gate Code</button>
+<button class="px-3 py-2 bg-surface-container-high border border-outline-variant font-label-caps text-label-caps uppercase text-on-surface hover:bg-surface-variant transition-colors" onclick="document.getElementById('details').value += 'Low visibility. ';">Low Visibility</button>
+</div>
+</div>
+<!-- Action Cluster -->
+<div class="mt-intake-gap flex flex-col gap-4">
+<button class="w-full py-4 bg-primary-container text-on-primary font-button-text text-button-text uppercase tracking-widest active:scale-[0.98] transition-transform shadow-lg shadow-primary-container/10">
+        Continue
+      </button>
+<button class="w-full py-4 bg-transparent border-2 border-outline-variant text-on-surface font-button-text text-button-text uppercase tracking-widest active:scale-[0.98] transition-transform">
+        Skip
+      </button>
+</div>
+</main>
+<!-- Emergency Footer [STRICT JSON MAPPING] -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 bg-secondary-container dark:bg-secondary-container flex items-center justify-center max-w-[600px] left-1/2 -translate-x-1/2 px-margin-mobile shadow-2xl">
+<button class="w-full h-full flex items-center justify-center gap-2 text-on-secondary-container font-button-text text-button-text hover:brightness-110 active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined" data-icon="call" style="font-variation-settings: 'FILL' 1;">call</span>
+      Call a person instead
+    </button>
+</footer>
+<script>
+    // Micro-interaction: Focus state atmospheric shift
+    const textarea = document.getElementById('details');
+    textarea.addEventListener('focus', () => {
+      textarea.parentElement.classList.add('scale-[1.01]');
+    });
+    textarea.addEventListener('blur', () => {
+      textarea.parentElement.classList.remove('scale-[1.01]');
+    });
+  </script>
+</body></html>

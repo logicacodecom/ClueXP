@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ClueXP - Specialist Assigned</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-secondary-fixed": "#00174b",
+                    "on-primary-fixed": "#261a00",
+                    "tertiary-fixed-dim": "#00d9fc",
+                    "surface-tint": "#fbbc00",
+                    "secondary-fixed-dim": "#b4c5ff",
+                    "on-primary-fixed-variant": "#5c4300",
+                    "on-surface-variant": "#d4c5ab",
+                    "on-primary-container": "#6d5000",
+                    "surface-container-low": "#1c1b1b",
+                    "tertiary-container": "#04dcff",
+                    "surface-variant": "#353535",
+                    "primary-fixed": "#ffdfa0",
+                    "error": "#ffb4ab",
+                    "surface-bright": "#393939",
+                    "outline": "#9c8f78",
+                    "tertiary-fixed": "#aaedff",
+                    "surface-container": "#20201f",
+                    "on-secondary-fixed-variant": "#003ea8",
+                    "surface-container-highest": "#353535",
+                    "on-tertiary-fixed-variant": "#004e5c",
+                    "inverse-surface": "#e5e2e1",
+                    "on-secondary": "#002a78",
+                    "surface-container-high": "#2a2a2a",
+                    "on-error": "#690005",
+                    "secondary": "#b4c5ff",
+                    "surface-dim": "#131313",
+                    "on-background": "#e5e2e1",
+                    "tertiary": "#b4efff",
+                    "error-container": "#93000a",
+                    "on-error-container": "#ffdad6",
+                    "secondary-container": "#0053db",
+                    "inverse-primary": "#795900",
+                    "on-primary": "#402d00",
+                    "surface-container-lowest": "#0e0e0e",
+                    "secondary-fixed": "#dbe1ff",
+                    "on-tertiary-fixed": "#001f26",
+                    "on-tertiary-container": "#005d6d",
+                    "on-secondary-container": "#cdd7ff",
+                    "on-tertiary": "#003640",
+                    "outline-variant": "#504532",
+                    "on-surface": "#e5e2e1",
+                    "inverse-on-surface": "#313030",
+                    "primary-fixed-dim": "#fbbc00",
+                    "primary-container": "#ffbf00",
+                    "background": "#131313",
+                    "primary": "#ffe2ab",
+                    "surface": "#131313"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "margin-desktop": "32px",
+                    "intake-gap": "12px",
+                    "fulfillment-gap": "24px",
+                    "margin-mobile": "16px",
+                    "gutter": "16px"
+            },
+            "fontFamily": {
+                    "headline-sm": ["Archivo Narrow"],
+                    "button-text": ["Archivo Narrow"],
+                    "body-lg": ["Archivo Narrow"],
+                    "display-lg": ["Archivo Narrow"],
+                    "headline-md": ["Archivo Narrow"],
+                    "body-md": ["Archivo Narrow"],
+                    "label-caps": ["Archivo Narrow"]
+            },
+            "fontSize": {
+                    "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                    "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        display: inline-block;
+        line-height: 1;
+      }
+      body {
+        background-color: #131313;
+        color: #e5e2e1;
+      }
+      .fulfillment-transition {
+        animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .glow-pulse {
+        animation: glow 3s infinite alternate;
+      }
+      @keyframes glow {
+        from { box-shadow: 0 0 5px rgba(255, 191, 0, 0.1); }
+        to { box-shadow: 0 0 20px rgba(255, 191, 0, 0.3); }
+      }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="font-body-md selection:bg-primary selection:text-on-primary">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-background border-b border-outline-variant">
+<div class="flex items-center justify-between px-margin-mobile h-16 max-w-[600px] mx-auto">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield" style="font-variation-settings: 'FILL' 1;">shield</span>
+<span class="font-headline-md text-headline-md font-bold text-on-background">ClueXP</span>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-label-caps text-label-caps text-primary uppercase tracking-widest">Emergency Access</span>
+<span class="font-label-caps text-[10px] text-on-surface-variant uppercase">Status: Matched</span>
+</div>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="pt-24 pb-32 px-margin-mobile max-w-[600px] mx-auto min-h-screen fulfillment-transition">
+<!-- Trust Banner -->
+<section class="mb-fulfillment-gap text-center">
+<h1 class="font-display-lg text-display-lg mb-2">Specialist David has been assigned.</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">Rapid response protocols initiated. Technician is en route to your secure location.</p>
+</section>
+<!-- Technician Card (Bento-style layout) -->
+<div class="grid grid-cols-12 gap-intake-gap">
+<!-- Tech Portrait & Verification -->
+<div class="col-span-12 bg-surface-container-low border border-outline-variant p-gutter rounded-lg flex items-center gap-4 glow-pulse">
+<div class="relative w-20 h-20 rounded-full overflow-hidden border-2 border-primary">
+<img alt="Specialist David" class="w-full h-full object-cover grayscale contrast-125" data-alt="A professional headshot of a specialist technician named David in a neutral, industrial environment. He is wearing a dark, high-quality uniform with a subtle company logo. The lighting is crisp and professional, with a clean gray background. The aesthetic is modern and serious, emphasizing trust and competence through a slightly desaturated, high-contrast digital photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBlbZqB-klC6I5J_8GvuXMuZYtLuo4xE9KH6RqQhy7HI_NyotxJ6okhiTPVIrSnTSnKkS_now-Li-QsRuooVPDvRlLT5-tgNxyJCK54-3LdsJrrsRafS21yQLe69ZOpsI9W5se9_fPcd5RvpzqHRwICglk-tUJ2y6FO668LHzmVA3vMXJwc0Lki8fG504MVSViny8VUv-7_XYc-8rUgsEc_ULTOuwhqj8aAyUHa5AhOa7sAU_yJRL16PRZRsgr8v-TA9mI4ozP5cqo"/>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm">David S.</span>
+<div class="bg-primary/10 text-primary px-2 py-0.5 rounded text-[10px] font-bold uppercase border border-primary/20">Verified</div>
+</div>
+<div class="flex items-center gap-1 text-primary mt-1">
+<span class="material-symbols-outlined text-[16px]" data-icon="star" style="font-variation-settings: 'FILL' 1;">star</span>
+<span class="font-label-caps text-label-caps">4.9 Rating</span>
+</div>
+<p class="font-label-caps text-on-surface-variant mt-1">Specialized in Complex Recovery</p>
+</div>
+</div>
+<!-- ETA Block -->
+<div class="col-span-12 md:col-span-7 bg-surface-container border border-outline-variant p-gutter rounded-lg relative overflow-hidden">
+<div class="flex flex-col">
+<span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Estimated Arrival</span>
+<span class="font-display-lg text-display-lg text-primary mt-1">12 Mins</span>
+</div>
+<div class="absolute right-gutter top-1/2 -translate-y-1/2 opacity-10">
+<span class="material-symbols-outlined text-[64px]" data-icon="timer">timer</span>
+</div>
+</div>
+<!-- Credentials Block -->
+<div class="col-span-12 md:col-span-5 bg-surface-container border border-outline-variant p-gutter rounded-lg flex flex-col justify-center">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-[18px]" data-icon="verified_user">verified_user</span>
+<span class="font-label-caps text-label-caps uppercase">Vetted Specialist</span>
+</div>
+<p class="text-[12px] leading-tight text-on-surface-variant">Cleared for high-security environments and sensitive technical recovery operations.</p>
+</div>
+<!-- Map Placeholder / Fulfillment context -->
+<div class="col-span-12 aspect-video bg-surface-container-highest border border-outline-variant rounded-lg relative overflow-hidden">
+<img alt="Real-time map" class="w-full h-full object-cover opacity-50 grayscale" data-alt="A dark-mode satellite map view of an urban landscape with a golden route line tracing through the streets. The map is stylized with deep grays and blacks, showing building footprints and grid systems. A single amber pulse point indicates the technician's real-time position. The overall mood is high-tech, urgent, and precise, mirroring a tactical mission monitoring interface." data-location="San Francisco" src="https://lh3.googleusercontent.com/aida-public/AB6AXuClq32LykwgPD3uiqgsAx3XXbNsu1Urd1pSuKpgx30rEFmvp1M8Tk0o5XUVv7XCM0VMi3TQYiGGcZrQA17U0h5t1b_And6WN1zc7mF-JWkMqnBk29139MuMKvlsPXxMJE_CWvgoqHvmWGX918lY5DHoLO5SgqJyj3ftwzqKK3nb1CGVOKfDFW0hrPiCokuvzdcKkzqLa6MDfQ47k9b29BbLmgI2YXW5HPBTjDFkn6WVKjaU1isYifo-nJHitii_ivVljG83_7S07_4"/>
+<div class="absolute inset-0 bg-gradient-to-t from-surface-container-lowest to-transparent"></div>
+<div class="absolute bottom-margin-mobile left-margin-mobile flex items-center gap-2">
+<span class="relative flex h-3 w-3">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+<span class="relative inline-flex rounded-full h-3 w-3 bg-primary"></span>
+</span>
+<span class="font-label-caps text-label-caps text-on-surface">Tracking Active</span>
+</div>
+</div>
+<!-- Secondary Action -->
+<div class="col-span-12 mt-intake-gap">
+<button class="w-full h-16 bg-primary-container text-on-primary-container font-button-text text-button-text flex items-center justify-center gap-3 active:scale-[0.98] transition-transform rounded-lg">
+<span class="material-symbols-outlined" data-icon="call">call</span>
+                    CALL SPECIALIST
+                </button>
+</div>
+</div>
+<!-- Status Updates / Activity Feed -->
+<div class="mt-fulfillment-gap">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant uppercase mb-intake-gap">Activity Log</h3>
+<div class="space-y-intake-gap">
+<div class="p-gutter bg-surface-container-low border-l-2 border-primary rounded-r-lg relative">
+<span class="absolute top-2 right-2 font-label-caps text-[10px] text-on-surface-variant">Just now</span>
+<p class="font-body-md text-on-surface font-semibold">Technician assigned and dispatched</p>
+<p class="text-[13px] text-on-surface-variant mt-1">David S. is on the way with specialized equipment.</p>
+</div>
+<div class="p-gutter bg-surface-container-low border-l-2 border-outline-variant rounded-r-lg relative opacity-60">
+<span class="absolute top-2 right-2 font-label-caps text-[10px] text-on-surface-variant">3 mins ago</span>
+<p class="font-body-md text-on-surface">Request verified by operations</p>
+</div>
+</div>
+</div>
+</main>
+<!-- Emergency Footer -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 bg-secondary-container flex items-center justify-center max-w-[600px] left-1/2 -translate-x-1/2">
+<button class="w-full h-full flex items-center justify-center gap-2 active:scale-[0.98] transition-transform hover:brightness-110">
+<span class="material-symbols-outlined text-on-secondary-container" data-icon="support_agent">support_agent</span>
+<span class="font-button-text text-button-text text-on-secondary-container">Call a person instead</span>
+</button>
+</footer>
+<script>
+        // Simple micro-interaction for the map tracking
+        document.addEventListener('DOMContentLoaded', () => {
+            const trackingIndicator = document.querySelector('.animate-ping');
+            if (trackingIndicator) {
+                console.log('Tracking initialized...');
+            }
+        });
+    </script>
+</body></html>

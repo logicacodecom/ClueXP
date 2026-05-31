@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-secondary-fixed": "#00174b",
+                        "on-primary-fixed": "#261a00",
+                        "tertiary-fixed-dim": "#00d9fc",
+                        "surface-tint": "#fbbc00",
+                        "secondary-fixed-dim": "#b4c5ff",
+                        "on-primary-fixed-variant": "#5c4300",
+                        "on-surface-variant": "#d4c5ab",
+                        "on-primary-container": "#6d5000",
+                        "surface-container-low": "#1c1b1b",
+                        "tertiary-container": "#04dcff",
+                        "surface-variant": "#353535",
+                        "primary-fixed": "#ffdfa0",
+                        "error": "#ffb4ab",
+                        "surface-bright": "#393939",
+                        "outline": "#9c8f78",
+                        "tertiary-fixed": "#aaedff",
+                        "surface-container": "#20201f",
+                        "on-secondary-fixed-variant": "#003ea8",
+                        "surface-container-highest": "#353535",
+                        "on-tertiary-fixed-variant": "#004e5c",
+                        "inverse-surface": "#e5e2e1",
+                        "on-secondary": "#002a78",
+                        "surface-container-high": "#2a2a2a",
+                        "on-error": "#690005",
+                        "secondary": "#b4c5ff",
+                        "surface-dim": "#131313",
+                        "on-background": "#e5e2e1",
+                        "tertiary": "#b4efff",
+                        "error-container": "#93000a",
+                        "on-error-container": "#ffdad6",
+                        "secondary-container": "#0053db",
+                        "inverse-primary": "#795900",
+                        "on-primary": "#402d00",
+                        "surface-container-lowest": "#0e0e0e",
+                        "secondary-fixed": "#dbe1ff",
+                        "on-tertiary-fixed": "#001f26",
+                        "on-tertiary-container": "#005d6d",
+                        "on-secondary-container": "#cdd7ff",
+                        "on-tertiary": "#003640",
+                        "outline-variant": "#504532",
+                        "on-surface": "#e5e2e1",
+                        "inverse-on-surface": "#313030",
+                        "primary-fixed-dim": "#fbbc00",
+                        "primary-container": "#ffbf00",
+                        "background": "#131313",
+                        "primary": "#ffe2ab",
+                        "surface": "#131313"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "unit": "4px",
+                        "margin-desktop": "32px",
+                        "intake-gap": "12px",
+                        "fulfillment-gap": "24px",
+                        "margin-mobile": "16px",
+                        "gutter": "16px"
+                    },
+                    "fontFamily": {
+                        "headline-sm": ["Archivo Narrow"],
+                        "button-text": ["Archivo Narrow"],
+                        "body-lg": ["Archivo Narrow"],
+                        "display-lg": ["Archivo Narrow"],
+                        "headline-md": ["Archivo Narrow"],
+                        "body-md": ["Archivo Narrow"],
+                        "label-caps": ["Archivo Narrow"]
+                    },
+                    "fontSize": {
+                        "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                        "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                        "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                        "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                        "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                        "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .map-mesh {
+            background-image: radial-gradient(#333 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+        .ping-slow {
+            animation: ping 3s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+        @keyframes ping {
+            75%, 100% { transform: scale(2); opacity: 0; }
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background font-body-md overflow-hidden">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-background border-b border-outline-variant flex items-center justify-between px-margin-mobile h-16 max-w-[600px] left-1/2 -translate-x-1/2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield">shield</span>
+<h1 class="font-headline-md text-headline-md font-bold text-on-background uppercase tracking-tighter">ClueXP</h1>
+</div>
+<div class="flex flex-col items-end">
+<span class="font-label-caps text-label-caps text-primary uppercase">Emergency Access</span>
+<span class="text-[10px] text-on-surface-variant uppercase tracking-widest">Live Tracking</span>
+</div>
+</header>
+<!-- Main Canvas: Fulfillment Phase Layout -->
+<main class="relative w-full h-screen max-w-[600px] mx-auto bg-surface-container-lowest">
+<!-- Full-screen Map Representation -->
+<div class="absolute inset-0 z-0 bg-surface-dim map-mesh overflow-hidden">
+<!-- Simulated Map Elements -->
+<div class="absolute top-1/4 left-1/3 w-full h-px bg-outline-variant/30 rotate-12"></div>
+<div class="absolute top-1/2 left-0 w-full h-px bg-outline-variant/30 -rotate-6"></div>
+<div class="absolute top-0 left-1/2 w-px h-full bg-outline-variant/30"></div>
+<!-- User Location Marker -->
+<div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+<div class="w-4 h-4 bg-tertiary-container rounded-full relative z-10 shadow-[0_0_15px_rgba(0,217,252,0.5)]"></div>
+<div class="absolute top-0 left-0 w-4 h-4 bg-tertiary-container rounded-full ping-slow"></div>
+</div>
+<!-- Technician Marker -->
+<div class="absolute top-1/3 left-1/4 transition-all duration-[8000ms] ease-linear" id="tech-marker">
+<div class="flex flex-col items-center">
+<div class="bg-primary-container text-on-primary-container px-3 py-1 rounded-lg shadow-lg mb-2 flex items-center gap-2">
+<span class="font-button-text text-[14px]">8 mins away</span>
+</div>
+<div class="w-8 h-8 bg-primary rounded-full border-2 border-on-primary flex items-center justify-center shadow-xl">
+<span class="material-symbols-outlined text-on-primary text-[20px]" data-icon="local_shipping" style="font-variation-settings: 'FILL' 1;">local_shipping</span>
+</div>
+</div>
+</div>
+<!-- Map Image Overlay (Prompted) -->
+<img class="absolute inset-0 object-cover opacity-20 grayscale pointer-events-none" data-alt="A highly detailed, dark-mode satellite map of a modern urban residential neighborhood at night. The view is top-down, showing clean geometric street patterns, dark asphalt surfaces, and subtle, glowing blue and amber light paths representing traffic flow. The aesthetic is industrial-minimalist with deep charcoal tones and a high-tech navigational interface feel, conveying professional reliability and precision." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAng6BwhdTg2G-KddlhE-eehSTCJW0ZQ9ZYauk4EfBJCefOLwbyWpxy8HicUf9-vwUFNmcuA1W1LSWuPkEUY7CEgjwD6svrVZZYU-igFUYQ_fMawxuaoqA3PG0H_pv8ZOhioz04_8rvdoYeB6ovWo3HHsmvIGUTWFn4PDW4oOsWk-9Ye-BRuw5u1ewOjkisFPtMl0SFcuRuR46KTAr7fh8800rrAdRig_FxkcNSP3LZo5pL0idWZ-NwZbqPW_Rsmt-eHgtZ0zdDuTg"/>
+</div>
+<!-- Status Overlays -->
+<div class="absolute top-20 left-4 right-4 z-20 flex flex-col gap-fulfillment-gap">
+<!-- Technician Identity Card -->
+<div class="bg-surface-container-high border border-outline-variant p-4 flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="w-12 h-12 bg-surface-variant border border-outline-variant overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="A professional close-up portrait of a specialist technician named David. He is wearing a clean, dark industrial utility uniform with a subtle company logo. He has a calm, focused, and reassuring expression, looking directly at the camera with competence. The lighting is crisp and cool-toned, set against a blurred background of a professional workshop, reinforcing a theme of expertise and reliability." src="https://lh3.googleusercontent.com/aida-public/AB6AXuClJl8vsy_4hZHRUSeXFWhXaxCeGW7PHK0Vi_NVdXavASKpSDDOXDqDe7zxqUY5l6CqsrPafwjdILceNZ-T_YpnKPe0mVVFBzqqah1XhVM2LojWAbvVwIK0dwGESif6v9aP6_fNAf7IgZ6osSe3e3lcFclGcHryiv1ob9bUasg6JGDNz6rtR8U0YZLd2sW6AZF4PjnL8TotV5R7fdNR_EHQ-4oTlmMiCj7x0YtwTSFnXd1g1njYAWs0LppRCUx01l5U2lrg6rTEJg4"/>
+</div>
+<div>
+<h2 class="font-headline-sm text-headline-sm text-on-surface">Specialist David</h2>
+<p class="text-primary font-label-caps text-label-caps uppercase tracking-wider">En Route to your location</p>
+</div>
+</div>
+<div class="text-right">
+<span class="text-on-surface-variant text-[10px] uppercase font-bold">ETA</span>
+<p class="text-primary font-display-lg text-[24px]">14:22</p>
+</div>
+</div>
+<!-- Reinforcement Banner -->
+<div class="bg-primary/10 border-l-2 border-primary px-4 py-3 flex items-center gap-3">
+<span class="material-symbols-outlined text-primary text-[20px]" data-icon="visibility">visibility</span>
+<p class="font-body-md text-on-primary-fixed-variant">Keep this page open for live updates.</p>
+</div>
+</div>
+<!-- Action Panel -->
+<div class="absolute bottom-[80px] left-margin-mobile right-margin-mobile z-20 flex flex-col gap-intake-gap">
+<div class="grid grid-cols-2 gap-3">
+<button class="bg-primary hover:bg-primary-fixed-dim text-on-primary h-14 font-button-text flex items-center justify-center gap-2 transition-transform active:scale-[0.98]">
+<span class="material-symbols-outlined text-[20px]" data-icon="chat">chat</span>
+                    Message Tech
+                </button>
+<button class="bg-primary hover:bg-primary-fixed-dim text-on-primary h-14 font-button-text flex items-center justify-center gap-2 transition-transform active:scale-[0.98]">
+<span class="material-symbols-outlined text-[20px]" data-icon="call">call</span>
+                    Call Tech
+                </button>
+</div>
+<button class="bg-surface-container-high border border-outline hover:bg-surface-variant text-on-surface h-12 font-button-text flex items-center justify-center gap-2 transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="support_agent">support_agent</span>
+                Call Dispatch
+            </button>
+</div>
+</main>
+<!-- Emergency Footer -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 bg-secondary-container flex items-center justify-center max-w-[600px] left-1/2 -translate-x-1/2 px-margin-mobile shadow-[0_-4px_10px_rgba(0,0,0,0.3)] cursor-pointer active:scale-[0.98] transition-transform">
+<div class="flex items-center gap-2 text-on-secondary-container">
+<span class="material-symbols-outlined" data-icon="headset_mic">headset_mic</span>
+<span class="font-button-text text-button-text">Call a person instead</span>
+</div>
+</footer>
+<script>
+        // Micro-interaction for simulated technician movement
+        const marker = document.getElementById('tech-marker');
+        let moveCount = 0;
+        
+        function simulateMovement() {
+            const x = 25 + (Math.random() * 5);
+            const y = 33 + (Math.random() * 10);
+            marker.style.left = `${x}%`;
+            marker.style.top = `${y}%`;
+            moveCount++;
+        }
+
+        setInterval(simulateMovement, 8000);
+        
+        // Initial call
+        simulateMovement();
+    </script>
+</body></html>

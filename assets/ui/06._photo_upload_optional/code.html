@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ClueXP - Photo Upload</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            display: inline-block;
+            line-height: 1;
+            text-transform: none;
+            letter-spacing: normal;
+            word-wrap: normal;
+            white-space: nowrap;
+            direction: ltr;
+        }
+        body {
+            background-color: #0E0E0E;
+            color: #E5E2E1;
+            font-family: 'Archivo Narrow', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        .intake-gap { gap: 12px; }
+        .fulfillment-gap { gap: 24px; }
+        .glass-panel {
+            background: rgba(26, 26, 26, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid #333333;
+        }
+        .progress-pipe {
+            height: 4px;
+            flex-grow: 1;
+            border-radius: 2px;
+            transition: all 0.3s ease;
+        }
+    </style>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-secondary-fixed": "#00174b",
+                    "on-primary-fixed": "#261a00",
+                    "tertiary-fixed-dim": "#00d9fc",
+                    "surface-tint": "#fbbc00",
+                    "secondary-fixed-dim": "#b4c5ff",
+                    "on-primary-fixed-variant": "#5c4300",
+                    "on-surface-variant": "#d4c5ab",
+                    "on-primary-container": "#6d5000",
+                    "surface-container-low": "#1c1b1b",
+                    "tertiary-container": "#04dcff",
+                    "surface-variant": "#353535",
+                    "primary-fixed": "#ffdfa0",
+                    "error": "#ffb4ab",
+                    "surface-bright": "#393939",
+                    "outline": "#9c8f78",
+                    "tertiary-fixed": "#aaedff",
+                    "surface-container": "#20201f",
+                    "on-secondary-fixed-variant": "#003ea8",
+                    "surface-container-highest": "#353535",
+                    "on-tertiary-fixed-variant": "#004e5c",
+                    "inverse-surface": "#e5e2e1",
+                    "on-secondary": "#002a78",
+                    "surface-container-high": "#2a2a2a",
+                    "on-error": "#690005",
+                    "secondary": "#b4c5ff",
+                    "surface-dim": "#131313",
+                    "on-background": "#e5e2e1",
+                    "tertiary": "#b4efff",
+                    "error-container": "#93000a",
+                    "on-error-container": "#ffdad6",
+                    "secondary-container": "#0053db",
+                    "inverse-primary": "#795900",
+                    "on-primary": "#402d00",
+                    "surface-container-lowest": "#0e0e0e",
+                    "secondary-fixed": "#dbe1ff",
+                    "on-tertiary-fixed": "#001f26",
+                    "on-tertiary-container": "#005d6d",
+                    "on-secondary-container": "#cdd7ff",
+                    "on-tertiary": "#003640",
+                    "outline-variant": "#504532",
+                    "on-surface": "#e5e2e1",
+                    "inverse-on-surface": "#313030",
+                    "primary-fixed-dim": "#fbbc00",
+                    "primary-container": "#ffbf00",
+                    "background": "#131313",
+                    "primary": "#ffe2ab",
+                    "surface": "#131313"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "margin-desktop": "32px",
+                    "intake-gap": "12px",
+                    "fulfillment-gap": "24px",
+                    "margin-mobile": "16px",
+                    "gutter": "16px"
+            },
+            "fontFamily": {
+                    "headline-sm": ["Archivo Narrow"],
+                    "button-text": ["Archivo Narrow"],
+                    "body-lg": ["Archivo Narrow"],
+                    "display-lg": ["Archivo Narrow"],
+                    "headline-md": ["Archivo Narrow"],
+                    "body-md": ["Archivo Narrow"],
+                    "label-caps": ["Archivo Narrow"]
+            },
+            "fontSize": {
+                    "headline-sm": ["20px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "button-text": ["16px", {"lineHeight": "1", "fontWeight": "700"}],
+                    "body-lg": ["18px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "display-lg": ["32px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "headline-md": ["24px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "label-caps": ["12px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background min-h-screen flex flex-col overflow-x-hidden">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-background border-b border-outline-variant h-16 flex items-center justify-between px-margin-mobile max-w-[600px] left-1/2 -translate-x-1/2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="shield" style="font-variation-settings: 'FILL' 1;">shield</span>
+<div class="flex flex-col">
+<span class="font-headline-md text-headline-md font-bold text-on-background tracking-tighter">ClueXP</span>
+<span class="font-label-caps text-label-caps text-primary uppercase">Emergency Access</span>
+</div>
+</div>
+<div class="flex items-center">
+<button class="p-2 hover:bg-surface-variant transition-colors duration-200">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="info">info</span>
+</button>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-1 mt-16 mb-[64px] w-full max-w-[600px] mx-auto px-margin-mobile py-8 flex flex-col intake-gap">
+<!-- Progress Bar (5-segment Final Step) -->
+<div class="flex gap-1 w-full mb-4">
+<div class="progress-pipe bg-primary-container"></div>
+<div class="progress-pipe bg-primary-container"></div>
+<div class="progress-pipe bg-primary-container"></div>
+<div class="progress-pipe bg-primary-container"></div>
+<div class="progress-pipe bg-primary-container shadow-[0_0_8px_rgba(255,191,0,0.4)]"></div>
+</div>
+<!-- Narrative Header -->
+<section class="mb-4">
+<h1 class="font-display-lg text-display-lg text-on-background mb-2">PHOTOS HELP US PREPARE FASTER.</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">Visual data reduces response time. Your photos are shared instantly with the dispatched unit.</p>
+</section>
+<!-- Capture Area / Bento Grid Hints -->
+<div class="grid grid-cols-2 gap-3 mb-6">
+<!-- Main Upload Trigger -->
+<button class="col-span-2 aspect-[4/3] bg-surface-container-high border-2 border-dashed border-outline hover:border-primary transition-all flex flex-col items-center justify-center group" onclick="document.getElementById('photo-input').click()">
+<input accept="image/*" capture="environment" class="hidden" id="photo-input" type="file"/>
+<div class="w-16 h-16 rounded-full bg-surface-variant flex items-center justify-center mb-4 group-hover:bg-primary transition-colors">
+<span class="material-symbols-outlined text-on-surface text-[32px] group-hover:text-on-primary-fixed" data-icon="add_a_photo">add_a_photo</span>
+</div>
+<span class="font-button-text text-button-text uppercase tracking-widest text-primary">Capture or Upload</span>
+<span class="font-label-caps text-label-caps mt-2 text-on-surface-variant">Native Camera Picker</span>
+</button>
+<!-- Hint Cards (Asymmetric/Bento style) -->
+<div class="col-span-1 glass-panel p-4 flex flex-col justify-between">
+<span class="material-symbols-outlined text-primary mb-2" data-icon="lock">lock</span>
+<div>
+<h3 class="font-label-caps text-label-caps uppercase text-on-background mb-1">Lock Model</h3>
+<p class="text-[10px] leading-tight text-on-surface-variant">Close-up of the brand and keyway.</p>
+</div>
+</div>
+<div class="col-span-1 glass-panel p-4 flex flex-col justify-between">
+<span class="material-symbols-outlined text-primary mb-2" data-icon="door_front">door_front</span>
+<div>
+<h3 class="font-label-caps text-label-caps uppercase text-on-background mb-1">Door Frame</h3>
+<p class="text-[10px] leading-tight text-on-surface-variant">Show clearance and potential obstacles.</p>
+</div>
+</div>
+<div class="col-span-2 glass-panel p-4 flex items-center gap-4">
+<div class="w-12 h-12 flex-shrink-0 bg-surface-variant flex items-center justify-center">
+<span class="material-symbols-outlined text-tertiary" data-icon="visibility">visibility</span>
+</div>
+<div>
+<h3 class="font-label-caps text-label-caps uppercase text-on-background">Visual Obstacles</h3>
+<p class="text-[10px] leading-tight text-on-surface-variant">Fences, stairs, or keypad malfunctions.</p>
+</div>
+</div>
+</div>
+<!-- Atmospheric Image Context -->
+<div class="w-full h-32 overflow-hidden border border-outline-variant grayscale opacity-40 mb-4">
+<img class="w-full h-full object-cover" data-alt="A cinematic, low-angle shot of a high-security industrial lock and door assembly in a dimly lit, high-contrast environment. The scene is dominated by deep blacks and cool metallic tones, with a single sharp amber highlight catching the texture of the steel. The atmosphere is professional, urgent, and technically precise, reflecting a state of emergency response preparation." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAM9wmwHqudpe5e0Hl4MtXz727jnnEijyB1eZjnTYwDKFGdvATCegVI4JL_ZJDyelNHkZyNhJ3Y-ymKf_Awj2hO1ljlllKtYBewcf_0LfSHvlfm4upaQzMjVUsjRMon17UEz7qTaCn_zjFRfMciMrRAX15Fg1LcRiY0pE9IPOcvDNv5kbagcN4nkrAR3Mpz1MIYbfHsSmitNRxoFOkaPN8CJ0h87Lco44964uLyKaAGw1dFpT6BFiVrIBi9c9u9iHqvMCtSDemWEnI"/>
+</div>
+<!-- Action Buttons -->
+<div class="flex flex-col gap-3 mt-auto">
+<button class="w-full h-14 bg-primary text-on-primary-fixed font-button-text text-button-text uppercase tracking-widest flex items-center justify-center active:scale-[0.98] transition-transform">
+                Continue to Dispatch
+            </button>
+<button class="w-full h-14 border border-outline text-on-surface font-button-text text-button-text uppercase tracking-widest flex items-center justify-center hover:bg-surface-variant active:scale-[0.98] transition-all">
+                Skip for Now
+            </button>
+</div>
+</main>
+<!-- Emergency Footer -->
+<footer class="fixed bottom-0 w-full h-[64px] z-50 bg-secondary-container flex items-center justify-center max-w-[600px] left-1/2 -translate-x-1/2 px-margin-mobile">
+<button class="w-full h-full flex items-center justify-center gap-3 active:scale-[0.98] transition-transform hover:brightness-110">
+<span class="material-symbols-outlined text-on-secondary-container" data-icon="call" style="font-variation-settings: 'FILL' 1;">call</span>
+<span class="font-button-text text-button-text text-on-secondary-container uppercase tracking-widest">Call a person instead</span>
+</button>
+</footer>
+<script>
+        // Micro-interaction: Update UI on file selection
+        document.getElementById('photo-input').addEventListener('change', function(e) {
+            if (e.target.files && e.target.files[0]) {
+                const btn = e.target.parentElement;
+                btn.innerHTML = `
+                    <div class="flex flex-col items-center justify-center text-primary-container">
+                        <span class="material-symbols-outlined text-[48px]" data-icon="check_circle" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+                        <span class="mt-2 font-button-text uppercase">Photo Added</span>
+                        <span class="text-[10px] text-on-surface-variant mt-1">${e.target.files[0].name}</span>
+                    </div>
+                `;
+                btn.classList.remove('border-dashed');
+                btn.classList.add('border-primary', 'bg-surface-container-highest');
+            }
+        });
+
+        // Handle scroll behavior for sticky items
+        window.addEventListener('scroll', () => {
+            const header = document.querySelector('header');
+            if (window.scrollY > 10) {
+                header.classList.add('shadow-xl');
+            } else {
+                header.classList.remove('shadow-xl');
+            }
+        });
+    </script>
+</body></html>
