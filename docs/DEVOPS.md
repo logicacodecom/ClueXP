@@ -33,7 +33,9 @@ How code goes from a branch to production safely. Reflects the current setup
 
 ## 3. CI (GitHub Actions) — recommended
 
-Add `.github/workflows/ci.yml`. Gate every PR on:
+Add `.github/workflows/ci.yml`. **The YAML below targets the *current* root
+layout.** After the Sprint-0 monorepo move the paths change — see the note under
+the block. Gate every PR on:
 
 ```yaml
 name: ci
@@ -68,6 +70,12 @@ Key checks: **TS typecheck + build**, **Python compile/lint**, **schema→types
 drift** (fail if `schema.py` changed but generated TS wasn't regenerated),
 **Alembic offline render** (migrations parse).
 
+**After the Sprint-0 restructure, update the paths in the same PR as the move:**
+run web steps with `working-directory: apps/intake-web`; compile
+`apps/intake-web/api`; generate types from `packages/schema` into
+`apps/intake-web/src/types`. (Creating this workflow is tracked as a Sprint-0
+task in `EXECUTION-PLAN.md`.)
+
 ## 4. CD (Vercel)
 
 - Preview URL per PR (auto). Smoke-test there before promoting.
@@ -86,7 +94,10 @@ drift** (fail if `schema.py` changed but generated TS wasn't regenerated),
     deploying code that depends on the new columns.
   - Migrations must be **backward-compatible** with the currently-running code
     (expand → deploy → contract), so a deploy + migration can interleave safely.
-- Use the **pooler** URL (6543) in CI; never point CI at a destructive
+- **Connection policy:** prefer the Supabase **direct** URL (5432) for
+  local/admin migrations when reachable; use the **transaction pooler** (6543) as
+  the verified fallback for CI or when the direct host is unavailable (it can be
+  IPv6-unreachable from some networks). Never point CI at a destructive
   `downgrade` automatically.
 
 ## 6. Secrets management
@@ -94,7 +105,7 @@ drift** (fail if `schema.py` changed but generated TS wasn't regenerated),
 | Secret | Lives in | Never |
 |---|---|---|
 | `DATABASE_URL` | Vercel env (Prod + Preview) | committed; in client bundle |
-| `GOOGLE_MAPS_API_KEY` (server) | Vercel env | exposed to browser (use a separate restricted render token) |
+| `GOOGLE_MAPS_API_KEY` (server) | Vercel env | exposed to browser — rendering uses `NEXT_PUBLIC_MAPS_BROWSER_KEY` (Maps JS, domain-restricted) |
 | Supabase service key | Vercel env / CI secret | in repo |
 | Vercel token | CI secret only | in chat/repo |
 

@@ -2,7 +2,7 @@
 
 Reference for the data layer: schema, connection model, migrations, and file
 storage. Migrations live in `packages/db`; the app reads/writes via the API
-(`api/store.py`, moving to `apps/api`).
+(`api/store.py`, moving to `apps/intake-web/api`).
 
 ---
 
@@ -49,7 +49,7 @@ live intake until Sprint 1 migrates intake onto `jobs`/`customers`.
 | Use | Endpoint | Why |
 |---|---|---|
 | **App / serverless** | **Transaction pooler** — `aws-1-us-east-2.pooler.supabase.com:6543`, user `postgres.gzgrkzvhotjolvcbqiku` | pgbouncer handles many short-lived serverless connections; **IPv4** |
-| **Migrations / admin** | **Pooler also works**; direct `db.gzgrkzvhotjolvcbqiku.supabase.co:5432` is preferred where reachable | full session features |
+| **Migrations / admin** | **Direct** `db.gzgrkzvhotjolvcbqiku.supabase.co:5432` preferred when reachable; **pooler** is the verified fallback (CI / IPv6-unreachable networks) | full session features |
 
 Gotchas we hit and handle:
 - **Disable prepared statements** behind the pooler — psycopg `prepare_threshold=None`
@@ -109,7 +109,11 @@ validate server-side before issuing the signed URL.
 
 - ID docs and customer photos live **only** in the private bucket; access via
   signed URLs scoped to the requesting job/technician.
-- Add **RLS** policies so a signed-in role can only read its own objects.
+- **Operationalized in Sprint 0 (not deferred):** RLS **deny-by-default** on
+  `private-verification` with owner-scoped read/write; public read on
+  `public-tech-media`; signed-URL TTLs (~60s upload / ~300s download); server-side
+  **size (≤10 MB) + MIME** validation *before* issuing any signed URL. A "private
+  bucket" without these is not actually safe.
 - Define **PII retention** (e.g., purge `id_document` media N days after job
   completion); record deletions in `events`.
 - `events` is the tamper-evident audit trail — never delete rows; archive.

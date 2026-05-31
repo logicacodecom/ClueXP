@@ -8,8 +8,9 @@
 - **Monorepo**, one git repo (`logicacodecom/ClueXP`), `apps/` + `packages/`. Each
   subsystem is a folder, not a separate repo. Separate Vercel projects per app,
   all from this one repo.
-- **One shared FastAPI backend** (extracted out of the intake app), not one API
-  per frontend.
+- **One shared FastAPI backend** (one logical service), not one API per frontend.
+  Co-located inside the intake app for now; standalone extraction deferred until
+  a second frontend exists.
 - **Maps:** Google Maps Platform (Geocoding + Routes + Maps JS).
 - **DB access:** raw SQL + Alembic migrations (lean, explicit), in `packages/db`.
 - **Storage:** Supabase Storage — public bucket for technician media, private
@@ -20,15 +21,17 @@
 ```
 ClueXP/
 ├─ apps/
-│  ├─ intake-web/      # customer PWA (today's Next app)   → Vercel: cluexp-intake
+│  ├─ intake-web/      # customer PWA + co-located API     → Vercel: cluexp-intake
+│  │  └─ api/          #   FastAPI (Python functions)
 │  ├─ technician-web/  # technician PWA (later)            → Vercel: cluexp-tech
-│  ├─ dispatcher-web/  # human ops console (later)         → Vercel: cluexp-ops
-│  └─ api/             # shared FastAPI backend            → Vercel: cluexp-api
+│  └─ dispatcher-web/  # human ops console (later)         → Vercel: cluexp-ops
 ├─ packages/
 │  ├─ schema/          # Pydantic contract + generated TS types
 │  └─ db/              # Alembic migrations (raw SQL)
 ├─ docs/               # SPEC.md, ROADMAP.md, ADRs
 └─ supabase/           # storage buckets + RLS, seed scripts
+
+# Deferred: apps/api as a standalone deployable (cluexp-api) once a 2nd frontend lands.
 ```
 
 ## Phase 1 data model (relational core + JSONB detail)
@@ -66,7 +69,7 @@ separate **domain-restricted** token for rendering only.
 
 ## Epics
 
-- **E0 Foundation** — monorepo restructure, extract API, `packages/db` + the Phase-1 schema, Storage buckets, Google Maps keys.
+- **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
 - **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
 - **E2 Technician** — registry/admin, profile + vetting, availability, location ping; technician PWA.
 - **E3 Dispatch engine** — deterministic matcher (geo + skill + availability + rating); offer cascade.
@@ -80,7 +83,7 @@ separate **domain-restricted** token for rendering only.
 
 | Sprint | Goal | Headline deliverable |
 |---|---|---|
-| **0 — Foundation** | Restructure + DB | `apps/`+`packages/` layout, API extracted, `packages/db` with the 6 tables applied to Supabase, intake still green |
+| **0 — Foundation** | Hardening + restructure + DB | live-app hardening, `apps/`+`packages/` layout (API co-located), CI, `packages/db` 6 tables on Supabase, intake still green |
 | **1 — Intake on real model** | Persist properly | Intake writes `customers`+`jobs`; real geocoding; photo upload to Storage |
 | **2 — Technician + matching v1** | Kill the stub tech | Technician table+seed+admin; deterministic dispatch + offers |
 | **3 — Fulfillment maps** | Real ETAs/tracking | Live map, traffic ETA, mutual arrival handshake |
@@ -89,7 +92,11 @@ separate **domain-restricted** token for rendering only.
 
 ## Sprint 0 — task order (production-safe)
 
-1. **`packages/db`** — Alembic + raw-SQL baseline; apply the 6 tables to Supabase (additive, does not touch the live intake). ✅ first
-2. **Monorepo move** — `apps/intake-web`, extract `apps/api`, `packages/schema`; update imports, `vercel.json`, and the Vercel Root Directory. *(only step that touches the live deploy — verify + redeploy)*
-3. **Storage buckets** — create the two buckets + a signed-URL upload endpoint.
-4. **Google Maps key** — provision + restrict; server-side geocoding of the intake address.
+1. **`packages/db`** — Alembic + raw-SQL baseline; the 6 tables on Supabase. ✅ done
+2. **Live hardening** — the app is already public: payload lockdown on POST/PATCH, restricted CORS, ticket-id rehydration, demo/prod flag, real handoff action.
+3. **CI** — `.github/workflows/ci.yml` (typecheck, build, py compile, types drift, Alembic offline render).
+4. **Monorepo move** — `apps/intake-web` (API co-located at `apps/intake-web/api`), `packages/schema`; update imports, `vercel.json`, and the Vercel Root Directory. *(only step that touches the live deploy — verify + redeploy)*
+5. **Storage buckets** — both buckets **with RLS policies + size/MIME limits** + signed-URL upload endpoint.
+6. **Google Maps keys** — provision two restricted keys (server + browser); server-side geocoding.
+
+Full detail + acceptance criteria: `EXECUTION-PLAN.md`.

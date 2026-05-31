@@ -13,10 +13,15 @@ polyrepo would force duplicating/publishing the schema and split every
 cross-cutting change across repos. Vercel supports multiple projects from one
 repo via per-project Root Directory.
 
-### 2. One shared FastAPI backend
-The API is extracted into `apps/api` and shared by all frontends, rather than one
-API per app. Keeps the SPEC §2.7 separation (agent collects; deterministic
-engines dispatch/price) in a single authoritative service.
+### 2. One shared FastAPI backend (extraction deferred)
+There is **one logical backend** shared by all frontends (not one API per app),
+keeping the SPEC §2.7 separation (agent collects; deterministic engines
+dispatch/price) in a single authoritative service. **Physically it stays
+co-located inside the intake app** (`apps/intake-web/api`, one Vercel project)
+for now; the app is live and already deployed that way, and extracting a
+standalone `apps/api` / `cluexp-api` project adds cross-project wiring for a
+benefit not needed until a second frontend exists. **Extraction is deferred**
+until `technician-web`/`dispatcher-web` lands.
 
 ### 3. Maps: Google Maps Platform
 Chosen over Mapbox for geocoding accuracy and traffic-aware Routes ETAs, because
@@ -38,7 +43,11 @@ signed URLs; Postgres stores only object paths.
 ## Consequences
 
 - A one-time Sprint-0 restructure moves the current root-level Next app into
-  `apps/intake-web` and extracts `apps/api`; the Vercel project's Root Directory
-  must be updated and the deploy re-verified.
-- Migrations run against the Supabase **direct** connection (5432); the app uses
-  the **transaction pooler** (6543).
+  `apps/intake-web` (the API stays co-located at `apps/intake-web/api`); the
+  Vercel project's Root Directory must be updated and the deploy re-verified.
+- Standalone API extraction (`apps/api` + its own Vercel project) is a known
+  future step, triggered by the second frontend.
+- **Migration connection policy:** use the Supabase **direct** connection (5432)
+  for local/admin migrations *when reachable*; the **transaction pooler** (6543)
+  is the verified fallback for CI or when the direct host is unavailable (it can
+  be IPv6-unreachable from some networks). The app runtime always uses the pooler.
