@@ -26,12 +26,13 @@ ClueXP/
 │  ├─ technician-web/  # technician PWA (later)            → Vercel: cluexp-tech
 │  └─ dispatcher-web/  # human ops console (later)         → Vercel: cluexp-ops
 ├─ packages/
-│  ├─ schema/          # Pydantic contract + generated TS types
 │  └─ db/              # Alembic migrations (raw SQL)
 ├─ docs/               # SPEC.md, ROADMAP.md, ADRs
 └─ supabase/           # storage buckets + RLS, seed scripts
 
-# Deferred: apps/api as a standalone deployable (cluexp-api) once a 2nd frontend lands.
+# Deferred: packages/schema and apps/api as standalone shared packages/deployables
+# once a 2nd frontend lands. For now the schema is co-located at
+# apps/intake-web/api/schema.py.
 ```
 
 ## Phase 1 data model (relational core + JSONB detail)
@@ -95,7 +96,7 @@ separate **domain-restricted** token for rendering only.
 1. **`packages/db`** — Alembic + raw-SQL baseline; the 6 tables on Supabase. ✅ done
 2. **Live hardening** — the app is already public: payload lockdown on POST/PATCH, restricted CORS, ticket-id rehydration, demo/prod flag, real handoff action.
 3. **CI** — `.github/workflows/ci.yml` (typecheck, build, py compile, types drift, Alembic offline render).
-4. **Monorepo move** — `apps/intake-web` (API co-located at `apps/intake-web/api`), `packages/schema`; update imports, `vercel.json`, and the Vercel Root Directory. *(only step that touches the live deploy — verify + redeploy)*
+4. **Monorepo move** — `apps/intake-web` (API + schema co-located at `apps/intake-web/api`); update imports, `vercel.json`, and the Vercel Root Directory. *(only step that touches the live deploy — verify + redeploy)*
 5. **Storage buckets** — both buckets **with RLS policies + size/MIME limits** + signed-URL upload endpoint.
 6. **Google Maps keys** — provision two restricted keys (server + browser); server-side geocoding.
 

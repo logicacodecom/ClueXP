@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from api.store import make_store
-from assets.schema import (
+from api.schema import (
     AccessType,
     CancellationPolicy,
     FinalCharge,

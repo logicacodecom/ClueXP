@@ -8,7 +8,7 @@ Selected at import time from the environment:
 
 The Ticket Pydantic model stays the single source of truth: we persist
 `Ticket.model_dump(mode="json")` and rehydrate with `Ticket.model_validate`,
-so no per-field columns drift from assets/schema.py.
+so no per-field columns drift from api/schema.py.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import os
 from datetime import datetime, timezone
 from uuid import UUID
 
-from assets.schema import Ticket
+from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 

@@ -33,9 +33,7 @@ How code goes from a branch to production safely. Reflects the current setup
 
 ## 3. CI (GitHub Actions) — recommended
 
-Add `.github/workflows/ci.yml`. **The YAML below targets the *current* root
-layout.** After the Sprint-0 monorepo move the paths change — see the note under
-the block. Gate every PR on:
+`.github/workflows/ci.yml` gates every PR on:
 
 ```yaml
 name: ci
@@ -43,10 +41,16 @@ on: [pull_request]
 jobs:
   web:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/intake-web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 24 }
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/intake-web/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
@@ -56,13 +60,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
-      - run: uv run python -m compileall api scripts assets
-      - run: uv run ruff check .          # once ruff is added
+      - run: uv run python -m compileall apps/intake-web/api apps/intake-web/scripts packages
       - name: schema→types drift check
         run: |
+          cd apps/intake-web
           uv run python scripts/generate_types.py
           git diff --exit-code src/types/schema.generated.ts
       - name: alembic migrations are valid (offline)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: uv run --with alembic --with "sqlalchemy>=2" alembic -c packages/db/alembic.ini upgrade head --sql
 ```
 
@@ -70,11 +76,9 @@ Key checks: **TS typecheck + build**, **Python compile/lint**, **schema→types
 drift** (fail if `schema.py` changed but generated TS wasn't regenerated),
 **Alembic offline render** (migrations parse).
 
-**After the Sprint-0 restructure, update the paths in the same PR as the move:**
-run web steps with `working-directory: apps/intake-web`; compile
-`apps/intake-web/api`; generate types from `packages/schema` into
-`apps/intake-web/src/types`. (Creating this workflow is tracked as a Sprint-0
-task in `EXECUTION-PLAN.md`.)
+The workflow uses the current `apps/intake-web` layout, compiles the co-located
+API, checks generated type drift, and renders Alembic SQL offline without
+touching a real database.
 
 ## 4. CD (Vercel)
 

@@ -2,8 +2,9 @@
 
 > **How to use this doc:** edit it freely — tick `[x]`, strike tasks, change order,
 > add notes. I will execute exactly what this file says, sprint by sprint, and
-> pause for your review at each sprint boundary. Nothing here is built until you
-> say go. High-level rationale lives in `ROADMAP.md` / `adr/0001`.
+> pause for your review at each sprint boundary. Completed items are marked
+> below; unchecked items are not built until you say go. High-level rationale
+> lives in `ROADMAP.md` / `adr/0001`.
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` planned · ⚠️ touches the live deploy · 🔑 needs something from you
 
@@ -16,7 +17,9 @@
 | Intake app (Sprint 1) | ✅ live — https://cluexp-intake.vercel.app |
 | Dispatch database (6 tables) | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
 | Roadmap / ADR / this plan | ✅ in `docs/` |
-| Everything below | ⬜ awaiting your review |
+| Sprint 0 live hardening | ✅ implemented locally; build verified |
+| Sprint 0 monorepo move | 🟨 code moved + build verified; Vercel Root Directory/redeploy still pending |
+| Everything unchecked below | ⬜ awaiting your review |
 
 ## Locked decisions (from ADR 0001)
 
@@ -27,11 +30,13 @@
 
 ## 🔑 Needs from you (blockers, do in parallel)
 
-- [ ] **Google Maps — two keys** (server-side calls and browser rendering must
-  use different, separately-restricted keys):
-  - `GOOGLE_MAPS_API_KEY` (server): enable Geocoding + Routes; restrict by **API +
+- [~] **Google Maps — two keys** (both keys were provided in chat; restrict them
+  in Google Cloud and do not commit them. Add them to Vercel env vars only.
+  Server-side calls and browser rendering must use different,
+  separately-restricted keys):
+  - `GOOGLE_MAPS_API_KEY` (server credential; second key provided): enable Geocoding + Routes; restrict by **API +
     IP/secret** usage. Never shipped to the browser.
-  - `NEXT_PUBLIC_MAPS_BROWSER_KEY` (browser): **Maps JS only**, restricted by
+  - `NEXT_PUBLIC_MAPS_BROWSER_KEY` (browser map render; first key provided): **Maps JS only**, restricted by
     **HTTP referrer (domain)**.
 - [ ] **Supabase Storage:** authenticate the Supabase plugin (so I can create
   buckets + policies), or create `public-tech-media` + `private-verification` in
@@ -46,31 +51,32 @@
 Tasks are in execution order; live-hardening runs **before** the restructure.
 
 - [x] **Database** — Alembic baseline; the 6 dispatch tables applied to Supabase.
-- [ ] **Live hardening (do first — the app is already public)** ⚠️
-  - [ ] Lock down `POST /tickets` / `PATCH /tickets/{id}` so clients set only
+- [x] **Live hardening (do first — the app is already public)** ⚠️
+  - [x] Lock down `POST /tickets` / `PATCH /tickets/{id}` so clients set only
         user-editable intake fields; reject `trust_state`, `technician_assignment`,
         `final_charge`, and payment fields from the browser.
-  - [ ] Env-driven **CORS**; restrict production origins (no `*`).
-  - [ ] Frontend **`ticket_id` rehydration** (persist + restore; no duplicate
+  - [x] Env-driven **CORS**; restrict production origins (no `*`).
+  - [x] Frontend **`ticket_id` rehydration** (persist + restore; no duplicate
         tickets on refresh/back).
-  - [ ] **Demo/production flag** so fulfillment/payment-review screens cannot be
+  - [x] **Demo/production flag** so fulfillment/payment-review screens cannot be
         mistaken for real operations.
-  - [ ] Real handoff **"Call now"** action (tel: / dispatcher callback), not a dead button.
-- [ ] **CI** — add `.github/workflows/ci.yml` (typecheck, build, py compile,
+  - [x] Real handoff **"Call now"** action (tel: / dispatcher callback), not a dead button.
+- [x] **CI** — add `.github/workflows/ci.yml` (typecheck, build, py compile,
       schema→types drift check, Alembic offline render). See `DEVOPS.md §3`.
-- [ ] ⚠️ **Monorepo restructure** — *API stays co-located in the intake app*
+- [~] ⚠️ **Monorepo restructure** — *API stays co-located in the intake app*
       (single Vercel project); only folders move:
-  - `src/`, `next.config.mjs`, `package.json`, `tsconfig.json`, `next-env.d.ts` → `apps/intake-web/`
-  - `api/`, `requirements.txt`, `vercel.json` → **`apps/intake-web/api/`** (co-located)
-  - `assets/schema.py`, `scripts/generate_types.py` → `packages/schema/`
+  - `src/`, `next.config.mjs`, `package.json`, `package-lock.json`, `tsconfig.json`, `next-env.d.ts`, `vercel.json` → `apps/intake-web/`
+  - `api/`, `requirements.txt` → **`apps/intake-web/api/`** (co-located)
+  - `assets/schema.py` → `apps/intake-web/api/schema.py`
+  - `scripts/generate_types.py` → `apps/intake-web/scripts/generate_types.py`
   - generated `schema.generated.ts` → `apps/intake-web/src/types/`
   - `assets/ui/` → `docs/design-ref/` (visual reference only)
-  - Update imports (`from assets.schema` → `from packages.schema...`), the
+  - Update imports (`from assets.schema` → `from api.schema`), the
     type-gen path, and `vercel.json` function globs.
   - [ ] ⚠️ Update the Vercel project **Root Directory** to `apps/intake-web`;
         re-verify build; **redeploy**; smoke-test the live flow.
-  - *(Deferred: a standalone `apps/api` + `cluexp-api` Vercel project — do this
-    when `technician-web` arrives.)*
+  - *(Deferred: standalone `packages/schema` and `apps/api` / `cluexp-api` —
+    do this when `technician-web` arrives.)*
 - [ ] **Supabase Storage** 🔑 — create buckets **and operationalize them**:
   - `public-tech-media` (public, CDN) · `private-verification` (private).
   - **RLS policies:** owner-scoped read/write on `private-verification`; deny by

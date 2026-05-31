@@ -11,8 +11,8 @@ storage. Migrations live in `packages/db`; the app reads/writes via the API
 - **Relational core + JSONB detail.** Columns that dispatch must *query*
   (location, skill, availability, status, trust_state) are real columns; the
   flexible intake payload stays as JSONB in `jobs.detail`, so the Pydantic
-  `Ticket` contract (`assets/schema.py` → `packages/schema`) remains the single
-  source of truth.
+  `Ticket` contract (`apps/intake-web/api/schema.py` now, `packages/schema`
+  later) remains the single source of truth.
 - **Raw SQL + Alembic.** Explicit, reviewable DDL; no ORM magic.
 - **One Supabase project** for both Postgres and Storage.
 - **Postgres stores pointers, not bytes.** Files live in Supabase Storage; the

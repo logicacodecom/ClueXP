@@ -1,16 +1,17 @@
 # ClueXP Emergency Access Intake
 
-Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md`: a Next.js + TypeScript frontend backed by a minimal FastAPI service that imports the canonical Pydantic contract from `assets/schema.py`.
+Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md`: a Next.js + TypeScript frontend backed by a minimal FastAPI service that imports the canonical Pydantic contract from `apps/intake-web/api/schema.py`.
 
 ## Project Shape
 
 - `SPEC.md` - product and architecture source of truth.
-- `assets/schema.py` - canonical Pydantic ticket schema. Do not duplicate it by hand.
-- `assets/ui/` - visual references and design tokens from the Stitch output.
-- `api/main.py` - FastAPI stub backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
-- `src/app/page.tsx` - mobile-first intake and fulfillment flow.
-- `src/types/schema.generated.ts` - generated TypeScript contract derived from `assets/schema.py`.
-- `scripts/generate_types.py` - local schema-to-TypeScript generator.
+- `apps/intake-web/api/schema.py` - canonical Pydantic ticket schema. Do not duplicate it by hand.
+- `docs/design-ref/ui/` - visual references and design tokens from the Stitch output.
+- `apps/intake-web/api/main.py` - FastAPI stub backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
+- `apps/intake-web/src/app/page.tsx` - mobile-first intake and fulfillment flow.
+- `apps/intake-web/src/types/schema.generated.ts` - generated TypeScript contract derived from `api/schema.py`.
+- `apps/intake-web/scripts/generate_types.py` - local schema-to-TypeScript generator.
+- `packages/db/` - Alembic migrations for the dispatch relational core.
 
 ## Requirements
 
@@ -21,15 +22,18 @@ Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md
 ## Install
 
 ```powershell
+cd apps/intake-web
 npm install
+cd ..\..
 uv sync
 ```
 
 ## Generate Types
 
-Run this whenever `assets/schema.py` changes:
+Run this whenever `apps/intake-web/api/schema.py` changes:
 
 ```powershell
+cd apps/intake-web
 npm run generate:types
 ```
 
@@ -38,12 +42,14 @@ npm run generate:types
 Start the API:
 
 ```powershell
+cd apps/intake-web
 uv run uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
 Start the frontend in another terminal:
 
 ```powershell
+cd apps/intake-web
 npm run dev
 ```
 
@@ -90,7 +96,7 @@ Copy `.env.example` into the relevant Vercel project environment variables rathe
 2. Copy the transaction pooler Postgres URL into Vercel as `DATABASE_URL`.
 3. Import the GitHub repo into Vercel.
 4. Set the Vercel framework to Next.js.
-5. Confirm Python functions are detected from `api/main.py`.
+5. Confirm Python functions are detected from `apps/intake-web/api/main.py`.
 6. Deploy from `main`.
 7. Smoke test on mobile: create ticket, submit intake, confirm the record persists.
 
@@ -98,19 +104,19 @@ Copy `.env.example` into the relevant Vercel project environment variables rathe
 
 Before public launch, handle these hardening items:
 
-1. Lock down `POST /tickets` and `PATCH /tickets/{id}` so public clients can update only user-editable intake fields. Server-owned fields such as `trust_state`, `technician_assignment`, `final_charge`, and payment fields must not be accepted from the browser.
-2. Persist and rehydrate the active `ticket_id` in the frontend so refresh/back-navigation does not create duplicate tickets.
-3. Make the handoff "Call now" action a real phone action or dispatcher callback request.
-4. Either wire photo upload to storage or hide the upload control from the live sprint.
-5. Make CORS environment-driven and restrict production origins.
-6. Add a demo/production flag so fulfillment and payment-review screens cannot be confused with real operations before those subsystems are live.
+1. Either wire photo upload to storage or hide the upload control from the live sprint.
+2. Add Supabase Storage buckets, policies, signed upload URLs, and size/MIME validation.
+3. Wire Google Maps geocoding and map rendering with the provided restricted keys.
+4. Move tickets from the legacy `tickets` JSONB table onto `customers` + `jobs`.
 
 ## Verification
 
 ```powershell
+cd apps/intake-web
 npx tsc --noEmit
 npm run build
-uv run python -m compileall api scripts assets
+cd ..\..
+uv run python -m compileall apps\intake-web\api apps\intake-web\scripts packages
 ```
 
 ## Trust-State Rule

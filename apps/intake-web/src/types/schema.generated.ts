@@ -1,5 +1,5 @@
 /* eslint-disable */
-// Generated from assets/schema.py by scripts/generate_types.py.
+// Generated from api/schema.py by scripts/generate_types.py.
 // Do not edit by hand.
 
 export type AccessType = "car" | "home" | "business" | "other";
