@@ -94,6 +94,17 @@ Copy `.env.example` into the relevant Vercel project environment variables rathe
 6. Deploy from `main`.
 7. Smoke test on mobile: create ticket, submit intake, confirm the record persists.
 
+## Fix Later Backlog
+
+Before public launch, handle these hardening items:
+
+1. Lock down `POST /tickets` and `PATCH /tickets/{id}` so public clients can update only user-editable intake fields. Server-owned fields such as `trust_state`, `technician_assignment`, `final_charge`, and payment fields must not be accepted from the browser.
+2. Persist and rehydrate the active `ticket_id` in the frontend so refresh/back-navigation does not create duplicate tickets.
+3. Make the handoff "Call now" action a real phone action or dispatcher callback request.
+4. Either wire photo upload to storage or hide the upload control from the live sprint.
+5. Make CORS environment-driven and restrict production origins.
+6. Add a demo/production flag so fulfillment and payment-review screens cannot be confused with real operations before those subsystems are live.
+
 ## Verification
 
 ```powershell

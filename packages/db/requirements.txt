@@ -1,0 +1,4 @@
+# Migration tooling (run locally / in CI, not in the serverless function).
+alembic>=1.13
+sqlalchemy>=2.0
+psycopg[binary]>=3.2.0
