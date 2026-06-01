@@ -93,8 +93,8 @@ Tasks are in execution order; live-hardening runs **before** the restructure.
     type-gen path, and `vercel.json` function globs.
   - [x] ⚠️ Update the Vercel project **Root Directory** to `apps/intake-web`;
         re-verify build; **redeploy**; smoke-test the live flow.
-  - *(Deferred: standalone `packages/schema` and `apps/api` / `cluexp-api` —
-    do this when `technician-web` arrives.)*
+  - *(Deferred to **E2/Sprint 2**: standalone `packages/schema` and `apps/api` /
+    `cluexp-api` — the technician app is the triggering client; `adr/0002`.)*
 - [~] **Supabase Storage** — buckets exist; operationalize them:
   - [x] `public-tech-media` (public, CDN) · `private-verification` (private).
   - **RLS policies:** owner-scoped read/write on `private-verification`; deny by

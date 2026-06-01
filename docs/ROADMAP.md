@@ -9,8 +9,8 @@
   subsystem is a folder, not a separate repo. Separate Vercel projects per app,
   all from this one repo.
 - **One shared FastAPI backend** (one logical service), not one API per frontend.
-  Co-located inside the intake app for now; standalone extraction deferred until
-  a second frontend exists.
+  Co-located inside the intake app for now; standalone `cluexp-api` extraction
+  scheduled for **E2** (the technician app is the triggering client; `adr/0002`).
 - **Maps:** Google Maps Platform (Geocoding + Routes + Maps JS).
 - **DB access:** raw SQL + Alembic migrations (lean, explicit), in `packages/db`.
 - **Storage:** Supabase Storage — public bucket for technician media, private

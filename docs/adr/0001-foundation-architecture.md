@@ -14,6 +14,10 @@ cross-cutting change across repos. Vercel supports multiple projects from one
 repo via per-project Root Directory.
 
 ### 2. One shared FastAPI backend (extraction deferred)
+> **Superseded in part by ADR 0002 §3:** the "extract later" timing is now fixed
+> to **E2** (the technician app is the triggering second client, and a native app
+> can't co-locate). The "one logical shared backend" principle below still holds.
+
 There is **one logical backend** shared by all frontends (not one API per app),
 keeping the SPEC §2.7 separation (agent collects; deterministic engines
 dispatch/price) in a single authoritative service. **Physically it stays
