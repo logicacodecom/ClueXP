@@ -176,9 +176,14 @@ human's explicit go + smoke test.
       varied skills/areas) + a minimal admin list view.
 - [ ] **Dispatch engine v1** (deterministic, outside the intake graph per SPEC §2.7):
       score by distance (service_area), skill (`access_type`/key type), availability, rating.
-- [ ] `/dispatch` creates `dispatch_offers` for top-N; first accept wins; timeout →
-      next; assigns `jobs.technician_id`; when affiliated, also records
+- [ ] `/dispatch` creates `dispatch_offers` for top-N; first accept wins via
+      backend transaction/constraint (not UI timing); timeout → next; assigns
+      `jobs.technician_id`; when affiliated, also records
       `jobs.provider_organization_id`; flips `trust_state=matched`.
+- [ ] Technician offer delivery v1 may poll `dispatch_offers`; production-grade
+      real-time delivery (push/websocket/native notifications), expiry countdown
+      correctness, and mobile alert reliability are tracked under Roadmap E3
+      before relying on live server→device alerts.
 - [ ] Technician location ping (`current_lat/lng`).
 
 **Acceptance:** dispatch picks a real seeded technician by rule, whether solo or

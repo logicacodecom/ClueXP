@@ -35,18 +35,20 @@ A technician attached to an organization/company/group provider.
 
 Key needs:
 - See jobs assigned by their organization.
-- Optionally receive direct ClueXP dispatch only if the organization allows it in the future.
+- Receive organization-managed assignments by default.
+- Receive direct ClueXP dispatch only when the organization releases that technician for direct dispatch, per `SPEC.md` §2.10.
 - Belong to one or many teams such as car lockout, home team, key team, night shift, region team.
 - Share live GPS location with the organization and, when on an active job, the customer-facing tracking flow.
 
 ### 2.3 Organization Dispatcher / Manager
 
-Not part of this Technician App build, but the Technician App must be compatible with future organization-managed dispatch.
+Not part of this Technician App build, but the Technician App must be compatible with the organization-managed dispatch direction in `SPEC.md` §2.10.
 
-Future organization behavior:
+Organization-managed dispatch behavior:
 - Organization receives a job.
 - Organization assigns one of its own technicians.
 - Customer only sees a named verified technician after assignment.
+- A specific affiliated technician may be released for direct ClueXP dispatch through the membership-level permission, not by changing the technician's global provider type.
 
 ---
 
@@ -74,6 +76,7 @@ Important technical notes:
 - Alarm sound cannot autoplay in most browsers until the user enables sound or interacts with the app.
 - Internet voice call requires a real-time provider later, such as WebRTC infrastructure, Twilio, Daily, Agora, or similar.
 - Push notifications require native/APNs/FCM or web push setup.
+- Production job offers require a server-to-device delivery strategy and backend concurrency control. A prototype may poll or simulate offers, but expiry countdowns and "another technician accepted first" must ultimately be backed by durable offer state and atomic accept semantics.
 
 The UI should include states for these capabilities, even if a demo uses mocked behavior.
 
@@ -88,7 +91,7 @@ Bottom navigation should have five main areas:
 | **Jobs** | Incoming offers, active job, assigned queue |
 | **Map** | Current location, service area, active route |
 | **Messages** | Customer, dispatcher, organization chats |
-| **Earnings** | Completed jobs, payouts, performance |
+| **Activity** | Completed jobs, provisional earnings/settlement visibility, performance |
 | **Profile** | Availability, auto-accept, teams, documents, settings |
 
 When a job is active, the app should prioritize the active job screen over ordinary tabs. The active job may appear as a persistent top or bottom job bar across tabs.
@@ -147,7 +150,7 @@ UI rules:
 ### 7.1 Job Sources
 
 Jobs can come from:
-- **ClueXP dispatch** — for individual technicians, and future direct-release affiliated technicians.
+- **ClueXP dispatch** — for individual technicians, and affiliated technicians whose organization has released them for direct ClueXP dispatch.
 - **Organization dispatch** — for affiliated technicians assigned by their company/group.
 
 Every job card must show the source:
@@ -171,6 +174,12 @@ Recommended technician-facing statuses:
 - `completed`
 - `cancelled`
 
+State-machine boundary:
+- Customer-facing `Ticket.trust_state` (`INTAKE`, `MATCHED`, `FULFILLMENT`) is separate from technician-facing job, offer, and route statuses.
+- Technician actions such as accepting an offer, going en route, or marking arrived do not directly decide what the customer may see. The backend changes `trust_state` only when the customer visibility contract is satisfied.
+- For organization-managed dispatch, organization acceptance is not customer `MATCHED`; `MATCHED` requires a specific verified technician assignment.
+- Offer statuses such as `offer_received`, `accepted`, `expired`, and `declined` are dispatch/technician states, not replacements for `trust_state`.
+
 ### 7.3 Offer Rules
 
 Manual accept:
@@ -178,6 +187,8 @@ Manual accept:
 - Technician can Accept or Decline.
 - Timer shows offer expiration.
 - If expired, job disappears into history as missed/expired.
+- Production timers must be derived from backend `expires_at`, not a local-only countdown.
+- First-accept-wins must be enforced server-side, not by the mobile UI.
 
 Auto-accept:
 - Technician explicitly enables auto-accept.
@@ -216,10 +227,11 @@ Purpose:
 
 Fields:
 - Phone or email.
-- Password or OTP, depending on auth strategy.
+- Password-based login backed by the platform `users` identity record, per `adr/0002-identity-and-clients.md`.
 
 Rules:
 - Do not show customer/job data before authentication.
+- OTP is for customer light verification in the intake flow, not the default technician login method.
 - If technician belongs to multiple organizations later, ask which workspace to enter after login.
 
 ---
@@ -285,7 +297,7 @@ Content:
 - Situation: locked out, lost key, broken key, etc.
 - General location area.
 - Distance and estimated travel time if available.
-- Price/earnings estimate if policy allows.
+- Price, earning, or settlement estimate only if policy allows and the backend provides it.
 - Source: ClueXP or organization.
 - Safety flags if any.
 
@@ -496,7 +508,7 @@ Primary actions:
 
 Rules:
 - Completion must sync to backend.
-- Offline completion can be queued only if business policy allows.
+- Offline completion and conflict resolution are deferred policy/product decisions; do not imply offline completion is supported until designed.
 
 ---
 
@@ -509,7 +521,7 @@ Content:
 - Completed jobs.
 - Cancelled jobs.
 - Missed/expired offers.
-- Earnings per job if available.
+- Earnings or settlement reference per job only if the payout model provides it.
 - Filters by date/status/source.
 
 Primary actions:
@@ -518,20 +530,22 @@ Primary actions:
 
 ---
 
-### 8.15 Earnings
+### 8.15 Activity / Earnings
 
 Purpose:
-- Technician payout visibility.
+- Technician activity, performance, and payout/settlement visibility where supported.
 
 Content:
-- Today earnings.
-- Week earnings.
-- Pending payout.
+- Today completed jobs.
+- Week completed jobs.
+- Provisional earnings where the technician is paid directly.
+- Organization settlement visibility where the organization is paid first.
 - Completed job count.
 - Adjustments/disputes if any.
 
 Rules:
-- If payout system is not live, show this as a controlled placeholder or hide until available.
+- The payout/commission model is undecided, especially for organization-managed jobs.
+- If payout system is not live, show activity metrics only or hide financial totals until available.
 
 ---
 
@@ -758,8 +772,13 @@ Visual pattern:
 
 ## 11. Data Needed by UI
 
+Identity:
+- user_id from the platform `users` table, used for login/session identity per ADR-0002.
+- role/status from the authenticated actor context.
+
 Technician:
 - id
+- user_id
 - display_name
 - photo_url
 - phone/email
@@ -796,7 +815,7 @@ Job:
 - lat/lng
 - distance
 - eta
-- price/earnings estimate if available
+- price, earnings, or settlement estimate if available
 - safety_flags
 - notes
 - photos
@@ -833,7 +852,7 @@ Document:
 
 ## 12. API Surface for Future Implementation
 
-Suggested mobile endpoints:
+Suggested mobile endpoints for the post-extraction `cluexp-api` shape. These are aspirational interface targets for the Technician App and should not be treated as today's ticket-centric intake API.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -974,4 +993,3 @@ If another model builds the UI:
 - Keep all technician app screens separate from the customer intake flow.
 - Do not implement production API calls until the backend contract is scheduled.
 - Treat this document as the UI flow contract.
-
