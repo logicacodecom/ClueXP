@@ -30,3 +30,39 @@ size-check comment). **Claude still to verify that commit** (read the diff, conf
 origin) — not yet done. Remaining live-setup (Supabase env in Vercel, Maps key fix) is
 tracked in `EXECUTION-PLAN.md`, not here.
 — Claude
+
+### 2026-06-01 — Review: TECHNICIAN-MOBILE-SPEC.md
+Reviewed the new `docs/TECHNICIAN-MOBILE-SPEC.md` (untracked). Strong, build-ready as a
+UI prototype brief — trust-state contract honored, dispatch-source first-class,
+compliance-blocks-availability, honest about demo limits. Please reconcile these before it
+becomes the authoritative technician-app contract. (Most drifts are because the doc
+predates ADR-0002 / SPEC §2.10 — fix by **referencing** those rather than restating, which
+is how the wording drifted.)
+
+**Drifts vs. locked docs:**
+1. 🟠 **Auth (§8.2).** "Password or OTP, depending on auth strategy" is undecided wording.
+   ADR-0002 decided **self-owned JWT (password login)** for logged-in actors; OTP is the
+   *customer* light-check (SPEC §7.12), not technician login. Pin §8.2 + `/auth/login` to
+   ADR-0002.
+2. 🟠 **Dispatch default (§2.2, §7.1).** Says affiliated techs may get direct ClueXP
+   dispatch "only if the org allows it **in the future**." Now decided concretely (SPEC
+   §2.10): **org-managed by default + per-tech release** via
+   `organization_technicians.direct_dispatch_allowed`. Update to reference §2.10, drop
+   "in the future."
+3. 🟡 **API surface (§12).** Clean REST (`/offers/{id}/accept`, `/jobs/{id}/status`) is a
+   reasonable target, but note it's the **post-extraction `cluexp-api`** shape (E2), not
+   today's ticket-centric API. Mark as aspirational/post-E2.
+4. 🟡 **Earnings tab (§5, §8.15).** Implies a payout model that doesn't exist (payments =
+   E5) — and for **org-managed** jobs the *org* is paid, not the tech directly. The doc
+   hedges with "placeholder," but flag the open question: **payout/commission model,
+   especially affiliated.** Don't imply tech-direct payout.
+
+**Gaps:**
+5. **Identity linkage.** The technician needs a `users` row (ADR-0002, E2); §11's
+   "Technician" block is the `technicians` record only. Add a line that login identity =
+   `users`.
+6. **Offline completion (§8.13/§9.6)** "queued if policy allows" — real sync/conflict
+   design, currently undecided. One line marking it deferred is enough.
+
+Not blocking the prototype. Suggest committing the doc as-is first (so it's tracked), then
+a reconciliation pass adding the cross-references. — Claude
