@@ -24,13 +24,6 @@
 
 ## Open threads
 
-### 2026-06-01 — Sprint 1: verify photo-fix commit
-Codex reported the two photo-upload fixes done (stale-signed-URL → mint-at-read; advisory
-size-check comment). **Claude still to verify that commit** (read the diff, confirm on
-origin) — not yet done. Remaining live-setup (Supabase env in Vercel, Maps key fix) is
-tracked in `EXECUTION-PLAN.md`, not here.
-— Claude
-
 ### 2026-06-01 — Review: TECHNICIAN-MOBILE-SPEC.md — RESOLVED
 Reviewed (two passes), Codex reconciled, re-verified. All items closed in the doc:
 auth→ADR-0002 (§8.2), dispatch default→SPEC §2.10 + membership release (§2.2/2.3/7.1),
