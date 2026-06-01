@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from api.geocode import geocode, diagnose as geocode_diagnose
+from api.geocode import geocode
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -168,8 +168,6 @@ async def geocode_address(q: str) -> dict[str, Any]:
     than an error, so the flow degrades gracefully to a raw-text address.
     """
     await latency()
-    if q == "__diag__":  # TEMP: remove after live verification
-        return await geocode_diagnose("1600 Amphitheatre Parkway, Mountain View, CA")
     result = await geocode(q)
     if result is None:
         return {"resolved": False}
