@@ -103,6 +103,29 @@ job also carries the organization that owns the fulfillment. Team membership is
 available to dispatch and reporting, but the customer-facing trust-state
 contract stays centered on the assigned verified person.
 
+### 2.9 Actors, identity, and customer data
+
+**Actors.** The customer is **anonymous** — no account, no forced install (§2.5);
+they are recognized by **phone number** as a soft identity anchor. Everyone else
+(technician, provider-org admin, ClueXP staff/admin) is a **logged-in user**.
+Identity is self-owned (a `users` table + JWT in our backend; see
+`adr/0002-identity-and-clients.md`), with a single flat `role` for now and
+scoped permissions deferred until multi-org operations need them.
+
+**Where customer data and job history live.** All of it is in the platform
+Postgres (schema detail in `docs/DATABASE-AND-STORAGE.md`):
+- a **customer** is a `customers` row keyed by phone;
+- each request is a **`jobs`** row (full intake payload in `jobs.detail`, key
+  fields promoted to columns) linked by `customer_id`;
+- **job history** = a customer's `jobs` ordered by `created_at`; the per-job
+  timeline is the append-only `events` rows for that job;
+- uploaded photos/IDs are files in private Storage, referenced by `media` rows.
+
+**Enabler:** linking a job to a returning customer requires intake to **capture
+the phone** so the `customers` upsert fires (today the `Ticket` has no phone
+field, so jobs can land unlinked). Phone arrives naturally with OTP (§7.12), but
+history needs it sooner — see the execution plan.
+
 ---
 
 ## 3. The data contract

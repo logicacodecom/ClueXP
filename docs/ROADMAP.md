@@ -21,25 +21,39 @@
 ```
 ClueXP/
 ├─ apps/
-│  ├─ intake-web/      # customer PWA + co-located API     → Vercel: cluexp-intake
+│  ├─ intake-web/      # customer PWA + co-located API (until E2) → Vercel: cluexp-intake
 │  │  └─ api/          #   FastAPI (Python functions)
-│  ├─ technician-web/  # technician PWA (later)            → Vercel: cluexp-tech
-│  └─ dispatcher-web/  # human ops console (later)         → Vercel: cluexp-ops
+│  ├─ api/             # standalone cluexp-api (extracted at E2)  → Vercel: cluexp-api
+│  ├─ technician/      # technician app: PWA → React Native/Expo  → cluexp-tech
+│  ├─ provider-web/    # company/provider portal (org admin)      → cluexp-provider
+│  └─ ops-web/         # dispatcher + admin/back-office console   → cluexp-ops
 ├─ packages/
 │  └─ db/              # Alembic migrations (raw SQL)
 ├─ docs/               # SPEC.md, ROADMAP.md, ADRs
 └─ supabase/           # storage buckets + RLS, seed scripts
 
-# Deferred: packages/schema and apps/api as standalone shared packages/deployables
-# once a 2nd frontend lands. For now the schema is co-located at
-# apps/intake-web/api/schema.py.
+# API extraction (apps/api) + packages/schema land at E2 — the first non-intake
+# client. Until then the schema is co-located at apps/intake-web/api/schema.py.
+# See adr/0002-identity-and-clients.md.
 ```
+
+## UI surfaces (front-end systems)
+
+| Surface | User | Channel | Lands |
+|---|---|---|---|
+| **Intake** | Customer (anonymous, phone-anchored) | Mobile-web PWA | ✅ live |
+| **Technician** | Technician (solo + affiliated) | PWA → **React Native** | E2 |
+| **Provider portal** | Org admin/owner | Web | E2 |
+| **Ops console** | ClueXP dispatcher + admin/back-office | Web | E7 (may start as views, split later) |
+
+All non-intake surfaces share one login (self-owned JWT + `users`; `adr/0002`).
 
 ## Phase 1 data model (relational core + JSONB detail)
 
 | Table | Purpose |
 |---|---|
-| `customers` | the requester; `phone` is the identity anchor |
+| `users` | logged-in actors (technician/staff/admin); flat `role`, self-owned JWT auth (added at E2; `adr/0002`) |
+| `customers` | the requester; `phone` is the identity anchor (anonymous, no login) |
 | `organizations` | company/group tenants that can register affiliated technicians; future subscription anchor |
 | `technicians` | supply-side people — individual or affiliated; skills, service area, availability, rating, location |
 | `organization_technicians` | company/group membership for affiliated technicians |
@@ -78,7 +92,7 @@ separate **domain-restricted** token for rendering only.
 
 - **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
 - **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
-- **E2 Technician** — individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician PWA.
+- **E2 Technician & Access** — self-owned auth foundation (`users` + JWT, flat role; `adr/0002`); **extract `cluexp-api`** (first non-intake client); individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician app (PWA → React Native) + provider portal.
 - **E3 Dispatch engine** — deterministic matcher (geo + skill + availability + rating); offer cascade.
 - **E4 Fulfillment** — real map, traffic ETA, live tracking, mutual arrival handshake.
 - **E5 Payments** — Stripe auth-hold at commit, capture at finalize; restore the deferred payment gate.
@@ -92,7 +106,7 @@ separate **domain-restricted** token for rendering only.
 |---|---|---|
 | **0 — Foundation** | Hardening + restructure + DB | live-app hardening, `apps/`+`packages/` layout (API co-located), CI, baseline dispatch schema on Supabase, intake still green |
 | **1 — Intake on real model** | Persist properly | Intake writes `customers`+`jobs`; real geocoding; photo upload to Storage |
-| **2 — Technician + matching v1** | Kill the stub tech | Provider organizations + teams + individual/affiliate technician registry; deterministic dispatch + offers |
+| **2 — Technician + matching v1** | Kill the stub tech | Auth foundation (`users`+JWT) + `cluexp-api` extraction; provider/team/technician registry + onboarding; deterministic dispatch + offers |
 | **3 — Fulfillment maps** | Real ETAs/tracking | Live map, traffic ETA, mutual arrival handshake |
 | **4 — Payments + OTP** | Restore deferred | Stripe auth-hold/capture; OTP back in flow |
 | **5 — Dispatcher console** | Human ops | Handoff queue, overrides, safety escalation |

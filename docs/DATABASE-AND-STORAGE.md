@@ -54,6 +54,18 @@ Legacy `tickets` may still exist from the original single-blob store. New
 runtime writes go to `jobs.detail` plus promoted dispatch columns; the API keeps
 a read-only fallback for old `tickets` rows during the transition.
 
+**Customer data & job history.** A customer is a `customers` row (phone is the
+anchor); a request is a `jobs` row linked by `customer_id`. **Job history** is
+`SELECT * FROM jobs WHERE customer_id = ? ORDER BY created_at DESC`; the per-job
+timeline is the `events` rows for that job. Reliable linking depends on intake
+**capturing the phone** so the `customers` upsert fires (today the `Ticket` has
+no phone field — see EXECUTION-PLAN Sprint 1).
+
+**Coming at E2 (`adr/0002`): `users`** — logged-in actors (technician/staff/admin)
+with a flat `role` and self-owned JWT auth; resolves the `verified_by` /
+`uploaded_by` referents. Customers stay anonymous (no `users` row). Authorization
+is enforced in the API layer, not RLS.
+
 **Indexes:** `jobs(status)`, `jobs(trust_state)`, `jobs(customer_id)`,
 `jobs(provider_organization_id)`, `technicians(is_available)`,
 `technicians(provider_type)`, `dispatch_offers(job_id)`,

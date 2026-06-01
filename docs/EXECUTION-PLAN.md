@@ -147,8 +147,17 @@ human's explicit go + smoke test.
 
 ---
 
-## Sprint 2 — Provider registry + matching v1
+## Sprint 2 — Technician + matching v1 (auth + extraction)
 
+> Decisions: `adr/0002-identity-and-clients.md`. Self-owned JWT auth, flat role,
+> `cluexp-api` extracted here (first non-intake client), technician → React Native.
+
+- [ ] **Auth foundation** — `users` table (migration `0005_*`): `id, email, phone,
+      password_hash, role ('customer'|'technician'|'staff'|'admin'), status`;
+      bcrypt/argon2 hashing; JWT issue/verify in FastAPI; `require_role(...)`
+      dependency. No RLS-based authz; scoped RBAC deferred (`adr/0002` §2).
+- [ ] **API extraction** — move the shared FastAPI to standalone `apps/api`
+      (`cluexp-api`) + `packages/schema`; intake-web consumes it over HTTP.
 - [x] **Provider tenant schema** — support individual technicians and
       company/group organizations with affiliated technicians
       (`organizations`, recursive `organization_teams`,
