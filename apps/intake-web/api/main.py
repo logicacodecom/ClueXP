@@ -99,9 +99,19 @@ class PhotoCompleteRequest(BaseModel):
     size: int
 
 
-def envelope(ticket: Ticket) -> TicketEnvelope:
+async def envelope(ticket: Ticket) -> TicketEnvelope:
+    response_ticket = ticket.model_copy(deep=True)
+    for photo in response_ticket.photos:
+        if photo.url.startswith("http://") or photo.url.startswith("https://"):
+            continue
+        try:
+            photo.url = await storage.create_signed_download_url(storage.PRIVATE_BUCKET, photo.url)
+        except RuntimeError:
+            # Keep the durable storage path if signing is unavailable; callers
+            # still receive the ticket instead of losing the whole response.
+            pass
     return TicketEnvelope(
-        ticket=ticket,
+        ticket=response_ticket,
         guards={
             "may_show_technician": ticket.may_show_technician(),
             "may_show_eta": ticket.may_show_eta(),
@@ -212,13 +222,13 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket)
     await log_transition(ticket, "created")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.get("/tickets/{ticket_id}", response_model=TicketEnvelope)
 async def get_ticket(ticket_id: UUID) -> TicketEnvelope:
     await latency()
-    return envelope(await require_ticket(ticket_id))
+    return await envelope(await require_ticket(ticket_id))
 
 
 @app.patch("/tickets/{ticket_id}", response_model=TicketEnvelope)
@@ -229,7 +239,7 @@ async def patch_ticket(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelo
     updated = Ticket.model_validate(merged)
     await save(updated)
     await log_transition(updated, "patched")
-    return envelope(updated)
+    return await envelope(updated)
 
 
 @app.post("/tickets/{ticket_id}/photo-intent", response_model=PhotoIntentResponse)
@@ -265,11 +275,8 @@ async def photo_complete(ticket_id: UUID, payload: PhotoCompleteRequest) -> Tick
         raise HTTPException(status_code=400, detail="Invalid storage path")
     try:
         storage.validate_upload_claim(payload.content_type, payload.size)
-        signed_url = await storage.create_signed_download_url(payload.bucket, payload.path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     media_id = await store.record_media(
         owner_type="job",
         owner_id=ticket_id,
@@ -278,10 +285,10 @@ async def photo_complete(ticket_id: UUID, payload: PhotoCompleteRequest) -> Tick
         path=payload.path,
         visibility="private",
     )
-    ticket.photos.append(Photo(id=media_id, url=signed_url, uploaded_at=now()))
+    ticket.photos.append(Photo(id=media_id, url=payload.path, uploaded_at=now()))
     await save(ticket)
     await log_transition(ticket, "photo_uploaded")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/price-quote", response_model=TicketEnvelope)
@@ -299,7 +306,7 @@ async def price_quote(ticket_id: UUID) -> TicketEnvelope:
     ticket.cancellation_policy = CancellationPolicy(cancellation_fee=35.0, no_show_fee=65.0)
     await save(ticket)
     await log_transition(ticket, "price_quote")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/payment-method", response_model=TicketEnvelope)
@@ -318,7 +325,7 @@ async def payment_method(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnve
     )
     await save(ticket)
     await log_transition(ticket, "payment_method")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/commit", response_model=TicketEnvelope)
@@ -332,7 +339,7 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
     ticket.status = TicketStatus.PARTIAL if ticket.unresolved_fields else TicketStatus.COMPLETE
     await save(ticket)
     await log_transition(ticket, "committed")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/otp/send")
@@ -351,7 +358,7 @@ async def verify_otp(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelope
     if otp_codes.get(ticket_id) != str(payload.get("code", "")):
         raise HTTPException(status_code=400, detail="Code did not match")
     await log_transition(ticket, "otp_verified")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/dispatch", response_model=TicketEnvelope)
@@ -373,7 +380,7 @@ async def dispatch(ticket_id: UUID) -> TicketEnvelope:
     ticket.trust_state = TrustState.MATCHED
     await save(ticket)
     await log_transition(ticket, "matched")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.get("/tickets/{ticket_id}/tracking", response_model=TicketEnvelope)
@@ -388,7 +395,7 @@ async def tracking(ticket_id: UUID) -> TicketEnvelope:
     ticket.technician_assignment.eta_minutes_max = minutes + 4
     await save(ticket)
     await log_transition(ticket, "tracking")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/arrival-handshake")
@@ -417,7 +424,7 @@ async def finalize(ticket_id: UUID) -> TicketEnvelope:
     )
     await save(ticket)
     await log_transition(ticket, "finalized")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/approve-final", response_model=TicketEnvelope)
@@ -430,7 +437,7 @@ async def approve_final(ticket_id: UUID) -> TicketEnvelope:
     ticket.final_charge.customer_approved_at = now()
     await save(ticket)
     await log_transition(ticket, "final_approved")
-    return envelope(ticket)
+    return await envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/charge")
@@ -451,4 +458,4 @@ async def handoff(ticket_id: UUID, payload: dict[str, Any] | None = None) -> Tic
     ticket.status = TicketStatus.FALLBACK_TO_HUMAN
     await save(ticket)
     await log_transition(ticket, f"handoff:{(payload or {}).get('reason', 'explicit')}")
-    return envelope(ticket)
+    return await envelope(ticket)

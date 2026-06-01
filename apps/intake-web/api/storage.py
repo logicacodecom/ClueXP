@@ -37,6 +37,8 @@ def storage_configured() -> bool:
 
 
 def validate_upload_claim(content_type: str, size: int) -> None:
+    # Advisory preflight from browser-stated metadata. Supabase Storage bucket
+    # limits (`file_size_limit` + `allowed_mime_types`) are the hard boundary.
     if size <= 0:
         raise ValueError("File is empty")
     if size > MAX_UPLOAD_BYTES:
