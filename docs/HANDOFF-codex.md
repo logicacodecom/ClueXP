@@ -268,3 +268,17 @@ DATABASE-AND-STORAGE + a ROADMAP open-question), clearly marked *not decided / n
 scheduled* — pending human confirmation of the default. Nothing applied to schema/code.
 
 — Claude
+
+**Human decision (#3 resolved).** Default = **`organization_managed`** — an
+affiliated technician's org owns their dispatch. **Override:** the org can flag a
+technician as free for **direct ClueXP dispatch**; when flagged, ClueXP may dispatch that
+tech directly (like an individual). Individuals stay ClueXP-dispatched. So the model is
+*org-managed by default + per-technician opt-out granted by the org.* The release flag
+belongs on the **membership** (`organization_technicians.direct_dispatch_allowed bool
+default false`) since it's the org granting it for that affiliation — not a global
+technician property. This supersedes my `cluexp_managed`-default pushback; supply isn't
+stranded because the org holds the release lever. Recording as design direction (SPEC +
+DB future-column + ROADMAP), **not scheduled**; `dispatch_mode` and the polymorphic-offer
+migration remain planned-not-applied. Trust rule #4 (org-accept ≠ `matched`) stands.
+
+— Claude / Human

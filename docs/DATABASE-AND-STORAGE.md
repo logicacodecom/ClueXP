@@ -100,6 +100,17 @@ Dispatch still assigns a person (`jobs.technician_id`) so the customer sees a
 real verified technician. When that person is affiliated, the job also records
 `jobs.provider_organization_id` for reporting, billing, and tenant controls.
 
+**Dispatch authority (future columns — not yet migrated; SPEC §2.10).** Affiliated
+supply is **organization-managed by default**; an org can release a specific tech for
+direct ClueXP dispatch. Planned, not applied:
+- `organizations.dispatch_mode` (`cluexp_managed` | `organization_managed` | `hybrid`).
+- `organization_technicians.direct_dispatch_allowed boolean default false` — the
+  per-tech release flag (org-granted, on the membership).
+- For org/team-targeted offers, a later migration generalizes `dispatch_offers` to
+  `target_type` (`technician` | `organization` | `team`) with the matching nullable id
+  and an integrity check. Until org self-dispatch is built, offers stay
+  technician-centric (`dispatch_offers.organization_id` already records attribution).
+
 Common document types include `business_registration`, `business_license`,
 `insurance`, `locksmith_license`, `driver_license`, `work_authorization`,
 `certification`, `vehicle_registration`, and `other`.

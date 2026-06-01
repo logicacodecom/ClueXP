@@ -239,3 +239,9 @@ applicable; trust gating intact.
 1. ~~API deploy shape~~ — **resolved: co-locate now, extraction deferred** (flip if you disagree). → _your answer:_
 2. Maps render in the customer app — full Maps JS now, or static map images for the stub fulfillment screen first? → _your answer:_
 3. Any sprint reordering / scope changes? → _your answer:_
+4. ~~Dispatch authority for affiliated technicians~~ — **resolved (direction, not
+   scheduled; SPEC §2.10):** organization-managed by default; org can release a specific
+   tech for direct ClueXP dispatch. Individuals = ClueXP-dispatched. Future columns
+   (`organizations.dispatch_mode`, `organization_technicians.direct_dispatch_allowed`,
+   polymorphic `dispatch_offers.target_type`) are planned-not-applied. Sprint 2 ships
+   ClueXP-managed dispatch only.

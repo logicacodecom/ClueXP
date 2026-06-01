@@ -126,6 +126,30 @@ the phone** so the `customers` upsert fires (today the `Ticket` has no phone
 field, so jobs can land unlinked). Phone arrives naturally with OTP (§7.12), but
 history needs it sooner — see the execution plan.
 
+### 2.10 Dispatch authority (open design — not scheduled)
+
+> Direction agreed, not yet built. No schema/code applied. Sprint 2 ships
+> **ClueXP-managed dispatch only**; the rest below is the shape to grow into.
+
+Who dispatches a job depends on the supply:
+
+- **Individual technician** → **ClueXP dispatches** directly (the matcher).
+- **Affiliated technician** → **organization-managed by default**: ClueXP routes the
+  job *to the organization*, which assigns one of its own technicians internally.
+- **Per-technician release (override):** an org may flag a specific affiliated
+  technician as **free for direct ClueXP dispatch**; flagged techs can then be
+  dispatched directly, like an individual. The flag is granted by the org on the
+  membership, not a global technician property.
+
+Future org-level posture is summarized by `organizations.dispatch_mode`
+(`cluexp_managed` | `organization_managed` | `hybrid`); the per-tech release lives on
+`organization_technicians` (see `docs/DATABASE-AND-STORAGE.md`).
+
+**Trust-state rule (non-negotiable):** in organization-managed flow, an organization
+*accepting* a job does **not** flip `trust_state` to `matched`. The customer is only
+ever shown a **named, verified person** (§2.2, §2.8), so `matched` fires only when a
+specific `jobs.technician_id` is set; org-accept is an internal `events` milestone.
+
 ---
 
 ## 3. The data contract

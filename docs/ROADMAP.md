@@ -93,7 +93,7 @@ separate **domain-restricted** token for rendering only.
 - **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
 - **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
 - **E2 Technician & Access** — self-owned auth foundation (`users` + JWT, flat role; `adr/0002`); **extract `cluexp-api`** (first non-intake client); individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician app (PWA → React Native) + provider portal.
-- **E3 Dispatch engine** — deterministic matcher (geo + skill + availability + rating); offer cascade.
+- **E3 Dispatch engine** — deterministic matcher (geo + skill + availability + rating); offer cascade. *(v1 = ClueXP-managed only. Later: organization-managed dispatch — affiliated supply routed to the org, with a per-tech direct-dispatch release; SPEC §2.10. Not scheduled.)*
 - **E4 Fulfillment** — real map, traffic ETA, live tracking, mutual arrival handshake.
 - **E5 Payments** — Stripe auth-hold at commit, capture at finalize; restore the deferred payment gate.
 - **E6 Identity/OTP** — restore OTP; ID verification into the private bucket.
