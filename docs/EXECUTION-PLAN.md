@@ -10,17 +10,22 @@
 
 ---
 
-## Status snapshot
+## Status snapshot (verified 2026-06-01)
 
 | | |
 |---|---|
-| Intake app (Sprint 1) | ✅ live — https://cluexp-intake.vercel.app |
+| Intake app (production) | ✅ live — https://cluexp-intake.vercel.app (runs the pre–Sprint-1 `tickets`-store code, commit `4a692ba`; prod only auto-promotes from `main`) |
 | Dispatch database baseline | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
-| Provider tenant schema | ✅ applied to Supabase (`packages/db`, rev `0003_provider_organizations`) |
+| Provider tenant schema | ✅ applied to Supabase, rev `0003_provider_organizations`; live `alembic_version = 0003` |
+| Live DB data | ✅ all 11 tables present and **empty** (dummy data purged) |
+| Supabase Storage | ✅ `public-tech-media` + `private-verification` (10 MB + MIME limits); RLS on, deny-by-default (backend bypasses as owner role) |
+| Relational store (`api/store.py`) | ✅ built (writes `jobs.detail` + promoted cols, `customers` upsert-by-phone, `events.job_id`; read-only fallback to legacy `tickets`); **write contract verified against live 0003**. On preview deploy, not production. |
+| `GET /api/geocode` | ✅ endpoint + helper built and deployed; ⚠️ returns `{resolved:false}` until the `GOOGLE_MAPS_API_KEY` referrer restriction is fixed (see blockers) |
+| CI | ✅ `.github/workflows/ci.yml` on origin (`cdaf020`); runs on PRs |
 | Roadmap / ADR / this plan | ✅ in `docs/` |
-| Sprint 0 live hardening | ✅ implemented locally; build verified |
-| Sprint 0 monorepo move | ✅ code moved + build verified; Vercel Root Directory/redeploy complete |
-| Everything unchecked below | ⬜ awaiting your review |
+| Sprint 0 | ✅ complete (hardening, monorepo move + redeploy, CI, DB, storage, geocode endpoint) |
+| Sprint 1 | 🟨 assigned to **Codex**; store layer largely done (see above) — remaining: wire flow end-to-end, geocoding in the location step, photo upload to Storage |
+| Everything unchecked below | ⬜ planned |
 
 ## Locked decisions (from ADR 0001)
 
@@ -109,21 +114,33 @@ buckets exist **with policies + size/MIME limits**; `geocode()` returns coords.
 ## Sprint 1 — Intake on the real model
 
 **Goal:** intake stops using the single `tickets` blob and writes the relational model.
+**Owner:** Codex.
 
-- [x] **Store layer** — replace the `tickets` JSONB store with `jobs` + `customers`:
+- [x] **Store layer** — `tickets` JSONB store replaced with `jobs` + `customers`:
   - `POST /tickets`: upsert `customers` (by phone when known) + insert `jobs`;
     `jobs.detail` holds the Ticket payload; promote `trust_state`, `status`,
     `access_type`, `situation`, `lat`, `lng`, `address`, `customer_id`.
   - `require_ticket`/`save` read/write `jobs`; `events` rows carry `job_id`.
   - Keep the API response contract (envelope + guards) unchanged.
-- [ ] **Real geocoding** — GPS/address persists `lat`/`lng` + `geocode_confidence`.
+  - *Built in `api/store.py`; write contract verified against the live 0003 schema.
+    Remaining: drive it through the live flow (not just SQL) and confirm rows land.*
+  - ⚠️ `customers` upsert-by-phone is **best-effort** — the public `Ticket` schema has
+    no phone field yet, so `_customer_from_payload` rarely finds one. Add a phone field
+    (and the `0004` migration if needed) to make customer rows reliably populate.
+- [ ] **Real geocoding** — location step calls `GET /api/geocode`; persist `lat`/`lng`
+      + `geocode_confidence`. *(Endpoint built; live coords blocked on the
+      `GOOGLE_MAPS_API_KEY` referrer-restriction fix — see "Needs from you".)*
 - [ ] **Photo upload to Storage** — `POST /tickets/{id}/photo-intent` → signed URL;
       browser uploads direct to `private-verification` (size/MIME enforced);
       record a `media` row; the intake Photos screen actually stores.
-- [ ] **Migration** `0002_*` if columns need adjusting.
+- [ ] **Migration** `0004_*` if columns need adjusting (e.g. customer phone on Ticket).
 
 **Acceptance:** a full run creates `customers`+`jobs`+`media` rows; coords stored;
 photo lands in the private bucket and is **only** reachable via a signed URL (RLS verified).
+
+**Deploy note:** branch pushes build an SSO-gated **preview**; production runs the old
+store until a merge to `main`. Do not promote the relational store to prod without the
+human's explicit go + smoke test.
 
 ---
 
