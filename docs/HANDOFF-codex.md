@@ -208,3 +208,65 @@ Item B is now resolved as option **(b)** after human approval:
 comment explaining it is a future reviewer/admin actor pointer, and
 `DATABASE-AND-STORAGE.md` notes that the FK should be added when a staff/admin
 users table exists.
+
+---
+
+## Sprint 1 kickoff — Codex owns this (handoff 2026-06-01)
+
+The human has assigned **Sprint 1** to Codex. Below is the current ground truth and
+the scope. Read the "Hard rules" section near the top of this file first — they
+still apply (discuss before applying; no secrets; trust-state contract intact).
+
+### Current state (verified this session)
+- **Branch:** `feat/sprint0-foundation`, in sync with `origin`. Latest commit `37b9b4a`.
+  (Sprint 0 work lives here; not yet merged to `main`. Decide with the human whether
+  Sprint 1 continues on this branch or a new `feat/sprint1-intake` cut from it.)
+- **Live DB:** `alembic_version = 0003_provider_organizations`. All 11 tables present
+  (customers, organizations, technicians, organization_technicians, organization_teams,
+  organization_team_technicians, provider_documents, jobs, dispatch_offers, media,
+  events). **All tables empty** (dummy data purged). Buckets `public-tech-media` +
+  `private-verification` exist with 10 MB + MIME limits; RLS enabled, no policies
+  (deny-by-default; backend uses the owner/postgres role and bypasses RLS).
+- **Store:** `apps/intake-web/api/store.py` already writes the relational model
+  (`jobs.detail` JSONB + promoted columns; `customers` upsert-by-phone; `events.job_id`)
+  with a read-only fallback to legacy `tickets`. Its write contract was **verified
+  against the live 0003 schema** (insert→readback→cleanup). So the Sprint-1 "store
+  layer" task is largely DONE — focus on wiring the flow to it and the gaps below.
+- **Geocode:** `GET /api/geocode?q=` endpoint exists (`apps/intake-web/api/main.py`)
+  calling `api/geocode.py`. Helper + routing + key injection verified live. **BLOCKED
+  on a Google Cloud key fix** (see EXECUTION-PLAN "Needs from you"): `GOOGLE_MAPS_API_KEY`
+  has an HTTP-referrer restriction that Google rejects for the server Geocoding API
+  (`REQUEST_DENIED`). Until the human removes that restriction, geocode returns
+  `{resolved:false}`. The endpoint degrades gracefully — build against it, but the
+  live "coords come back" check waits on the key fix.
+- **Deploys:** pushes to this branch build a **preview** deploy (SSO-gated). Production
+  still runs old `tickets`-store code (commit `4a692ba`) — it only auto-promotes from
+  `main`. Do not promote the relational store to production without the human's
+  explicit go + a smoke test.
+
+### Sprint 1 scope (from EXECUTION-PLAN.md)
+1. **Store layer** — wire `POST /tickets` / `PATCH` end-to-end to the relational store
+   (mostly built; verify through the live flow, not just SQL). Keep the API envelope +
+   guards unchanged.
+2. **Real geocoding** — call `GET /api/geocode` from the intake location step so
+   `lat`/`lng`/`geocode_confidence` persist. (Live coords depend on the key fix above.)
+3. **Photo upload to Storage** — `POST /tickets/{id}/photo-intent` → signed upload URL →
+   browser uploads **direct** to `private-verification` (size/MIME enforced) → record a
+   `media` row. The intake Photos screen must actually store.
+4. **Migration `0004_*`** only if columns need adjusting (e.g. a customer-phone field on
+   the Ticket schema — note `_customer_from_payload` is currently best-effort because the
+   public Ticket has no phone field yet).
+
+### Acceptance (Sprint 1)
+A full intake run creates `customers`+`jobs`(+`media`) rows; coords stored; a photo lands
+in `private-verification` reachable **only** via signed URL (RLS verified).
+
+### How to apply DB migrations / reach the gated preview
+- Migrations: pooler (6543) with `prepare_threshold=None`, or direct (5432) when reachable.
+  Production DDL needs explicit human authorization.
+- Gated preview API: reach it via the Vercel MCP `web_fetch_vercel_url` (authenticates
+  past SSO; can be intermittent — retry), or ask the human for a Protection Bypass token.
+
+### Open (human-owned, not Sprint 1 blockers unless noted)
+- 🔑 Fix `GOOGLE_MAPS_API_KEY` referrer restriction (blocks live geocode coords — task 2).
+- 🔑 Rotate Vercel token + Supabase DB password before real launch.
