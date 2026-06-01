@@ -1,8 +1,9 @@
 # packages/db — ClueXP database migrations
 
 Alembic with raw-SQL migrations. The relational core for dispatch lives here
-(`customers`, `technicians`, `jobs`, `dispatch_offers`, `media`, `events`); the
-flexible intake payload stays as JSONB in `jobs.detail`.
+(`customers`, `organizations`, `technicians`, `organization_technicians`,
+`jobs`, `dispatch_offers`, `media`, `events`); the flexible intake payload stays
+as JSONB in `jobs.detail`.
 
 ## Running migrations
 

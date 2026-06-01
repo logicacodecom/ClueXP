@@ -18,7 +18,7 @@
 | Dispatch database (6 tables) | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
 | Roadmap / ADR / this plan | ✅ in `docs/` |
 | Sprint 0 live hardening | ✅ implemented locally; build verified |
-| Sprint 0 monorepo move | 🟨 code moved + build verified; Vercel Root Directory/redeploy still pending |
+| Sprint 0 monorepo move | ✅ code moved + build verified; Vercel Root Directory/redeploy complete |
 | Everything unchecked below | ⬜ awaiting your review |
 
 ## Locked decisions (from ADR 0001)
@@ -30,7 +30,7 @@
 
 ## 🔑 Needs from you (blockers, do in parallel)
 
-- [~] **Google Maps — two keys** (both keys were provided in chat; restrict them
+- [x] **Google Maps — two keys** (both keys were provided in chat; restrict them
   in Google Cloud and do not commit them. Add them to Vercel env vars only.
   Server-side calls and browser rendering must use different,
   separately-restricted keys):
@@ -38,9 +38,8 @@
     IP/secret** usage. Never shipped to the browser.
   - `NEXT_PUBLIC_MAPS_BROWSER_KEY` (browser map render; first key provided): **Maps JS only**, restricted by
     **HTTP referrer (domain)**.
-- [ ] **Supabase Storage:** authenticate the Supabase plugin (so I can create
-  buckets + policies), or create `public-tech-media` + `private-verification` in
-  the dashboard.
+- [x] **Supabase Storage:** buckets created in Supabase dashboard:
+  `public-tech-media` + `private-verification`.
 - [ ] **Rotate** the Vercel token + Supabase DB password when we wrap (both shared in chat).
 
 ---
@@ -63,7 +62,7 @@ Tasks are in execution order; live-hardening runs **before** the restructure.
   - [x] Real handoff **"Call now"** action (tel: / dispatcher callback), not a dead button.
 - [x] **CI** — add `.github/workflows/ci.yml` (typecheck, build, py compile,
       schema→types drift check, Alembic offline render). See `DEVOPS.md §3`.
-- [~] ⚠️ **Monorepo restructure** — *API stays co-located in the intake app*
+- [x] ⚠️ **Monorepo restructure** — *API stays co-located in the intake app*
       (single Vercel project); only folders move:
   - `src/`, `next.config.mjs`, `package.json`, `package-lock.json`, `tsconfig.json`, `next-env.d.ts`, `vercel.json` → `apps/intake-web/`
   - `api/`, `requirements.txt` → **`apps/intake-web/api/`** (co-located)
@@ -73,19 +72,19 @@ Tasks are in execution order; live-hardening runs **before** the restructure.
   - `assets/ui/` → `docs/design-ref/` (visual reference only)
   - Update imports (`from assets.schema` → `from api.schema`), the
     type-gen path, and `vercel.json` function globs.
-  - [ ] ⚠️ Update the Vercel project **Root Directory** to `apps/intake-web`;
+  - [x] ⚠️ Update the Vercel project **Root Directory** to `apps/intake-web`;
         re-verify build; **redeploy**; smoke-test the live flow.
   - *(Deferred: standalone `packages/schema` and `apps/api` / `cluexp-api` —
     do this when `technician-web` arrives.)*
-- [ ] **Supabase Storage** 🔑 — create buckets **and operationalize them**:
-  - `public-tech-media` (public, CDN) · `private-verification` (private).
+- [~] **Supabase Storage** — buckets exist; operationalize them:
+  - [x] `public-tech-media` (public, CDN) · `private-verification` (private).
   - **RLS policies:** owner-scoped read/write on `private-verification`; deny by
     default; public read only on `public-tech-media`.
   - **Signed-URL rules:** upload TTL ~60s, download TTL ~300s.
   - **Limits:** max 10 MB; MIME allowlist (`image/*`; `application/pdf` for IDs);
     **validate size + MIME server-side before issuing the signed URL**.
-- [ ] **Google Maps** 🔑 — store the two keys above; add a backend
-      `geocode(address)` helper (server key); confirm a test address resolves.
+- [~] **Google Maps** — keys are stored; add a backend `geocode(address)`
+      helper (server key); confirm a test address resolves.
 
 **Acceptance:** live app has payload lockdown + restricted CORS + a demo flag;
 repo is `apps/`+`packages/` with intake still green in prod; CI runs on PRs;
@@ -97,7 +96,7 @@ buckets exist **with policies + size/MIME limits**; `geocode()` returns coords.
 
 **Goal:** intake stops using the single `tickets` blob and writes the relational model.
 
-- [ ] **Store layer** — replace the `tickets` JSONB store with `jobs` + `customers`:
+- [x] **Store layer** — replace the `tickets` JSONB store with `jobs` + `customers`:
   - `POST /tickets`: upsert `customers` (by phone when known) + insert `jobs`;
     `jobs.detail` holds the Ticket payload; promote `trust_state`, `status`,
     `access_type`, `situation`, `lat`, `lng`, `address`, `customer_id`.
@@ -114,16 +113,26 @@ photo lands in the private bucket and is **only** reachable via a signed URL (RL
 
 ---
 
-## Sprint 2 — Technician registry + matching v1
+## Sprint 2 — Provider registry + matching v1
 
-- [ ] Seed `technicians` (varied skills/areas) + a minimal admin list view.
+- [x] **Provider tenant schema** — support individual technicians and
+      company/group organizations with affiliated technicians
+      (`organizations`, `organization_technicians`, technician `provider_type`).
+- [ ] Organization onboarding: company/group can register itself, set service
+      area/contact details, and invite or bulk-create affiliated technicians.
+- [ ] Individual technician onboarding remains supported for solo operators.
+- [ ] Seed `organizations` + `technicians` (individual + affiliated; varied
+      skills/areas) + a minimal admin list view.
 - [ ] **Dispatch engine v1** (deterministic, outside the intake graph per SPEC §2.7):
       score by distance (service_area), skill (`access_type`/key type), availability, rating.
 - [ ] `/dispatch` creates `dispatch_offers` for top-N; first accept wins; timeout →
-      next; assigns `jobs.technician_id`, flips `trust_state=matched`.
+      next; assigns `jobs.technician_id`; when affiliated, also records
+      `jobs.provider_organization_id`; flips `trust_state=matched`.
 - [ ] Technician location ping (`current_lat/lng`).
 
-**Acceptance:** dispatch picks a real seeded technician by rule; offers recorded; trust gating intact.
+**Acceptance:** dispatch picks a real seeded technician by rule, whether solo or
+affiliated; offers record the technician and provider organization where
+applicable; trust gating intact.
 
 ---
 
@@ -165,7 +174,9 @@ photo lands in the private bucket and is **only** reachable via a signed URL (RL
 
 - [ ] PII retention policy (purge `id_document` media N days post-completion; log to `events`).
 - [ ] Audit-log retention/archival for `events`.
-- [ ] Licensing/insurance checks per jurisdiction before activating a technician.
+- [ ] Licensing/insurance checks per jurisdiction before activating an individual
+      technician or a provider organization.
+- [ ] Subscription/billing model for provider organizations.
 - [ ] Error tracking (Sentry) + API health check + alerting (see `DEVOPS.md §7`).
 
 ---

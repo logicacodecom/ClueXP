@@ -73,6 +73,22 @@ A full-width "Call a person instead" button is present in the footer of **every*
 
 The intake graph collects information and produces a structured Ticket. Technician matching, equipment selection, and pricing live in **deterministic engines outside** the intake graph. This separation is what keeps the bulletproof part bulletproof.
 
+### 2.8 Technicians can be individual or affiliated
+
+The supply side supports two provider paths:
+
+- **Individual technician** — a solo operator vetted and dispatched directly by
+  ClueXP.
+- **Affiliated technician** — a technician attached to a company/group provider
+  organization. The customer still sees the assigned verified person, while the
+  backend records the provider organization for business reporting, permissions,
+  subscription, billing, and future tenant controls.
+
+Provider organizations can register themselves and manage affiliated technicians
+without changing the customer intake flow. Dispatch always assigns a technician;
+when that technician is affiliated, the job also carries the organization that
+owns the fulfillment.
+
 ---
 
 ## 3. The data contract

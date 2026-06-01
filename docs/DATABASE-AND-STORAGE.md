@@ -22,8 +22,9 @@ storage. Migrations live in `packages/db`; the app reads/writes via the API
 
 ```
 customers ──< jobs >── technicians
-                │  \
-                │   └──< dispatch_offers >── technicians
+                │  \       │
+                │   \      └──< organization_technicians >── organizations
+                │    └──< dispatch_offers >── technicians / organizations
                 └──< media (owner_type='job')
                 └──< events (job_id)
 technicians ──< media (owner_type='technician')
@@ -32,17 +33,37 @@ technicians ──< media (owner_type='technician')
 | Table | Key columns | Notes |
 |---|---|---|
 | **customers** | `id` uuid pk, `phone` unique, `name`, `created_at` | identity anchor = phone |
-| **technicians** | `id`, `display_name`, `status`, `vetting_status`, `skills text[]`, `service_area_center_lat/lng`, `service_area_radius_km`, `rating`, `profile_photo_url`, `vehicle_info jsonb`, `current_lat/lng`, `location_updated_at`, `is_available`, `created_at` | supply side; queried by the matcher |
-| **jobs** | `id`, `customer_id`→customers, `technician_id`→technicians, `trust_state`, `status`, `access_type`, `situation`, `urgency`, `lat/lng`, `address`, `detail jsonb`, `price_quote jsonb`, `final_charge jsonb`, `created_at`, `updated_at` | dispatch spine; `detail` = Ticket payload |
-| **dispatch_offers** | `id`, `job_id`→jobs, `technician_id`→technicians, `status`, `rank`, `offered_at`, `responded_at`, `expires_at` | offer→accept→fallback cascade |
+| **organizations** | `id`, `legal_name`, `display_name`, `slug`, `organization_type`, `status`, `subscription_status`, `billing_customer_ref`, contact + service-area fields | company/group tenant for affiliated technicians; future subscription anchor |
+| **technicians** | `id`, `display_name`, `provider_type`, `primary_organization_id`, `status`, `vetting_status`, `skills text[]`, `service_area_center_lat/lng`, `service_area_radius_km`, `rating`, `profile_photo_url`, `vehicle_info jsonb`, `current_lat/lng`, `location_updated_at`, `is_available`, `created_at` | supply-side person; `provider_type='individual'` or `affiliate` |
+| **organization_technicians** | `organization_id`, `technician_id`, `role`, `status`, `invited_at`, `activated_at` | links a company/group tenant to its affiliated technicians |
+| **jobs** | `id`, `customer_id`→customers, `technician_id`→technicians, `provider_organization_id`→organizations, `trust_state`, `status`, `access_type`, `situation`, `urgency`, `lat/lng`, `address`, `detail jsonb`, `price_quote jsonb`, `final_charge jsonb`, `created_at`, `updated_at` | dispatch spine; `detail` = Ticket payload |
+| **dispatch_offers** | `id`, `job_id`→jobs, `technician_id`→technicians, `organization_id`→organizations, `status`, `rank`, `offered_at`, `responded_at`, `expires_at` | offer→accept→fallback cascade; can target solo or affiliated supply |
 | **media** | `id`, `owner_type`, `owner_id`, `kind`, `bucket`, `path`, `visibility`, `uploaded_by`, `uploaded_at` | pointers to Storage objects |
 | **events** | `id` bigserial, `ticket_id`, `job_id`, `event`, `trust_state`, `at` | append-only audit log |
 
-Legacy `tickets` (the original single-blob store) still exists and backs the
-live intake until Sprint 1 migrates intake onto `jobs`/`customers`.
+Legacy `tickets` may still exist from the original single-blob store. New
+runtime writes go to `jobs.detail` plus promoted dispatch columns; the API keeps
+a read-only fallback for old `tickets` rows during the transition.
 
 **Indexes:** `jobs(status)`, `jobs(trust_state)`, `jobs(customer_id)`,
-`technicians(is_available)`, `dispatch_offers(job_id)`, `media(owner_type, owner_id)`.
+`jobs(provider_organization_id)`, `technicians(is_available)`,
+`technicians(provider_type)`, `dispatch_offers(job_id)`,
+`dispatch_offers(organization_id)`, `media(owner_type, owner_id)`.
+
+## 2.1 Provider / tenant model
+
+Technicians can enter the marketplace in two ways:
+
+- **Individual technician:** `technicians.provider_type = 'individual'`; the
+  technician is vetted and dispatched directly.
+- **Affiliated technician:** `technicians.provider_type = 'affiliate'`; the
+  technician belongs to an `organizations` row through
+  `organization_technicians`. The organization is the future subscription,
+  billing, admin, and business-entity boundary.
+
+Dispatch still assigns a person (`jobs.technician_id`) so the customer sees a
+real verified technician. When that person is affiliated, the job also records
+`jobs.provider_organization_id` for reporting, billing, and tenant controls.
 
 ## 3. Connection model (Supabase)
 
