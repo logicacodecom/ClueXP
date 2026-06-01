@@ -44,6 +44,25 @@ const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
 const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final"];
 
+type GeocodeResponse =
+  | {
+      resolved: true;
+      lat: number;
+      lng: number;
+      formatted_address?: string;
+      geocode_confidence: string;
+    }
+  | { resolved: false };
+
+interface PhotoIntentResponse {
+  bucket: string;
+  path: string;
+  upload_url: string;
+  token?: string | null;
+  expires_in: number;
+  max_bytes: number;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -152,6 +171,8 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [arrivalCode, setArrivalCode] = useState("");
+  const [selectedPhotos, setSelectedPhotos] = useState<File[]>([]);
+  const [uploadedPhotoCount, setUploadedPhotoCount] = useState(0);
   const [form, setForm] = useState({
     address: "",
     make: "",
@@ -206,6 +227,81 @@ export default function HomePage() {
     });
     sync(envelope);
     return envelope.ticket;
+  }
+
+  async function geocodeAddress(address: string) {
+    const trimmed = address.trim();
+    if (!trimmed) {
+      return { raw_text: "Address pending", geocode_confidence: "none" };
+    }
+    const result = await api<GeocodeResponse>(`/geocode?q=${encodeURIComponent(trimmed)}`);
+    if (!result.resolved) {
+      return { raw_text: trimmed, geocode_confidence: "none" };
+    }
+    return {
+      raw_text: result.formatted_address || trimmed,
+      lat: result.lat,
+      lng: result.lng,
+      geocode_confidence: result.geocode_confidence
+    };
+  }
+
+  async function shareGpsLocation() {
+    if (!navigator.geolocation) {
+      throw new Error("GPS is not available in this browser");
+    }
+    const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        maximumAge: 30_000,
+        timeout: 10_000
+      });
+    });
+    await patch({
+      location: {
+        raw_text: "Current GPS location",
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        geocode_confidence: "high"
+      }
+    });
+  }
+
+  async function uploadSelectedPhotos() {
+    if (!selectedPhotos.length) return;
+    const current = await ensureTicket();
+    let uploaded = 0;
+    for (const file of selectedPhotos) {
+      const intent = await api<PhotoIntentResponse>(`/tickets/${current.ticket_id}/photo-intent`, {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          content_type: file.type,
+          size: file.size
+        })
+      });
+      const upload = await fetch(intent.upload_url, {
+        method: "PUT",
+        headers: { "content-type": file.type },
+        body: file
+      });
+      if (!upload.ok) {
+        throw new Error(`Photo upload failed: ${upload.status}`);
+      }
+      const envelope = await api<TicketEnvelope>(`/tickets/${current.ticket_id}/photo-complete`, {
+        method: "POST",
+        body: JSON.stringify({
+          bucket: intent.bucket,
+          path: intent.path,
+          content_type: file.type,
+          size: file.size
+        })
+      });
+      sync(envelope);
+      uploaded += 1;
+    }
+    setUploadedPhotoCount((count) => count + uploaded);
+    setSelectedPhotos([]);
   }
 
   async function handoff(reason = "explicit") {
@@ -333,7 +429,8 @@ export default function HomePage() {
               type="button"
               onClick={() =>
                 run(async () => {
-                  await patch({ location: { raw_text: "Current GPS location", lat: 40.7128, lng: -74.006, geocode_confidence: "high" } });
+                  await shareGpsLocation();
+                  setScreen("details");
                 })
               }
             >
@@ -358,8 +455,9 @@ export default function HomePage() {
                 ]}
                 onSelect={(value) =>
                   run(async () => {
+                    const location = await geocodeAddress(form.address || ticket?.location?.raw_text || "");
                     await patch({
-                      location: { raw_text: form.address || ticket?.location?.raw_text || "Address pending" },
+                      location,
                       safety_flag: { present: value !== "none", type: value, advised_emergency_services: value !== "none" }
                     });
                     if (value !== "none") await handoff("safety");
@@ -454,10 +552,36 @@ export default function HomePage() {
             Add a photo if it is useful.
           </AgentMessage>
           <div className="stack">
-            <input className="field" type="file" accept="image/*" multiple />
+            <input
+              className="field"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              onChange={(event) => setSelectedPhotos(Array.from(event.target.files || []))}
+            />
+            {selectedPhotos.length ? (
+              <div className="panel">
+                <p className="panel-title">Selected photos</p>
+                <p className="fine">{selectedPhotos.length} image{selectedPhotos.length === 1 ? "" : "s"} ready to upload.</p>
+              </div>
+            ) : null}
+            {uploadedPhotoCount || ticket?.photos?.length ? (
+              <p className="fine">{ticket?.photos?.length || uploadedPhotoCount} uploaded for this request.</p>
+            ) : null}
             <div className="row">
               <button className="ghost" type="button" onClick={() => setScreen("identity")}>Skip</button>
-              <button className="primary" type="button" onClick={() => setScreen("identity")}>Continue</button>
+              <button
+                className="primary"
+                type="button"
+                onClick={() =>
+                  run(async () => {
+                    await uploadSelectedPhotos();
+                    setScreen("identity");
+                  })
+                }
+              >
+                Continue
+              </button>
             </div>
           </div>
         </>

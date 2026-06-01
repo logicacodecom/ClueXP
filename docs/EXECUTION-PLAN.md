@@ -24,7 +24,7 @@
 | CI | ✅ `.github/workflows/ci.yml` on origin (`cdaf020`); runs on PRs |
 | Roadmap / ADR / this plan | ✅ in `docs/` |
 | Sprint 0 | ✅ complete (hardening, monorepo move + redeploy, CI, DB, storage, geocode endpoint) |
-| Sprint 1 | 🟨 assigned to **Codex**; store layer largely done (see above) — remaining: wire flow end-to-end, geocoding in the location step, photo upload to Storage |
+| Sprint 1 | 🟨 assigned to **Codex**; store layer, geocoding UI wiring, and photo upload endpoints/UI built — remaining: live credential verification + full flow smoke |
 | Everything unchecked below | ⬜ planned |
 
 ## Locked decisions (from ADR 0001)
@@ -127,12 +127,15 @@ buckets exist **with policies + size/MIME limits**; `geocode()` returns coords.
   - ⚠️ `customers` upsert-by-phone is **best-effort** — the public `Ticket` schema has
     no phone field yet, so `_customer_from_payload` rarely finds one. Add a phone field
     (and the `0004` migration if needed) to make customer rows reliably populate.
-- [ ] **Real geocoding** — location step calls `GET /api/geocode`; persist `lat`/`lng`
+- [~] **Real geocoding** — location step calls `GET /api/geocode`; persist `lat`/`lng`
       + `geocode_confidence`. *(Endpoint built; live coords blocked on the
-      `GOOGLE_MAPS_API_KEY` referrer-restriction fix — see "Needs from you".)*
-- [ ] **Photo upload to Storage** — `POST /tickets/{id}/photo-intent` → signed URL;
+      `GOOGLE_MAPS_API_KEY` referrer-restriction fix — see "Needs from you".
+      Frontend wiring is built.)*
+- [~] **Photo upload to Storage** — `POST /tickets/{id}/photo-intent` → signed URL;
       browser uploads direct to `private-verification` (size/MIME enforced);
-      record a `media` row; the intake Photos screen actually stores.
+      `POST /tickets/{id}/photo-complete` records a `media` row; the intake
+      Photos screen uploads selected PNG/JPEG/WebP images. Needs live
+      `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` verification in Vercel.
 - [ ] **Migration** `0004_*` if columns need adjusting (e.g. customer phone on Ticket).
 
 **Acceptance:** a full run creates `customers`+`jobs`+`media` rows; coords stored;

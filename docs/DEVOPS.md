@@ -110,7 +110,8 @@ touching a real database.
 |---|---|---|
 | `DATABASE_URL` | Vercel env (Prod + Preview) | committed; in client bundle |
 | `GOOGLE_MAPS_API_KEY` (server) | Vercel env | exposed to browser — rendering uses `NEXT_PUBLIC_MAPS_BROWSER_KEY` (Maps JS, domain-restricted) |
-| Supabase service key | Vercel env / CI secret | in repo |
+| `SUPABASE_URL` | Vercel env | hardcoded into backend modules |
+| `SUPABASE_SERVICE_ROLE_KEY` | Vercel env / CI secret | in repo or client bundle |
 | Vercel token | CI secret only | in chat/repo |
 
 - `.env*` is gitignored; `.env.example` holds placeholders only.

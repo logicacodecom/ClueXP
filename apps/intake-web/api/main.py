@@ -7,19 +7,21 @@ import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from api.geocode import geocode
+from api import storage
 from api.store import make_store
 from api.schema import (
     AccessType,
     CancellationPolicy,
     FinalCharge,
     PaymentMethod,
+    Photo,
     PriceQuote,
     TechnicianAssignment,
     Ticket,
@@ -73,6 +75,28 @@ arrival_codes: dict[UUID, str] = {}
 class TicketEnvelope(BaseModel):
     ticket: Ticket
     guards: dict[str, bool]
+
+
+class PhotoIntentRequest(BaseModel):
+    filename: str
+    content_type: str
+    size: int
+
+
+class PhotoIntentResponse(BaseModel):
+    bucket: str
+    path: str
+    upload_url: str
+    token: str | None = None
+    expires_in: int
+    max_bytes: int
+
+
+class PhotoCompleteRequest(BaseModel):
+    bucket: str
+    path: str
+    content_type: str
+    size: int
 
 
 def envelope(ticket: Ticket) -> TicketEnvelope:
@@ -159,6 +183,14 @@ async def log_transition(ticket: Ticket, event: str) -> None:
     await store.log_event(ticket, event)
 
 
+def _extension_for_content_type(content_type: str) -> str:
+    return {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+    }.get(content_type, "")
+
+
 @app.get("/geocode")
 async def geocode_address(q: str) -> dict[str, Any]:
     """Resolve an address to coordinates using the server Maps key.
@@ -198,6 +230,58 @@ async def patch_ticket(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelo
     await save(updated)
     await log_transition(updated, "patched")
     return envelope(updated)
+
+
+@app.post("/tickets/{ticket_id}/photo-intent", response_model=PhotoIntentResponse)
+async def photo_intent(ticket_id: UUID, payload: PhotoIntentRequest) -> PhotoIntentResponse:
+    await latency()
+    await require_ticket(ticket_id)
+    try:
+        storage.validate_upload_claim(payload.content_type, payload.size)
+        ext = _extension_for_content_type(payload.content_type)
+        path = f"tickets/{ticket_id}/{uuid4()}{ext}"
+        intent = await storage.create_signed_upload_url(storage.PRIVATE_BUCKET, path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return PhotoIntentResponse(
+        bucket=intent.bucket,
+        path=intent.path,
+        upload_url=intent.upload_url,
+        token=intent.token,
+        expires_in=intent.expires_in,
+        max_bytes=storage.MAX_UPLOAD_BYTES,
+    )
+
+
+@app.post("/tickets/{ticket_id}/photo-complete", response_model=TicketEnvelope)
+async def photo_complete(ticket_id: UUID, payload: PhotoCompleteRequest) -> TicketEnvelope:
+    await latency()
+    ticket = await require_ticket(ticket_id)
+    if payload.bucket != storage.PRIVATE_BUCKET:
+        raise HTTPException(status_code=400, detail="Invalid storage bucket")
+    if not payload.path.startswith(f"tickets/{ticket_id}/"):
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    try:
+        storage.validate_upload_claim(payload.content_type, payload.size)
+        signed_url = await storage.create_signed_download_url(payload.bucket, payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    media_id = await store.record_media(
+        owner_type="job",
+        owner_id=ticket_id,
+        kind="intake_photo",
+        bucket=payload.bucket,
+        path=payload.path,
+        visibility="private",
+    )
+    ticket.photos.append(Photo(id=media_id, url=signed_url, uploaded_at=now()))
+    await save(ticket)
+    await log_transition(ticket, "photo_uploaded")
+    return envelope(ticket)
 
 
 @app.post("/tickets/{ticket_id}/price-quote", response_model=TicketEnvelope)

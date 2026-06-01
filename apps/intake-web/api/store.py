@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from api.schema import Ticket
 
@@ -75,11 +75,24 @@ class Store:
     async def log_event(self, ticket: Ticket, event: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def record_media(
+        self,
+        *,
+        owner_type: str,
+        owner_id: UUID,
+        kind: str,
+        bucket: str,
+        path: str,
+        visibility: str,
+    ) -> str:  # pragma: no cover
+        raise NotImplementedError
+
 
 class InMemoryStore(Store):
     def __init__(self) -> None:
         self._tickets: dict[UUID, Ticket] = {}
         self.events: list[str] = []
+        self.media: list[dict[str, str]] = []
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         return self._tickets.get(ticket_id)
@@ -90,6 +103,30 @@ class InMemoryStore(Store):
     async def log_event(self, ticket: Ticket, event: str) -> None:
         stamp = datetime.now(timezone.utc).isoformat()
         self.events.append(f"{stamp} {ticket.ticket_id} {event} {_trust_state_value(ticket)}")
+
+    async def record_media(
+        self,
+        *,
+        owner_type: str,
+        owner_id: UUID,
+        kind: str,
+        bucket: str,
+        path: str,
+        visibility: str,
+    ) -> str:
+        media_id = str(uuid4())
+        self.media.append(
+            {
+                "id": media_id,
+                "owner_type": owner_type,
+                "owner_id": str(owner_id),
+                "kind": kind,
+                "bucket": bucket,
+                "path": path,
+                "visibility": visibility,
+            }
+        )
+        return media_id
 
 
 class PostgresStore(Store):
@@ -145,11 +182,27 @@ class PostgresStore(Store):
                 ")"
             )
             await conn.execute("alter table events add column if not exists job_id uuid")
+            await conn.execute(
+                "create table if not exists media ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  owner_type text not null,"
+                "  owner_id uuid not null,"
+                "  kind text not null,"
+                "  bucket text not null,"
+                "  path text not null,"
+                "  visibility text not null default 'private',"
+                "  uploaded_by uuid,"
+                "  uploaded_at timestamptz not null default now()"
+                ")"
+            )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
                 "create index if not exists idx_jobs_trust_state on jobs (trust_state)"
             )
             await conn.execute("create index if not exists idx_jobs_customer on jobs (customer_id)")
+            await conn.execute(
+                "create index if not exists idx_media_owner on media (owner_type, owner_id)"
+            )
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         async with await self._connect() as conn:
@@ -252,6 +305,26 @@ class PostgresStore(Store):
                     _trust_state_value(ticket),
                 ),
             )
+
+    async def record_media(
+        self,
+        *,
+        owner_type: str,
+        owner_id: UUID,
+        kind: str,
+        bucket: str,
+        path: str,
+        visibility: str,
+    ) -> str:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into media (owner_type, owner_id, kind, bucket, path, visibility)"
+                " values (%s, %s, %s, %s, %s, %s)"
+                " returning id",
+                (owner_type, str(owner_id), kind, bucket, path, visibility),
+            )
+            row = await cur.fetchone()
+        return str(row[0])
 
 
 def make_store() -> Store:
