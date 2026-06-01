@@ -39,6 +39,19 @@
     IP/secret** usage. Never shipped to the browser.
   - `NEXT_PUBLIC_MAPS_BROWSER_KEY` (browser map render; first key provided): **Maps JS only**, restricted by
     **HTTP referrer (domain)**.
+- [ ] ⚠️ **FIX `GOOGLE_MAPS_API_KEY` restriction (do later, remind me).**
+  Live verification of `GET /api/geocode` (2026-06-01) returned
+  `REQUEST_DENIED — "API keys with referer restrictions cannot be used with this
+  API."` The server key currently carries an **HTTP-referrer restriction**, which
+  Google rejects for the server-side Geocoding API. The endpoint, helper, and key
+  injection all work — only the key restriction is wrong. Fix in **Google Cloud
+  Console → APIs & Services → Credentials → (the GOOGLE_MAPS_API_KEY key):**
+  - **Application restrictions → None** (Vercel egress IPs are dynamic, so no IP
+    restriction; the referrer restriction belongs only on the *browser* key).
+  - **API restrictions → restrict to Geocoding API** (add Routes API later).
+  - Leave `NEXT_PUBLIC_MAPS_BROWSER_KEY` as-is (HTTP-referrer + Maps JS only).
+  - No redeploy needed; Google applies it in ~1–2 min. Then re-hit
+    `GET /api/geocode?q=<address>` to confirm coordinates come back.
 - [x] **Supabase Storage:** buckets created in Supabase dashboard:
   `public-tech-media` + `private-verification`.
 - [ ] **Rotate** the Vercel token + Supabase DB password when we wrap (both shared in chat).
