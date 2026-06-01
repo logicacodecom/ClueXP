@@ -43,6 +43,9 @@ ClueXP/
 | `organizations` | company/group tenants that can register affiliated technicians; future subscription anchor |
 | `technicians` | supply-side people — individual or affiliated; skills, service area, availability, rating, location |
 | `organization_technicians` | company/group membership for affiliated technicians |
+| `organization_teams` | recursive departments/groups/business units inside a provider organization |
+| `organization_team_technicians` | technician membership in one or many organization teams |
+| `provider_documents` | legal/compliance documents, status, storage pointer, and expiration for organizations or technicians |
 | `jobs` | the dispatch spine (evolves from `tickets`); queryable columns + `detail` JSONB holding the `Ticket` payload |
 | `dispatch_offers` | offer → accept → fallback cascade (replaces the stubbed single technician) |
 | `media` | pointers to files in Supabase Storage |
@@ -75,7 +78,7 @@ separate **domain-restricted** token for rendering only.
 
 - **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
 - **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
-- **E2 Technician** — individual + company/group registry, affiliated technician onboarding, profile + vetting, availability, location ping; technician PWA.
+- **E2 Technician** — individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician PWA.
 - **E3 Dispatch engine** — deterministic matcher (geo + skill + availability + rating); offer cascade.
 - **E4 Fulfillment** — real map, traffic ETA, live tracking, mutual arrival handshake.
 - **E5 Payments** — Stripe auth-hold at commit, capture at finalize; restore the deferred payment gate.
@@ -87,16 +90,16 @@ separate **domain-restricted** token for rendering only.
 
 | Sprint | Goal | Headline deliverable |
 |---|---|---|
-| **0 — Foundation** | Hardening + restructure + DB | live-app hardening, `apps/`+`packages/` layout (API co-located), CI, `packages/db` 6 tables on Supabase, intake still green |
+| **0 — Foundation** | Hardening + restructure + DB | live-app hardening, `apps/`+`packages/` layout (API co-located), CI, baseline dispatch schema on Supabase, intake still green |
 | **1 — Intake on real model** | Persist properly | Intake writes `customers`+`jobs`; real geocoding; photo upload to Storage |
-| **2 — Technician + matching v1** | Kill the stub tech | Provider organizations + individual/affiliate technician registry; deterministic dispatch + offers |
+| **2 — Technician + matching v1** | Kill the stub tech | Provider organizations + teams + individual/affiliate technician registry; deterministic dispatch + offers |
 | **3 — Fulfillment maps** | Real ETAs/tracking | Live map, traffic ETA, mutual arrival handshake |
 | **4 — Payments + OTP** | Restore deferred | Stripe auth-hold/capture; OTP back in flow |
 | **5 — Dispatcher console** | Human ops | Handoff queue, overrides, safety escalation |
 
 ## Sprint 0 — task order (production-safe)
 
-1. **`packages/db`** — Alembic + raw-SQL baseline; the 6 tables on Supabase. ✅ done
+1. **`packages/db`** — Alembic + raw-SQL baseline on Supabase. ✅ done
 2. **Live hardening** — the app is already public: payload lockdown on POST/PATCH, restricted CORS, ticket-id rehydration, demo/prod flag, real handoff action.
 3. **CI** — `.github/workflows/ci.yml` (typecheck, build, py compile, types drift, Alembic offline render).
 4. **Monorepo move** — `apps/intake-web` (API + schema co-located at `apps/intake-web/api`); update imports, `vercel.json`, and the Vercel Root Directory. *(only step that touches the live deploy — verify + redeploy)*

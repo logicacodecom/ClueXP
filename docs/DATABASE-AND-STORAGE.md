@@ -18,24 +18,33 @@ storage. Migrations live in `packages/db`; the app reads/writes via the API
 - **Postgres stores pointers, not bytes.** Files live in Supabase Storage; the
   `media` table holds bucket + path + visibility.
 
-## 2. Schema (rev `0001_baseline`)
+## 2. Schema (rev `0003_provider_organizations`)
 
 ```
 customers ──< jobs >── technicians
-                │  \       │
-                │   \      └──< organization_technicians >── organizations
-                │    └──< dispatch_offers >── technicians / organizations
-                └──< media (owner_type='job')
+                │          │
+                │          └──< organization_technicians >── organizations
+                │                                                 │
+                │                                                 └──< organization_teams
+                │                                                        ├──< organization_teams (parent_team_id)
+                │                                                        └──< organization_team_technicians >── technicians
+                ├──< dispatch_offers >── technicians / organizations
+                ├──< media (owner_type='job')
                 └──< events (job_id)
-technicians ──< media (owner_type='technician')
+
+organizations / technicians ──< provider_documents
+technicians ───────────────────< media (owner_type='technician')
 ```
 
 | Table | Key columns | Notes |
 |---|---|---|
 | **customers** | `id` uuid pk, `phone` unique, `name`, `created_at` | identity anchor = phone |
-| **organizations** | `id`, `legal_name`, `display_name`, `slug`, `organization_type`, `status`, `subscription_status`, `billing_customer_ref`, contact + service-area fields | company/group tenant for affiliated technicians; future subscription anchor |
+| **organizations** | `id`, `legal_name`, `display_name`, `description`, `slug`, `organization_type`, `status`, `subscription_status`, `billing_customer_ref`, contact + service-area fields | company/group tenant for affiliated technicians; future subscription anchor |
 | **technicians** | `id`, `display_name`, `provider_type`, `primary_organization_id`, `status`, `vetting_status`, `skills text[]`, `service_area_center_lat/lng`, `service_area_radius_km`, `rating`, `profile_photo_url`, `vehicle_info jsonb`, `current_lat/lng`, `location_updated_at`, `is_available`, `created_at` | supply-side person; `provider_type='individual'` or `affiliate` |
 | **organization_technicians** | `organization_id`, `technician_id`, `role`, `status`, `invited_at`, `activated_at` | links a company/group tenant to its affiliated technicians |
+| **organization_teams** | `id`, `organization_id`, `parent_team_id`, `name`, `description`, `team_type`, `status`, timestamps | recursive departments/groups/business units inside an organization |
+| **organization_team_technicians** | `team_id`, `technician_id`, `role`, `assigned_at` | many-to-many team membership for affiliated technicians |
+| **provider_documents** | `id`, `owner_type`, `owner_id`, `document_type`, `document_number`, `issuing_authority`, `jurisdiction`, `issued_at`, `expires_at`, `status`, `storage_bucket`, `storage_path`, `notes`, review timestamps | compliance/legal documents for organizations and technicians |
 | **jobs** | `id`, `customer_id`→customers, `technician_id`→technicians, `provider_organization_id`→organizations, `trust_state`, `status`, `access_type`, `situation`, `urgency`, `lat/lng`, `address`, `detail jsonb`, `price_quote jsonb`, `final_charge jsonb`, `created_at`, `updated_at` | dispatch spine; `detail` = Ticket payload |
 | **dispatch_offers** | `id`, `job_id`→jobs, `technician_id`→technicians, `organization_id`→organizations, `status`, `rank`, `offered_at`, `responded_at`, `expires_at` | offer→accept→fallback cascade; can target solo or affiliated supply |
 | **media** | `id`, `owner_type`, `owner_id`, `kind`, `bucket`, `path`, `visibility`, `uploaded_by`, `uploaded_at` | pointers to Storage objects |
@@ -48,7 +57,10 @@ a read-only fallback for old `tickets` rows during the transition.
 **Indexes:** `jobs(status)`, `jobs(trust_state)`, `jobs(customer_id)`,
 `jobs(provider_organization_id)`, `technicians(is_available)`,
 `technicians(provider_type)`, `dispatch_offers(job_id)`,
-`dispatch_offers(organization_id)`, `media(owner_type, owner_id)`.
+`dispatch_offers(organization_id)`, `organization_teams(organization_id)`,
+`organization_teams(parent_team_id)`, `organization_team_technicians(technician_id)`,
+`provider_documents(owner_type, owner_id)`, `provider_documents(expires_at)`,
+`media(owner_type, owner_id)`.
 
 ## 2.1 Provider / tenant model
 
@@ -60,10 +72,25 @@ Technicians can enter the marketplace in two ways:
   technician belongs to an `organizations` row through
   `organization_technicians`. The organization is the future subscription,
   billing, admin, and business-entity boundary.
+- **Organization teams:** organizations can define recursive teams through
+  `organization_teams.parent_team_id`. A team can represent a department, group,
+  branch, business unit, region, specialty crew, or any internal structure. Each
+  team has a description, and technicians can belong to many teams through
+  `organization_team_technicians`.
+- **Compliance documents:** legal/compliance documents attach to organizations
+  or technicians through `provider_documents`. Teams are virtual operating
+  groups and do not hold legal documents. Document files live in Supabase
+  Storage; Postgres stores the bucket/path, type, jurisdiction, review status,
+  and expiration date. `provider_documents.verified_by` is intentionally nullable
+  until a staff/admin actor table exists; add its FK in that later migration.
 
 Dispatch still assigns a person (`jobs.technician_id`) so the customer sees a
 real verified technician. When that person is affiliated, the job also records
 `jobs.provider_organization_id` for reporting, billing, and tenant controls.
+
+Common document types include `business_registration`, `business_license`,
+`insurance`, `locksmith_license`, `driver_license`, `work_authorization`,
+`certification`, `vehicle_registration`, and `other`.
 
 ## 3. Connection model (Supabase)
 

@@ -15,7 +15,8 @@
 | | |
 |---|---|
 | Intake app (Sprint 1) | ✅ live — https://cluexp-intake.vercel.app |
-| Dispatch database (6 tables) | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
+| Dispatch database baseline | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
+| Provider tenant schema | ✅ applied to Supabase (`packages/db`, rev `0003_provider_organizations`) |
 | Roadmap / ADR / this plan | ✅ in `docs/` |
 | Sprint 0 live hardening | ✅ implemented locally; build verified |
 | Sprint 0 monorepo move | ✅ code moved + build verified; Vercel Root Directory/redeploy complete |
@@ -49,7 +50,7 @@
 **Goal:** make the *live* app safe, then lay clean structure + the data layer.
 Tasks are in execution order; live-hardening runs **before** the restructure.
 
-- [x] **Database** — Alembic baseline; the 6 dispatch tables applied to Supabase.
+- [x] **Database** — Alembic baseline (`0001`); 6 baseline dispatch tables applied to Supabase.
 - [x] **Live hardening (do first — the app is already public)** ⚠️
   - [x] Lock down `POST /tickets` / `PATCH /tickets/{id}` so clients set only
         user-editable intake fields; reject `trust_state`, `technician_assignment`,
@@ -117,12 +118,20 @@ photo lands in the private bucket and is **only** reachable via a signed URL (RL
 
 - [x] **Provider tenant schema** — support individual technicians and
       company/group organizations with affiliated technicians
-      (`organizations`, `organization_technicians`, technician `provider_type`).
+      (`organizations`, recursive `organization_teams`,
+      `organization_technicians`, `organization_team_technicians`, technician
+      `provider_type`, `provider_documents`).
 - [ ] Organization onboarding: company/group can register itself, set service
-      area/contact details, and invite or bulk-create affiliated technicians.
+      area/contact details, add description/notes, create
+      departments/groups/business units, and invite or bulk-create affiliated
+      technicians.
+- [ ] Team management: teams can be nested, described, activated/deactivated,
+      and assigned one or many affiliated technicians.
+- [ ] Compliance documents: upload/review/expire documents for organizations
+      and technicians only; teams are virtual and have no legal docs.
 - [ ] Individual technician onboarding remains supported for solo operators.
-- [ ] Seed `organizations` + `technicians` (individual + affiliated; varied
-      skills/areas) + a minimal admin list view.
+- [ ] Seed `organizations` + teams + `technicians` (individual + affiliated;
+      varied skills/areas) + a minimal admin list view.
 - [ ] **Dispatch engine v1** (deterministic, outside the intake graph per SPEC §2.7):
       score by distance (service_area), skill (`access_type`/key type), availability, rating.
 - [ ] `/dispatch` creates `dispatch_offers` for top-N; first accept wins; timeout →
@@ -176,6 +185,8 @@ applicable; trust gating intact.
 - [ ] Audit-log retention/archival for `events`.
 - [ ] Licensing/insurance checks per jurisdiction before activating an individual
       technician or a provider organization.
+- [ ] Expiration monitoring for provider documents; prevent dispatch when
+      required organization/technician documents are missing, rejected, or expired.
 - [ ] Subscription/billing model for provider organizations.
 - [ ] Error tracking (Sentry) + API health check + alerting (see `DEVOPS.md §7`).
 

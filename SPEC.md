@@ -85,9 +85,23 @@ The supply side supports two provider paths:
   subscription, billing, and future tenant controls.
 
 Provider organizations can register themselves and manage affiliated technicians
-without changing the customer intake flow. Dispatch always assigns a technician;
-when that technician is affiliated, the job also carries the organization that
-owns the fulfillment.
+without changing the customer intake flow. Each provider organization may also
+define recursive teams — departments, groups, business units, branches, regions,
+or specialty crews — and each team has its own description. An affiliated
+technician can belong to one or many teams.
+
+Teams are virtual operating groups only. Legal/compliance documents attach to
+the organization or the technician, not to the team. Organization documents may
+include business registration, business license, insurance, or similar company
+credentials. Technician documents may include license ID, work authorization,
+driver license, certifications, or vehicle registration. Each document carries a
+status and optional expiration date so dispatch can later require valid,
+non-expired credentials before matching.
+
+Dispatch always assigns a technician; when that technician is affiliated, the
+job also carries the organization that owns the fulfillment. Team membership is
+available to dispatch and reporting, but the customer-facing trust-state
+contract stays centered on the assigned verified person.
 
 ---
 
@@ -212,7 +226,14 @@ The Stitch HTML/PNG files attached to this spec are the second-pass output. They
 
 - **FastAPI** + Pydantic v2.
 - The schema is `schema.py` — import and use directly (it is already Pydantic).
-- Storage: **Supabase Postgres** for the live sprint. Each `Ticket` persists as a single JSONB row keyed by `ticket_id`; state transitions append to an `events` table (the seed of the audit log). The API selects the store from `DATABASE_URL` (Postgres when set, in-memory fallback when unset for local dev). Tickets must persist across requests; with Postgres they also survive restarts.
+- Storage: **Supabase Postgres** for the live sprint. Each `Ticket` persists in
+  `jobs.detail` as JSONB, with dispatch-critical values promoted onto relational
+  columns (`trust_state`, `status`, `access_type`, `situation`, `urgency`,
+  `lat`, `lng`, `address`, and provider/customer links). State transitions
+  append to `events` with `job_id`. The API selects the store from
+  `DATABASE_URL` (Postgres when set, in-memory fallback when unset for local
+  dev). A read-only fallback can still fetch legacy `tickets` rows created
+  before the Sprint 1 store migration.
 - Use Pydantic models as both request/response schemas and storage objects — FastAPI handles serialization automatically.
 
 ### 6.2 Endpoints (stub services for now)
