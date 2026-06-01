@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from api.geocode import geocode
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -156,6 +157,21 @@ async def save(ticket: Ticket) -> Ticket:
 
 async def log_transition(ticket: Ticket, event: str) -> None:
     await store.log_event(ticket, event)
+
+
+@app.get("/geocode")
+async def geocode_address(q: str) -> dict[str, Any]:
+    """Resolve an address to coordinates using the server Maps key.
+
+    The intake location step calls this so the browser never sees the server
+    credential. Returns {resolved: false} when unconfigured or unresolved rather
+    than an error, so the flow degrades gracefully to a raw-text address.
+    """
+    await latency()
+    result = await geocode(q)
+    if result is None:
+        return {"resolved": False}
+    return {"resolved": True, **result}
 
 
 @app.post("/tickets", response_model=TicketEnvelope)
