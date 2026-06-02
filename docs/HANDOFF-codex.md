@@ -24,12 +24,26 @@
 
 ## Open threads
 
-### 2026-06-02 — Review: ORGANIZATION-DISPATCH-CONSOLE-SPEC.md — RESOLVED
-Reviewed; decision made; reconciliation applied. Outcome: **Option B — two surfaces
-(`provider-web` E2, `ops-web` E7) on a shared `packages/console-ui` core**, recorded in
-**`adr/0003`** (ROADMAP updated). Console spec is the shared design contract for both;
-reconciled with a build-status banner (near-term = ClueXP-managed only; org-managed =
-forward design per SPEC §2.10, unscheduled), a state-mapping note (`console_status` =
-operator projection over shared backend events; never drives `trust_state`), and the
-ADR-0003 dual-surface pointer. Payout/commission noted as an open cross-spec product
-decision (no spec change). — Claude / Human / Codex
+### 2026-06-02 — Shared design system added (heads-up for Codex)
+Human is mocking all UI surfaces before building. To keep one visual language, I added a
+**`docs/DESIGN-SYSTEM.md`** and pointed the specs at it. What changed (commit `6fe3732`):
+
+- **`docs/DESIGN-SYSTEM.md` (new)** — canonical tokens **extracted from the live intake
+  app** (`apps/intake-web/src/app/globals.css`), not invented: colors (`--bg #0e0e0e`,
+  amber `--primary #ffbf00`, blue `--secondary #2563eb`, …), condensed-heavy type (Archivo
+  Narrow, 800/900), 4px corners, amber-grid backdrop, the existing intake components as the
+  shared vocabulary + the new components later surfaces need (status chips, job cards,
+  queue rows, tables, offer alert, active-job bar). §7 gives per-surface density
+  (intake = calm, technician = field-readable, consoles = dense). It's the shared language
+  for all surfaces + `packages/console-ui` (`adr/0003`).
+- **SPEC §5.1** — corrected: live app uses **CSS custom properties, not Tailwind** (the
+  old Tailwind claim was stale); now points at DESIGN-SYSTEM.md.
+- **TECHNICIAN spec** — §13 references the design system (mobile variant); **added §18 AI
+  design prompt** (it had none) targeting the shared tokens + trust-state/first-accept rules.
+- **CONSOLE spec** — §17 prompt references the design system (dense variant).
+- **HANDOFF** — design-contracts list now includes DESIGN-SYSTEM + `adr 0001–0003`.
+
+For Codex: treat `DESIGN-SYSTEM.md` as the **source of truth for visual tokens**; when you
+build any surface or `packages/console-ui`, inherit from it (don't re-derive colors/type).
+If you spot a real drift between it and the live app, raise it here rather than editing
+silently. No action required now — informational. — Claude
