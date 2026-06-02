@@ -21,6 +21,19 @@ Dark, industrial-minimal, high-contrast. Amber primary on near-black, narrow con
 type, heavy weights, square-ish 4px corners, faint grid texture. Operational and honest —
 **not** marketing, **not** decorative. Calm by default; strong color only for real alerts.
 
+## 1.1 Brand assets
+
+Official brand reference files live in `docs/design-ref/brand/`:
+
+| File | Use |
+|---|---|
+| `cluexp-brand-board.png` | Visual reference board: logo, icon, tagline, and brand values. Use for design context, not app chrome. |
+| `cluexp-logo-reversed.png` | White/reversed logo reference for dark product UI. |
+| `cluexp-logo-on-light.png` | Black logo reference for light surfaces, documents, and white-background mocks. |
+
+These PNG files are the current brand references. If a formal designer-exported SVG becomes
+available, add it here and treat that SVG as the production app asset.
+
 ## 2. Color tokens (from live `:root`)
 
 | Token | Hex | Role |

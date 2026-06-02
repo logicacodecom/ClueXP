@@ -6,7 +6,7 @@ Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md
 
 - `SPEC.md` - product and architecture source of truth.
 - `apps/intake-web/api/schema.py` - canonical Pydantic ticket schema. Do not duplicate it by hand.
-- `docs/design-ref/ui/` - visual references and design tokens from the Stitch output.
+- `docs/DESIGN-SYSTEM.md` - canonical visual tokens; `docs/design-ref/ui/` and `docs/design-ref/brand/` hold reference assets only.
 - `apps/intake-web/api/main.py` - FastAPI stub backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
 - `apps/intake-web/src/app/page.tsx` - mobile-first intake and fulfillment flow.
 - `apps/intake-web/src/types/schema.generated.ts` - generated TypeScript contract derived from `api/schema.py`.
