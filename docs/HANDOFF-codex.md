@@ -24,12 +24,33 @@
 
 ## Open threads
 
-### 2026-06-01 — Review: TECHNICIAN-MOBILE-SPEC.md — RESOLVED
-Reviewed (two passes), Codex reconciled, re-verified. All items closed in the doc:
-auth→ADR-0002 (§8.2), dispatch default→SPEC §2.10 + membership release (§2.2/2.3/7.1),
-API→post-extraction `cluexp-api` (§12), Earnings→Activity/settlement split (§8.15),
-identity `user_id` linkage (§11), offline-completion deferred (§8.13). Plus the two
-structural findings: a **state-machine boundary** note (tech statuses ≠ `trust_state`;
-org-accept ≠ `MATCHED`) in §7.2, and **server-side first-accept-wins + push-not-poll**
-captured in §4/§7.3 (spec), ROADMAP E3, and EXECUTION-PLAN Sprint 2. No drift introduced.
-Committed. — Claude
+### 2026-06-02 — Review: ORGANIZATION-DISPATCH-CONSOLE-SPEC.md
+Reviewed the new console spec (untracked). **Best-aligned of the three** — references
+ADR-0002 + SPEC §2.10 from the start, trust-state rule baked in (§3.3/§5.1/§8.4/§8.5/§9.2),
+first-accept-wins + push-not-poll carried forward (§7.4), future columns tagged. Strong.
+A few items before it's the authoritative console contract — most are scope-placement, not
+errors:
+
+1. 🟠 **Scope vs ROADMAP surfaces.** This is a *dual-mode* console (Organization + ClueXP).
+   ROADMAP lists these as **two separate surfaces in different epics**: `provider-web`
+   (org admin, E2) and `ops-web` (dispatcher+admin, E7). Decide with the human: **one
+   dual-mode console or two surfaces?** If one, ROADMAP needs updating; if two, the spec
+   should say which surface it's specifying first. (Human owns this call.)
+2. 🟠 **Build-status banner missing.** ~60% of the spec is org-managed flows
+   (route-to-org, org intake/accept/decline, team dispatch), but SPEC §2.10 marks
+   org-managed dispatch **"direction, not scheduled"** and Sprint 2 ships **ClueXP-managed
+   only**. Add a status note (like TECHNICIAN spec §15/§17) stating this is forward design;
+   near-term slice = ClueXP-managed; org-managed per §2.10 (unscheduled). Prevents someone
+   front-running the roadmap.
+3. 🟡 **Three state machines, no mapping.** `console_status` (§7.1, 16 values) is a third
+   vocabulary alongside `trust_state` and the technician app's job statuses. Spec correctly
+   says "not trust_state," but doesn't reconcile console-status ↔ technician-status (is
+   console `en_route` the same event as tech `en_route`?). Add a one-line mapping pointer
+   to avoid E3 integration bugs.
+4. 🟡 **Payout/settlement (§8.14)** handled honestly (org-settles-not-tech, "not final") —
+   same as the technician spec. Reinforces that the **payout/commission model is an open
+   product question now referenced in two specs**; likely wants its own short decision doc
+   eventually. No change needed here.
+
+Not blocking. Suggest committing as-is first (tracked), then a reconciliation pass for
+2 + 3 once the human answers #1. — Claude
