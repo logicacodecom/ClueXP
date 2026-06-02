@@ -4,6 +4,19 @@
 > **Audience:** UI builder, designer, or another coding model.
 > **Important:** This is a console specification, not an implementation task. Build screens and flows from this document; do not assume database or API contracts beyond what is stated here.
 
+> **Build status & scope (read first):**
+> - **Forward design, not a near-term build order.** Sprint 2 ships **ClueXP-managed
+>   dispatch only**; **organization-managed dispatch** (route-to-org, org intake/accept,
+>   team dispatch — much of §3.2, §4.1, §8.4, §8.5, §8.10, §9.2, §9.3) is **direction per
+>   `SPEC.md` §2.10 and not scheduled.** Build the ClueXP-managed slice first; treat
+>   org-managed screens as designed-ahead.
+> - **Two surfaces, one shared shell** (`adr/0003`): this document is the shared design
+>   contract for **both** `provider-web` (org admin/dispatch, E2) and `ops-web` (ClueXP
+>   ops/admin, E7) — separate deployable apps built on shared `packages/console-ui` +
+>   `api-client`, not one dual-mode app. "Organization Mode" / "ClueXP Mode" below describe
+>   the two surfaces' scopes, not runtime modes of a single app.
+> - **Auth:** `adr/0002-identity-and-clients.md` (platform `users` + JWT).
+
 ---
 
 ## 1. Product Purpose
@@ -108,6 +121,11 @@ Non-negotiable:
 
 ## 4. Console Modes
 
+> Per `adr/0003`, these are **two separate surfaces** (`provider-web` = Organization,
+> `ops-web` = ClueXP), not runtime modes of one app. "Mode" here means *which surface*
+> and its scope/authorization — the surfaces share `packages/console-ui` but ship and
+> authenticate independently.
+
 ### 4.1 Organization Mode
 
 Scope:
@@ -205,6 +223,18 @@ Queue states:
 Rules:
 - These are console/job states, not replacements for customer `trust_state`.
 - A job may be internally routed to an organization while the customer still remains in `INTAKE` or pre-`MATCHED` visibility.
+
+State-machine relationship (three views, one source of truth):
+- `console_status` is an **operator projection over shared backend job/offer/technician
+  events** (the `events` log) — a dispatcher's read of where a job is. It is not an
+  independent lifecycle the console owns.
+- The **technician app's** job statuses are a different projection over the *same* events;
+  the two should map through shared backend events, not invent separate lifecycles
+  (e.g. console `en_route` and technician `en_route` are the same underlying event, viewed
+  from each side).
+- Customer-facing **`Ticket.trust_state`** (`INTAKE`/`MATCHED`/`FULFILLMENT`) is the only
+  state that governs customer visibility, and the backend owns its transitions (see §3.3).
+  `console_status` must never drive `trust_state`.
 
 ### 7.2 Technician Eligibility State
 
