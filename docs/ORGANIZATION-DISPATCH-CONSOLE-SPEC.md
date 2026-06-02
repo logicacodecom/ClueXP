@@ -1092,6 +1092,11 @@ The console has two modes:
 - ClueXP Mode: ClueXP dispatches individual technicians, routes jobs to organizations, and handles escalations.
 
 Style: dense operations console, industrial, high contrast, fast to scan, no decorative SaaS dashboard, no landing page.
+Use the ClueXP design system in `docs/DESIGN-SYSTEM.md` — dark near-black `#0e0e0e`,
+amber primary `#ffbf00`, blue secondary `#2563eb`, condensed heavy type (Archivo Narrow),
+4px corners, faint amber grid, semantic status chips (text+color, never color alone).
+Consoles use the **denser** variant (compact rows, tables, multi-panel) per §7 of the
+design system. Same tokens as the customer intake app and technician app.
 
 Critical rules:
 - Organization acceptance alone does not make the customer MATCHED.

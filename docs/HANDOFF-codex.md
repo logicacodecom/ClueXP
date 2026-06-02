@@ -6,7 +6,7 @@
 > **It is NOT the plan.** Sprint scope, tasks, acceptance, and live state live in:
 > - `docs/EXECUTION-PLAN.md` — sprint tasks + acceptance + **Status snapshot** (current truth)
 > - `docs/ROADMAP.md` — epics + sprint table
-> - `docs/DATABASE-AND-STORAGE.md`, `SPEC.md`, `adr/0001`, `adr/0002` — design contracts
+> - `docs/DATABASE-AND-STORAGE.md`, `SPEC.md`, `DESIGN-SYSTEM.md`, `adr/0001`–`0003` — design contracts
 >
 > Don't restate scope or state here; link to those docs. Keep it lean — delete
 > threads once resolved (the durable outcome belongs in the plan/design docs).

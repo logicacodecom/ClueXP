@@ -212,8 +212,11 @@ Detailed per-screen specifications are in [§ 7. Screen-by-screen behavior](#7-s
 
 ### 5.1 Stack
 
-- **Next.js 14+** with App Router, TypeScript, Tailwind CSS.
-- Use the existing dark / industrial-minimal design language from the Stitch files (color tokens, typography choices, spacing rules).
+- **Next.js 14+** with App Router, TypeScript. (Live app styles with CSS custom
+  properties, not Tailwind — see `docs/DESIGN-SYSTEM.md`.)
+- Use the ClueXP design language captured in **`docs/DESIGN-SYSTEM.md`** (extracted from
+  the live intake app): dark/industrial-minimal, amber primary, condensed heavy type,
+  4px corners. This is the shared visual system for all surfaces.
 - State management: React context or Zustand for the active Ticket; persist to backend per step, not just at submit.
 - TS types: auto-generated from `schema.py` (see § 3).
 

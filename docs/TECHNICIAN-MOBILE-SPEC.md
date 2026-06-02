@@ -878,6 +878,13 @@ Suggested mobile endpoints for the post-extraction `cluexp-api` shape. These are
 
 ## 13. UI Style Direction
 
+> **Design system:** inherit `docs/DESIGN-SYSTEM.md` — the shared ClueXP visual language
+> (dark `#0e0e0e`, amber primary `#ffbf00`, blue secondary `#2563eb`, condensed heavy type
+> (Archivo Narrow), 4px corners, faint amber grid, semantic status chips text+color). Use
+> the **technician/mobile variant** per design-system §7 (field-readable, larger hit areas,
+> bottom nav; full-screen offer alert is the one place strong alarm color is allowed). Same
+> tokens as customer intake and the dispatch consoles.
+
 Tone:
 - Industrial, direct, reliable.
 - Alerting without panic.
@@ -993,3 +1000,49 @@ If another model builds the UI:
 - Keep all technician app screens separate from the customer intake flow.
 - Do not implement production API calls until the backend contract is scheduled.
 - Treat this document as the UI flow contract.
+
+---
+
+## 18. AI Design Prompt
+
+Use this prompt when sending the spec to Google Stitch or another UI design model:
+
+```text
+Design a mobile-first field-work app for ClueXP technicians using the specification below.
+
+Create high-fidelity mobile UI screens and flows, not marketing pages.
+
+Prioritize these screens:
+1. Jobs Home (availability, GPS status, auto-accept, active job card)
+2. Incoming Job Alert (full-screen takeover, countdown, accept/decline)
+3. Active Job Overview (status, customer, route, actions)
+4. Navigation / Map
+5. Customer Chat (with quick replies)
+6. Arrival Verification (mutual PIN/QR)
+7. In-Service + Complete Job
+8. Profile / Documents (compliance, blocking states)
+9. Team / Organization view (affiliated technician)
+
+Two technician types:
+- Individual: dispatched by ClueXP.
+- Affiliated: organization-managed by default; direct ClueXP dispatch only when the
+  organization releases that technician (SPEC.md §2.10).
+
+Style: use the ClueXP design system in docs/DESIGN-SYSTEM.md — dark near-black #0e0e0e,
+amber primary #ffbf00, blue secondary #2563eb, condensed heavy type (Archivo Narrow),
+4px corners, faint amber grid, semantic status chips (text+color, never color alone).
+Use the technician/mobile variant: field-readable, large hit areas, bottom nav, persistent
+active-job bar. Strong alarm color (amber→red) ONLY on the incoming-offer alert and urgent
+warnings. Industrial operations tool, not a marketing app. Same visual language as the
+customer intake app and the dispatch consoles.
+
+Critical rules:
+- Do not show customer/job data before acceptance or assignment.
+- Technician statuses are separate from customer trust_state; accepting an offer does not
+  by itself make the customer MATCHED.
+- Offer timers must use backend expires_at; first-accept-wins is backend-enforced.
+- No fake ETA, route, movement, or acceptance.
+
+Use the full spec below as the source of truth.
+[paste TECHNICIAN-MOBILE-SPEC.md here]
+```
