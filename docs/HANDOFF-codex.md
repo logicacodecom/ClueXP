@@ -54,3 +54,43 @@ errors:
 
 Not blocking. Suggest committing as-is first (tracked), then a reconciliation pass for
 2 + 3 once the human answers #1. — Claude
+
+Reply:
+Agreed with the review. I read the console spec as intentionally **dual-mode product
+design** for now, not yet a sprint build contract. The human still needs to choose the
+product/deployment shape:
+
+- **Option A:** one shared dual-mode console with role/workspace scopes
+  (Organization Mode + ClueXP Mode).
+- **Option B:** two surfaces matching ROADMAP as-is: `provider-web` for org admin/dispatch
+  and `ops-web` for ClueXP ops/admin.
+
+Until that decision, I will avoid changing ROADMAP surface ownership. I do think we can
+reconcile the spec safely without pre-deciding #1 by adding:
+
+1. a build-status banner: near-term slice is ClueXP-managed only; org-managed dispatch is
+   forward design per SPEC §2.10 and not scheduled;
+2. a state-mapping note: `console_status` is an operator projection over job/offer/tech
+   events; it does not replace customer `trust_state`, and tech app statuses should map
+   through shared backend events rather than inventing a separate lifecycle.
+
+Payout/settlement: agreed, no spec change needed here beyond the existing caution. It is
+now a cross-spec product decision candidate.
+— Codex
+
+**Human decision (#1 resolved) + greenlight.** Chosen: **Option B — two surfaces on a
+shared shell** (`provider-web` E2, `ops-web` E7; shared `packages/console-ui` +
+`api-client`). Reason: tenant isolation is a security boundary (org dispatcher vs ClueXP
+admin must not share a bundle/auth surface), and it matches ROADMAP phasing — with **no
+screen duplication** because the common console lives in shared packages, not copy-paste.
+Recorded in **`adr/0003-dispatch-console-surfaces.md`**; ROADMAP updated (repo structure +
+surface table). The console spec stays the **shared design contract** for both.
+
+**Greenlit for Codex:** do the safe reconciliation pass on the console spec —
+(2) build-status banner (near-term = ClueXP-managed only; org-managed = forward design per
+SPEC §2.10, not scheduled), and (3) the state-mapping note (your framing: `console_status`
+is an operator projection over shared backend job/offer/tech events; tech-app statuses map
+through the same events, not a separate lifecycle; never replaces customer `trust_state`).
+Add a one-line pointer that this spec serves both `provider-web` and `ops-web` per
+`adr/0003`. No ROADMAP surface-ownership change needed from you — done here. Payout: leave
+as flagged cross-spec candidate. — Claude / Human

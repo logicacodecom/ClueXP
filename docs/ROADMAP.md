@@ -25,10 +25,12 @@ ClueXP/
 │  │  └─ api/          #   FastAPI (Python functions)
 │  ├─ api/             # standalone cluexp-api (extracted at E2)  → Vercel: cluexp-api
 │  ├─ technician/      # technician app: PWA → React Native/Expo  → cluexp-tech
-│  ├─ provider-web/    # company/provider portal (org admin)      → cluexp-provider
-│  └─ ops-web/         # dispatcher + admin/back-office console   → cluexp-ops
+│  ├─ provider-web/    # org admin/dispatch console (E2)          → cluexp-provider
+│  └─ ops-web/         # ClueXP dispatch + admin console (E7)     → cluexp-ops
 ├─ packages/
-│  └─ db/              # Alembic migrations (raw SQL)
+│  ├─ db/              # Alembic migrations (raw SQL)
+│  ├─ console-ui/      # shared dispatch-console components (provider-web + ops-web; adr/0003)
+│  └─ api-client/      # shared cluexp-api client + generated types
 ├─ docs/               # SPEC.md, ROADMAP.md, ADRs
 └─ supabase/           # storage buckets + RLS, seed scripts
 
@@ -43,10 +45,13 @@ ClueXP/
 |---|---|---|---|
 | **Intake** | Customer (anonymous, phone-anchored) | Mobile-web PWA | ✅ live |
 | **Technician** | Technician (solo + affiliated) | PWA → **React Native** | E2 |
-| **Provider portal** | Org admin/owner | Web | E2 |
-| **Ops console** | ClueXP dispatcher + admin/back-office | Web | E7 (may start as views, split later) |
+| **Provider portal** (`provider-web`) | Org admin/owner | Web | E2 |
+| **Ops console** (`ops-web`) | ClueXP dispatcher + admin/back-office | Web | E7 |
 
 All non-intake surfaces share one login (self-owned JWT + `users`; `adr/0002`).
+Provider-web and ops-web are **separate apps on a shared `console-ui` core** (two
+surfaces, not one dual-mode app, for tenant isolation; `adr/0003`). Their shared design
+contract is `ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`.
 
 ## Phase 1 data model (relational core + JSONB detail)
 
