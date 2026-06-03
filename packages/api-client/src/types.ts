@@ -199,3 +199,64 @@ export interface ComplianceEntry {
   last_verified: string;
   blocking: boolean;
 }
+
+export type TechnicianAvailability =
+  | "offline"
+  | "online"
+  | "busy"
+  | "break"
+  | "blocked_by_documents"
+  | "suspended";
+
+export type GpsState =
+  | "tracking_active"
+  | "tracking_paused"
+  | "permission_needed"
+  | "low_accuracy"
+  | "stale_location"
+  | "background_limited";
+
+export type AlarmState = "sound_enabled" | "sound_muted" | "permission_needed" | "alarm_active";
+
+export interface TechnicianAppProfile {
+  technician_id: string;
+  availability: TechnicianAvailability;
+  gps_state: GpsState;
+  alarm_state: AlarmState;
+  auto_accept: boolean;
+  current_shift_started_at: string;
+  workspace_label: string;
+  masked_phone: string;
+}
+
+export interface TechnicianAppOffer {
+  offer_id: string;
+  job_id: string;
+  source: "cluexp" | "organization";
+  source_label: string;
+  team_label?: string;
+  distance_mi: number;
+  eta_min: number;
+  estimated_earnings?: string;
+  auto_accept_eligible: boolean;
+  status: OfferStatus;
+  expires_at: string;
+  superseded_by?: string;
+}
+
+export interface TechnicianActivitySummary {
+  today_completed: number;
+  week_completed: number;
+  provisional_earnings: string;
+  completion_rate: string;
+}
+
+export interface TechnicianHistoryEntry {
+  id: string;
+  job_id: string;
+  label: string;
+  source_label: string;
+  status: "completed" | "cancelled" | "expired" | "missed";
+  completed_at: string;
+  amount?: string;
+}

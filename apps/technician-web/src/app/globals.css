@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@source "../**/*.{ts,tsx}";
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: #0b0d10;
+  --foreground: #f4f6f8;
+  --card: #15181d;
+  --card-strong: #1b1f26;
+  --muted: #99a2ad;
+  --border: #272d35;
+  --primary: #ffbf00;
+  --primary-foreground: #1d1500;
+  --success: #31d291;
+  --danger: #ff6b6b;
+  --info: #62a8ff;
+  --warn: #f5b53d;
+  --font-inter: Inter;
+  --font-archivo: "Arial Narrow";
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-strong: var(--card-strong);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-condensed: var(--font-archivo), "Arial Narrow", var(--font-inter), sans-serif;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    border-color: var(--color-border);
+  }
+
+  html {
+    min-height: 100%;
+    background: #07080a;
+  }
+
+  body {
+    min-height: 100%;
+    margin: 0;
+    background:
+      radial-gradient(circle at 50% -10%, rgba(255, 191, 0, 0.16), transparent 34rem),
+      linear-gradient(180deg, #101319 0%, #07080a 100%);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer utilities {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .safe-bottom {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .safe-top {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+
+  .glass {
+    background: color-mix(in srgb, var(--color-card) 84%, transparent);
+    backdrop-filter: blur(18px);
+  }
+}

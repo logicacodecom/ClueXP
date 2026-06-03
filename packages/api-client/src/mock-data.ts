@@ -11,7 +11,11 @@ import type {
   Job,
   Organization,
   Team,
-  Technician
+  Technician,
+  TechnicianActivitySummary,
+  TechnicianAppOffer,
+  TechnicianAppProfile,
+  TechnicianHistoryEntry
 } from "./types";
 
 export const organizations: Organization[] = [
@@ -464,4 +468,116 @@ export function organizationById(id?: string): Organization | undefined {
 
 export function eventsForJob(jobId: string): DispatchEvent[] {
   return events.filter((e) => e.job_id === jobId);
+}
+
+export const currentTechnician = technicians.find((tech) => tech.id === "tech-jordan") ?? technicians[0]!;
+
+export const technicianAppProfile: TechnicianAppProfile = {
+  technician_id: currentTechnician.id,
+  availability: "online",
+  gps_state: "tracking_active",
+  alarm_state: "sound_enabled",
+  auto_accept: false,
+  current_shift_started_at: "2026-06-03T18:12:00Z",
+  workspace_label: "ClueXP Individual Network",
+  masked_phone: "(555) ***-0144"
+};
+
+function mockOfferExpiresAt(secondsFromNow: number): string {
+  return new Date(Date.now() + secondsFromNow * 1000).toISOString();
+}
+
+export const technicianAppOffers: TechnicianAppOffer[] = [
+  {
+    offer_id: "offer-a-1",
+    job_id: "JOB-A-2201",
+    source: "cluexp",
+    source_label: "ClueXP Dispatch",
+    distance_mi: 2.4,
+    eta_min: 9,
+    estimated_earnings: "$72-95",
+    auto_accept_eligible: true,
+    status: "sent",
+    expires_at: mockOfferExpiresAt(75)
+  },
+  {
+    offer_id: "offer-b-tech",
+    job_id: "JOB-B-2248",
+    source: "organization",
+    source_label: "Metro Key Partners",
+    team_label: "Home Team",
+    distance_mi: 5.8,
+    eta_min: 18,
+    estimated_earnings: "Org settlement",
+    auto_accept_eligible: false,
+    status: "pending",
+    expires_at: mockOfferExpiresAt(90)
+  },
+  {
+    offer_id: "offer-superseded-demo",
+    job_id: "JOB-C-2289",
+    source: "cluexp",
+    source_label: "ClueXP Dispatch",
+    distance_mi: 3.1,
+    eta_min: 12,
+    estimated_earnings: "$88-120",
+    auto_accept_eligible: false,
+    status: "superseded",
+    expires_at: mockOfferExpiresAt(0),
+    superseded_by: "Another verified technician accepted first"
+  }
+];
+
+export const activeTechnicianJobIds = ["JOB-D-2301"];
+export const assignedTechnicianJobIds = ["JOB-D-2301", "JOB-E-2312"];
+
+export const technicianActivitySummary: TechnicianActivitySummary = {
+  today_completed: 3,
+  week_completed: 18,
+  provisional_earnings: "$640",
+  completion_rate: "96%"
+};
+
+export const technicianHistory: TechnicianHistoryEntry[] = [
+  {
+    id: "hist-1",
+    job_id: "JOB-2198",
+    label: "Car lockout · Downtown garage",
+    source_label: "ClueXP",
+    status: "completed",
+    completed_at: "2026-06-03T16:32:00Z",
+    amount: "$92"
+  },
+  {
+    id: "hist-2",
+    job_id: "JOB-2188",
+    label: "Home rekey · North Hills",
+    source_label: "Metro Key Partners",
+    status: "completed",
+    completed_at: "2026-06-03T14:08:00Z",
+    amount: "Org settlement"
+  },
+  {
+    id: "hist-3",
+    job_id: "JOB-2170",
+    label: "Expired offer · Strip Mall",
+    source_label: "ClueXP",
+    status: "expired",
+    completed_at: "2026-06-02T21:40:00Z"
+  }
+];
+
+export function jobById(id?: string): Job | undefined {
+  return jobs.find((job) => job.id === id);
+}
+
+export function technicianOfferById(id?: string): TechnicianAppOffer | undefined {
+  const offer = technicianAppOffers.find((item) => item.offer_id === id);
+  if (!offer || offer.status === "superseded") return offer;
+  const seconds = offer.offer_id === "offer-a-1" ? 75 : 90;
+  return { ...offer, expires_at: mockOfferExpiresAt(seconds) };
+}
+
+export function technicianJobs(): Job[] {
+  return jobs.filter((job) => assignedTechnicianJobIds.includes(job.id));
 }

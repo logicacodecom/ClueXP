@@ -1,0 +1,19 @@
+{
+  "name": "ClueXP Technician",
+  "short_name": "ClueXP Tech",
+  "description": "Technician field app mockup for ClueXP dispatch.",
+  "start_url": "/jobs",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d10",
+  "theme_color": "#ffbf00",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

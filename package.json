@@ -10,9 +10,11 @@
   "scripts": {
     "dev:ops": "npm run dev --workspace @cluexp/ops-web",
     "dev:provider": "npm run dev --workspace @cluexp/provider-web",
+    "dev:tech": "npm run dev --workspace @cluexp/technician-web",
     "dev:intake": "npm run dev --workspace @cluexp/intake-web",
     "build:ops": "npm run build --workspace @cluexp/ops-web",
     "build:provider": "npm run build --workspace @cluexp/provider-web",
+    "build:tech": "npm run build --workspace @cluexp/technician-web",
     "typecheck": "tsc -b packages/api-client packages/console-ui"
   }
 }

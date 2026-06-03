@@ -1,0 +1,19 @@
+import { AppFrame, PrimaryButton, Screen, Section, icons } from "@/components/mobile";
+
+export default function SignInPage() {
+  return (
+    <AppFrame nav={false} title="Sign In">
+      <Screen>
+        <div className="flex min-h-[720px] flex-col justify-end">
+          <Section title="Sign in" subtitle="Demo-only form for the technician PWA mockup.">
+            <div className="space-y-3">
+              <div className="rounded-xl border border-border bg-card-strong px-3 py-3 text-sm text-muted">Phone or email</div>
+              <div className="rounded-xl border border-border bg-card-strong px-3 py-3 text-sm text-muted">Password</div>
+            </div>
+          </Section>
+          <PrimaryButton href="/jobs"><icons.ShieldCheck className="size-5" />Enter demo</PrimaryButton>
+        </div>
+      </Screen>
+    </AppFrame>
+  );
+}
