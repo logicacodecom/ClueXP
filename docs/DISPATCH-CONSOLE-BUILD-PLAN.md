@@ -278,7 +278,7 @@ ClueXP ops must not share a bundle/domain).
 | App (folder) | Audience | Subdomain | Vercel project | Status |
 |---|---|---|---|---|
 | `apps/intake-web` | Customers | `intake.cluexp.com` | `cluexp-intake` | live today |
-| `apps/ops-web` | ClueXP dispatchers/admin (the dispatch center) | `dispatch.cluexp.com` | `cluexp-ops` | new |
+| `apps/ops-web` | ClueXP internal operations/admin/dispatch console | `ops.cluexp.com` | `cluexp-ops` | new |
 | `apps/provider-web` | Provider partner orgs | `partners.cluexp.com` | `cluexp-provider` | new |
 
 Vercel setup for each new app: create a project pointing at the **same repo**, set **Root
