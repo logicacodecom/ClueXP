@@ -10,6 +10,8 @@
    Consoles are dark-only; :root carries the dark palette. */
 :root {
   --radius: 0.5rem;
+  --font-inter: Inter;
+  --font-archivo: "Arial Narrow";
 
   --background: #0c0d10;
   --foreground: #e7e9ea;

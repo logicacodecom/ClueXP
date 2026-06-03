@@ -115,6 +115,11 @@ export interface Technician {
   /** §3.2 — membership-level permission, future/planned. Lets ClueXP dispatch directly. */
   direct_dispatch_allowed: boolean;
   blocking_reason?: string;
+  verified?: boolean;
+  background_check?: "verified" | "pending" | "expired";
+  insurance_status?: DocumentStatus;
+  payment_risk?: "low" | "medium" | "high";
+  no_show_history?: number;
 }
 
 export interface SafetyFlag {
@@ -140,11 +145,21 @@ export interface Job {
   technician_id?: string;
   age_min: number;
   sla_min?: number;
+  sla_deadline_at?: string;
   eta_min?: number;
   price_quote?: string;
   escalation_reason?: string;
   lat?: number;
   lng?: number;
+}
+
+export interface DashboardAggregates {
+  live_requests: number;
+  avg_eta_min: number;
+  active_professionals: number;
+  sla_risk_count: number;
+  revenue_today: string;
+  completion_rate: string;
 }
 
 export interface DispatchOffer {

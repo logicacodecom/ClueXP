@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
-import { Archivo_Narrow, Inter } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const archivo = Archivo_Narrow({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+const archivo = localFont({
+  src: "../../../../packages/console-ui/src/fonts/archivo-narrow-latin.woff2",
   variable: "--font-archivo",
-  display: "swap"
+  display: "swap",
+  weight: "400 700"
 });
 
-const inter = Inter({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+const inter = localFont({
+  src: "../../../../packages/console-ui/src/fonts/inter-latin.woff2",
   variable: "--font-inter",
-  display: "swap"
+  display: "swap",
+  weight: "400 700"
 });
 
 export const metadata: Metadata = {

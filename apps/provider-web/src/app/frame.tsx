@@ -1,6 +1,6 @@
 "use client";
 
-import { Shell, defaultNav } from "@cluexp/console-ui";
+import { AppShell, defaultNav } from "@cluexp/console-ui";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
@@ -10,7 +10,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     item.label === "Technicians" ? { ...item, href: "/jobs/JOB-B-2248/assign" } : item
   );
   return (
-    <Shell
+    <AppShell
       activePath={pathname}
       mode="org"
       modeBadge="ORGANIZATION MODE: METRO KEY PARTNERS"
@@ -18,6 +18,6 @@ export function AppFrame({ children }: { children: ReactNode }) {
       surfaceLabel="PROVIDER CONSOLE"
     >
       {children}
-    </Shell>
+    </AppShell>
   );
 }

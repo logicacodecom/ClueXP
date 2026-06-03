@@ -10,9 +10,10 @@
 > spec (SPEC.md, TECHNICIAN-MOBILE-SPEC, ORGANIZATION-DISPATCH-CONSOLE-SPEC) disagree, the
 > spec wins (mirrors SPEC §8).
 >
-> **Note (stack reality):** the live app is **hand-written CSS custom properties**, not
-> Tailwind (SPEC §5.1 says Tailwind — that's aspirational/stale). Tokens below are
-> framework-neutral so they map cleanly to CSS vars, a Tailwind config, or Figma styles.
+> **Note (stack reality):** intake and technician surfaces use hand-written CSS custom
+> properties. The ops/provider consoles intentionally use Tailwind v4 + shadcn-style
+> primitives themed to these same tokens. This is not design drift; it is the console
+> implementation stack for dense enterprise operations UI.
 
 ---
 

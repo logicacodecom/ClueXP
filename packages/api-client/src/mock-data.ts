@@ -5,6 +5,7 @@
 
 import type {
   ComplianceEntry,
+  DashboardAggregates,
   DispatchEvent,
   DispatchOffer,
   Job,
@@ -97,7 +98,12 @@ export const technicians: Technician[] = [
     rating: 4.8,
     document_status: "verified",
     location_updated_min_ago: 1,
-    direct_dispatch_allowed: false
+    direct_dispatch_allowed: false,
+    verified: true,
+    background_check: "verified",
+    insurance_status: "verified",
+    payment_risk: "low",
+    no_show_history: 0
   },
   {
     id: "tech-samir",
@@ -117,7 +123,12 @@ export const technicians: Technician[] = [
     document_status: "verified",
     location_updated_min_ago: 2,
     // §3.2 direct-release: Metro released Samir for direct ClueXP dispatch (future/planned).
-    direct_dispatch_allowed: true
+    direct_dispatch_allowed: true,
+    verified: true,
+    background_check: "verified",
+    insurance_status: "verified",
+    payment_risk: "low",
+    no_show_history: 0
   },
   {
     id: "tech-lina",
@@ -136,7 +147,12 @@ export const technicians: Technician[] = [
     rating: 4.7,
     document_status: "verified",
     location_updated_min_ago: 4,
-    direct_dispatch_allowed: false
+    direct_dispatch_allowed: false,
+    verified: true,
+    background_check: "verified",
+    insurance_status: "verified",
+    payment_risk: "low",
+    no_show_history: 1
   },
   {
     id: "tech-marcus",
@@ -154,7 +170,12 @@ export const technicians: Technician[] = [
     document_status: "expired",
     location_updated_min_ago: 9,
     direct_dispatch_allowed: false,
-    blocking_reason: "Locksmith license expired 2024-01-05"
+    blocking_reason: "Locksmith license expired 2024-01-05",
+    verified: false,
+    background_check: "expired",
+    insurance_status: "expired",
+    payment_risk: "medium",
+    no_show_history: 0
   },
   {
     id: "tech-morgan",
@@ -172,7 +193,12 @@ export const technicians: Technician[] = [
     document_status: "verified",
     location_updated_min_ago: 18,
     direct_dispatch_allowed: false,
-    blocking_reason: "GPS stale 18 min"
+    blocking_reason: "GPS stale 18 min",
+    verified: true,
+    background_check: "verified",
+    insurance_status: "verified",
+    payment_risk: "medium",
+    no_show_history: 2
   }
 ];
 
@@ -193,6 +219,7 @@ export const jobs: Job[] = [
     safety_flags: [],
     age_min: 4,
     sla_min: 20,
+    sla_deadline_at: "2026-06-03T23:40:00Z",
     price_quote: "$95 est.",
     lat: 40,
     lng: -74
@@ -215,6 +242,7 @@ export const jobs: Job[] = [
     provider_organization_id: "org-metro",
     age_min: 7,
     sla_min: 30,
+    sla_deadline_at: "2026-06-03T23:55:00Z",
     lat: 41,
     lng: -73
   },
@@ -233,6 +261,7 @@ export const jobs: Job[] = [
     safety_flags: [],
     technician_id: "tech-morgan",
     age_min: 31,
+    sla_deadline_at: "2026-06-03T23:18:00Z",
     escalation_reason: "GPS stale for 18 minutes",
     lat: 39,
     lng: -75
@@ -252,6 +281,7 @@ export const jobs: Job[] = [
     safety_flags: [],
     technician_id: "tech-jordan",
     age_min: 22,
+    sla_deadline_at: "2026-06-03T23:33:00Z",
     eta_min: 7,
     lat: 40,
     lng: -74
@@ -272,6 +302,7 @@ export const jobs: Job[] = [
     provider_organization_id: "org-metro",
     technician_id: "tech-samir",
     age_min: 14,
+    sla_deadline_at: "2026-06-03T23:48:00Z",
     eta_min: 15,
     lat: 41,
     lng: -73
@@ -291,6 +322,7 @@ export const jobs: Job[] = [
     safety_flags: [],
     age_min: 26,
     sla_min: 20,
+    sla_deadline_at: "2026-06-03T23:22:00Z",
     escalation_reason: "No eligible technician in range",
     lat: 40,
     lng: -75
@@ -412,6 +444,15 @@ export const compliance: ComplianceEntry[] = [
     blocking: false
   }
 ];
+
+export const dashboardAggregates: DashboardAggregates = {
+  live_requests: jobs.filter((job) => job.console_status !== "completed" && job.console_status !== "cancelled").length,
+  avg_eta_min: 11,
+  active_professionals: technicians.filter((tech) => tech.is_available).length,
+  sla_risk_count: jobs.filter((job) => job.urgency === "critical" || job.console_status === "stalled").length,
+  revenue_today: "$4.8k",
+  completion_rate: "92%"
+};
 
 export function technicianById(id?: string): Technician | undefined {
   return technicians.find((t) => t.id === id);

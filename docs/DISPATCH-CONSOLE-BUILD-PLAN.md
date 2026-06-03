@@ -25,7 +25,7 @@ Build to these, in this order of authority:
 - **Architecture:** ADR-0003 correct — npm-workspace monorepo, a shared `@cluexp/console-ui` core consumed by two thin apps (`ops-web`, `provider-web`). No copy-paste between apps.
 - **Scope:** build **all 10 prioritized screens, both modes** now (org-managed screens are "designed-ahead" per SPEC build-status; we build them anyway by decision).
 - **Data:** local **mock data only** (SPEC §14). No real API calls, no auth, no real maps. A `@cluexp/api-client` package holds types + mock data as the seam where real endpoints land later (SPEC §11).
-- **No template needed:** mirror the live `apps/intake-web` stack — **Next.js 16 (App Router) + React 19 + lucide-react + hand-written CSS custom properties**. No Tailwind, no shadcn.
+- **Updated console stack:** the console apps now use **Next.js 16 (App Router) + React 19 + lucide-react + Tailwind v4 + shadcn-style primitives**, themed to the ClueXP dark/amber design tokens. Intake/technician remain hand-written CSS.
 
 Roadmap fit (`docs/ROADMAP.md`): `console-ui` shared; `provider-web` = E2, `ops-web` = E7. This task builds the UI shell ahead of backend wiring.
 
@@ -44,7 +44,7 @@ intake/
    │  └─ src/{types.ts,mock-data.ts,index.ts}
    └─ console-ui/               # NEW — shared shell + components + 10 screens
       └─ src/
-         ├─ console.css         # tokens + dense console styles (single import)
+         ├─ globals.css         # Tailwind v4 + shadcn token theme (single import)
          ├─ components/         # shared primitives
          ├─ screens/            # the 10 screen views
          └─ index.ts            # barrel export
@@ -58,7 +58,7 @@ intake/
 - Screens/components that use state/effects/handlers are **client components** (`"use client"`).
   Pure presentational pieces can stay server components, but when in doubt mark `"use client"`
   (these are interactive console screens).
-- Each app imports the stylesheet once in its root layout: `import "@cluexp/console-ui/console.css";`
+- Each app imports the shared Tailwind theme once via app `globals.css`: `@import "@cluexp/console-ui/globals.css";`
 
 ## 3. Screen → app (mode) mapping
 
@@ -120,7 +120,7 @@ From `SPEC-REVIEW-FIXLIST.md`. Each is a build requirement, not a later cleanup:
 
 ## 5. Design system (the dense console variant)
 
-Token values are fixed in `DESIGN-SYSTEM.md` / live `globals.css`. Put them in `console.css`:
+Token values are fixed in `DESIGN-SYSTEM.md` / shared console `globals.css`:
 - `--bg #0e0e0e`, `--surface #1c1b1b`, `--surface-high #2a2a2a`, `--text #e5e2e1`,
   `--muted #d4c5ab`, `--line #504532`, `--primary #ffbf00`, `--primary-soft #ffe2ab`,
   `--primary-text #261a00`, `--secondary #2563eb`, `--secondary-soft #b4c5ff`,
@@ -225,7 +225,7 @@ For **each** of `apps/ops-web` and `apps/provider-web`:
   distinct dev ports (ops-web `3001`, provider-web `3002`; intake-web keeps `3000`).
 - `next.config.ts` — `transpilePackages: ["@cluexp/console-ui", "@cluexp/api-client"]`.
 - `tsconfig.json` — extend a Next-appropriate config (copy intake-web's, add path alias `@/*`).
-- `src/app/layout.tsx` — `import "@cluexp/console-ui/console.css";`, set `<html lang>`, metadata
+- `src/app/globals.css` — `@import "@cluexp/console-ui/globals.css";`; layouts set fonts, `<html className="dark ...">`, and metadata
   (ops: "ClueXP Operations Console"; provider: "ClueXP Provider Console").
 - `src/app/` routes per §3 table; each page renders the matching `console-ui` screen wrapped in
   `<Shell mode=... surfaceLabel=... modeBadge=... nav=...>`. `ops-web` passes `mode="cluexp"`,
@@ -266,7 +266,7 @@ These files exist and are correct; build on them:
 - `packages/api-client/` — `package.json`, `tsconfig.json`, `src/types.ts`, `src/mock-data.ts`, `src/index.ts`. **Types mirror SPEC §7/§10 exactly; mock data is the access-domain §13 demo set. Reuse these — do not rename state values.**
 - `packages/console-ui/package.json`, `packages/console-ui/tsconfig.json` (peerDeps + api-client dep set).
 
-**Remaining for Codex:** `packages/console-ui/src/*` (console.css, components, screens, index.ts),
+**Historical note:** initial pass built `packages/console-ui/src/*`; later migration replaced legacy `console.css` with Tailwind v4 `globals.css` and shadcn-style primitives.
 both apps under `apps/`, then install + typecheck + build + smoke both surfaces.
 
 ## 10.5 Deployment & domains (decided 2026-06-02)
@@ -311,7 +311,7 @@ human-authorized (see HANDOFF hard rules); ship previews first.
 - Next 16 + React 19 + workspace TS source ⇒ `transpilePackages` is required or imports fail.
 - Keep everything **mock-data driven**; the only seam for real data is `@cluexp/api-client`
   (mirrors SPEC §11 endpoint shape for later).
-- Don't add Tailwind/shadcn — the system is hand-written CSS vars (matches intake).
+- Tailwind/shadcn-style primitives are intentional for consoles; keep intake/technician stack separate.
 - Don't fake live movement on the map (SPEC §8.8 / §12).
 - Don't invent trust sub-states anywhere. `console_status` ≠ `trust_state`, ever.
 - Commit on a feature branch; do not promote to prod. Raise questions in `HANDOFF-codex.md`.
