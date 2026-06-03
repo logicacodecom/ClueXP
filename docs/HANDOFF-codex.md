@@ -24,6 +24,30 @@
 
 ## Open threads
 
+### 2026-06-02 — Dispatch console build plan ready for Codex to execute
+Human decided to build the dispatch console UI now: **ADR-0003 monorepo** (shared
+`@cluexp/console-ui` consumed by thin `ops-web` + `provider-web`), **all 10 prioritized
+screens, both modes**, **mock data only** (no API/auth/real maps). Full file-by-file spec:
+**[`docs/DISPATCH-CONSOLE-BUILD-PLAN.md`](DISPATCH-CONSOLE-BUILD-PLAN.md)** — read §0 (precedence
++ hard contracts), §4 (fix-list to build in, not the mock flaws), §6 (component/screen specs),
+§8 (acceptance), §9 (what I already scaffolded — don't redo).
+
+I scaffolded the foundation: root npm-workspace `package.json`, `tsconfig.base.json`,
+`@cluexp/api-client` (types mirroring SPEC §7/§10 + access-domain §13 mock data), and
+`@cluexp/console-ui` package.json/tsconfig. **Remaining for you:** `console-ui/src/*`
+(console.css + components + 10 screens), both `apps/*`, then install + typecheck + build + smoke.
+
+Key musts (from the mock review, `design-ref/ui/Dispatch/SPEC-REVIEW-FIXLIST.md`): board lanes =
+`console_status` not trust-state; tech-assignment stays locksmith/access domain (no HVAC) with
+offer-based dispatch + direct-release chip; map copy factual (no "deploy asset/operatives") with
+job-vs-tech markers + service-area + staleness; job-detail shows trust-state + safety flags;
+audit-log trust column uses only INTAKE/MATCHED/FULFILLMENT. Don't break the trust-state contract.
+
+**Domains decided:** three separate Vercel projects/domains —
+`intake-web → intake.cluexp.com` (live), `ops-web → dispatch.cluexp.com` (the ClueXP dispatch
+center), `provider-web → partners.cluexp.com`. Keep the two consoles on separate domains (ADR-0003 isolation).
+See build-plan §10.5. Questions back here. — Claude
+
 ### 2026-06-02 — Shared design system added (heads-up for Codex)
 Human is mocking all UI surfaces before building. To keep one visual language, I added a
 **`docs/DESIGN-SYSTEM.md`** and pointed the specs at it. What changed (commit `6fe3732`):

@@ -1,0 +1,426 @@
+// Local mock dataset (SPEC §14 — "Use local mock data first"; no real API).
+// Domain: emergency ACCESS (locksmith) — car / home / business lockouts, broken/lost keys.
+// Built around the §13 demo dataset (Jobs A/B/C) plus enough rows to populate the board,
+// queue and map. NOT a real dispatch algorithm.
+
+import type {
+  ComplianceEntry,
+  DispatchEvent,
+  DispatchOffer,
+  Job,
+  Organization,
+  Team,
+  Technician
+} from "./types";
+
+export const organizations: Organization[] = [
+  {
+    id: "org-metro",
+    legal_name: "Metro Key Partners LLC",
+    display_name: "Metro Key Partners",
+    description: "Residential & auto access provider, north metro.",
+    status: "eligible",
+    service_area: "North Hills · Downtown",
+    distance_mi: 2.4,
+    workload: "low",
+    rating: 4.9,
+    jobs_completed: 12000,
+    avg_response_min: 6,
+    document_status: "verified"
+  },
+  {
+    id: "org-citywide",
+    legal_name: "City Wide Lock & Safe Inc.",
+    display_name: "City Wide Lock",
+    description: "Commercial access specialist.",
+    status: "blocked_by_documents",
+    service_area: "Downtown · Midtown",
+    distance_mi: 1.8,
+    workload: "medium",
+    rating: 4.4,
+    jobs_completed: 5300,
+    avg_response_min: 11,
+    document_status: "expired",
+    blocking_reason: "Liability insurance expired 2024-11-14"
+  },
+  {
+    id: "org-precision",
+    legal_name: "Precision Entry Co.",
+    display_name: "Precision Entry",
+    description: "High-security & smart-lock access.",
+    status: "eligible",
+    service_area: "Strip Mall · East Side",
+    distance_mi: 5.1,
+    workload: "medium",
+    rating: 4.7,
+    jobs_completed: 3100,
+    avg_response_min: 9,
+    document_status: "verified"
+  }
+];
+
+export const teams: Team[] = [
+  {
+    id: "team-home",
+    organization_id: "org-metro",
+    name: "Home Team",
+    description: "Residential lockouts & rekeys.",
+    members_count: 6,
+    workload: "low",
+    specialties: ["Residential lock", "Rekey", "Broken-key extraction"]
+  },
+  {
+    id: "team-auto",
+    organization_id: "org-metro",
+    name: "Auto Team",
+    description: "Vehicle lockouts & key programming.",
+    members_count: 4,
+    workload: "medium",
+    specialties: ["Auto lock", "Key programming"]
+  }
+];
+
+export const technicians: Technician[] = [
+  {
+    id: "tech-jordan",
+    display_name: "Jordan Lee",
+    initials: "JL",
+    provider_type: "individual",
+    teams: [],
+    eligibility: "eligible",
+    skills: ["Auto lock", "Broken-key extraction"],
+    service_area: "Downtown",
+    distance_mi: 0.8,
+    eta_min: 9,
+    is_available: true,
+    workload: 0,
+    rating: 4.8,
+    document_status: "verified",
+    location_updated_min_ago: 1,
+    direct_dispatch_allowed: false
+  },
+  {
+    id: "tech-samir",
+    display_name: "Samir Patel",
+    initials: "SP",
+    provider_type: "affiliated",
+    primary_organization_id: "org-metro",
+    teams: ["team-home"],
+    eligibility: "eligible",
+    skills: ["Residential lock", "Rekey"],
+    service_area: "North Hills",
+    distance_mi: 1.2,
+    eta_min: 12,
+    is_available: true,
+    workload: 1,
+    rating: 4.9,
+    document_status: "verified",
+    location_updated_min_ago: 2,
+    // §3.2 direct-release: Metro released Samir for direct ClueXP dispatch (future/planned).
+    direct_dispatch_allowed: true
+  },
+  {
+    id: "tech-lina",
+    display_name: "Lina Gomez",
+    initials: "LG",
+    provider_type: "affiliated",
+    primary_organization_id: "org-metro",
+    teams: ["team-home"],
+    eligibility: "eligible",
+    skills: ["Residential lock", "Smart lock"],
+    service_area: "North Hills",
+    distance_mi: 2.1,
+    eta_min: 18,
+    is_available: true,
+    workload: 0,
+    rating: 4.7,
+    document_status: "verified",
+    location_updated_min_ago: 4,
+    direct_dispatch_allowed: false
+  },
+  {
+    id: "tech-marcus",
+    display_name: "Marcus Vale",
+    initials: "MV",
+    provider_type: "affiliated",
+    primary_organization_id: "org-metro",
+    teams: ["team-auto"],
+    eligibility: "blocked_by_documents",
+    skills: ["Commercial lock", "High-security"],
+    service_area: "Downtown",
+    is_available: false,
+    workload: 0,
+    rating: 4.6,
+    document_status: "expired",
+    location_updated_min_ago: 9,
+    direct_dispatch_allowed: false,
+    blocking_reason: "Locksmith license expired 2024-01-05"
+  },
+  {
+    id: "tech-morgan",
+    display_name: "Morgan Vale",
+    initials: "MV",
+    provider_type: "individual",
+    teams: [],
+    eligibility: "stale_location",
+    skills: ["Commercial lock", "Broken-key extraction"],
+    service_area: "Strip Mall",
+    distance_mi: 3.3,
+    is_available: true,
+    workload: 1,
+    rating: 4.5,
+    document_status: "verified",
+    location_updated_min_ago: 18,
+    direct_dispatch_allowed: false,
+    blocking_reason: "GPS stale 18 min"
+  }
+];
+
+// §13 demo dataset — Job A (ClueXP→individual), Job B (org-managed), Job C (escalation) + extras.
+export const jobs: Job[] = [
+  {
+    id: "JOB-A-2201",
+    customer_display: "Alex T.",
+    trust_state: "INTAKE", // not MATCHED — no named technician assigned yet
+    console_status: "awaiting_technician_assignment",
+    dispatch_owner: "cluexp",
+    access_type: "car",
+    situation: "Locked out — keys in ignition",
+    urgency: "high",
+    area: "Downtown",
+    address: "1200 Market St, Financial District",
+    routing_source: "ClueXP-routed",
+    safety_flags: [],
+    age_min: 4,
+    sla_min: 20,
+    price_quote: "$95 est.",
+    lat: 40,
+    lng: -74
+  },
+  {
+    id: "JOB-B-2248",
+    customer_display: "R. Daniels",
+    trust_state: "INTAKE", // org accepted, but customer is NOT MATCHED until a tech is named
+    console_status: "routed_to_organization",
+    dispatch_owner: "organization",
+    access_type: "home",
+    situation: "Locked out — door secured",
+    urgency: "medium",
+    area: "North Hills",
+    address: "123 Maple St, Region 4",
+    routing_source: "Organization-routed",
+    safety_flags: [
+      { code: "alone_at_night", label: "Customer alone at night", severity: "warning" }
+    ],
+    provider_organization_id: "org-metro",
+    age_min: 7,
+    sla_min: 30,
+    lat: 41,
+    lng: -73
+  },
+  {
+    id: "JOB-C-2289",
+    customer_display: "Strip Mall Mgmt",
+    trust_state: "FULFILLMENT",
+    console_status: "escalated",
+    dispatch_owner: "cluexp",
+    access_type: "business",
+    situation: "Broken key in lock",
+    urgency: "critical",
+    area: "Strip Mall",
+    address: "880 Retail Blvd, Unit 12",
+    routing_source: "Direct Call",
+    safety_flags: [],
+    technician_id: "tech-morgan",
+    age_min: 31,
+    escalation_reason: "GPS stale for 18 minutes",
+    lat: 39,
+    lng: -75
+  },
+  {
+    id: "JOB-D-2301",
+    customer_display: "M. Owen",
+    trust_state: "MATCHED",
+    console_status: "en_route",
+    dispatch_owner: "cluexp",
+    access_type: "car",
+    situation: "Lost key — Ford F150",
+    urgency: "medium",
+    area: "Midtown",
+    address: "44 8th Ave",
+    routing_source: "ClueXP-routed",
+    safety_flags: [],
+    technician_id: "tech-jordan",
+    age_min: 22,
+    eta_min: 7,
+    lat: 40,
+    lng: -74
+  },
+  {
+    id: "JOB-E-2312",
+    customer_display: "J. Miller",
+    trust_state: "MATCHED",
+    console_status: "accepted",
+    dispatch_owner: "organization",
+    access_type: "home",
+    situation: "Broken key extraction",
+    urgency: "low",
+    area: "North Hills",
+    address: "9 Oak Ridge",
+    routing_source: "Organization-routed",
+    safety_flags: [],
+    provider_organization_id: "org-metro",
+    technician_id: "tech-samir",
+    age_min: 14,
+    eta_min: 15,
+    lat: 41,
+    lng: -73
+  },
+  {
+    id: "JOB-F-2320",
+    customer_display: "Global Logistics",
+    trust_state: "INTAKE",
+    console_status: "stalled",
+    dispatch_owner: "cluexp",
+    access_type: "business",
+    situation: "Locked out — gate code unknown",
+    urgency: "critical",
+    area: "Industrial Park",
+    address: "500 Dock Rd",
+    routing_source: "ClueXP-routed",
+    safety_flags: [],
+    age_min: 26,
+    sla_min: 20,
+    escalation_reason: "No eligible technician in range",
+    lat: 40,
+    lng: -75
+  }
+];
+
+export const offers: DispatchOffer[] = [
+  {
+    id: "offer-a-1",
+    job_id: "JOB-A-2201",
+    target_type: "technician",
+    technician_id: "tech-jordan",
+    status: "sent",
+    rank: 1,
+    offered_at: "2026-06-02T14:58:30Z",
+    expires_at: "2026-06-02T15:00:00Z" // countdown driven by this value, not the client
+  },
+  {
+    id: "offer-b-1",
+    job_id: "JOB-B-2248",
+    target_type: "organization",
+    organization_id: "org-metro",
+    status: "accepted",
+    offered_at: "2026-06-02T14:42:00Z",
+    expires_at: "2026-06-02T14:47:00Z",
+    responded_at: "2026-06-02T14:44:00Z"
+  }
+];
+
+export const events: DispatchEvent[] = [
+  {
+    id: "evt-1",
+    job_id: "JOB-C-2289",
+    actor_display: "Jack Wilson (ID: 002)",
+    actor_scope: "cluexp",
+    event: "Dispatcher took ownership",
+    trust_state: "FULFILLMENT",
+    reason: "Manual intervention — stale GPS",
+    metadata: { action_code: "OWN_MANUAL_04" },
+    at: "2026-06-02T14:25:31Z"
+  },
+  {
+    id: "evt-2",
+    job_id: "JOB-C-2289",
+    actor_display: "System Watchdog",
+    actor_scope: "system",
+    event: "System escalation: GPS stale",
+    trust_state: "FULFILLMENT",
+    reason: "telemetry_loss",
+    metadata: { stale_limit_s: 480, elapsed_s: 480 },
+    at: "2026-06-02T14:23:10Z"
+  },
+  {
+    id: "evt-3",
+    job_id: "JOB-C-2289",
+    actor_display: "Technician app (Morgan Vale)",
+    actor_scope: "technician",
+    event: "GPS update lost",
+    trust_state: "FULFILLMENT",
+    reason: "ping_timeout",
+    at: "2026-06-02T14:15:00Z"
+  },
+  {
+    id: "evt-4",
+    job_id: "JOB-C-2289",
+    actor_display: "Morgan Vale",
+    actor_scope: "technician",
+    event: "Technician assigned",
+    trust_state: "MATCHED", // becomes MATCHED only at named-technician assignment
+    metadata: { technician_id: "tech-morgan" },
+    at: "2026-06-02T13:50:44Z"
+  },
+  {
+    id: "evt-5",
+    job_id: "JOB-C-2289",
+    actor_display: "ClueXP Agent",
+    actor_scope: "system",
+    event: "Job created from intake",
+    trust_state: "INTAKE",
+    at: "2026-06-02T13:42:00Z"
+  }
+];
+
+export const compliance: ComplianceEntry[] = [
+  {
+    id: "cmp-1",
+    entity_name: "City Wide Lock",
+    entity_type: "organization",
+    category: "Liability insurance",
+    document_status: "expired",
+    last_verified: "2024-11-14",
+    blocking: true
+  },
+  {
+    id: "cmp-2",
+    entity_name: "Marcus Vale",
+    entity_type: "technician",
+    category: "Locksmith license",
+    document_status: "expired",
+    last_verified: "2024-01-05",
+    blocking: true
+  },
+  {
+    id: "cmp-3",
+    entity_name: "Samir Patel",
+    entity_type: "technician",
+    category: "Locksmith license",
+    document_status: "verified",
+    last_verified: "2024-03-20",
+    blocking: false
+  },
+  {
+    id: "cmp-4",
+    entity_name: "Metro Key Partners",
+    entity_type: "organization",
+    category: "Liability insurance",
+    document_status: "verified",
+    last_verified: "2025-09-01",
+    blocking: false
+  }
+];
+
+export function technicianById(id?: string): Technician | undefined {
+  return technicians.find((t) => t.id === id);
+}
+
+export function organizationById(id?: string): Organization | undefined {
+  return organizations.find((o) => o.id === id);
+}
+
+export function eventsForJob(jobId: string): DispatchEvent[] {
+  return events.filter((e) => e.job_id === jobId);
+}

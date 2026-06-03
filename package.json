@@ -1,0 +1,18 @@
+{
+  "name": "cluexp",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/console-ui",
+    "packages/api-client"
+  ],
+  "scripts": {
+    "dev:ops": "npm run dev --workspace @cluexp/ops-web",
+    "dev:provider": "npm run dev --workspace @cluexp/provider-web",
+    "dev:intake": "npm run dev --workspace @cluexp/intake-web",
+    "build:ops": "npm run build --workspace @cluexp/ops-web",
+    "build:provider": "npm run build --workspace @cluexp/provider-web",
+    "typecheck": "tsc -b packages/api-client packages/console-ui"
+  }
+}
