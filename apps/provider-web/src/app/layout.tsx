@@ -1,18 +1,18 @@
 import type { Metadata } from "next";
 import { Archivo_Narrow, Inter } from "next/font/google";
-import "@cluexp/console-ui/console.css";
+import "./globals.css";
 
-const condensed = Archivo_Narrow({
+const archivo = Archivo_Narrow({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-condensed",
+  variable: "--font-archivo",
   display: "swap"
 });
 
-const sans = Inter({
+const inter = Inter({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-sans",
+  variable: "--font-inter",
   display: "swap"
 });
 
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${condensed.variable} ${sans.variable}`}>
+    <html lang="en" className={`dark ${archivo.variable} ${inter.variable}`}>
       <body>{children}</body>
     </html>
   );

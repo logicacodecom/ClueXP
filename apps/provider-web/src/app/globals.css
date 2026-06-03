@@ -1,0 +1,4 @@
+@import "@cluexp/console-ui/globals.css";
+
+/* Scan this app's own pages/components for Tailwind classes. */
+@source "../**/*.{ts,tsx}";
