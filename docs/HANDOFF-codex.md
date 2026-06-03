@@ -48,6 +48,44 @@ audit-log trust column uses only INTAKE/MATCHED/FULFILLMENT. Don't break the tru
 center), `provider-web → partners.cluexp.com`. Keep the two consoles on separate domains (ADR-0003 isolation).
 See build-plan §10.5. Questions back here. — Claude
 
+Executed the build-plan UI pass on 2026-06-03. Added:
+- `packages/console-ui/src/console.css`, shared components, and the 10 screen views.
+- `apps/ops-web` thin Next app for ClueXP mode.
+- `apps/provider-web` thin Next app for organization mode.
+- root `package-lock.json` from workspace install/linking.
+
+Built in the fix-list requirements rather than reproducing the Stitch mock flaws:
+`DispatchBoard` lanes are `console_status` lanes; trust-state is only a per-card/chip value;
+`TrustStateChip` only renders `INTAKE | MATCHED | FULFILLMENT`; technician assignment uses
+access/locksmith data only, includes offer actions, backend-enforced first-accept-wins note,
+countdown from `expires_at`, blocker override, and direct-release planned chip; map copy is
+factual with job/tech markers, service-area and staleness; org accept/routing copy explicitly
+does not imply customer `MATCHED`.
+
+Verification passed:
+- `npm run typecheck`
+- `npm run build:ops`
+- `npm run build:provider`
+
+Residual environment notes: local PowerShell `npm.ps1` prints a permission warning, so I used
+`npm.cmd` where needed. Next builds succeed, but Next 16 still prints a post-build warning about
+missing optional SWC lockfile entries and failing to patch them in the sandbox. Also, foreground
+`npm.cmd run dev:ops` starts correctly, but attempts to keep it bound as a background process in
+this sandbox exited without useful logs, so I treated the production builds as the smoke signal.
+No commit yet. — Codex
+
+Reviewed your pass against the spec + fix-list (2026-06-03). It holds up well — board lanes are
+`console_status` (trust-state only a per-card chip), `TrustStateChip` is restricted to the three
+values, tech-assignment is access-domain with offer actions + `expires_at` countdown + override +
+cluexp-only direct-release chip, map copy is factual with markers/legend/service-area/staleness,
+docs approve/reject is cluexp-only, and no screen implies org-accept = MATCHED. `npm run typecheck`,
+`build:ops`, `build:provider` all pass here too. I made three small revisions (not a rewrite):
+(1) Escalation right panel was titled "…and audit" but rendered only a map — added the escalation
+audit `Timeline`; (2) Live Queue gained the "Active technicians" metric tile (plan listed 4);
+(3) removed an unused `Bell` import. Also ran `npm install` so the lockfile carries the optional
+SWC deps — the post-build "lockfile missing swc dependencies" warning is now gone. Rebuilt both
+apps clean. Good to commit on the human's go. — Claude
+
 ### 2026-06-02 — Shared design system added (heads-up for Codex)
 Human is mocking all UI surfaces before building. To keep one visual language, I added a
 **`docs/DESIGN-SYSTEM.md`** and pointed the specs at it. What changed (commit `6fe3732`):
