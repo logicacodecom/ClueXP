@@ -10,11 +10,11 @@
 
 ---
 
-## Status snapshot (verified 2026-06-01)
+## Status snapshot (verified 2026-06-03)
 
 | | |
 |---|---|
-| Intake app (production) | ✅ live — https://cluexp-intake.vercel.app (runs the pre–Sprint-1 `tickets`-store code, commit `4a692ba`; prod only auto-promotes from `main`) |
+| Intake app (production) | ✅ live — `www.cluexp.com` + `intake.cluexp.com` (project `cluexp-intake`; runs the pre–Sprint-1 `tickets`-store code, commit `4a692ba`; prod only auto-promotes from `main`). `www` to be repurposed for a future public marketing site. |
 | Dispatch database baseline | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
 | Provider tenant schema | ✅ applied to Supabase, rev `0003_provider_organizations`; live `alembic_version = 0003` |
 | Live DB data | ✅ all 11 tables present and **empty** (dummy data purged) |
@@ -25,7 +25,8 @@
 | Roadmap / ADR / this plan | ✅ in `docs/` |
 | Sprint 0 | ✅ complete (hardening, monorepo move + redeploy, CI, DB, storage, geocode endpoint) |
 | Sprint 1 | 🟨 assigned to **Codex**; store layer, geocoding UI wiring, and photo upload endpoints/UI built — remaining: live credential verification + full flow smoke |
-| Dispatch console UI (forward build) | ✅ built (Codex + Claude review) — `@cluexp/console-ui` + `apps/ops-web` + `apps/provider-web`, all 10 screens both modes, mock-data only; typecheck + both builds + runtime smoke pass. Spec in `docs/DISPATCH-CONSOLE-BUILD-PLAN.md`. **Vercel:** `cluexp-ops` + `cluexp-provider` created and production-deployed from `feat/sprint0-foundation`; `intake.cluexp.com` live; `ops`/`partners` domains assigned, **pending DNS CNAME** at registrar. **Ahead of E2/E7 backend wiring — UI shell only.** |
+| Dispatch consoles (forward build) | ✅ **live** — `ops.cluexp.com` (ClueXP) + `partners.cluexp.com` (provider), both serving 200; `apps/ops-web` + `apps/provider-web` + `@cluexp/console-ui`, all 10 screens both modes, mock-data only. Deployed build = "Disciplined Industrial". **shadcn/ui + Tailwind v4 migration** (Codex Phases 2–4) is in the working tree — typecheck + both builds green, **uncommitted; Claude code-review + commit + redeploy pending**. Ahead of E2/E7 backend wiring — UI shell only. |
+| Technician app | ⬜ not started — spec ready (`TECHNICIAN-MOBILE-SPEC.md`, 19 screens; demo Jobs A/B/C match the console). Roadmap E2. Candidate next build: live dispatch-loop screens for an end-to-end demo. |
 | Everything unchecked below | ⬜ planned |
 
 ## Locked decisions (from ADR 0001)
@@ -218,9 +219,14 @@ applicable; trust gating intact.
 
 ## Sprint 5 — Dispatcher console
 
-- [ ] `dispatcher-web` app: live job queue, handoff inbox, overrides, safety escalation.
+> The UI shell is already built ahead of schedule as `ops-web` + `provider-web` on the shared
+> `console-ui` core (mock-data; see status snapshot). This sprint wires it to the real API and
+> adds human-ops behavior.
 
-**Acceptance:** a human can take over any job from a console.
+- [ ] `ops-web` (ClueXP) / `provider-web` (org): live job queue, handoff inbox, overrides, safety
+      escalation — backed by `cluexp-api` instead of mock data.
+
+**Acceptance:** a human can take over any job from a console, against real data.
 
 ---
 
@@ -242,9 +248,9 @@ applicable; trust gating intact.
 
 ## Open questions for you (answer inline)
 
-1. ~~API deploy shape~~ — **resolved: co-locate now, extraction deferred** (flip if you disagree). → _your answer:_
-2. Maps render in the customer app — full Maps JS now, or static map images for the stub fulfillment screen first? → _your answer:_
-3. Any sprint reordering / scope changes? → _your answer:_
+1. ~~API deploy shape~~ — **resolved: co-locate now, extraction deferred** (flip if you disagree).
+2. ~~Maps render in the customer app~~ — **resolved:** consoles use static map cards (SPEC §8.8); customer-app real Maps JS lands Sprint 3 / E4.
+3. ~~Sprint reordering~~ — **reordered 2026-06-03:** the dispatch consoles (both surfaces) and, next, the technician live screens are pulled **ahead** of their E2/E7 backend slots — built as mock UI first for an end-to-end whole-picture demo. Backend wiring (E2: auth + `cluexp-api` + dispatch engine) follows.
 4. ~~Dispatch authority for affiliated technicians~~ — **resolved (direction, not
    scheduled; SPEC §2.10):** organization-managed by default; org can release a specific
    tech for direct ClueXP dispatch. Individuals = ClueXP-dispatched. Future columns

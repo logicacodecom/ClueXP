@@ -12,6 +12,12 @@ Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md
 - `apps/intake-web/src/types/schema.generated.ts` - generated TypeScript contract derived from `api/schema.py`.
 - `apps/intake-web/scripts/generate_types.py` - local schema-to-TypeScript generator.
 - `packages/db/` - Alembic migrations for the dispatch relational core.
+- `apps/ops-web/`, `apps/provider-web/` - dispatch consoles (ClueXP ops + provider org) built on shared `packages/console-ui`; mock-data UI ahead of backend wiring (`docs/ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`, `adr/0003`).
+- `packages/api-client/`, `packages/console-ui/` - shared types + mock data and the shared console component system (seam for the future `cluexp-api`).
+- `docs/ROADMAP.md`, `docs/EXECUTION-PLAN.md` - delivery plan and current status snapshot (the live source of truth for project state).
+
+> This is an npm-workspace monorepo (`apps/*` + `packages/*`). The instructions below cover the
+> **intake** app; the consoles run via `npm run dev:ops` / `npm run dev:provider` from the repo root.
 
 ## Requirements
 
@@ -102,12 +108,14 @@ Copy `.env.example` into the relevant Vercel project environment variables rathe
 
 ## Fix Later Backlog
 
-Before public launch, handle these hardening items:
+Most of the original hardening items are now handled in Sprint 0/1 — see `docs/EXECUTION-PLAN.md`
+for the authoritative current status. Snapshot:
 
-1. Either wire photo upload to storage or hide the upload control from the live sprint.
-2. Add Supabase Storage buckets, policies, signed upload URLs, and size/MIME validation.
-3. Wire Google Maps geocoding and map rendering with the provided restricted keys.
-4. Move tickets from the legacy `tickets` JSONB table onto `customers` + `jobs`.
+1. ✅ Photo upload wired to Supabase Storage (signed upload/download URLs, size/MIME validation).
+2. ✅ Storage buckets + RLS policies created (`public-tech-media`, `private-verification`).
+3. ⚠️ Google Maps: server-side geocoding endpoint built, but returns `{resolved:false}` until the
+   `GOOGLE_MAPS_API_KEY` referrer restriction is fixed; customer-app map rendering still pending (Sprint 3).
+4. ✅ Relational store: intake writes `customers` + `jobs` (legacy `tickets` kept as read-only fallback).
 
 ## Verification
 
