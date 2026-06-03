@@ -25,7 +25,7 @@
 | Roadmap / ADR / this plan | ✅ in `docs/` |
 | Sprint 0 | ✅ complete (hardening, monorepo move + redeploy, CI, DB, storage, geocode endpoint) |
 | Sprint 1 | 🟨 assigned to **Codex**; store layer, geocoding UI wiring, and photo upload endpoints/UI built — remaining: live credential verification + full flow smoke |
-| Dispatch console UI (forward build) | 🟨 assigned to **Codex**; foundation scaffolded (root npm workspaces, `@cluexp/api-client` types+mock data, `@cluexp/console-ui` pkg shell). Full file-by-file spec in `docs/DISPATCH-CONSOLE-BUILD-PLAN.md`. ADR-0003 monorepo, all 10 screens both modes, mock-data only. Domains: `ops-web → ops.cluexp.com`, `provider-web → partners.cluexp.com`. **Ahead of E2/E7 backend wiring — UI shell only.** |
+| Dispatch console UI (forward build) | ✅ built (Codex + Claude review) — `@cluexp/console-ui` + `apps/ops-web` + `apps/provider-web`, all 10 screens both modes, mock-data only; typecheck + both builds + runtime smoke pass. Spec in `docs/DISPATCH-CONSOLE-BUILD-PLAN.md`. **Vercel:** `cluexp-ops` + `cluexp-provider` created and production-deployed from `feat/sprint0-foundation`; `intake.cluexp.com` live; `ops`/`partners` domains assigned, **pending DNS CNAME** at registrar. **Ahead of E2/E7 backend wiring — UI shell only.** |
 | Everything unchecked below | ⬜ planned |
 
 ## Locked decisions (from ADR 0001)

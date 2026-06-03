@@ -277,17 +277,21 @@ ClueXP ops must not share a bundle/domain).
 
 | App (folder) | Audience | Subdomain (target) | Vercel project | Status |
 |---|---|---|---|---|
-| `apps/intake-web` | Customers | `intake.cluexp.com` | `cluexp-intake` | live, but currently served at `www.cluexp.com` — migrate to `intake.cluexp.com` |
-| `apps/ops-web` | ClueXP internal operations/admin/dispatch console | `ops.cluexp.com` | `cluexp-ops` | new |
-| `apps/provider-web` | Provider partner orgs | `partners.cluexp.com` | `cluexp-provider` | new |
+| `apps/intake-web` | Customers | `intake.cluexp.com` | `cluexp-intake` | ✅ live at `intake.cluexp.com` (HTTP 200) **and** `www.cluexp.com`; `www` to be repurposed for the public site later |
+| `apps/ops-web` | ClueXP internal operations/admin/dispatch console | `ops.cluexp.com` | `cluexp-ops` | ✅ project created + **production-deployed** from `feat/sprint0-foundation`; domain assigned — **pending `ops` CNAME** at registrar |
+| `apps/provider-web` | Provider partner orgs | `partners.cluexp.com` | `cluexp-provider` | ✅ project created + **production-deployed** from `feat/sprint0-foundation`; domain assigned — **pending `partners` CNAME** at registrar |
 | _(future)_ public marketing site | Public | `cluexp.com` / `www.cluexp.com` | TBD | not built — `www` to be repurposed from intake later |
 
-> **Live-account reality (verified 2026-06-03):** `cluexp.com` is on the Vercel team
-> `logicacode-projects`, but its **nameservers are third-party**, so each subdomain needs a
-> `CNAME → cname.vercel-dns.com` added at the registrar before it verifies. Today `cluexp-intake`
-> serves `www.cluexp.com`; the plan is to move intake to `intake.cluexp.com` and free `www` for a
-> future public site. Vercel CLI v54 cannot set a project's **Root Directory** (dashboard/REST API
-> only), so creating the two monorepo console projects needs the dashboard or an API token.
+> **Provisioned 2026-06-03 (via Vercel REST API).** `cluexp-ops` (rootDir `apps/ops-web`) and
+> `cluexp-provider` (rootDir `apps/provider-web`) created, Git-connected to `logicacodecom/ClueXP`,
+> and production-deployed from `feat/sprint0-foundation` (monorepo workspaces resolve on Vercel; no
+> install-command override needed). Domains `ops.cluexp.com` / `partners.cluexp.com` / `intake.cluexp.com`
+> assigned. `cluexp.com` is on team `logicacode-projects` with **third-party nameservers**, so
+> `ops` + `partners` each need a `CNAME → cname.vercel-dns.com` at the registrar to resolve
+> (`intake` already routes). Vercel CLI v54 can't set a project's Root Directory — that's why this
+> was done over the REST API, not the CLI. Production deploys are still human-authorized per HANDOFF.
+> **Production branch:** projects deploy from `feat/sprint0-foundation`; auto-promotion on push waits
+> until that branch merges to `main` (PR #2) or each project's production branch is changed in settings.
 
 Vercel setup for each new app: create a project pointing at the **same repo**, set **Root
 Directory** = `apps/provider-web` / `apps/ops-web`, framework = Next.js, then bind the custom
