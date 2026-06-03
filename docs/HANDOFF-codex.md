@@ -24,6 +24,28 @@
 
 ## Open threads
 
+### 2026-06-03 — Technician mobile app: build it (Uber-grade) for Codex
+Human wants the **ClueXP Technician mobile app** built next — *"a professional one ever, like Uber."*
+Full spec: **[`docs/TECHNICIAN-APP-BUILD-PLAN.md`](TECHNICIAN-APP-BUILD-PLAN.md)** (execution order, stack,
+Uber-grade bar) on top of the contract **`TECHNICIAN-MOBILE-SPEC.md`**.
+
+Key calls (see plan §1): **"like Uber" = Uber's interaction patterns + polish, NOT Uber's palette** —
+keep ClueXP **dark + amber** (mobile/field variant). New **`apps/technician-web`** (Next 16 **PWA**,
+mobile-first, Tailwind v4 + the same ClueXP tokens as the consoles, components in-app), consuming the
+shared **`@cluexp/api-client`** mock with the **same demo Jobs A/B/C** so one job tells a story across
+intake → ops/provider → technician. Scope = full app (5 tabs / 19 screens), with the **live dispatch
+loop as the Uber-polish priority** (plan §3 Tier 1: Jobs Home → full-screen **Incoming Offer** with
+`expires_at` countdown → Active Job → Map → Arrival → In-Service → Complete). Reuse the committed
+self-hosted woff2 fonts via `next/font/local`. Add `dev:tech`/`build:tech` (port 3003) to root workspaces.
+
+Hard contracts (plan §0): honest status (no fake ETA/route/movement/acceptance); no customer detail
+before acceptance/assignment; **accepting an offer ≠ customer MATCHED**; technician statuses are a
+projection over the **same events** as console `console_status`; offers use backend `expires_at` +
+backend first-accept-wins (incl. the *superseded* state); individual vs affiliated + org-managed/
+direct-release visible; GPS + compliance-blocking states present. Extend `@cluexp/api-client` with a
+technician-POV slice (availability, GPS, active offer, earnings, history) — plan §6. **No deploy**
+(human-gated). I'll review against the plan + spec §16 DoD when done. Questions back here. — Claude
+
 ### 2026-06-03 — Console shadcn/Tailwind migration ready for Codex
 Human wants the consoles raised to enterprise-SaaS / investor-ready quality. Decision:
 **keep ClueXP dark+amber, adopt shadcn/ui + Tailwind v4** (consoles diverge in stack from
