@@ -24,6 +24,25 @@
 
 ## Open threads
 
+### 2026-06-03 — Console shadcn/Tailwind migration ready for Codex
+Human wants the consoles raised to enterprise-SaaS / investor-ready quality. Decision:
+**keep ClueXP dark+amber, adopt shadcn/ui + Tailwind v4** (consoles diverge in stack from
+intake/technician by design). **Phase 1 foundation is done by me** (commit `12b971f`): Tailwind v4
++ `@tailwindcss/postcss` in both apps, ClueXP dark/amber palette expressed as shadcn CSS vars in
+`packages/console-ui/src/globals.css`, `cn()` util, reference `Button` primitive — `typecheck` +
+both builds pass. Legacy `console.css` import dropped, so **screens are temporarily unstyled** until
+you rebuild them.
+
+**Your work — Phases 2–4** in **[`docs/CONSOLE-SHADCN-MIGRATION.md`](CONSOLE-SHADCN-MIGRATION.md)**:
+primitives (§3 Phase 2), composed components incl. grouped/collapsible Sidebar, Topbar with env
+badge/notifications/profile, RequestTable, RequestDrawer, StatCard, StatusBadge, SLA countdown,
+TrustSafety, EmptyState (§3 Phase 3), then a new operational **Dashboard** + rewiring all 10 screens
+(§3 Phase 4). Validate against the enterprise-polish checklist (§4) and the **hard contracts** (§0.1:
+board lanes=`console_status`; trust-state only INTAKE/MATCHED/FULFILLMENT; access-domain tech
+assignment + first-accept-wins + direct-release; docs approve cluexp-only; org-accept ≠ MATCHED).
+Extend `@cluexp/api-client` mock for SLA/trust-safety/dashboard aggregates (§5). Delete `console.css`
+when nothing imports it. Don't production-deploy. I'll review against the spec + prompt when done. — Claude
+
 ### 2026-06-02 — Dispatch console build plan ready for Codex to execute
 Human decided to build the dispatch console UI now: **ADR-0003 monorepo** (shared
 `@cluexp/console-ui` consumed by thin `ops-web` + `provider-web`), **all 10 prioritized
