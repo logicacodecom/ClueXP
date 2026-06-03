@@ -210,7 +210,9 @@ export function TopBar({ modeBadge, surfaceLabel }: { modeBadge: string; surface
     <header className="cx-topbar">
       <div className="cx-brand">
         <div className="cx-brand-mark" aria-hidden>
-          C
+          <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" clipRule="evenodd">
+            <path d="M12 2a6 6 0 0 0-3.2 11.08l-1.7 6.34A1.3 1.3 0 0 0 8.35 21h7.3a1.3 1.3 0 0 0 1.25-1.58l-1.7-6.34A6 6 0 0 0 12 2Zm0 3.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z" />
+          </svg>
         </div>
         <div>
           <div className="cx-wordmark">CLUEXP</div>
