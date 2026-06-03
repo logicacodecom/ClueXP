@@ -275,11 +275,19 @@ Three separate deployable apps in this one monorepo — **separate Vercel projec
 domains, separate auth surfaces** (the ADR-0003 tenant-isolation boundary: org dispatchers and
 ClueXP ops must not share a bundle/domain).
 
-| App (folder) | Audience | Subdomain | Vercel project | Status |
+| App (folder) | Audience | Subdomain (target) | Vercel project | Status |
 |---|---|---|---|---|
-| `apps/intake-web` | Customers | `intake.cluexp.com` | `cluexp-intake` | live today |
+| `apps/intake-web` | Customers | `intake.cluexp.com` | `cluexp-intake` | live, but currently served at `www.cluexp.com` — migrate to `intake.cluexp.com` |
 | `apps/ops-web` | ClueXP internal operations/admin/dispatch console | `ops.cluexp.com` | `cluexp-ops` | new |
 | `apps/provider-web` | Provider partner orgs | `partners.cluexp.com` | `cluexp-provider` | new |
+| _(future)_ public marketing site | Public | `cluexp.com` / `www.cluexp.com` | TBD | not built — `www` to be repurposed from intake later |
+
+> **Live-account reality (verified 2026-06-03):** `cluexp.com` is on the Vercel team
+> `logicacode-projects`, but its **nameservers are third-party**, so each subdomain needs a
+> `CNAME → cname.vercel-dns.com` added at the registrar before it verifies. Today `cluexp-intake`
+> serves `www.cluexp.com`; the plan is to move intake to `intake.cluexp.com` and free `www` for a
+> future public site. Vercel CLI v54 cannot set a project's **Root Directory** (dashboard/REST API
+> only), so creating the two monorepo console projects needs the dashboard or an API token.
 
 Vercel setup for each new app: create a project pointing at the **same repo**, set **Root
 Directory** = `apps/provider-web` / `apps/ops-web`, framework = Next.js, then bind the custom

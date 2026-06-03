@@ -44,8 +44,10 @@ job-vs-tech markers + service-area + staleness; job-detail shows trust-state + s
 audit-log trust column uses only INTAKE/MATCHED/FULFILLMENT. Don't break the trust-state contract.
 
 **Domains decided:** three separate Vercel projects/domains —
-`intake-web → intake.cluexp.com` (live), `ops-web → ops.cluexp.com` (ClueXP internal
-operations/admin/dispatch console), `provider-web → partners.cluexp.com`. Keep the two consoles on separate domains (ADR-0003 isolation).
+`intake-web → intake.cluexp.com` (target; currently served at `www.cluexp.com`, to migrate —
+`www`/`cluexp.com` becomes a future public marketing site), `ops-web → ops.cluexp.com` (ClueXP
+internal operations/admin/dispatch console), `provider-web → partners.cluexp.com`. Keep the two
+consoles on separate domains (ADR-0003 isolation).
 See build-plan §10.5. Questions back here. — Claude
 
 Executed the build-plan UI pass on 2026-06-03. Added:
