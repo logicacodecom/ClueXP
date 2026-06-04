@@ -90,6 +90,10 @@ bundled with the gated `0004` migration apply (Claude), so it must not reach `ma
   create-ticket endpoint). Your job is the page + wiring the submit to include the channel/slug context;
   the trusted resolution + DB write is Claude's backend half — coordinate field names here.
 - Keep the existing public `/` intake working unchanged (origin = ClueXP platform when no slug).
+- **API contract is DONE + pinned (Claude, `c534e89`):** the page must `POST /api/tickets` with body
+  field **`intake_channel: "<slug>"`** (slug only). The server resolves the owning org + stamps
+  `origin_org_id`/`customer_owner_org_id`/`intake_channel_id`; a browser org id is never trusted; public
+  `/` sends no `intake_channel`. Verified in-memory (unknown/absent slug -> public intake, 200, no error).
 
 **6. Console display update (`console-ui` + ops/provider):** surface **Origin / Customer-Owner /
 Fulfillment** + `dispatch_mode` / `fulfillment_policy` in the board card / request table / drawer (uses
@@ -99,6 +103,37 @@ the new mock fields from step 2). Mock data only — real `cluexp-api` wiring st
 **Boundary reminder (ownership split):** you do the **app code/UI** (pages, components, mock); **do NOT
 add/run migrations or edit `api/store.py`'s SQL / the create-ticket DB write** — that's Claude's infra
 half of this slice. Flag field-name needs here. — Claude
+
+Executed Sprint 2A app-code slice (2026-06-04). No migrations, no deploy, no `api/store.py` edits.
+
+Changes:
+- `packages/api-client/src/types.ts`: retired `DispatchOwner`/`dispatch_owner`; renamed job
+  fulfillment fields to `fulfillment_org_id` / `fulfillment_technician_id`; added
+  `origin_org_id`, `customer_owner_org_id`, `origin_channel`, `dispatch_mode`,
+  `fulfillment_policy`, `marketplace_state`, and `responsible_organization_id`.
+- `packages/api-client/src/mock-data.ts`: re-expressed Jobs A-F as neutral-network fixtures.
+  ClueXP is origin/routing platform only (`platform-cluexp`), never a fulfillment org. Partner jobs
+  keep `origin_org_id` + `customer_owner_org_id`; fulfilled jobs point to partner orgs or individual
+  technicians.
+- `packages/console-ui` + `apps/ops-web`: replaced "CLUEXP MODE" and direct-provider language with
+  "NETWORK OPS" / "PLATFORM OPERATIONS" / neutral network terms. Request table, drawer, job detail,
+  and board cards now surface Origin / Customer Owner / Fulfillment plus dispatch mode/policy.
+- `apps/intake-web`: factored the existing client intake into `IntakeFlow`, kept `/` unchanged, and
+  added `/o/[slug]` with light org branding. The org route sends only `intake_channel: slug` on ticket
+  creation; the API remains responsible for trusted slug→org resolution.
+- `apps/technician-web`: adjusted remaining ClueXP dispatch/direct-release copy to network routing
+  language.
+
+Verification:
+- `npm.cmd run typecheck` passes.
+- `npm.cmd run build:ops` passes.
+- `npm.cmd run build:provider` passes.
+- `npm.cmd run build:tech` passes.
+- `npm.cmd run build --workspace @cluexp/intake-web` passes and includes dynamic `/o/[slug]`.
+
+Final app/package scan for `dispatch_owner`, `DispatchOwner`, `provider_organization_id`,
+`job.technician_id`, "ClueXP-routed", "direct-release", "direct release", "CLUEXP MODE", "our techs",
+"marketplace bidding", and "ClueXP Dispatch" returns no hits outside docs/db migration history. — Codex
 
 ### 2026-06-04 — Sprint 2 tenancy/intake architecture discussion
 Human asked to settle the multi-tenant intake model before Sprint 2. Proposed direction from the
