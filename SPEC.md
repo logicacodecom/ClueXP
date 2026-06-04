@@ -126,29 +126,35 @@ the phone** so the `customers` upsert fires (today the `Ticket` has no phone
 field, so jobs can land unlinked). Phone arrives naturally with OTP (§7.12), but
 history needs it sooner — see the execution plan.
 
-### 2.10 Dispatch authority (open design — not scheduled)
+### 2.10 Dispatch authority & tenancy (see `adr/0004`)
 
-> Direction agreed, not yet built. No schema/code applied. Sprint 2 ships
-> **ClueXP-managed dispatch only**; the rest below is the shape to grow into.
+> ClueXP is a **neutral dispatch network**, not a fulfillment provider — it routes
+> demand to verified providers/technicians and never competes as a service company.
+> The full tenancy/intake model is **`adr/0004-tenancy-and-intake.md`**; this is the
+> dispatch-authority summary. Sprint 2 builds the foundation, not the marketplace.
 
-Who dispatches a job depends on the supply:
+Every job tracks **three independent axes** — **origin** (who brought the demand),
+**customer owner** (who owns the relationship; defaults to the origin owner), and
+**fulfillment** (`fulfillment_org_id` *nullable* + `fulfillment_technician_id`). The
+legacy single `dispatch_owner` field is **retired**.
 
-- **Individual technician** → **ClueXP dispatches** directly (the matcher).
-- **Affiliated technician** → **organization-managed by default**: ClueXP routes the
-  job *to the organization*, which assigns one of its own technicians internally.
-- **Per-technician release (override):** an org may flag a specific affiliated
-  technician as **free for direct ClueXP dispatch**; flagged techs can then be
-  dispatched directly, like an individual. The flag is granted by the org on the
-  membership, not a global technician property.
+Who *controls* routing is `dispatch_mode`:
+- **`organization_managed`** — the provider org assigns from its own technicians, or
+  overflows the job to the network. When an org overflows, **the org stays the owner**;
+  the fulfilling technician only serves.
+- **`cluexp_managed_routing`** — ClueXP **routes** the request to the best eligible
+  provider org or **independent technician**. This is routing, **not** ClueXP
+  fulfillment; an independent technician fulfills with `fulfillment_org_id` null.
 
-Future org-level posture is summarized by `organizations.dispatch_mode`
-(`cluexp_managed` | `organization_managed` | `hybrid`); the per-tech release lives on
-`organization_technicians` (see `docs/DATABASE-AND-STORAGE.md`).
+Overflow is governed by `fulfillment_policy` (`private` | `network_overflow` |
+`network_open`), set per org/channel; default **private**, cross-tenant exposure is
+explicit/opt-in. A previously org-managed technician released for network routing is a
+**membership flag** on `organization_technicians`, not a global technician property.
 
-**Trust-state rule (non-negotiable):** in organization-managed flow, an organization
-*accepting* a job does **not** flip `trust_state` to `matched`. The customer is only
-ever shown a **named, verified person** (§2.2, §2.8), so `matched` fires only when a
-specific `jobs.technician_id` is set; org-accept is an internal `events` milestone.
+**Trust-state rule (non-negotiable):** an organization (or ClueXP) *accepting/routing*
+a job does **not** flip `trust_state` to `matched`. The customer is only ever shown a
+**named, verified person** (§2.2, §2.8), so `matched` fires only when a specific
+`fulfillment_technician_id` is set; accept/route is an internal `events` milestone.
 
 ---
 

@@ -10,23 +10,24 @@
 
 ---
 
-## Status snapshot (verified 2026-06-03)
+## Status snapshot (verified 2026-06-04)
 
 | | |
 |---|---|
-| Intake app (production) | ✅ live — `www.cluexp.com` + `intake.cluexp.com` (project `cluexp-intake`; runs the pre–Sprint-1 `tickets`-store code, commit `4a692ba`; prod only auto-promotes from `main`). `www` to be repurposed for a future public marketing site. |
+| Intake app (production) | ✅ live — `www.cluexp.com` + `intake.cluexp.com` (project `cluexp-intake`). **Sprint 1 shipped to prod** (relational store + `/geocode` + photo upload) at commit `eeb3f7c` via `main`; both domains serving 200. `www` to be repurposed for a future public marketing site. |
+| Git / branches | ✅ **`main` consolidated** — `feat/sprint0-foundation` fast-forwarded into `main` (`eeb3f7c`); `main` is now the trunk and intake prod auto-deploys from it. New work should branch off `main`. |
 | Dispatch database baseline | ✅ applied to Supabase (`packages/db`, rev `0001_baseline`) |
 | Provider tenant schema | ✅ applied to Supabase, rev `0003_provider_organizations`; live `alembic_version = 0003` |
-| Live DB data | ✅ all 11 tables present and **empty** (dummy data purged) |
+| Live DB data | ✅ tables present; **prod intake write path verified 2026-06-04** (test ticket created → persisted to `jobs` with queryable lat/lng/address → read-back → cleaned up). `customers` empty (customer capture not wired — see backlog). |
 | Supabase Storage | ✅ `public-tech-media` + `private-verification` (10 MB + MIME limits); RLS on, deny-by-default (backend bypasses as owner role) |
-| Relational store (`api/store.py`) | ✅ built (writes `jobs.detail` + promoted cols, `customers` upsert-by-phone, `events.job_id`; read-only fallback to legacy `tickets`); **write contract verified against live 0003**. On preview deploy, not production. |
-| `GET /api/geocode` | ✅ endpoint + helper built and deployed; ⚠️ returns `{resolved:false}` until the `GOOGLE_MAPS_API_KEY` referrer restriction is fixed (see blockers) |
-| CI | ✅ `.github/workflows/ci.yml` on origin (`cdaf020`); runs on PRs |
-| Roadmap / ADR / this plan | ✅ in `docs/` |
-| Sprint 0 | ✅ complete (hardening, monorepo move + redeploy, CI, DB, storage, geocode endpoint) |
-| Sprint 1 | 🟨 assigned to **Codex**; store layer, geocoding UI wiring, and photo upload endpoints/UI built — remaining: live credential verification + full flow smoke |
-| Dispatch consoles (forward build) | ✅ **live** — `ops.cluexp.com` (ClueXP) + `partners.cluexp.com` (provider), both serving 200; `apps/ops-web` + `apps/provider-web` + `@cluexp/console-ui`, all 10 screens both modes, mock-data only. Deployed build = "Disciplined Industrial". **shadcn/ui + Tailwind v4 migration** (Codex Phases 2–4) is in the working tree — typecheck + both builds green, **uncommitted; Claude code-review + commit + redeploy pending**. Ahead of E2/E7 backend wiring — UI shell only. |
-| Technician app | ⬜ not started — spec ready (`TECHNICIAN-MOBILE-SPEC.md`, 19 screens; demo Jobs A/B/C match the console). Roadmap E2. Candidate next build: live dispatch-loop screens for an end-to-end demo. |
+| Relational store (`api/store.py`) | ✅ built + **write contract verified in PRODUCTION** (writes `jobs.detail` + promoted cols, `customers` upsert-by-phone, `events.job_id`; read-only fallback to legacy `tickets`). |
+| `GET /api/geocode` | ✅ **working in prod** — server-key restriction fixed (Application restrictions = None); returns real coords (`high`/`low` confidence). |
+| CI | ✅ `.github/workflows/ci.yml` on origin; runs on PRs |
+| Sprint 0 | ✅ complete |
+| Sprint 1 | ✅ **complete + verified in production** (relational store, geocoding, photo upload). |
+| Dispatch consoles | ✅ **live** — `ops.cluexp.com` (ClueXP) + `partners.cluexp.com` (provider), 200; shadcn/ui + Tailwind v4 migration **committed (`71d32b5`) + redeployed**. Mock-data UI ahead of backend wiring. ⚠️ copy uses pre-`adr/0004` "ClueXP MODE/ClueXP-routed" language — slated for the Sprint 2A language correction. |
+| Technician app | ✅ **live** — `tech.cluexp.com` (`apps/technician-web` PWA, 19 screens) + **real Google Map render** (geocode + Maps JS both live), committed. |
+| Tenancy / intake model | ✅ **`adr/0004` accepted** (neutral dispatch network, no ClueXP Direct, three axes, no bidding). Correction pass = **Sprint 2A** (below). |
 | Everything unchecked below | ⬜ planned |
 
 ## Locked decisions (from ADR 0001)
@@ -149,11 +150,33 @@ human's explicit go + smoke test.
 
 ---
 
-## Sprint 2 — Technician + matching v1 (auth + extraction)
+## Sprint 2 — Neutral-network correction, then technician + matching v1
 
-> Decisions: `adr/0002-identity-and-clients.md`. Self-owned JWT auth, flat role,
-> `cluexp-api` extracted here (first non-intake client), technician → React Native.
+> Decisions: **`adr/0004-tenancy-and-intake.md`** (tenancy/intake — neutral network,
+> no ClueXP Direct, three axes, no bidding) + `adr/0002-identity-and-clients.md`
+> (self-owned JWT auth, `cluexp-api` extraction).
+>
+> **Sequencing (human, 2026-06-04):** do the **correction pass + document updates
+> FIRST (2A)**, then the auth/extraction/dispatch build (2B).
 
+### 2A — Tenancy correction pass (do first, per `adr/0004`)
+- [~] **ADR 0004** authored (neutral network; origin/customer-owner/fulfillment;
+      `dispatch_mode` vs `fulfillment_policy`; no bidding; trusted-channel resolution).
+- [~] **Docs realigned** — SPEC §2.10 reworded; ROADMAP/this plan reframed to the
+      neutral-network model; console spec + `DATABASE-AND-STORAGE` updated.
+- [ ] **Code language correction** — retire `dispatch_owner`; reconcile
+      `provider_organization_id` → `fulfillment_org_id`; re-express mock fixtures
+      (`routing_source:"ClueXP-routed"`, `dispatch_owner:"cluexp"`) as Origin=ClueXP /
+      Fulfillment=partner-or-tech; audit console/technician copy to the neutral
+      lexicon (Dispatch Network, Provider Organizations, Verified Technicians, Service
+      Requests, Network Overflow, Origin/Fulfillment/Customer Owner, Trusted Routing,
+      Service Capacity) — remove "ClueXP Direct / our techs / ClueXP MODE /
+      direct-release / marketplace bidding". Keep typecheck + builds green.
+- [ ] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
+      settings, anonymous-capacity map/list (masked PII), network-release action,
+      ranked-match mock, job detail showing origin/customer-owner/fulfillment.
+
+### 2B — Auth + extraction + dispatch v1 (after 2A)
 - [ ] **Auth foundation** — `users` table (migration `0005_*`): `id, email, phone,
       password_hash, role ('customer'|'technician'|'staff'|'admin'), status`;
       bcrypt/argon2 hashing; JWT issue/verify in FastAPI; `require_role(...)`
@@ -179,9 +202,10 @@ human's explicit go + smoke test.
 - [ ] **Dispatch engine v1** (deterministic, outside the intake graph per SPEC §2.7):
       score by distance (service_area), skill (`access_type`/key type), availability, rating.
 - [ ] `/dispatch` creates `dispatch_offers` for top-N; first accept wins via
-      backend transaction/constraint (not UI timing); timeout → next; assigns
-      `jobs.technician_id`; when affiliated, also records
-      `jobs.provider_organization_id`; flips `trust_state=matched`.
+      backend transaction/constraint (not UI timing); timeout → next; sets
+      `jobs.fulfillment_technician_id` (and `fulfillment_org_id` when an org fulfills,
+      else null for an independent tech — `adr/0004` §2/§9); preserves the job's
+      `origin_org_id`/`customer_owner_org_id`; flips `trust_state=matched`.
 - [ ] Technician offer delivery v1 may poll `dispatch_offers`; production-grade
       real-time delivery (push/websocket/native notifications), expiry countdown
       correctness, and mobile alert reliability are tracked under Roadmap E3

@@ -1,7 +1,17 @@
 # ClueXP — Product Roadmap
 
-> Living plan for building the full ClueXP emergency-access platform gradually.
+> Living plan for building the full ClueXP platform gradually.
 > The long-term product contract is `SPEC.md`; this file is the delivery plan.
+
+> **Positioning (`adr/0004`, 2026-06-04):** ClueXP is a **neutral multi-tenant
+> dispatch network for urgent services** — *Clue Express + Clue Experts; "the trusted
+> dispatch network for urgent services."* **Locksmith/access is the first vertical**,
+> but the architecture must extend to other urgent local services (roadside, garage
+> door, towing, emergency glass, plumbing/HVAC, appliance repair). ClueXP **routes**
+> demand to verified providers/independent technicians and **never competes as a
+> service company** (no "ClueXP Direct"). Jobs track three independent axes — origin /
+> customer-owner / fulfillment; private-by-default with explicit network overflow; no
+> bidding in the MVP. See `adr/0004-tenancy-and-intake.md`.
 
 ## Locked architecture decisions (see `docs/adr/0001-foundation-architecture.md`)
 
@@ -98,7 +108,7 @@ separate **domain-restricted** token for rendering only.
 - **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
 - **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
 - **E2 Technician & Access** — self-owned auth foundation (`users` + JWT, flat role; `adr/0002`); **extract `cluexp-api`** (first non-intake client); individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician app (PWA → React Native) + provider portal.
-- **E3 Dispatch engine** — deterministic matcher (geo + skill + availability + rating); offer cascade; backend-enforced first-accept-wins concurrency; production technician offer delivery (polling acceptable for v1, push/websocket/native notifications required before relying on real-time mobile alerts). *(v1 = ClueXP-managed only. Later: organization-managed dispatch — affiliated supply routed to the org, with a per-tech direct-dispatch release; SPEC §2.10. Not scheduled.)*
+- **E3 Dispatch engine** — deterministic/ranked matcher (territory + skill + availability + rating + verification; **no bidding/auction**, `adr/0004`); offer cascade; backend-enforced first-accept-wins concurrency; production technician offer delivery (polling acceptable for v1, push/websocket/native notifications required before relying on real-time mobile alerts). *(v1 = `cluexp_managed_routing` to providers/independent techs — routing, never ClueXP fulfillment. `dispatch_mode` `organization_managed` + `fulfillment_policy` network-overflow per `adr/0004`/SPEC §2.10. Open marketplace/bidding reserved, not scheduled.)*
 - **E4 Fulfillment** — real map, traffic ETA, live tracking, mutual arrival handshake.
 - **E5 Payments** — Stripe auth-hold at commit, capture at finalize; restore the deferred payment gate.
 - **E6 Identity/OTP** — restore OTP; ID verification into the private bucket.
