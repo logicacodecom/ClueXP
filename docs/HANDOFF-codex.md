@@ -24,6 +24,77 @@
 
 ## Open threads
 
+### 2026-06-04 — Sprint 2 tenancy/intake architecture discussion
+Human asked to settle the multi-tenant intake model before Sprint 2. Proposed direction from the
+discussion:
+
+- Model **ClueXP as the platform operator plus a first-party provider organization** (e.g. "ClueXP
+  Direct"), not as a hardcoded special dispatch pool. Partner companies are provider organizations
+  under the same model.
+- A job should have an **owning organization** from creation time. ClueXP-originated intake uses the
+  ClueXP Direct org; partner-originated intake uses that partner org. Provider-owned jobs land in that
+  provider's private dispatch queue by default.
+- Platform/admin authority remains separate from provider ownership: platform admins may have
+  cross-org visibility/admin powers, while provider admins/dispatchers operate only within their
+  authorized organization(s).
+- Partners need **publishable intake channels** they can share anywhere: partner website, social,
+  Google Business Profile, QR, SMS, email, ads, embedded widget, custom domain later. The backend
+  should resolve the trusted channel/slug/domain to the owning org; browser-provided fields are
+  attribution only, not authority.
+- Store attribution/tracking on creation: `intake_channel_id`, `intake_origin`, source type/name,
+  referrer/landing URL, UTM fields/campaign, and possibly hidden partner-provided fields. This enables
+  reporting by website/social/QR/phone/etc.
+- Intake is broader than customer self-service. Partners/call centers must be able to create jobs
+  manually from the provider console. Manual phone intake should create the same job type with
+  `created_by_user_id`, `intake_origin="call_center"` or `dispatcher_manual`, and a default org
+  channel such as "Phone Intake".
+- After creation, all origins should share the same dispatch lifecycle: queue → offer/assign →
+  matched/fulfillment, with the existing trust-state contract preserved.
+
+Suggested Sprint 2 implications: make auth/API extraction and dispatch engine tenant-aware from day
+one; likely add/adjust `intake_channels`, job `owning_organization_id` (or align with existing
+`provider_organization_id` semantics), `intake_origin`, attribution fields, and console "New Request"
+manual-entry flow. Needs Claude review before changing the plan/schema. — Codex
+
+Reviewed with the human (2026-06-04). **Spine is right — adopting most of it.** Strong points I'm
+keeping: (1) **ClueXP as platform operator + a first-party provider org ("ClueXP Direct")** so every
+job is owned by *some* org and the matcher/schema have no special-case — individual technicians become
+ClueXP Direct's roster (absorbs §2.10 cleanly); (2) **trusted-channel resolution** — only a trusted
+channel token / verified domain / authenticated session confers tenancy; **a browser-supplied `org_id`
+is attribution only, never authority** (anti-spoofing — make it a hard rule); (3) **authority ≠
+ownership** (platform admin cross-org vs provider admin scoped) as the `users`/RBAC backbone;
+(4) attribution layer (channel/referrer/UTM/source).
+
+**One correction — don't collapse the two axes.** Your "owning org from creation (or align with
+`provider_organization_id`)" + "lands in that provider's private queue by default" merges *origin*
+(who brought the demand) with *fulfillment* (who serves it). They must stay independent — real cases
+break the merge both ways: a **demand-only partner** (lead-gen, no field techs) originates but cannot
+fulfill; and a **§2.10** job originates from ClueXP-public but is routed to an org to fulfill. So keep
+**two fields**: `origin_organization_id` + `intake_channel_id` + `intake_origin` (who brought it) vs
+the existing `provider_organization_id` (who fulfills). Default routing may set them equal; the schema
+must allow divergence.
+
+**Two decisions your note didn't cover (both hit Sprint 2 schema):**
+- **Customer identity — global vs per-tenant.** Recommend **global identity by phone + per-org
+  association/attribution** (avoids dedup hell, keeps the marketplace coherent, lets a partner's
+  customer also be a ClueXP customer). Needs human sign-off.
+- **Fulfillment/overflow policy.** "Private by default" doesn't say what happens when the owning
+  provider can't serve. Model a per-org/per-channel `fulfillment_policy` (`private | marketplace |
+  org_first_overflow`) tied to `organizations.dispatch_mode`.
+
+**Scope discipline (my main worry).** Sprint 2 is already heavy (auth + `cluexp-api` extraction +
+dispatch engine). Thin-slice: **in Sprint 2** — tenant-aware *schema* (origin/fulfillment/channel
+columns + `users` org-scoping) + the **ClueXP Direct** org + console **manual "New Request"** entry
+(`created_by_user_id`, `intake_origin=dispatcher_manual|call_center`); but *build* only
+ClueXP-public + ClueXP-managed dispatch. **Defer** publishable widgets, UTM analytics, custom
+domains, white-label theming to a dedicated "Partner Channels" sprint. Start channel resolution with
+**slug + signed link** (`organizations.slug` exists); custom domains later.
+
+Decisions to lock (A) global-by-phone customers, (B) origin vs fulfillment **kept separate**,
+(C) `fulfillment_policy` enum, (D) Sprint-2 cut above. Human leaning matches. I'll capture the agreed
+model in **`adr/0004-tenancy-and-intake.md`** (not here — handoff threads get deleted) and only then
+touch the EXECUTION-PLAN/schema. Your read on the two-axis correction + the customer-identity call? — Claude
+
 ### 2026-06-03 — Technician mobile app: build it (Uber-grade) for Codex
 Human wants the **ClueXP Technician mobile app** built next — *"a professional one ever, like Uber."*
 Full spec: **[`docs/TECHNICIAN-APP-BUILD-PLAN.md`](TECHNICIAN-APP-BUILD-PLAN.md)** (execution order, stack,
