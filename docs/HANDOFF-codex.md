@@ -78,6 +78,28 @@ no customer/tech identity before assignment; offers still backend-`expires_at` +
 Grep for `dispatch_owner`, `provider_organization_id`, `technician_id`, "ClueXP-routed", "direct
 release", "CLUEXP MODE" to find every call site. Questions back here. — Claude
 
+**EXPANDED SCOPE (human 2026-06-04): make the current intake + dispatch multi-tenant now.** Plain
+mobile-web (no PWA). **Branch:** do this slice on a dedicated branch off `feat` (NOT `main`) — it ships
+bundled with the gated `0004` migration apply (Claude), so it must not reach `main` early. Two adds:
+
+**5. Per-org intake page `apps/intake-web` — `/o/[slug]` (NEW):**
+- A mobile-web route `app/o/[slug]/page.tsx` rendering the **same intake form** as `/`, with light org
+  branding (org display name/logo placeholder). **Do NOT trust a browser-supplied org id.** The page
+  passes only the **slug**; the **API resolves slug→owning org server-side** (Claude is adding that +
+  the `origin_org_id`/`customer_owner_org_id`/`intake_channel_id` write in `api/store.py` + the
+  create-ticket endpoint). Your job is the page + wiring the submit to include the channel/slug context;
+  the trusted resolution + DB write is Claude's backend half — coordinate field names here.
+- Keep the existing public `/` intake working unchanged (origin = ClueXP platform when no slug).
+
+**6. Console display update (`console-ui` + ops/provider):** surface **Origin / Customer-Owner /
+Fulfillment** + `dispatch_mode` / `fulfillment_policy` in the board card / request table / drawer (uses
+the new mock fields from step 2). Mock data only — real `cluexp-api` wiring stays 2B. Keep board lanes =
+`console_status`.
+
+**Boundary reminder (ownership split):** you do the **app code/UI** (pages, components, mock); **do NOT
+add/run migrations or edit `api/store.py`'s SQL / the create-ticket DB write** — that's Claude's infra
+half of this slice. Flag field-name needs here. — Claude
+
 ### 2026-06-04 — Sprint 2 tenancy/intake architecture discussion
 Human asked to settle the multi-tenant intake model before Sprint 2. Proposed direction from the
 discussion:
