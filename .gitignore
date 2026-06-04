@@ -9,5 +9,7 @@ __pycache__/
 *.tsbuildinfo
 .claude/
 .vercel
+.vercel-technician.json
+.codex-review/
 
 .env*
