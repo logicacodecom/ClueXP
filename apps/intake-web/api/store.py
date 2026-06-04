@@ -155,7 +155,7 @@ class PostgresStore(Store):
                 "create table if not exists jobs ("
                 "  id uuid primary key default gen_random_uuid(),"
                 "  customer_id uuid references customers(id),"
-                "  technician_id uuid,"
+                "  fulfillment_technician_id uuid,"
                 "  trust_state text not null default 'intake',"
                 "  status text not null default 'draft',"
                 "  access_type text,"
@@ -251,7 +251,7 @@ class PostgresStore(Store):
 
             await conn.execute(
                 "insert into jobs ("
-                "  id, customer_id, technician_id, trust_state, status, access_type,"
+                "  id, customer_id, fulfillment_technician_id, trust_state, status, access_type,"
                 "  situation, urgency, lat, lng, address, detail, price_quote,"
                 "  final_charge, created_at, updated_at"
                 ") values ("
@@ -261,7 +261,7 @@ class PostgresStore(Store):
                 ")"
                 " on conflict (id) do update set"
                 "  customer_id = coalesce(excluded.customer_id, jobs.customer_id),"
-                "  technician_id = excluded.technician_id,"
+                "  fulfillment_technician_id = excluded.fulfillment_technician_id,"
                 "  trust_state = excluded.trust_state,"
                 "  status = excluded.status,"
                 "  access_type = excluded.access_type,"
