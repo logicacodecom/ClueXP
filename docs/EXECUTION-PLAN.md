@@ -164,6 +164,11 @@ human's explicit go + smoke test.
       `dispatch_mode` vs `fulfillment_policy`; no bidding; trusted-channel resolution).
 - [~] **Docs realigned** — SPEC §2.10 reworded; ROADMAP/this plan reframed to the
       neutral-network model; console spec + `DATABASE-AND-STORAGE` updated.
+- [~] **Infra (Claude):** migration `0004_tenancy_and_intake` drafted + offline-verified
+      (**UNAPPLIED**); the coupled `api/store.py` column rename is **parked on branch
+      `chore/sprint2b-0004-apply`** (kept off `main` so prod can't pick it up early).
+      **Apply bundle → 2B:** run `0004` on prod, then merge+deploy the store.py branch
+      (brief writer window acceptable at current scale); needs prod-DDL authorization.
 - [ ] **Code language correction** — retire `dispatch_owner`; reconcile
       `provider_organization_id` → `fulfillment_org_id`; re-express mock fixtures
       (`routing_source:"ClueXP-routed"`, `dispatch_owner:"cluexp"`) as Origin=ClueXP /
