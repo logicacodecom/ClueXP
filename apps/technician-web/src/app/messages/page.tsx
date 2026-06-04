@@ -11,7 +11,7 @@ export default function MessagesPage() {
         </Section>
         <Section title="Dispatch channel">
           <div className="rounded-xl border border-border bg-card-strong p-3">
-            <div className="text-xs font-bold uppercase text-muted">ClueXP Dispatch</div>
+            <div className="text-xs font-bold uppercase text-muted">ClueXP Network</div>
             <div className="mt-1 text-sm">Keep GPS active for {job?.id ?? "current job"}. Arrival verification required before service.</div>
           </div>
         </Section>

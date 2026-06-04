@@ -14,7 +14,7 @@ export default function TeamPage() {
         </Section>
         <Section title="Affiliated example">
           <div className="rounded-xl border border-border bg-card-strong p-3 text-sm leading-5 text-muted">
-            Organization technicians would see org name, teams such as Auto Team or Home Team, and whether ClueXP has direct-release permission.
+            Organization technicians would see org name, teams such as Auto Team or Home Team, and whether they are eligible for verified network routing.
           </div>
         </Section>
       </Screen>

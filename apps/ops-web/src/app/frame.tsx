@@ -10,8 +10,8 @@ export function AppFrame({ children }: { children: ReactNode }) {
     <AppShell
       activePath={pathname}
       mode="cluexp"
-      modeBadge="CLUEXP MODE"
-      surfaceLabel="OPERATIONS CONSOLE"
+      modeBadge="NETWORK OPS"
+      surfaceLabel="PLATFORM OPERATIONS"
     >
       {children}
     </AppShell>

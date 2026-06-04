@@ -62,11 +62,18 @@ export type OfferStatus =
   | "failed_delivery";
 
 export type ProviderType = "individual" | "affiliated";
-export type DispatchOwner = "cluexp" | "organization";
 export type AccessType = "car" | "home" | "business";
 export type Urgency = "low" | "medium" | "high" | "critical";
 export type DocumentStatus = "verified" | "expiring" | "expired" | "pending_review";
 export type ConsoleMode = "cluexp" | "org";
+export type DispatchMode = "organization_managed" | "cluexp_managed_routing";
+export type FulfillmentPolicy = "private" | "network_overflow" | "network_open";
+export type MarketplaceState =
+  | "private"
+  | "offered_to_network"
+  | "open_network"
+  | "awarded"
+  | "withdrawn";
 
 export interface Organization {
   id: string;
@@ -112,7 +119,7 @@ export interface Technician {
   rating?: number;
   document_status: DocumentStatus;
   location_updated_min_ago?: number;
-  /** §3.2 — membership-level permission, future/planned. Lets ClueXP dispatch directly. */
+  /** ADR 0004 — membership-level permission for verified network routing, future/planned. */
   direct_dispatch_allowed: boolean;
   blocking_reason?: string;
   verified?: boolean;
@@ -133,16 +140,22 @@ export interface Job {
   customer_display: string;
   trust_state: TrustState;
   console_status: ConsoleStatus;
-  dispatch_owner: DispatchOwner;
   access_type: AccessType;
   situation: string;
   urgency: Urgency;
   area: string;
   address: string;
   routing_source: string;
+  origin_org_id?: string;
+  customer_owner_org_id?: string;
+  origin_channel?: string;
+  dispatch_mode?: DispatchMode;
+  fulfillment_policy?: FulfillmentPolicy;
+  marketplace_state?: MarketplaceState;
+  responsible_organization_id?: string | null;
   safety_flags: SafetyFlag[];
-  provider_organization_id?: string;
-  technician_id?: string;
+  fulfillment_org_id?: string | null;
+  fulfillment_technician_id?: string;
   age_min: number;
   sla_min?: number;
   sla_deadline_at?: string;

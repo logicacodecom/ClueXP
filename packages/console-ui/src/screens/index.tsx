@@ -65,7 +65,7 @@ function firstOffer() {
 }
 
 function scopedJobs(mode: ConsoleMode): Job[] {
-  return mode === "org" ? jobs.filter((job) => job.provider_organization_id === orgId || job.dispatch_owner === "organization") : jobs;
+  return mode === "org" ? jobs.filter((job) => job.origin_org_id === orgId || job.customer_owner_org_id === orgId || job.fulfillment_org_id === orgId) : jobs;
 }
 
 function byPriority(job: Job): number {
@@ -78,6 +78,24 @@ function primaryJob(mode: ConsoleMode): Job {
   return mode === "org" ? mustJob("JOB-B-2248") : mustJob("JOB-A-2201");
 }
 
+function organizationLabel(id?: string | null): string {
+  if (!id) return "Not assigned";
+  if (id === "platform-cluexp") return "ClueXP Platform";
+  return organizationById(id)?.display_name ?? id;
+}
+
+function fulfillmentLabel(job: Job): string {
+  if (job.fulfillment_technician_id) return technicianById(job.fulfillment_technician_id)?.display_name ?? job.fulfillment_technician_id;
+  if (job.fulfillment_org_id) return organizationLabel(job.fulfillment_org_id);
+  return "Pending network assignment";
+}
+
+function policyLabel(job: Job): string {
+  const policy = job.fulfillment_policy?.replace(/_/g, " ") ?? "not set";
+  const mode = job.dispatch_mode?.replace(/_/g, " ") ?? "not set";
+  return `${mode} · ${policy}`;
+}
+
 export function Dashboard({ mode }: { mode: ConsoleMode }) {
   const queue = [...scopedJobs(mode)].sort((a, b) => byPriority(a) - byPriority(b));
   const atRisk = queue.filter((job) => job.urgency === "critical" || job.console_status === "stalled" || job.console_status === "escalated");
@@ -86,7 +104,7 @@ export function Dashboard({ mode }: { mode: ConsoleMode }) {
       <PageHeader
         kicker={mode === "org" ? "Provider command center" : "Operations command center"}
         title="Dispatch Dashboard"
-        description="Live emergency-access operations, SLA exposure, technician availability, and recent trust-state activity."
+        description="Live service requests, network capacity, SLA exposure, and recent trust-state activity."
         actions={<><Button>Create request</Button><Button variant="outline">Export shift report</Button></>}
       />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
@@ -135,10 +153,10 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
   return (
     <div>
       <PageHeader
-        kicker={mode === "org" ? "Organization queue" : "ClueXP live queue"}
+        kicker={mode === "org" ? "Organization queue" : "Network live queue"}
         title="Live Dispatch Queue"
-        description="Sorted by stalled requests, safety flags, age, and service pressure. Customer trust-state stays separate from console status."
-        actions={<><Button>Create Job</Button><Button variant="secondary"><Phone className="size-4" />Call Customer</Button><Button variant="outline"><Phone className="size-4" />Call Technician</Button></>}
+        description="Sorted by stalled service requests, safety flags, age, and service pressure. Customer trust-state stays separate from console status."
+        actions={<><Button>Create Request</Button><Button variant="secondary"><Phone className="size-4" />Call Customer</Button><Button variant="outline"><Phone className="size-4" />Call Technician</Button></>}
       />
       <div className="mb-4"><FilterBar filters={["Source", "Access type", "Situation", "Urgency", "Area", "Team", "Age", "Trust-state", "Escalation reason"]} /></div>
       <RequestTable jobs={queue} />
@@ -154,8 +172,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
 
 export function JobDetail({ mode }: { mode: ConsoleMode }) {
   const job = primaryJob(mode);
-  const tech = technicianById(job.technician_id);
-  const org = organizationById(job.provider_organization_id);
+  const tech = technicianById(job.fulfillment_technician_id);
   const jobEvents = eventsForJob(job.id);
   return (
     <div>
@@ -188,9 +205,12 @@ export function JobDetail({ mode }: { mode: ConsoleMode }) {
           </Card>
           <TrustSafety flags={job.safety_flags} status={job.trust_state} technician={tech} />
           <Card>
-            <CardHeader><CardTitle>Dispatch assignment</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Network routing and ownership</CardTitle></CardHeader>
             <CardContent>
-              <DataTable columns={["Owner", "Organization", "Technician", "ETA", "Routing source"]} rows={[[job.dispatch_owner, org?.display_name ?? "ClueXP individual network", tech?.display_name ?? "No named technician yet", job.eta_min ? `${job.eta_min} min` : "Pending", job.routing_source]]} />
+              <DataTable
+                columns={["Origin", "Customer Owner", "Fulfillment", "Dispatch Policy", "ETA", "Routing source"]}
+                rows={[[organizationLabel(job.origin_org_id), organizationLabel(job.customer_owner_org_id), fulfillmentLabel(job), policyLabel(job), job.eta_min ? `${job.eta_min} min` : "Pending", job.routing_source]]}
+              />
             </CardContent>
           </Card>
           <Card>
@@ -203,7 +223,7 @@ export function JobDetail({ mode }: { mode: ConsoleMode }) {
             <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
             <CardContent className="flex flex-wrap gap-2">
               <Button asChild><Link href={`/jobs/${job.id}/assign`}>Assign</Link></Button>
-              {mode === "cluexp" ? <Button asChild variant="secondary"><Link href={`/jobs/${job.id}/route`}>Route</Link></Button> : <Button variant="secondary">Ask ClueXP</Button>}
+              {mode === "cluexp" ? <Button asChild variant="secondary"><Link href={`/jobs/${job.id}/route`}>Route</Link></Button> : <Button variant="secondary">Request Network Overflow</Button>}
               <Button variant="outline">Reassign</Button>
               <Button variant="destructive">Cancel</Button>
               <Button variant="destructive"><AlertTriangle className="size-4" />Escalate</Button>
@@ -278,7 +298,7 @@ export function RouteToOrganization() {
                   <div className="mt-1 text-sm text-muted-foreground">{org.description} · {org.distance_mi ?? "--"} mi · avg response {org.avg_response_min ?? "--"} min</div>
                   {org.blocking_reason ? <div className="mt-2 text-sm text-destructive">{org.blocking_reason}</div> : null}
                 </div>
-                <div className="flex flex-wrap gap-2">{org.status === "eligible" ? <><Button>Route to Organization</Button><Button variant="secondary"><Route className="size-4" />Route to Team</Button></> : <Badge variant="danger">Actions locked</Badge>}<Button variant="outline">View Profile</Button></div>
+              <div className="flex flex-wrap gap-2">{org.status === "eligible" ? <><Button>Route to Provider</Button><Button variant="secondary"><Route className="size-4" />Route to Team</Button></> : <Badge variant="danger">Actions locked</Badge>}<Button variant="outline">View Profile</Button></div>
               </CardContent>
             </Card>
           ))}
@@ -312,7 +332,7 @@ export function OrgJobIntake() {
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-3"><StatCard label="Access" value={job.access_type} /><StatCard label="Urgency" value={job.urgency} /><StatCard label="Area" value={job.area} /></div>
             <div className="flex flex-wrap gap-2"><Badge variant="warn">{job.situation}</Badge>{job.safety_flags.map((flag) => <Badge key={flag.code} variant="warn">{flag.label}</Badge>)}</div>
-            <div className="flex flex-wrap gap-2"><Button>Accept for Organization</Button><Button variant="secondary">Assign Technician</Button><Button variant="outline">Ask ClueXP</Button><Button variant="destructive">Decline with Reason</Button></div>
+            <div className="flex flex-wrap gap-2"><Button>Accept for Organization</Button><Button variant="secondary">Assign Technician</Button><Button variant="outline">Request Network Overflow</Button><Button variant="destructive">Decline with Reason</Button></div>
           </CardContent>
         </Card>
         <div className="space-y-3">{technicians.filter((tech) => tech.primary_organization_id === orgId).map((tech) => <TechnicianCard key={tech.id} mode="org" technician={tech} />)}</div>
@@ -351,7 +371,12 @@ export function DispatchBoard({ mode }: { mode: ConsoleMode }) {
                       <div className="font-medium">{job.id}</div>
                       <div className="mt-1 text-xs text-muted-foreground">{job.situation}</div>
                       <div className="mt-3 flex flex-wrap gap-2"><TrustStateChip trustState={job.trust_state} /><Badge variant="outline">{job.age_min}m</Badge>{job.eta_min ? <Badge variant="info">ETA {job.eta_min}m</Badge> : null}</div>
-                      <div className="mt-2 text-xs text-muted-foreground">{technicianById(job.technician_id)?.display_name ?? organizationById(job.provider_organization_id)?.display_name ?? "Unassigned"}</div>
+                      <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        <div>Origin: {organizationLabel(job.origin_org_id)}</div>
+                        <div>Customer owner: {organizationLabel(job.customer_owner_org_id)}</div>
+                        <div>Fulfillment: {fulfillmentLabel(job)}</div>
+                        <div>{policyLabel(job)}</div>
+                      </div>
                     </div>
                   ))}
                 </CardContent>
@@ -380,7 +405,7 @@ export function EscalationQueue({ mode }: { mode: ConsoleMode }) {
   const escalated = scopedJobs(mode).filter((job) => job.console_status === "escalated" || job.escalation_reason);
   return (
     <div>
-      <PageHeader kicker="Escalations" title="Escalation Queue" description="Factual reasons, ownership, and resolution actions for jobs needing human intervention." />
+      <PageHeader kicker="Escalations" title="Escalation Queue" description="Factual reasons, ownership, and resolution actions for service requests needing human intervention." />
       <div className="grid gap-6 xl:grid-cols-[1fr_460px]">
         <div className="space-y-3">
           {escalated.map((job) => (
@@ -417,7 +442,7 @@ export function DocumentsCompliance({ mode }: { mode: ConsoleMode }) {
     <div>
       <PageHeader kicker="Documents" title="Compliance Matrix" description="License, insurance, authorization and business documents that control dispatch eligibility." />
       <div className="mb-6 grid gap-4 md:grid-cols-3"><StatCard label="Verified entities" value={String(compliance.filter((entry) => entry.document_status === "verified").length)} /><StatCard label="Action required" value={String(compliance.filter((entry) => entry.blocking).length)} intent="warn" /><StatCard label="Pending review" value={String(compliance.filter((entry) => entry.document_status === "pending_review").length)} /></div>
-      <Card><CardHeader><div><CardTitle>All documents</CardTitle><CardDescription>Approve/reject/suspend actions are ClueXP-only.</CardDescription></div></CardHeader><CardContent className="space-y-4"><FilterBar filters={["All", "Organizations", "Technicians", "Expired", "Pending Review", "Blocking"]} /><DataTable columns={["Entity", "Type", "Category", "Status", "Last verified", "Actions"]} rows={rows} /></CardContent></Card>
+      <Card><CardHeader><div><CardTitle>All documents</CardTitle><CardDescription>Approve/reject/suspend actions are platform-operator actions.</CardDescription></div></CardHeader><CardContent className="space-y-4"><FilterBar filters={["All", "Organizations", "Technicians", "Expired", "Pending Review", "Blocking"]} /><DataTable columns={["Entity", "Type", "Category", "Status", "Last verified", "Actions"]} rows={rows} /></CardContent></Card>
     </div>
   );
 }

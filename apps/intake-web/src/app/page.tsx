@@ -63,6 +63,11 @@ interface PhotoIntentResponse {
   max_bytes: number;
 }
 
+interface IntakeBranding {
+  organizationName?: string;
+  organizationSlug?: string;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -83,7 +88,7 @@ function money(value?: number | null, currency = "USD") {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 }
 
-function TopBar() {
+function TopBar({ organizationName }: { organizationName?: string }) {
   return (
     <header className="topbar">
       <div className="mark" aria-hidden="true">
@@ -91,7 +96,7 @@ function TopBar() {
       </div>
       <div className="brand">
         <div className="wordmark">ClueXP</div>
-        <div className="subtitle">Emergency Access</div>
+        <div className="subtitle">{organizationName ? `${organizationName} intake` : "Urgent Service Dispatch"}</div>
       </div>
     </header>
   );
@@ -164,7 +169,7 @@ function ChipSelect({
   );
 }
 
-export default function HomePage() {
+export function IntakeFlow({ organizationName, organizationSlug }: IntakeBranding) {
   const [screen, setScreen] = useState<Screen>("opener");
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [guards, setGuards] = useState<TicketGuards>(emptyGuards);
@@ -191,6 +196,11 @@ export default function HomePage() {
     }),
     []
   );
+  const sessionKey = organizationSlug ? `${SESSION_KEY}:${organizationSlug}` : SESSION_KEY;
+
+  function withIntakeChannel(payload: Record<string, unknown> = {}) {
+    return organizationSlug ? { ...payload, intake_channel: organizationSlug } : payload;
+  }
 
   function sync(envelope: TicketEnvelope) {
     setTicket(envelope.ticket);
@@ -213,7 +223,7 @@ export default function HomePage() {
     if (ticket) return ticket;
     const envelope = await api<TicketEnvelope>("/tickets", {
       method: "POST",
-      body: JSON.stringify(payload)
+      body: JSON.stringify(withIntakeChannel(payload))
     });
     sync(envelope);
     return envelope.ticket;
@@ -319,13 +329,13 @@ export default function HomePage() {
   // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(SESSION_KEY);
+    const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
     let saved: { ticketId?: string; screen?: Screen };
     try {
       saved = JSON.parse(raw);
     } catch {
-      window.localStorage.removeItem(SESSION_KEY);
+      window.localStorage.removeItem(sessionKey);
       return;
     }
     if (!saved.ticketId) return;
@@ -335,18 +345,18 @@ export default function HomePage() {
         sync(envelope);
         if (saved.screen) setScreen(saved.screen);
       } catch {
-        window.localStorage.removeItem(SESSION_KEY); // ticket gone — start fresh
+        window.localStorage.removeItem(sessionKey); // ticket gone — start fresh
       }
     })();
-  }, []);
+  }, [sessionKey]);
 
   // Persist the active ticket id + screen so the session survives a reload.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (ticket?.ticket_id) {
-      window.localStorage.setItem(SESSION_KEY, JSON.stringify({ ticketId: ticket.ticket_id, screen }));
+      window.localStorage.setItem(sessionKey, JSON.stringify({ ticketId: ticket.ticket_id, screen }));
     }
-  }, [ticket?.ticket_id, screen]);
+  }, [ticket?.ticket_id, screen, sessionKey]);
 
   const content = (() => {
     if (screen === "opener") {
@@ -370,7 +380,7 @@ export default function HomePage() {
                   run(async () => {
                     const envelope = await api<TicketEnvelope>("/tickets", {
                       method: "POST",
-                      body: JSON.stringify({ access_type: value })
+                      body: JSON.stringify(withIntakeChannel({ access_type: value }))
                     });
                     sync(envelope);
                     if (value === "other") {
@@ -784,8 +794,13 @@ export default function HomePage() {
 
   return (
     <div className="shell">
-      <TopBar />
+      <TopBar organizationName={organizationName} />
       <main className="main">
+        {organizationName ? (
+          <div className="demo-banner" role="status">
+            Partner intake · {organizationName} · fulfilled through verified dispatch.
+          </div>
+        ) : null}
         <StepPipes screen={screen} />
         {DEMO && DEMO_SCREENS.includes(screen) ? (
           <div className="demo-banner" role="status">
@@ -803,4 +818,8 @@ export default function HomePage() {
       </footer>
     </div>
   );
+}
+
+export default function HomePage() {
+  return <IntakeFlow />;
 }

@@ -15,6 +15,7 @@ import type {
   TrustState,
   Urgency
 } from "@cluexp/api-client";
+import { organizationById, technicianById } from "@cluexp/api-client";
 import {
   AlertTriangle,
   Bell,
@@ -116,7 +117,7 @@ export const defaultNav: NavItem[] = [
 
 const labels: Record<StatusLike, string> = {
   new_unrouted: "New",
-  routed_to_cluexp: "Routed to ClueXP",
+  routed_to_cluexp: "Network routed",
   routed_to_organization: "Routed to org",
   awaiting_org_accept: "Awaiting org",
   awaiting_technician_assignment: "Awaiting assignment",
@@ -171,6 +172,22 @@ function StatusIcon({ status }: { status: StatusLike }) {
   if (variant === "danger") return <ShieldAlert className="size-3" aria-hidden />;
   if (variant === "warn") return <Clock className="size-3" aria-hidden />;
   return <span className="size-1.5 rounded-full bg-current" aria-hidden />;
+}
+
+function organizationLabel(id?: string | null): string {
+  if (!id) return "Not assigned";
+  if (id === "platform-cluexp") return "ClueXP Platform";
+  return organizationById(id)?.display_name ?? id;
+}
+
+function technicianLabel(id?: string): string {
+  return technicianById(id)?.display_name ?? "No named technician yet";
+}
+
+function fulfillmentLabel(job: Job): string {
+  if (job.fulfillment_technician_id) return technicianLabel(job.fulfillment_technician_id);
+  if (job.fulfillment_org_id) return organizationLabel(job.fulfillment_org_id);
+  return "Pending network assignment";
 }
 
 export function StatusBadge({ status, className }: { className?: string; status: StatusLike }) {
@@ -287,7 +304,7 @@ export function Sidebar({
         <Button className="w-full justify-center" onClick={onToggle} size={collapsed ? "icon" : "sm"} variant="outline">
           {collapsed ? <ChevronRight className="size-4" /> : <><ChevronLeft className="size-4" /> Collapse</>}
         </Button>
-        {!collapsed ? <div className="mt-3 rounded-md border border-border bg-card/60 p-3 text-xs text-muted-foreground">{mode === "cluexp" ? "Platform operations, compliance, dispatch." : "Organization-scoped dispatch workspace."}</div> : null}
+        {!collapsed ? <div className="mt-3 rounded-md border border-border bg-card/60 p-3 text-xs text-muted-foreground">{mode === "cluexp" ? "Network operations, compliance, and trusted routing." : "Organization-scoped dispatch workspace."}</div> : null}
       </div>
     </aside>
   );
@@ -437,24 +454,26 @@ export function RequestTable({ jobs }: { jobs: Job[] }) {
       <CardHeader>
         <div>
           <CardTitle>Requests</CardTitle>
-          <CardDescription>Dense operational table with trust-state separated from console status.</CardDescription>
+        <CardDescription>Dense service-request table with trust-state separated from console status.</CardDescription>
         </div>
         <div className="flex items-center gap-2"><Input className="w-64" placeholder="Filter requests" /><Button variant="outline">Filters</Button></div>
       </CardHeader>
       <CardContent className="p-0">
         <DataTable
-          columns={["Request", "Customer", "Area", "Status", "Trust", "Urgency", "Age", "Actions"]}
+          columns={["Request", "Customer", "Origin", "Customer Owner", "Fulfillment", "Status", "Trust", "Urgency", "Age", "Actions"]}
           rows={jobs.map((job) => [
             <div key={`${job.id}-req`}><div className="font-medium">{job.id}</div><div className="text-xs text-muted-foreground">{job.situation}</div></div>,
             job.customer_display,
-            job.area,
+            <div key={`${job.id}-origin`}><div>{organizationLabel(job.origin_org_id)}</div><div className="text-xs text-muted-foreground">{job.origin_channel ?? job.routing_source}</div></div>,
+            organizationLabel(job.customer_owner_org_id),
+            fulfillmentLabel(job),
             <StatusBadge key={`${job.id}-status`} status={job.console_status} />,
             <TrustStateChip key={`${job.id}-trust`} trustState={job.trust_state} />,
             <UrgencyTag key={`${job.id}-urgency`} urgency={job.urgency} />,
             <span className="tabular-nums" key={`${job.id}-age`}>{job.age_min}m</span>,
             <div className="flex items-center gap-1" key={`${job.id}-actions`}>
               <RequestDrawer job={job} />
-              <RowActions items={["Assign", "Route", "Escalate", "Call customer", "Call technician"]} />
+              <RowActions items={["Assign", "Route", "Release to network", "Escalate", "Call customer", "Call technician"]} />
             </div>
           ])}
         />
@@ -504,6 +523,8 @@ export function RequestDrawer({ job }: { job: Job }) {
           <div className="grid grid-cols-2 gap-3">
             <StatCard label="Age" value={`${job.age_min}m`} />
             <StatCard label="ETA" value={job.eta_min ? `${job.eta_min}m` : "Pending"} />
+            <StatCard label="Origin" value={organizationLabel(job.origin_org_id)} />
+            <StatCard label="Fulfillment" value={fulfillmentLabel(job)} />
           </div>
           <TrustSafety status={job.trust_state} flags={job.safety_flags} />
           <div className="flex flex-wrap gap-2">
@@ -530,7 +551,7 @@ export function TechnicianCard({ mode, technician }: { mode: ConsoleMode; techni
             <div className="flex flex-wrap items-center gap-2">
               <div className="font-medium">{technician.display_name}</div>
               <StatusBadge status={technician.eligibility} />
-              {technician.direct_dispatch_allowed && mode === "cluexp" ? <Badge variant="warn">Direct-release · planned</Badge> : null}
+              {technician.direct_dispatch_allowed && mode === "cluexp" ? <Badge variant="warn">Network routing eligible</Badge> : null}
             </div>
             <div className="mt-1 text-sm text-muted-foreground">{technician.provider_type} · {technician.service_area} · ETA {technician.eta_min ?? "--"}m · {technician.distance_mi ?? "--"}mi</div>
             <div className="mt-3 flex flex-wrap gap-2">{technician.skills.map((skill) => <Badge key={skill} variant="outline">{skill}</Badge>)}</div>
