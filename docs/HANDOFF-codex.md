@@ -19,6 +19,11 @@
   commit secrets; keep the trust-state contract (INTAKE→MATCHED→FULFILLMENT) and the API
   envelope intact; production DDL / prod promotion needs explicit human authorization;
   `.github/workflows/` pushes need the GitHub `workflow` OAuth scope (or add via web UI).
+- **Ownership split (human, 2026-06-04):** **Claude owns all infrastructure** — DB
+  migrations (`packages/db`), Supabase, Vercel projects/env, deploys. **Codex owns the
+  application code** (apps/UI, mock data, shared packages' code). Codex does **not** add
+  or run migrations; Claude does **not** do the app code-language work. Where a change
+  couples both (e.g. a column rename + `api/store.py`), coordinate via this log.
 
 ---
 
