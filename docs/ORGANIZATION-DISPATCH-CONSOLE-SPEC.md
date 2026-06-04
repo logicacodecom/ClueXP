@@ -16,6 +16,21 @@
 >   `api-client`, not one dual-mode app. "Organization Mode" / "ClueXP Mode" below describe
 >   the two surfaces' scopes, not runtime modes of a single app.
 > - **Auth:** `adr/0002-identity-and-clients.md` (platform `users` + JWT).
+>
+> - **⚠️ Tenancy/positioning superseded by `adr/0004` (2026-06-04).** Where this spec's
+>   language diverges, **`adr/0004-tenancy-and-intake.md` wins.** ClueXP is a **neutral
+>   dispatch network**, **not** a fulfillment provider (no "ClueXP Direct"). The
+>   **ClueXP / ops surface is the platform-operator console** (routing, oversight,
+>   escalation across tenants) — it does **not** dispatch ClueXP-owned technicians.
+>   Jobs track **three axes** (origin / customer-owner / fulfillment); use
+>   `dispatch_mode` (control: `organization_managed` | `cluexp_managed_routing`) +
+>   `fulfillment_policy` (`private` | `network_overflow` | `network_open`); **no
+>   bidding**. Use the neutral lexicon — *Dispatch Network, Provider Organizations,
+>   Verified Technicians, Service Requests, Network Overflow, Origin / Fulfillment /
+>   Customer Owner, Trusted Routing, Service Capacity* — and avoid "ClueXP Direct / our
+>   techs / direct-release / marketplace bidding." Read "ClueXP-managed dispatch" below
+>   as **ClueXP-managed *routing*** (to partners/independent techs, never ClueXP
+>   fulfillment) and "direct-release" as **released for network routing**.
 
 ---
 

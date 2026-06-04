@@ -96,20 +96,38 @@ Technicians can enter the marketplace in two ways:
   and expiration date. `provider_documents.verified_by` is intentionally nullable
   until a staff/admin actor table exists; add its FK in that later migration.
 
-Dispatch still assigns a person (`jobs.technician_id`) so the customer sees a
-real verified technician. When that person is affiliated, the job also records
-`jobs.provider_organization_id` for reporting, billing, and tenant controls.
+Dispatch still assigns a person (the **fulfillment technician**) so the customer
+sees a real verified technician. The applied `0003` columns (`jobs.technician_id`,
+`jobs.provider_organization_id`) are the *pre-`adr/0004`* shape; the future migration
+below renames/splits them into the neutral-network model.
 
-**Dispatch authority (future columns — not yet migrated; SPEC §2.10).** Affiliated
-supply is **organization-managed by default**; an org can release a specific tech for
-direct ClueXP dispatch. Planned, not applied:
-- `organizations.dispatch_mode` (`cluexp_managed` | `organization_managed` | `hybrid`).
-- `organization_technicians.direct_dispatch_allowed boolean default false` — the
-  per-tech release flag (org-granted, on the membership).
+**Tenancy & dispatch model (future columns — not yet migrated; `adr/0004` + SPEC §2.10).**
+ClueXP is a **neutral network**, not a fulfillment provider. A job tracks **three
+independent axes** and the legacy single `dispatch_owner` is **retired**:
+- `jobs.origin_org_id` + `jobs.origin_channel` / `jobs.intake_channel_id` — who brought
+  the demand (a provider org, or the ClueXP platform entity for direct requests).
+- `jobs.customer_owner_org_id` — who owns the customer relationship; **defaults to the
+  origin owner** and **stays the owner on overflow** (`adr/0004` §4/§9).
+- `jobs.fulfillment_org_id` **(nullable)** + `jobs.fulfillment_technician_id` — who
+  serves it. An **independent technician fulfills with `fulfillment_org_id` null**
+  (renames the old `provider_organization_id`/`technician_id` pair).
+- `jobs.responsible_organization_id` **(nullable)** — accountable / merchant-of-record
+  party (provider org for its own jobs; ClueXP platform as facilitator for
+  independent-tech jobs). Legal specifics deferred (`adr/0004` §9).
+- `organizations.dispatch_mode` (`organization_managed` | `cluexp_managed_routing`) —
+  who *controls* routing. `cluexp_managed_routing` = routing, **not** ClueXP fulfillment.
+- `jobs.fulfillment_policy` / `intake_channels.fulfillment_policy`
+  (`private` | `network_overflow` | `network_open`) — the overflow ladder; **default
+  `private`**, cross-tenant exposure is explicit/opt-in.
+- `organization_technicians.network_release_allowed boolean default false` — membership
+  flag releasing an affiliated tech for **network routing** (not "direct ClueXP dispatch").
+- **Customer identity:** a global person/identity (resolved by phone, **not** tenant-
+  browsable) + **org-scoped, RLS-isolated** customer-relationship rows — global
+  resolution, never global visibility (`adr/0004` §3).
+- **Reserved, not built:** `jobs.marketplace_state`, bidding tables, settlement/fees.
 - For org/team-targeted offers, a later migration generalizes `dispatch_offers` to
-  `target_type` (`technician` | `organization` | `team`) with the matching nullable id
-  and an integrity check. Until org self-dispatch is built, offers stay
-  technician-centric (`dispatch_offers.organization_id` already records attribution).
+  `target_type` (`technician` | `organization` | `team`); until then offers stay
+  technician-centric (`dispatch_offers.organization_id` records attribution).
 
 Common document types include `business_registration`, `business_license`,
 `insurance`, `locksmith_license`, `driver_license`, `work_authorization`,

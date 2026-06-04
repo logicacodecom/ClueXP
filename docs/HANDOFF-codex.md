@@ -24,6 +24,55 @@
 
 ## Open threads
 
+### 2026-06-04 — DEV TASK for Codex: Sprint 2A code-language correction (execute)
+Human signed off the neutral-network model; **`adr/0004-tenancy-and-intake.md` is accepted** and the
+docs are realigned (SPEC §2.10, ROADMAP, EXECUTION-PLAN, DATABASE-AND-STORAGE, console spec banner).
+**Your job: the code-language correction (Sprint 2A wave 3).** Mock-only, no backend, no new
+migrations. Make the code match `adr/0004`. Keep `typecheck` + `build:ops` + `build:provider` +
+`build:tech` green. **Do NOT redeploy** (human-gated); I review when done.
+
+**Read first:** `adr/0004` (esp. §1 neutral network, §2 three axes, §5 dispatch_mode vs
+fulfillment_policy, §8 ClueXP=platform actor) + the SPEC §2.10 reword.
+
+**1. `packages/api-client/src/types.ts` — model rename to the three axes:**
+- **Retire `dispatch_owner`** and the `DispatchOwner` type entirely.
+- **Rename** `Job.provider_organization_id` → `fulfillment_org_id` (nullable);
+  `Job.technician_id` → `fulfillment_technician_id`.
+- **Add** `origin_org_id?`, `customer_owner_org_id?`, `origin_channel?: string`,
+  `dispatch_mode?: "organization_managed" | "cluexp_managed_routing"`,
+  `fulfillment_policy?: "private" | "network_overflow" | "network_open"`,
+  `responsible_organization_id?` (nullable). Reserve `marketplace_state?` as an optional type only
+  (no logic). Export the new union types.
+
+**2. `packages/api-client/src/mock-data.ts` — re-express the demo jobs:**
+- Jobs that were `dispatch_owner:"cluexp"` / `routing_source:"ClueXP-routed"` → **Origin = ClueXP
+  platform**, **fulfillment = a partner org or an independent tech** (set `fulfillment_org_id`/
+  `fulfillment_technician_id` accordingly; ClueXP is NEVER a fulfillment org). Affiliated jobs →
+  `origin_org_id` = the partner, `customer_owner_org_id` = origin (stays owner on overflow).
+- Set `dispatch_mode` / `fulfillment_policy` sensibly per job; keep the existing cross-surface demo
+  Jobs A/B/C story intact. Technician offer `source` labels: keep "ClueXP" as a **routing/network**
+  source label (not "ClueXP Direct").
+
+**3. `packages/console-ui` + `apps/ops-web`/`apps/provider-web` — neutral lexicon:**
+- ops/platform surface mode label: **not** "CLUEXP MODE" → use platform/network-operator framing
+  (e.g. "PLATFORM OPERATIONS" / "NETWORK OPS"); provider stays "ORGANIZATION MODE".
+- Replace "ClueXP-routed", "direct-release", "our techs", "marketplace bidding" copy with the neutral
+  lexicon: **Dispatch Network, Provider Organizations, Verified Technicians, Service Requests, Network
+  Overflow, Origin / Fulfillment / Customer Owner, Trusted Routing, Service Capacity.**
+- Where the request table/drawer showed dispatch-owner, surface **Origin / Customer Owner /
+  Fulfillment** instead. The "released for direct ClueXP dispatch" chip → **"released for network
+  routing."**
+
+**4. `apps/technician-web`:** ensure source badges/copy read as ClueXP **routing/network** (not a
+ClueXP-owned fulfillment brand); update any `provider_organization_id`/`technician_id` references to
+the renamed fields.
+
+**Hard contracts (unchanged):** trust-state only `INTAKE|MATCHED|FULFILLMENT`; `matched` only on a
+named `fulfillment_technician_id`; board lanes = `console_status` (not trust-state, not the new axes);
+no customer/tech identity before assignment; offers still backend-`expires_at` + first-accept-wins.
+Grep for `dispatch_owner`, `provider_organization_id`, `technician_id`, "ClueXP-routed", "direct
+release", "CLUEXP MODE" to find every call site. Questions back here. — Claude
+
 ### 2026-06-04 — Sprint 2 tenancy/intake architecture discussion
 Human asked to settle the multi-tenant intake model before Sprint 2. Proposed direction from the
 discussion:
