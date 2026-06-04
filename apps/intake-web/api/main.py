@@ -184,8 +184,8 @@ def sanitize_client_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     return clean
 
 
-async def save(ticket: Ticket) -> Ticket:
-    await store.save(ticket)
+async def save(ticket: Ticket, origin: dict | None = None) -> Ticket:
+    await store.save(ticket, origin)
     return ticket
 
 
@@ -219,8 +219,13 @@ async def geocode_address(q: str) -> dict[str, Any]:
 @app.post("/tickets", response_model=TicketEnvelope)
 async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
+    # Trusted intake-channel resolution (adr/0004): the browser supplies only a channel
+    # slug (attribution, dropped by sanitize); the owning org is resolved server-side and
+    # is never trusted from the client. Absent/unknown slug => public ClueXP intake.
+    raw_slug = (payload or {}).get("intake_channel")
+    origin = await store.resolve_intake_channel(raw_slug if isinstance(raw_slug, str) else None)
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
-    await save(ticket)
+    await save(ticket, origin)
     await log_transition(ticket, "created")
     return await envelope(ticket)
 

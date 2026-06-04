@@ -69,8 +69,16 @@ class Store:
     async def get(self, ticket_id: UUID) -> Ticket | None:  # pragma: no cover
         raise NotImplementedError
 
-    async def save(self, ticket: Ticket) -> None:  # pragma: no cover
+    async def save(self, ticket: Ticket, origin: dict | None = None) -> None:  # pragma: no cover
         raise NotImplementedError
+
+    async def resolve_intake_channel(self, slug: str | None) -> dict | None:  # pragma: no cover
+        """Trusted server-side slug -> owning-org resolution (adr/0004).
+
+        Returns {origin_org_id, customer_owner_org_id, intake_channel_id} for a
+        known active channel, else None (public ClueXP intake). A browser-supplied
+        org id is never trusted — only this lookup confers tenancy."""
+        return None
 
     async def log_event(self, ticket: Ticket, event: str) -> None:  # pragma: no cover
         raise NotImplementedError
@@ -97,8 +105,12 @@ class InMemoryStore(Store):
     async def get(self, ticket_id: UUID) -> Ticket | None:
         return self._tickets.get(ticket_id)
 
-    async def save(self, ticket: Ticket) -> None:
+    async def save(self, ticket: Ticket, origin: dict | None = None) -> None:
         self._tickets[ticket.ticket_id] = ticket
+
+    async def resolve_intake_channel(self, slug: str | None) -> dict | None:
+        # No DB locally — public ClueXP intake (no owning org).
+        return None
 
     async def log_event(self, ticket: Ticket, event: str) -> None:
         stamp = datetime.now(timezone.utc).isoformat()
@@ -156,6 +168,9 @@ class PostgresStore(Store):
                 "  id uuid primary key default gen_random_uuid(),"
                 "  customer_id uuid references customers(id),"
                 "  fulfillment_technician_id uuid,"
+                "  origin_org_id uuid,"
+                "  customer_owner_org_id uuid,"
+                "  intake_channel_id uuid,"
                 "  trust_state text not null default 'intake',"
                 "  status text not null default 'draft',"
                 "  access_type text,"
@@ -222,7 +237,7 @@ class PostgresStore(Store):
                     row = await cur.fetchone()
         return Ticket.model_validate(row[0]) if row else None
 
-    async def save(self, ticket: Ticket) -> None:
+    async def save(self, ticket: Ticket, origin: dict | None = None) -> None:
         from psycopg.types.json import Jsonb
 
         payload = ticket.model_dump(mode="json")
@@ -234,6 +249,10 @@ class PostgresStore(Store):
         )
         customer_phone, customer_name = _customer_from_payload(payload)
         technician_id = _uuid_or_none(assignment.get("technician_id"))
+        origin = origin or {}
+        origin_org_id = _uuid_or_none(origin.get("origin_org_id"))
+        customer_owner_org_id = _uuid_or_none(origin.get("customer_owner_org_id"))
+        intake_channel_id = _uuid_or_none(origin.get("intake_channel_id"))
 
         async with await self._connect() as conn:
             customer_id = None
@@ -251,17 +270,24 @@ class PostgresStore(Store):
 
             await conn.execute(
                 "insert into jobs ("
-                "  id, customer_id, fulfillment_technician_id, trust_state, status, access_type,"
+                "  id, customer_id, fulfillment_technician_id,"
+                "  origin_org_id, customer_owner_org_id, intake_channel_id,"
+                "  trust_state, status, access_type,"
                 "  situation, urgency, lat, lng, address, detail, price_quote,"
                 "  final_charge, created_at, updated_at"
                 ") values ("
-                "  %s, %s, %s, %s, %s, %s,"
+                "  %s, %s, %s,"
+                "  %s, %s, %s,"
+                "  %s, %s, %s,"
                 "  %s, %s, %s, %s, %s, %s, %s,"
                 "  %s, %s, now()"
                 ")"
                 " on conflict (id) do update set"
                 "  customer_id = coalesce(excluded.customer_id, jobs.customer_id),"
                 "  fulfillment_technician_id = excluded.fulfillment_technician_id,"
+                "  origin_org_id = coalesce(jobs.origin_org_id, excluded.origin_org_id),"
+                "  customer_owner_org_id = coalesce(jobs.customer_owner_org_id, excluded.customer_owner_org_id),"
+                "  intake_channel_id = coalesce(jobs.intake_channel_id, excluded.intake_channel_id),"
                 "  trust_state = excluded.trust_state,"
                 "  status = excluded.status,"
                 "  access_type = excluded.access_type,"
@@ -278,6 +304,9 @@ class PostgresStore(Store):
                     str(ticket.ticket_id),
                     customer_id,
                     technician_id,
+                    origin_org_id,
+                    customer_owner_org_id,
+                    intake_channel_id,
                     _trust_state_value(ticket),
                     _enum_value(ticket.status),
                     _enum_value(ticket.access_type),
@@ -292,6 +321,29 @@ class PostgresStore(Store):
                     ticket.created_at,
                 ),
             )
+
+    async def resolve_intake_channel(self, slug: str | None) -> dict | None:
+        if not slug:
+            return None
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "select id, organization_id from intake_channels"
+                    " where slug = %s and active = true",
+                    (slug,),
+                )
+                row = await cur.fetchone()
+        except Exception:
+            # Table not present yet (pre-0004) or lookup failed → public intake.
+            return None
+        if not row:
+            return None
+        channel_id, org_id = row[0], row[1]
+        return {
+            "intake_channel_id": channel_id,
+            "origin_org_id": org_id,
+            "customer_owner_org_id": org_id,  # origin owns the customer (adr/0004 §4)
+        }
 
     async def log_event(self, ticket: Ticket, event: str) -> None:
         async with await self._connect() as conn:

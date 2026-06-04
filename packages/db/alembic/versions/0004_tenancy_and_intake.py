@@ -49,8 +49,8 @@ alter table jobs rename column technician_id to fulfillment_technician_id;
 alter table jobs rename column provider_organization_id to fulfillment_org_id;
 
 -- 2. jobs: origin / customer-owner / policy / provenance (all nullable or defaulted).
-alter table jobs add column if not exists origin_organization_id        uuid references organizations(id);
-alter table jobs add column if not exists customer_owner_organization_id uuid references organizations(id);
+alter table jobs add column if not exists origin_org_id                  uuid references organizations(id);
+alter table jobs add column if not exists customer_owner_org_id          uuid references organizations(id);
 alter table jobs add column if not exists origin_channel                 text;
 alter table jobs add column if not exists responsible_organization_id    uuid references organizations(id);
 alter table jobs add column if not exists fulfillment_policy             text not null default 'private';
@@ -80,8 +80,8 @@ alter table jobs add column if not exists intake_channel_id uuid references inta
 
 -- 6. indexes.
 alter index if exists idx_jobs_provider_organization rename to idx_jobs_fulfillment_org;
-create index if not exists idx_jobs_origin_org     on jobs (origin_organization_id);
-create index if not exists idx_jobs_customer_owner on jobs (customer_owner_organization_id);
+create index if not exists idx_jobs_origin_org     on jobs (origin_org_id);
+create index if not exists idx_jobs_customer_owner on jobs (customer_owner_org_id);
 create index if not exists idx_jobs_intake_channel on jobs (intake_channel_id);
 """
 
@@ -102,8 +102,8 @@ alter table if exists jobs drop column if exists network_released_at;
 alter table if exists jobs drop column if exists fulfillment_policy;
 alter table if exists jobs drop column if exists responsible_organization_id;
 alter table if exists jobs drop column if exists origin_channel;
-alter table if exists jobs drop column if exists customer_owner_organization_id;
-alter table if exists jobs drop column if exists origin_organization_id;
+alter table if exists jobs drop column if exists customer_owner_org_id;
+alter table if exists jobs drop column if exists origin_org_id;
 
 alter table if exists jobs rename column fulfillment_org_id to provider_organization_id;
 alter table if exists jobs rename column fulfillment_technician_id to technician_id;
