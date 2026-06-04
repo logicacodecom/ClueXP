@@ -15,6 +15,7 @@ import {
 } from "@cluexp/api-client";
 import type { ConsoleMode, ConsoleStatus, Job } from "@cluexp/api-client";
 import Link from "next/link";
+import { useState } from "react";
 import {
   AlertTriangle,
   Badge,
@@ -173,12 +174,56 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
 
 export function ProviderNewRequest() {
   const org = organizationById(orgId);
+  const [form, setForm] = useState({
+    customer_name: "Taylor Morgan",
+    customer_phone: "(555) 014-0199",
+    address: "210 Pine St, North Hills",
+    source_channel: "Phone intake",
+    access_type: "home",
+    situation: "locked_out",
+    urgency: "urgent",
+    notes: "Customer called from lobby. Has ID available. No safety concern reported."
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [createdId, setCreatedId] = useState<string | null>(null);
+
+  function update(field: keyof typeof form, value: string) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function createRequest() {
+    setBusy(true);
+    setError(null);
+    setCreatedId(null);
+    try {
+      const token = window.localStorage.getItem("cluexp_access_token");
+      if (!token) throw new Error("Sign in before creating provider requests.");
+      const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "";
+      const response = await fetch(`${apiBase}/api/provider/requests`, {
+        method: "POST",
+        headers: {
+          "authorization": `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(form)
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `Request failed: ${response.status}`);
+      setCreatedId(body.ticket?.ticket_id ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create request");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
         kicker="Manual intake"
         title="New Service Request"
-        description="Mock call-center entry for provider-owned requests. The backend will create the job with trusted org/session context, not a browser-supplied org id."
+        description="Call-center entry for provider-owned requests. The backend creates the job with trusted org/session context, not a browser-supplied org id."
         actions={<><Badge variant="outline">Origin: {org?.display_name ?? "Provider"}</Badge><Badge variant="outline">Customer owner: {org?.display_name ?? "Provider"}</Badge></>}
       />
       <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
@@ -186,27 +231,29 @@ export function ProviderNewRequest() {
           <CardHeader>
             <div>
               <CardTitle>Request details</CardTitle>
-              <CardDescription>Designed for phone and dispatcher-entered requests. Fields are mock-only until the authenticated API slice lands.</CardDescription>
+              <CardDescription>Designed for phone and dispatcher-entered requests. Submit stores the customer under the authenticated provider tenant.</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="space-y-2 text-sm font-medium">Customer name<Input placeholder="Customer display name" defaultValue="Taylor Morgan" /></label>
-              <label className="space-y-2 text-sm font-medium">Customer phone<Input placeholder="Masked or verified phone" defaultValue="(555) ***-0199" /></label>
-              <label className="space-y-2 text-sm font-medium">Service address<Input placeholder="Address or landmark" defaultValue="210 Pine St, North Hills" /></label>
-              <label className="space-y-2 text-sm font-medium">Source channel<Input placeholder="Phone, website, QR, referral" defaultValue="Phone intake" /></label>
+              <label className="space-y-2 text-sm font-medium">Customer name<Input placeholder="Customer display name" value={form.customer_name} onChange={(event) => update("customer_name", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Customer phone<Input placeholder="Verified phone" value={form.customer_phone} onChange={(event) => update("customer_phone", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Service address<Input placeholder="Address or landmark" value={form.address} onChange={(event) => update("address", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Source channel<Input placeholder="Phone, website, QR, referral" value={form.source_channel} onChange={(event) => update("source_channel", event.target.value)} /></label>
             </div>
             <div className="grid gap-4 md:grid-cols-3">
-              <label className="space-y-2 text-sm font-medium">Access type<Input defaultValue="home" /></label>
-              <label className="space-y-2 text-sm font-medium">Situation<Input defaultValue="Locked out" /></label>
-              <label className="space-y-2 text-sm font-medium">Urgency<Input defaultValue="medium" /></label>
+              <label className="space-y-2 text-sm font-medium">Access type<Input value={form.access_type} onChange={(event) => update("access_type", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Situation<Input value={form.situation} onChange={(event) => update("situation", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Urgency<Input value={form.urgency} onChange={(event) => update("urgency", event.target.value)} /></label>
             </div>
             <label className="space-y-2 text-sm font-medium">
               Dispatcher notes
-              <textarea className="min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" defaultValue="Customer called from lobby. Has ID available. No safety concern reported." />
+              <textarea className="min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" value={form.notes} onChange={(event) => update("notes", event.target.value)} />
             </label>
+            {createdId ? <div className="rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success">Created request {createdId}</div> : null}
+            {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
             <div className="flex flex-wrap gap-2">
-              <Button>Create Mock Request</Button>
+              <Button disabled={busy} onClick={createRequest}>{busy ? "Creating..." : "Create Request"}</Button>
               <Button variant="secondary">Save Draft</Button>
               <Button asChild variant="outline"><Link href="/queue">Back to Queue</Link></Button>
             </div>
@@ -222,8 +269,8 @@ export function ProviderNewRequest() {
                 <Badge variant="success">no-solicit required</Badge>
               </div>
               <p className="text-sm leading-6 text-muted-foreground">
-                On submit, the authenticated provider session should set origin and customer owner.
-                The browser should only send the form content and channel context.
+                On submit, the authenticated provider session sets origin and customer owner.
+                The browser only sends form content and source context.
               </p>
             </CardContent>
           </Card>

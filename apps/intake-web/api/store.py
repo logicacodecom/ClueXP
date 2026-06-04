@@ -18,6 +18,7 @@ import os
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from api.auth import hash_password, verify_password
 from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -95,12 +96,52 @@ class Store:
     ) -> str:  # pragma: no cover
         raise NotImplementedError
 
+    async def authenticate_user(self, identifier: str, password: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_user_session(self, user_id: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def record_review(
+        self,
+        *,
+        ticket_id: UUID,
+        rating: int,
+        tags: list[str],
+        comment: str | None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
 
 class InMemoryStore(Store):
     def __init__(self) -> None:
         self._tickets: dict[UUID, Ticket] = {}
         self.events: list[str] = []
         self.media: list[dict[str, str]] = []
+        password_hash = hash_password("demo-password", salt="cluexp-demo-salt")
+        self.users: dict[str, dict] = {
+            "usr_platform_demo": {
+                "id": "usr_platform_demo",
+                "email": "ops@cluexp.com",
+                "phone": None,
+                "display_name": "Avery Chen",
+                "password_hash": password_hash,
+                "roles": ["platform_admin"],
+                "active_organization_id": None,
+                "organization_name": None,
+            },
+            "usr_provider_demo": {
+                "id": "usr_provider_demo",
+                "email": "dispatch@metrokey.example",
+                "phone": "+15550140199",
+                "display_name": "Maya Torres",
+                "password_hash": password_hash,
+                "roles": ["provider_admin", "dispatcher"],
+                "active_organization_id": "org-metro",
+                "organization_name": "Metro Key Partners",
+            },
+        }
+        self.reviews: list[dict] = []
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         return self._tickets.get(ticket_id)
@@ -140,6 +181,57 @@ class InMemoryStore(Store):
         )
         return media_id
 
+    async def authenticate_user(self, identifier: str, password: str) -> dict | None:
+        normalized = identifier.strip().lower()
+        for user in self.users.values():
+            if normalized not in {str(user.get("email") or "").lower(), str(user.get("phone") or "")}:
+                continue
+            if not verify_password(password, user.get("password_hash")):
+                return None
+            return await self.get_user_session(user["id"])
+        return None
+
+    async def get_user_session(self, user_id: str) -> dict | None:
+        user = self.users.get(user_id)
+        if not user:
+            return None
+        return {
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "phone": user["phone"],
+                "display_name": user["display_name"],
+            },
+            "roles": user["roles"],
+            "active_organization_id": user["active_organization_id"],
+            "organization_name": user["organization_name"],
+        }
+
+    async def record_review(
+        self,
+        *,
+        ticket_id: UUID,
+        rating: int,
+        tags: list[str],
+        comment: str | None,
+    ) -> dict:
+        ticket = await self.get(ticket_id)
+        if ticket is None:
+            raise KeyError(str(ticket_id))
+        review = {
+            "id": str(uuid4()),
+            "ticket_id": str(ticket_id),
+            "rating": rating,
+            "tags": tags,
+            "comment": comment,
+            "technician_ref": ticket.technician_assignment.technician_id
+            if ticket.technician_assignment
+            else None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.reviews.append(review)
+        return review
+
 
 class PostgresStore(Store):
     def __init__(self, dsn: str) -> None:
@@ -168,6 +260,7 @@ class PostgresStore(Store):
                 "  id uuid primary key default gen_random_uuid(),"
                 "  customer_id uuid references customers(id),"
                 "  fulfillment_technician_id uuid,"
+                "  fulfillment_org_id uuid,"
                 "  origin_org_id uuid,"
                 "  customer_owner_org_id uuid,"
                 "  intake_channel_id uuid,"
@@ -210,6 +303,59 @@ class PostgresStore(Store):
                 "  uploaded_at timestamptz not null default now()"
                 ")"
             )
+            await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
+            await conn.execute(
+                "create table if not exists users ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  email text unique,"
+                "  phone text unique,"
+                "  password_hash text not null,"
+                "  display_name text not null,"
+                "  status text not null default 'active',"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now()"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists user_roles ("
+                "  user_id uuid not null references users(id) on delete cascade,"
+                "  role text not null,"
+                "  created_at timestamptz not null default now(),"
+                "  primary key (user_id, role)"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists user_organization_memberships ("
+                "  user_id uuid not null references users(id) on delete cascade,"
+                "  organization_id uuid not null,"
+                "  role text not null default 'member',"
+                "  status text not null default 'active',"
+                "  created_at timestamptz not null default now(),"
+                "  primary key (user_id, organization_id)"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists job_reviews ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  job_id uuid not null,"
+                "  rating integer not null check (rating between 1 and 5),"
+                "  tags text[] not null default '{}',"
+                "  comment text,"
+                "  fulfillment_technician_ref text,"
+                "  fulfillment_org_id uuid,"
+                "  created_at timestamptz not null default now()"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists rating_summaries ("
+                "  target_type text not null,"
+                "  target_id text not null,"
+                "  average_rating numeric(3,2) not null default 0,"
+                "  review_count integer not null default 0,"
+                "  updated_at timestamptz not null default now(),"
+                "  primary key (target_type, target_id)"
+                ")"
+            )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
                 "create index if not exists idx_jobs_trust_state on jobs (trust_state)"
@@ -218,6 +364,79 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_media_owner on media (owner_type, owner_id)"
             )
+            await conn.execute("create index if not exists idx_user_roles_user on user_roles (user_id)")
+            await conn.execute(
+                "create index if not exists idx_user_memberships_org"
+                " on user_organization_memberships (organization_id)"
+            )
+            await conn.execute("create index if not exists idx_job_reviews_job on job_reviews (job_id)")
+            await conn.execute(
+                "create index if not exists idx_job_reviews_technician"
+                " on job_reviews (fulfillment_technician_ref)"
+            )
+            await self._seed_demo_auth(conn)
+
+    async def _seed_demo_auth(self, conn) -> None:
+        password_hash = hash_password("demo-password", salt="cluexp-demo-salt")
+        provider_org_id = None
+        try:
+            cur = await conn.execute(
+                "insert into organizations (display_name, legal_name, slug, status, subscription_status, email)"
+                " values (%s, %s, %s, %s, %s, %s)"
+                " on conflict (slug) do update set display_name = excluded.display_name"
+                " returning id",
+                (
+                    "Metro Key Partners",
+                    "Metro Key Partners LLC",
+                    "metro-key-partners",
+                    "eligible",
+                    "active",
+                    "dispatch@metrokey.example",
+                ),
+            )
+            row = await cur.fetchone()
+            provider_org_id = row[0] if row else None
+        except Exception:
+            provider_org_id = None
+
+        async def ensure_user(email: str, display_name: str, roles: list[str], org_id=None, phone=None):
+            cur = await conn.execute(
+                "insert into users (email, phone, password_hash, display_name, status)"
+                " values (%s, %s, %s, %s, 'active')"
+                " on conflict (email) do update set"
+                "  display_name = excluded.display_name,"
+                "  password_hash = excluded.password_hash,"
+                "  updated_at = now()"
+                " returning id",
+                (email, phone, password_hash, display_name),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return
+            user_id = row[0]
+            for role in roles:
+                await conn.execute(
+                    "insert into user_roles (user_id, role) values (%s, %s)"
+                    " on conflict do nothing",
+                    (user_id, role),
+                )
+            if org_id:
+                await conn.execute(
+                    "insert into user_organization_memberships (user_id, organization_id, role, status)"
+                    " values (%s, %s, %s, 'active')"
+                    " on conflict (user_id, organization_id) do update"
+                    " set role = excluded.role, status = 'active'",
+                    (user_id, org_id, "provider_admin"),
+                )
+
+        await ensure_user("ops@cluexp.com", "Avery Chen", ["platform_admin"])
+        await ensure_user(
+            "dispatch@metrokey.example",
+            "Maya Torres",
+            ["provider_admin", "dispatcher"],
+            provider_org_id,
+            "+15550140199",
+        )
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         async with await self._connect() as conn:
@@ -247,9 +466,11 @@ class PostgresStore(Store):
             if isinstance(payload.get("technician_assignment"), dict)
             else {}
         )
-        customer_phone, customer_name = _customer_from_payload(payload)
-        technician_id = _uuid_or_none(assignment.get("technician_id"))
         origin = origin or {}
+        customer_phone, customer_name = _customer_from_payload(payload)
+        customer_phone = customer_phone or origin.get("customer_phone")
+        customer_name = customer_name or origin.get("customer_name")
+        technician_id = _uuid_or_none(assignment.get("technician_id"))
         origin_org_id = _uuid_or_none(origin.get("origin_org_id"))
         customer_owner_org_id = _uuid_or_none(origin.get("customer_owner_org_id"))
         intake_channel_id = _uuid_or_none(origin.get("intake_channel_id"))
@@ -377,6 +598,128 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return str(row[0])
+
+    async def authenticate_user(self, identifier: str, password: str) -> dict | None:
+        normalized = identifier.strip().lower()
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, password_hash from users"
+                " where status = 'active' and (lower(email) = %s or phone = %s)",
+                (normalized, identifier.strip()),
+            )
+            row = await cur.fetchone()
+            if row is None or not verify_password(password, row[1]):
+                return None
+            return await self._session_for_user(conn, str(row[0]))
+
+    async def get_user_session(self, user_id: str) -> dict | None:
+        async with await self._connect() as conn:
+            return await self._session_for_user(conn, user_id)
+
+    async def _session_for_user(self, conn, user_id: str) -> dict | None:
+        cur = await conn.execute(
+            "select id, email, phone, display_name from users where id = %s and status = 'active'",
+            (user_id,),
+        )
+        user_row = await cur.fetchone()
+        if user_row is None:
+            return None
+        cur = await conn.execute(
+            "select role from user_roles where user_id = %s order by role",
+            (user_id,),
+        )
+        roles = [row[0] for row in await cur.fetchall()]
+        cur = await conn.execute(
+            "select m.organization_id, o.display_name"
+            " from user_organization_memberships m"
+            " left join organizations o on o.id = m.organization_id"
+            " where m.user_id = %s and m.status = 'active'"
+            " order by m.created_at"
+            " limit 1",
+            (user_id,),
+        )
+        org_row = await cur.fetchone()
+        return {
+            "user": {
+                "id": str(user_row[0]),
+                "email": user_row[1],
+                "phone": user_row[2],
+                "display_name": user_row[3],
+            },
+            "roles": roles,
+            "active_organization_id": str(org_row[0]) if org_row else None,
+            "organization_name": org_row[1] if org_row else None,
+        }
+
+    async def record_review(
+        self,
+        *,
+        ticket_id: UUID,
+        rating: int,
+        tags: list[str],
+        comment: str | None,
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        ticket = await self.get(ticket_id)
+        if ticket is None:
+            raise KeyError(str(ticket_id))
+        technician_ref = (
+            ticket.technician_assignment.technician_id if ticket.technician_assignment else None
+        )
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select fulfillment_org_id from jobs where id = %s",
+                (str(ticket_id),),
+            )
+            row = await cur.fetchone()
+            fulfillment_org_id = row[0] if row else None
+            cur = await conn.execute(
+                "insert into job_reviews ("
+                " job_id, rating, tags, comment, fulfillment_technician_ref, fulfillment_org_id"
+                ") values (%s, %s, %s, %s, %s, %s)"
+                " returning id, created_at",
+                (str(ticket_id), rating, tags, comment, technician_ref, fulfillment_org_id),
+            )
+            review_row = await cur.fetchone()
+            targets = []
+            if technician_ref:
+                targets.append(("technician", technician_ref))
+            if fulfillment_org_id:
+                targets.append(("organization", str(fulfillment_org_id)))
+            for target_type, target_id in targets:
+                await conn.execute(
+                    "insert into rating_summaries (target_type, target_id, average_rating, review_count)"
+                    " select %s, %s, avg(rating)::numeric(3,2), count(*)::integer"
+                    " from job_reviews"
+                    " where (%s = 'technician' and fulfillment_technician_ref = %s)"
+                    "    or (%s = 'organization' and fulfillment_org_id::text = %s)"
+                    " on conflict (target_type, target_id) do update set"
+                    "  average_rating = excluded.average_rating,"
+                    "  review_count = excluded.review_count,"
+                    "  updated_at = now()",
+                    (target_type, target_id, target_type, target_id, target_type, target_id),
+                )
+            payload = ticket.model_dump(mode="json")
+            payload["latest_review"] = {
+                "rating": rating,
+                "tags": tags,
+                "comment": comment,
+                "created_at": review_row[1].isoformat() if review_row else None,
+            }
+            await conn.execute(
+                "update jobs set detail = %s, updated_at = now() where id = %s",
+                (Jsonb(payload), str(ticket_id)),
+            )
+        return {
+            "id": str(review_row[0]) if review_row else None,
+            "ticket_id": str(ticket_id),
+            "rating": rating,
+            "tags": tags,
+            "comment": comment,
+            "technician_ref": technician_ref,
+            "organization_id": str(fulfillment_org_id) if fulfillment_org_id else None,
+        }
 
 
 def make_store() -> Store:

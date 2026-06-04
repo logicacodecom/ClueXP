@@ -850,7 +850,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               className="primary"
               type="button"
               disabled={!reviewRating}
-              onClick={() => setReviewSubmitted(true)}
+              onClick={() =>
+                run(async () => {
+                  const current = await ensureTicket();
+                  await api(`/tickets/${current.ticket_id}/review`, {
+                    method: "POST",
+                    body: JSON.stringify({
+                      rating: reviewRating,
+                      tags: reviewTags,
+                      comment: reviewComment || null
+                    })
+                  });
+                  setReviewSubmitted(true);
+                  setScreen("final");
+                })
+              }
             >
               Submit review
             </button>

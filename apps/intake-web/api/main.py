@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from api.geocode import geocode
 from api import storage
+from api.auth import create_access_token, decode_access_token
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -23,10 +24,12 @@ from api.schema import (
     PaymentMethod,
     Photo,
     PriceQuote,
+    Situation,
     TechnicianAssignment,
     Ticket,
     TicketStatus,
     TrustState,
+    Urgency,
 )
 
 
@@ -97,6 +100,34 @@ class PhotoCompleteRequest(BaseModel):
     path: str
     content_type: str
     size: int
+
+
+class LoginRequest(BaseModel):
+    identifier: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    session: dict[str, Any]
+
+
+class ManualIntakeRequest(BaseModel):
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    address: str
+    source_channel: str | None = None
+    access_type: str = "home"
+    situation: str = "locked_out"
+    urgency: str = "urgent"
+    notes: str | None = None
+
+
+class JobReviewRequest(BaseModel):
+    rating: int
+    tags: list[str] = []
+    comment: str | None = None
 
 
 async def envelope(ticket: Ticket) -> TicketEnvelope:
@@ -201,6 +232,63 @@ def _extension_for_content_type(content_type: str) -> str:
     }.get(content_type, "")
 
 
+async def require_session(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    claims = decode_access_token(authorization.split(" ", 1)[1].strip())
+    if claims is None or not claims.get("sub"):
+        raise HTTPException(status_code=401, detail="Invalid session")
+    session = await store.get_user_session(str(claims["sub"]))
+    if session is None:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return session
+
+
+def require_any_role(session: dict[str, Any], allowed: set[str]) -> None:
+    if not allowed.intersection(set(session.get("roles", []))):
+        raise HTTPException(status_code=403, detail="Insufficient role")
+
+
+def _enum_or_default(enum_type, value: str, default):
+    try:
+        return enum_type(value)
+    except ValueError:
+        return default
+
+
+def _manual_origin(session: dict[str, Any], payload: ManualIntakeRequest) -> dict[str, Any]:
+    org_id = session.get("active_organization_id")
+    if not org_id:
+        raise HTTPException(status_code=409, detail="Provider organization is required")
+    return {
+        "origin_org_id": org_id,
+        "customer_owner_org_id": org_id,
+        "customer_name": payload.customer_name,
+        "customer_phone": payload.customer_phone,
+    }
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(payload: LoginRequest) -> AuthResponse:
+    await latency()
+    session = await store.authenticate_user(payload.identifier, payload.password)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Invalid email, phone, or password")
+    token = create_access_token(
+        {
+            "sub": session["user"]["id"],
+            "roles": session.get("roles", []),
+            "org": session.get("active_organization_id"),
+        }
+    )
+    return AuthResponse(access_token=token, session=session)
+
+
+@app.get("/auth/me")
+async def me(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    return session
+
+
 @app.get("/geocode")
 async def geocode_address(q: str) -> dict[str, Any]:
     """Resolve an address to coordinates using the server Maps key.
@@ -227,6 +315,29 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
+    return await envelope(ticket)
+
+
+@app.post("/provider/requests", response_model=TicketEnvelope)
+async def create_provider_request(
+    payload: ManualIntakeRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> TicketEnvelope:
+    await latency()
+    require_any_role(session, {"provider_admin", "dispatcher"})
+    ticket = Ticket(
+        channel="voice",
+        status=TicketStatus.PARTIAL,
+        access_type=_enum_or_default(AccessType, payload.access_type, AccessType.HOME),
+        situation=_enum_or_default(Situation, payload.situation, Situation.LOCKED_OUT),
+        urgency=_enum_or_default(Urgency, payload.urgency, Urgency.URGENT),
+        location={"raw_text": payload.address, "geocode_confidence": "none"},
+        additional_details=payload.notes,
+    )
+    origin = _manual_origin(session, payload)
+    await save(ticket, origin)
+    source = payload.source_channel or "manual"
+    await log_transition(ticket, f"manual_intake_created:{source}")
     return await envelope(ticket)
 
 
@@ -453,7 +564,26 @@ async def charge(ticket_id: UUID) -> dict[str, str]:
         raise HTTPException(status_code=409, detail="Final charge not ready")
     if ticket.final_charge.customer_approval_required and not ticket.final_charge.customer_approved:
         raise HTTPException(status_code=409, detail="Customer approval required")
+    await log_transition(ticket, "charge_captured")
     return {"status": "captured"}
+
+
+@app.post("/tickets/{ticket_id}/review")
+async def review_ticket(ticket_id: UUID, payload: JobReviewRequest) -> dict[str, Any]:
+    await latency()
+    ticket = await require_ticket(ticket_id)
+    if ticket.final_charge is None:
+        raise HTTPException(status_code=409, detail="Job must be finalized before review")
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    review = await store.record_review(
+        ticket_id=ticket_id,
+        rating=payload.rating,
+        tags=payload.tags[:12],
+        comment=payload.comment,
+    )
+    await log_transition(ticket, "review_submitted")
+    return {"status": "recorded", "review": review}
 
 
 @app.post("/tickets/{ticket_id}/handoff", response_model=TicketEnvelope)
