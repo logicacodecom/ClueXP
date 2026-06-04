@@ -262,6 +262,27 @@ export function AppShell({
 
 export const Shell = AppShell;
 
+export function MockAuthBoundary({
+  allowedRoles,
+  children,
+  session
+}: {
+  allowedRoles: AuthSession["active_role"][];
+  children: ReactNode;
+  session?: AuthSession;
+}) {
+  const allowed = Boolean(session && allowedRoles.includes(session.active_role));
+  if (allowed) return <>{children}</>;
+  return (
+    <EmptyState
+      icon={ShieldAlert}
+      title="Session required"
+      description="Mock route guard placeholder. Real JWT validation and tenant enforcement will come from the backend auth slice."
+      action={<Button asChild><Link href="/signin">Sign in</Link></Button>}
+    />
+  );
+}
+
 export function Sidebar({
   activePath = "/dashboard",
   collapsed,

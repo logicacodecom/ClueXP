@@ -1,6 +1,6 @@
 "use client";
 
-import { AppShell, defaultNav } from "@cluexp/console-ui";
+import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import { providerSession } from "@cluexp/api-client";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
@@ -19,7 +19,9 @@ export function AppFrame({ children }: { children: ReactNode }) {
       session={providerSession}
       surfaceLabel="PROVIDER CONSOLE"
     >
-      {children}
+      <MockAuthBoundary allowedRoles={["provider_admin", "dispatcher"]} session={providerSession}>
+        {children}
+      </MockAuthBoundary>
     </AppShell>
   );
 }

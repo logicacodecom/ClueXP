@@ -1,6 +1,6 @@
 "use client";
 
-import { AppShell } from "@cluexp/console-ui";
+import { AppShell, MockAuthBoundary } from "@cluexp/console-ui";
 import { platformSession } from "@cluexp/api-client";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
@@ -15,7 +15,9 @@ export function AppFrame({ children }: { children: ReactNode }) {
       session={platformSession}
       surfaceLabel="PLATFORM OPERATIONS"
     >
-      {children}
+      <MockAuthBoundary allowedRoles={["platform_admin"]} session={platformSession}>
+        {children}
+      </MockAuthBoundary>
     </AppShell>
   );
 }

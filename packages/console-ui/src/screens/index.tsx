@@ -30,6 +30,7 @@ import {
   EmptyState,
   FileText,
   FilterBar,
+  Input,
   MapCard,
   MessageSquare,
   Navigation,
@@ -105,7 +106,7 @@ export function Dashboard({ mode }: { mode: ConsoleMode }) {
         kicker={mode === "org" ? "Provider command center" : "Operations command center"}
         title="Dispatch Dashboard"
         description="Live service requests, network capacity, SLA exposure, and recent trust-state activity."
-        actions={<><Button>Create request</Button><Button variant="outline">Export shift report</Button></>}
+        actions={<><Button asChild><Link href={mode === "org" ? "/intake/new" : "/queue"}>Create request</Link></Button><Button variant="outline">Export shift report</Button></>}
       />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <StatCard label="Live Requests" value={String(dashboardAggregates.live_requests)} delta="+3" trend="last 30 min" />
@@ -156,7 +157,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
         kicker={mode === "org" ? "Organization queue" : "Network live queue"}
         title="Live Dispatch Queue"
         description="Sorted by stalled service requests, safety flags, age, and service pressure. Customer trust-state stays separate from console status."
-        actions={<><Button>Create Request</Button><Button variant="secondary"><Phone className="size-4" />Call Customer</Button><Button variant="outline"><Phone className="size-4" />Call Technician</Button></>}
+        actions={<><Button asChild><Link href={mode === "org" ? "/intake/new" : "/queue"}>Create Request</Link></Button><Button variant="secondary"><Phone className="size-4" />Call Customer</Button><Button variant="outline"><Phone className="size-4" />Call Technician</Button></>}
       />
       <div className="mb-4"><FilterBar filters={["Source", "Access type", "Situation", "Urgency", "Area", "Team", "Age", "Trust-state", "Escalation reason"]} /></div>
       <RequestTable jobs={queue} />
@@ -165,6 +166,69 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
         <StatCard label="Average response" value="8m" />
         <StatCard label="Active technicians" value={String(technicians.filter((tech) => tech.is_available).length)} />
         <StatCard label="Critical alerts" value={String(queue.filter((job) => job.urgency === "critical").length)} intent="warn" />
+      </div>
+    </div>
+  );
+}
+
+export function ProviderNewRequest() {
+  const org = organizationById(orgId);
+  return (
+    <div>
+      <PageHeader
+        kicker="Manual intake"
+        title="New Service Request"
+        description="Mock call-center entry for provider-owned requests. The backend will create the job with trusted org/session context, not a browser-supplied org id."
+        actions={<><Badge variant="outline">Origin: {org?.display_name ?? "Provider"}</Badge><Badge variant="outline">Customer owner: {org?.display_name ?? "Provider"}</Badge></>}
+      />
+      <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>Request details</CardTitle>
+              <CardDescription>Designed for phone and dispatcher-entered requests. Fields are mock-only until the authenticated API slice lands.</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-2 text-sm font-medium">Customer name<Input placeholder="Customer display name" defaultValue="Taylor Morgan" /></label>
+              <label className="space-y-2 text-sm font-medium">Customer phone<Input placeholder="Masked or verified phone" defaultValue="(555) ***-0199" /></label>
+              <label className="space-y-2 text-sm font-medium">Service address<Input placeholder="Address or landmark" defaultValue="210 Pine St, North Hills" /></label>
+              <label className="space-y-2 text-sm font-medium">Source channel<Input placeholder="Phone, website, QR, referral" defaultValue="Phone intake" /></label>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="space-y-2 text-sm font-medium">Access type<Input defaultValue="home" /></label>
+              <label className="space-y-2 text-sm font-medium">Situation<Input defaultValue="Locked out" /></label>
+              <label className="space-y-2 text-sm font-medium">Urgency<Input defaultValue="medium" /></label>
+            </div>
+            <label className="space-y-2 text-sm font-medium">
+              Dispatcher notes
+              <textarea className="min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" defaultValue="Customer called from lobby. Has ID available. No safety concern reported." />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button>Create Mock Request</Button>
+              <Button variant="secondary">Save Draft</Button>
+              <Button asChild variant="outline"><Link href="/queue">Back to Queue</Link></Button>
+            </div>
+          </CardContent>
+        </Card>
+        <div className="space-y-6">
+          <Card>
+            <CardHeader><CardTitle>Tenant policy preview</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">dispatch_mode: organization_managed</Badge>
+                <Badge variant="outline">fulfillment_policy: private</Badge>
+                <Badge variant="success">no-solicit required</Badge>
+              </div>
+              <p className="text-sm leading-6 text-muted-foreground">
+                On submit, the authenticated provider session should set origin and customer owner.
+                The browser should only send the form content and channel context.
+              </p>
+            </CardContent>
+          </Card>
+          <TrustSafety status="INTAKE" flags={[]} />
+        </div>
       </div>
     </div>
   );
