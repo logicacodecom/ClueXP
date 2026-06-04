@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  AuthSession,
   ComplianceEntry,
   ConsoleMode,
   ConsoleStatus,
@@ -233,6 +234,7 @@ export function AppShell({
   mode,
   modeBadge,
   nav = defaultNav,
+  session,
   surfaceLabel
 }: {
   activePath?: string;
@@ -240,6 +242,7 @@ export function AppShell({
   mode: ConsoleMode;
   modeBadge: string;
   nav?: NavItem[];
+  session?: AuthSession;
   surfaceLabel: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -249,7 +252,7 @@ export function AppShell({
       <div className="min-h-screen bg-background text-foreground">
         <Sidebar activePath={activePath} collapsed={collapsed} mode={mode} nav={scopedNav} onToggle={() => setCollapsed((value) => !value)} surfaceLabel={surfaceLabel} />
         <div className={cn("min-h-screen transition-[padding] duration-200", collapsed ? "pl-[76px]" : "pl-[264px]")}>
-          <Topbar modeBadge={modeBadge} surfaceLabel={surfaceLabel} />
+          <Topbar modeBadge={modeBadge} session={session} surfaceLabel={surfaceLabel} />
           <main className="mx-auto w-full max-w-[1760px] px-6 py-6 lg:px-8">{children}</main>
         </div>
       </div>
@@ -335,7 +338,22 @@ function SidebarItem({ activePath, collapsed, item }: { activePath: string; coll
   );
 }
 
-export function Topbar({ modeBadge, surfaceLabel }: { modeBadge: string; surfaceLabel: string }) {
+function roleLabel(role?: string) {
+  return role ? role.replaceAll("_", " ") : "mock session";
+}
+
+function initialsFor(name?: string) {
+  return (name ?? "OP")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "OP";
+}
+
+export function Topbar({ modeBadge, session, surfaceLabel }: { modeBadge: string; session?: AuthSession; surfaceLabel: string }) {
+  const orgLabel = session?.active_organization_id ? organizationLabel(session.active_organization_id) : "All network tenants";
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-background/85 px-6 backdrop-blur">
       <div className="relative flex-1 max-w-2xl">
@@ -346,6 +364,7 @@ export function Topbar({ modeBadge, surfaceLabel }: { modeBadge: string; surface
       <Badge variant="outline">Production</Badge>
       <Badge variant="success"><span className="size-1.5 rounded-full bg-success" />All systems operational</Badge>
       <Badge variant="neutral">{modeBadge}</Badge>
+      <Badge variant="outline">{roleLabel(session?.active_role)}</Badge>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button aria-label="Notifications" size="icon" variant="outline"><Bell className="size-4" /></Button>
@@ -359,12 +378,14 @@ export function Topbar({ modeBadge, surfaceLabel }: { modeBadge: string; surface
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button className="gap-2" variant="ghost">
-            <Avatar className="size-7"><AvatarFallback>OP</AvatarFallback></Avatar>
-            <span className="hidden text-sm md:inline">Operations</span>
+            <Avatar className="size-7"><AvatarFallback>{initialsFor(session?.user.display_name)}</AvatarFallback></Avatar>
+            <span className="hidden text-sm md:inline">{session?.user.display_name ?? "Operations"}</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuLabel>{surfaceLabel}</DropdownMenuLabel>
+          <DropdownMenuItem>{orgLabel}</DropdownMenuItem>
+          <DropdownMenuItem>{roleLabel(session?.active_role)}</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem>Account</DropdownMenuItem>
           <DropdownMenuItem>Switch workspace</DropdownMenuItem>

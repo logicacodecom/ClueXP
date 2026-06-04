@@ -18,6 +18,7 @@ type Screen =
   | "tracking"
   | "arrival"
   | "final"
+  | "review"
   | "handoff";
 
 const intakeSteps: Partial<Record<Screen, number>> = {
@@ -42,7 +43,7 @@ const emptyGuards: TicketGuards = {
 const SESSION_KEY = "cluexp_session";
 const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
 const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
-const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final"];
+const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
 
 type GeocodeResponse =
   | {
@@ -178,6 +179,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [arrivalCode, setArrivalCode] = useState("");
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([]);
   const [uploadedPhotoCount, setUploadedPhotoCount] = useState(0);
+  const [reviewRating, setReviewRating] = useState<number | null>(null);
+  const [reviewTags, setReviewTags] = useState<string[]>([]);
+  const [reviewComment, setReviewComment] = useState("");
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [form, setForm] = useState({
     address: "",
     make: "",
@@ -324,6 +329,12 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       sync(envelope);
       setScreen("handoff");
     });
+  }
+
+  function toggleReviewTag(tag: string) {
+    setReviewTags((current) =>
+      current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
+    );
   }
 
   // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket.
@@ -748,6 +759,24 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (screen === "final") {
       const quote = ticket?.price_quote;
       const final = ticket?.final_charge;
+      if (reviewSubmitted) {
+        return (
+          <>
+            <AgentMessage support="Your review is tied to this completed job. It helps future routing without changing customer ownership.">
+              Thanks for the feedback.
+            </AgentMessage>
+            <div className="panel">
+              <p className="panel-title">Job review</p>
+              <div className="big-number">{reviewRating || 5}/5</div>
+              <p className="fine">
+                Applies to the assigned specialist and fulfillment company when one was responsible for the job.
+              </p>
+            </div>
+            <button className="ghost" type="button">Add to Home Screen</button>
+          </>
+        );
+      }
+
       return (
         <>
           <AgentMessage support="Review the completed service before capture.">
@@ -767,9 +796,64 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
             {final?.customer_approval_required && !final.customer_approved ? (
               <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); sync(await api<TicketEnvelope>(`/tickets/${current.ticket_id}/approve-final`, { method: "POST" })); })}>Approve final price</button>
             ) : (
-              <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); await api(`/tickets/${current.ticket_id}/charge`, { method: "POST" }); })}>Capture payment</button>
+              <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); await api(`/tickets/${current.ticket_id}/charge`, { method: "POST" }); setScreen("review"); })}>Capture payment</button>
             )}
-            <button className="ghost" type="button">Add to Home Screen</button>
+          </div>
+        </>
+      );
+    }
+
+    if (screen === "review") {
+      return (
+        <>
+          <AgentMessage support="Rate the completed service. This affects the technician and fulfillment company when applicable.">
+            How was your service?
+          </AgentMessage>
+          <div className="stack">
+            <div className="panel">
+              <p className="panel-title">Rating</p>
+              <div className="row" role="radiogroup" aria-label="Service rating">
+                {[1, 2, 3, 4, 5].map((rating) => (
+                  <button
+                    className={reviewRating === rating ? "primary" : "ghost"}
+                    key={rating}
+                    type="button"
+                    aria-checked={reviewRating === rating}
+                    role="radio"
+                    onClick={() => setReviewRating(rating)}
+                  >
+                    {rating}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <ChipSelect
+              options={[
+                { value: "arrived_fast", label: "Arrived fast" },
+                { value: "professional", label: "Professional" },
+                { value: "solved_issue", label: "Solved issue" },
+                { value: "clear_price", label: "Clear price" },
+                { value: "felt_safe", label: "Felt safe" },
+                { value: "needs_followup", label: "Needs follow-up" }
+              ]}
+              value={null}
+              onSelect={toggleReviewTag}
+            />
+            {reviewTags.length ? <p className="fine">Selected: {reviewTags.join(", ")}</p> : null}
+            <textarea
+              className="field"
+              placeholder="Optional comment"
+              value={reviewComment}
+              onChange={(event) => setReviewComment(event.target.value)}
+            />
+            <button
+              className="primary"
+              type="button"
+              disabled={!reviewRating}
+              onClick={() => setReviewSubmitted(true)}
+            >
+              Submit review
+            </button>
           </div>
         </>
       );

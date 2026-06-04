@@ -413,7 +413,7 @@ For each screen, the spec gives: trust-state, what data the screen reads/writes,
 
 ### 7.16 Payment / review (FULFILLMENT)
 - **Endpoints:** `POST /tickets/{id}/finalize`, `POST /tickets/{id}/approve-final` (conditional), `POST /tickets/{id}/charge`.
-- **Behavior:** Side-by-side "Estimated Range" vs. "Final Price." Inside the range: calm. Exceeds the range: **explicit approval tap required before any charge.** Rating/review prompt. **One** appropriate place for an optional "Add to Home Screen" PWA hint.
+- **Behavior:** Side-by-side "Estimated Range" vs. "Final Price." Inside the range: calm. Exceeds the range: **explicit approval tap required before any charge.** After charge, show one job-service review prompt. The customer rates the completed service, not dispatch/intake. That review applies to the `fulfillment_technician_id` and, when present, the `fulfillment_org_id`; it does **not** change customer ownership and does not rate the origin organization unless the origin also fulfilled the job. **One** appropriate place for an optional "Add to Home Screen" PWA hint.
 
 ### 7.17 Human-handoff screen (always reachable)
 - **Endpoints:** `POST /tickets/{id}/handoff`.

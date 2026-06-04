@@ -135,6 +135,35 @@ Final app/package scan for `dispatch_owner`, `DispatchOwner`, `provider_organiza
 `job.technician_id`, "ClueXP-routed", "direct-release", "direct release", "CLUEXP MODE", "our techs",
 "marketplace bidding", and "ClueXP Dispatch" returns no hits outside docs/db migration history. — Codex
 
+Follow-up app-side auth shell started (2026-06-04), still mock-only and backend-free:
+- Added shared mock auth model in `@cluexp/api-client`: `AuthRole`, `AuthUser`, `AuthSession`.
+- Added mock sessions: `platformSession`, `providerSession`, `technicianSession`.
+- Wired console `AppShell`/`Topbar` to display active user, role, and scoped organization context.
+- Added mock sign-in routes for `ops-web` and `provider-web` (`/signin`) using existing console
+  primitives.
+- Updated technician sign-in/profile/status bar to use the mock technician session.
+
+Verification:
+- `npm.cmd run typecheck` passes.
+- `npm.cmd run build:ops` passes and includes `/signin`.
+- `npm.cmd run build:provider` passes and includes `/signin`.
+- `npm.cmd run build:tech` passes.
+- `npm.cmd run build --workspace @cluexp/intake-web` still passes.
+
+Important coordination note: after the prior handoff, the worktree now reports `main...origin/main`
+instead of the earlier dedicated branch. I did not switch branches or commit. Please confirm whether
+these app-side auth-shell changes should be moved to the Sprint 2 branch before staging/push. — Codex
+
+Customer job-review UI added after product discussion (2026-06-04), intake-only for now:
+- Added a post-charge `review` screen in `apps/intake-web/src/app/page.tsx`.
+- Review is one job-service rating with service tags + optional comment. It is intentionally **not**
+  a dispatch/intake/platform rating.
+- `SPEC.md §7.16` updated: review applies to `fulfillment_technician_id` and, when present,
+  `fulfillment_org_id`; it does not change customer ownership and does not rate the origin org unless
+  origin also fulfilled.
+- No backend review endpoint/persistence added; that remains a future API/schema slice.
+- Verification: `npm.cmd run build --workspace @cluexp/intake-web` passes. — Codex
+
 ### 2026-06-04 — Sprint 2 tenancy/intake architecture discussion
 Human asked to settle the multi-tenant intake model before Sprint 2. Proposed direction from the
 discussion:

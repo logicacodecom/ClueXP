@@ -66,6 +66,7 @@ export type AccessType = "car" | "home" | "business";
 export type Urgency = "low" | "medium" | "high" | "critical";
 export type DocumentStatus = "verified" | "expiring" | "expired" | "pending_review";
 export type ConsoleMode = "cluexp" | "org";
+export type AuthRole = "platform_admin" | "provider_admin" | "dispatcher" | "technician" | "customer";
 export type DispatchMode = "organization_managed" | "cluexp_managed_routing";
 export type FulfillmentPolicy = "private" | "network_overflow" | "network_open";
 export type MarketplaceState =
@@ -89,6 +90,24 @@ export interface Organization {
   avg_response_min?: number;
   document_status: DocumentStatus;
   blocking_reason?: string;
+}
+
+export interface AuthUser {
+  id: string;
+  display_name: string;
+  email?: string;
+  phone?: string;
+  roles: AuthRole[];
+  organization_ids: string[];
+  technician_id?: string;
+  status: "active" | "invited" | "suspended";
+}
+
+export interface AuthSession {
+  user: AuthUser;
+  active_role: AuthRole;
+  active_organization_id?: string;
+  surface: "platform" | "provider" | "technician" | "customer";
 }
 
 export interface Team {

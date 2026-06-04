@@ -3,7 +3,8 @@ import {
   activeTechnicianJobIds,
   currentTechnician,
   jobById,
-  technicianAppProfile
+  technicianAppProfile,
+  technicianSession
 } from "@cluexp/api-client";
 import {
   AlertTriangle,
@@ -107,7 +108,7 @@ export function PhoneStatus({ title }: { title: string }) {
           </div>
           <div>
             <div className="font-condensed text-xl font-bold uppercase leading-none">{title}</div>
-            <div className="text-[11px] font-semibold uppercase text-muted">{technicianAppProfile.workspace_label}</div>
+            <div className="text-[11px] font-semibold uppercase text-muted">{technicianAppProfile.workspace_label} · {technicianSession.active_role}</div>
           </div>
         </div>
         <Link className="touch-target flex items-center justify-center rounded-full border border-border bg-card" href="/settings" aria-label="Settings">

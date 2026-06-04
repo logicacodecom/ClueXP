@@ -1,4 +1,4 @@
-import { currentTechnician, technicianAppProfile } from "@cluexp/api-client";
+import { currentTechnician, technicianAppProfile, technicianSession } from "@cluexp/api-client";
 import { ActionList, AppFrame, MiniStat, ProfileStrip, Screen, Section, icons } from "@/components/mobile";
 
 export default function ProfilePage() {
@@ -8,6 +8,8 @@ export default function ProfilePage() {
         <ProfileStrip profile={technicianAppProfile} />
         <Section title="Trust profile">
           <div className="grid grid-cols-2 gap-2">
+            <MiniStat label="Role" value={technicianSession.active_role} tone="info" />
+            <MiniStat label="Session" value={technicianSession.user.status} tone="success" />
             <MiniStat label="Rating" value={String(currentTechnician.rating ?? "--")} tone="success" />
             <MiniStat label="No-show" value={String(currentTechnician.no_show_history ?? 0)} />
             <MiniStat label="Docs" value={currentTechnician.document_status} tone="success" />

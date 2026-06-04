@@ -4,6 +4,8 @@
 // queue and map. NOT a real dispatch algorithm.
 
 import type {
+  AuthSession,
+  AuthUser,
   ComplianceEntry,
   DashboardAggregates,
   DispatchEvent,
@@ -84,6 +86,47 @@ export const teams: Team[] = [
     specialties: ["Auto lock", "Key programming"]
   }
 ];
+
+export const authUsers: AuthUser[] = [
+  {
+    id: "user-platform-ops",
+    display_name: "Avery Knox",
+    email: "avery@cluexp.com",
+    roles: ["platform_admin"],
+    organization_ids: [],
+    status: "active"
+  },
+  {
+    id: "user-metro-dispatch",
+    display_name: "Nadia Reyes",
+    email: "dispatch@metrokey.example",
+    roles: ["provider_admin", "dispatcher"],
+    organization_ids: ["org-metro"],
+    status: "active"
+  },
+  {
+    id: "user-tech-jordan",
+    display_name: "Jordan Lee",
+    phone: "(555) 014-2201",
+    roles: ["technician"],
+    organization_ids: [],
+    technician_id: "tech-jordan",
+    status: "active"
+  }
+];
+
+export const platformSession: AuthSession = {
+  user: authUsers[0]!,
+  active_role: "platform_admin",
+  surface: "platform"
+};
+
+export const providerSession: AuthSession = {
+  user: authUsers[1]!,
+  active_role: "provider_admin",
+  active_organization_id: "org-metro",
+  surface: "provider"
+};
 
 export const technicians: Technician[] = [
   {
@@ -521,8 +564,14 @@ export const technicianAppProfile: TechnicianAppProfile = {
   alarm_state: "sound_enabled",
   auto_accept: false,
   current_shift_started_at: "2026-06-03T18:12:00Z",
-  workspace_label: "ClueXP Individual Network",
+  workspace_label: "Verified Network",
   masked_phone: "(555) ***-0144"
+};
+
+export const technicianSession: AuthSession = {
+  user: authUsers[2]!,
+  active_role: "technician",
+  surface: "technician"
 };
 
 function mockOfferExpiresAt(secondsFromNow: number): string {
