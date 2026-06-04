@@ -164,6 +164,11 @@ human's explicit go + smoke test.
       `dispatch_mode` vs `fulfillment_policy`; no bidding; trusted-channel resolution).
 - [~] **Docs realigned** — SPEC §2.10 reworded; ROADMAP/this plan reframed to the
       neutral-network model; console spec + `DATABASE-AND-STORAGE` updated.
+- [~] **Infra (Claude):** migration `0004_tenancy_and_intake` drafted + offline-verified
+      (**UNAPPLIED**); the coupled `api/store.py` column rename is **parked on branch
+      `chore/sprint2b-0004-apply`** (kept off `main` so prod can't pick it up early).
+      **Apply bundle → 2B:** run `0004` on prod, then merge+deploy the store.py branch
+      (brief writer window acceptable at current scale); needs prod-DDL authorization.
 - [ ] **Code language correction** — retire `dispatch_owner`; reconcile
       `provider_organization_id` → `fulfillment_org_id`; re-express mock fixtures
       (`routing_source:"ClueXP-routed"`, `dispatch_owner:"cluexp"`) as Origin=ClueXP /
@@ -174,7 +179,23 @@ human's explicit go + smoke test.
       direct-release / marketplace bidding". Keep typecheck + builds green.
 - [ ] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
       settings, anonymous-capacity map/list (masked PII), network-release action,
-      ranked-match mock, job detail showing origin/customer-owner/fulfillment.
+      ranked-match mock.
+
+### 2A+ — Multi-tenant intake & dispatch update (pulled into current scope, human 2026-06-04)
+> Priority: make the **existing** intake + dispatch systems multi-tenant now. Plain
+> mobile-web (no PWA). Ships as one bundle with the `0004` apply.
+- [ ] **Per-org intake link (REAL):** route `/o/[slug]` (mobile-web, same intake form,
+      light org branding) → **server-side resolve slug→owning org** (trusted, browser
+      `org_id` is never authority) → on submit stamp `origin_org_id` /
+      `customer_owner_org_id` / `intake_channel_id` on the job. *(Codex = page; Claude =
+      API resolution + `store.py` writes.)*
+- [ ] **Dispatch consoles (display update):** show **Origin / Customer-Owner /
+      Fulfillment** + `dispatch_mode` / `fulfillment_policy` in the board/table/drawer;
+      neutral lexicon. Mock data still (real `cluexp-api` wiring stays 2B). *(Codex.)*
+- [ ] **Infra ship (Claude, gated):** apply `0004` to prod (explicit prod-DDL go) +
+      seed one provider org + intake channel; deploy `store.py` + intake API; prod smoke
+      (create via `/o/[slug]` → job carries `origin_org_id`). Bundle: migration +
+      `chore/sprint2b-0004-apply` + the slice branch, shipped together.
 
 ### 2B — Auth + extraction + dispatch v1 (after 2A)
 - [ ] **Auth foundation** — `users` table (migration `0005_*`): `id, email, phone,
