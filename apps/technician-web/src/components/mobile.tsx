@@ -37,6 +37,8 @@ import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { BottomNav, Countdown } from "./client-widgets";
+import { GoogleMapView } from "./google-map";
+import type { MapPoint } from "./google-map";
 
 type PillTone = "default" | "success" | "warn" | "danger" | "info" | "muted";
 
@@ -392,9 +394,11 @@ export function Stepper({ active }: { active: number }) {
   );
 }
 
-export function MockMap({ job, mode = "route" }: { job?: Job; mode?: "route" | "fleet" }) {
+// Decorative mock-map layer — the fallback shown when no browser Maps key is
+// configured (or the Maps script fails to load). No overlay here; MockMap owns it.
+function MockMapVisual() {
   return (
-    <div className="relative mb-4 h-[310px] overflow-hidden rounded-2xl border border-border bg-[#101720]">
+    <div className="absolute inset-0">
       <div className="absolute inset-0 opacity-80 [background-image:linear-gradient(135deg,rgba(98,168,255,.13)_1px,transparent_1px),linear-gradient(45deg,rgba(255,191,0,.10)_1px,transparent_1px)] [background-size:46px_46px,32px_32px]" />
       <div className="absolute left-10 right-8 top-28 h-1 rotate-[-18deg] rounded-full bg-primary" />
       <div className="absolute left-28 right-14 top-48 h-1 rotate-[10deg] rounded-full bg-info/80" />
@@ -404,6 +408,23 @@ export function MockMap({ job, mode = "route" }: { job?: Job; mode?: "route" | "
       <span className="absolute right-[20%] top-[22%] flex size-10 items-center justify-center rounded-full bg-info text-[#05192e] shadow-lg shadow-info/25">
         <KeyRound className="size-5" />
       </span>
+    </div>
+  );
+}
+
+export function MockMap({ job, mode = "route" }: { job?: Job; mode?: "route" | "fleet" }) {
+  // Build map points from the job's coordinates. In route mode, place a technician
+  // origin offset from the destination (mock GPS — no live position yet, no fake movement).
+  const points: MapPoint[] = [];
+  if (typeof job?.lat === "number" && typeof job?.lng === "number") {
+    if (mode === "route") {
+      points.push({ lat: job.lat + 0.012, lng: job.lng - 0.014, kind: "tech", label: "You" });
+    }
+    points.push({ lat: job.lat, lng: job.lng, kind: "job", label: job.customer_display });
+  }
+  return (
+    <div className="relative mb-4 h-[310px] overflow-hidden rounded-2xl border border-border bg-[#101720]">
+      <GoogleMapView points={points} connect={mode === "route"} fallback={<MockMapVisual />} />
       <div className="absolute bottom-3 left-3 right-3 rounded-xl border border-border bg-background/90 p-3 backdrop-blur">
         <div className="flex items-center justify-between gap-3">
           <div>

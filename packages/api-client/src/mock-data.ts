@@ -225,8 +225,8 @@ export const jobs: Job[] = [
     sla_min: 20,
     sla_deadline_at: "2026-06-03T23:40:00Z",
     price_quote: "$95 est.",
-    lat: 40,
-    lng: -74
+    lat: 40.7075,
+    lng: -74.0113
   },
   {
     id: "JOB-B-2248",
@@ -247,8 +247,8 @@ export const jobs: Job[] = [
     age_min: 7,
     sla_min: 30,
     sla_deadline_at: "2026-06-03T23:55:00Z",
-    lat: 41,
-    lng: -73
+    lat: 40.7880,
+    lng: -73.9460
   },
   {
     id: "JOB-C-2289",
@@ -267,8 +267,8 @@ export const jobs: Job[] = [
     age_min: 31,
     sla_deadline_at: "2026-06-03T23:18:00Z",
     escalation_reason: "GPS stale for 18 minutes",
-    lat: 39,
-    lng: -75
+    lat: 40.7420,
+    lng: -73.9890
   },
   {
     id: "JOB-D-2301",
@@ -287,8 +287,8 @@ export const jobs: Job[] = [
     age_min: 22,
     sla_deadline_at: "2026-06-03T23:33:00Z",
     eta_min: 7,
-    lat: 40,
-    lng: -74
+    lat: 40.7402,
+    lng: -74.0027
   },
   {
     id: "JOB-E-2312",
@@ -308,8 +308,8 @@ export const jobs: Job[] = [
     age_min: 14,
     sla_deadline_at: "2026-06-03T23:48:00Z",
     eta_min: 15,
-    lat: 41,
-    lng: -73
+    lat: 40.7950,
+    lng: -73.9510
   },
   {
     id: "JOB-F-2320",
@@ -328,8 +328,8 @@ export const jobs: Job[] = [
     sla_min: 20,
     sla_deadline_at: "2026-06-03T23:22:00Z",
     escalation_reason: "No eligible technician in range",
-    lat: 40,
-    lng: -75
+    lat: 40.6890,
+    lng: -74.0150
   }
 ];
 
