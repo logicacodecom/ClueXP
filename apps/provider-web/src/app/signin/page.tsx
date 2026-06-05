@@ -8,7 +8,7 @@ import { useState } from "react";
 export default function SignInPage() {
   const router = useRouter();
   const [identifier, setIdentifier] = useState(providerSession.user.email ?? "");
-  const [password, setPassword] = useState("demo-password");
+  const [password, setPassword] = useState("123456");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

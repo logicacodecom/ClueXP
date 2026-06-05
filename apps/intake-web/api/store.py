@@ -23,6 +23,10 @@ from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# Demo/seed login password. Intentionally simple for the demo environment; override
+# via env. The JWT signing secret (AUTH_SECRET) is separate and must still be strong.
+DEMO_PASSWORD = os.environ.get("DEMO_SEED_PASSWORD", "123456")
+
 
 def _trust_state_value(ticket: Ticket) -> str:
     state = ticket.trust_state
@@ -118,13 +122,13 @@ class InMemoryStore(Store):
         self._tickets: dict[UUID, Ticket] = {}
         self.events: list[str] = []
         self.media: list[dict[str, str]] = []
-        password_hash = hash_password("demo-password", salt="cluexp-demo-salt")
+        password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         self.users: dict[str, dict] = {
             "usr_platform_demo": {
                 "id": "usr_platform_demo",
-                "email": "ops@cluexp.com",
+                "email": "avery@cluexp.com",
                 "phone": None,
-                "display_name": "Avery Chen",
+                "display_name": "Avery Knox",
                 "password_hash": password_hash,
                 "roles": ["platform_admin"],
                 "active_organization_id": None,
@@ -134,11 +138,21 @@ class InMemoryStore(Store):
                 "id": "usr_provider_demo",
                 "email": "dispatch@metrokey.example",
                 "phone": "+15550140199",
-                "display_name": "Maya Torres",
+                "display_name": "Nadia Reyes",
                 "password_hash": password_hash,
                 "roles": ["provider_admin", "dispatcher"],
                 "active_organization_id": "org-metro",
                 "organization_name": "Metro Key Partners",
+            },
+            "usr_tech_demo": {
+                "id": "usr_tech_demo",
+                "email": "jordan@cluexp.example",
+                "phone": "+15550142201",
+                "display_name": "Jordan Lee",
+                "password_hash": password_hash,
+                "roles": ["technician"],
+                "active_organization_id": None,
+                "organization_name": None,
             },
         }
         self.reviews: list[dict] = []
@@ -377,7 +391,7 @@ class PostgresStore(Store):
             await self._seed_demo_auth(conn)
 
     async def _seed_demo_auth(self, conn) -> None:
-        password_hash = hash_password("demo-password", salt="cluexp-demo-salt")
+        password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         provider_org_id = None
         try:
             cur = await conn.execute(
@@ -388,7 +402,7 @@ class PostgresStore(Store):
                 (
                     "Metro Key Partners",
                     "Metro Key Partners LLC",
-                    "metro-key-partners",
+                    "metro-key",
                     "eligible",
                     "active",
                     "dispatch@metrokey.example",
@@ -429,13 +443,20 @@ class PostgresStore(Store):
                     (user_id, org_id, "provider_admin"),
                 )
 
-        await ensure_user("ops@cluexp.com", "Avery Chen", ["platform_admin"])
+        await ensure_user("avery@cluexp.com", "Avery Knox", ["platform_admin"])
         await ensure_user(
             "dispatch@metrokey.example",
-            "Maya Torres",
+            "Nadia Reyes",
             ["provider_admin", "dispatcher"],
             provider_org_id,
             "+15550140199",
+        )
+        await ensure_user(
+            "jordan@cluexp.example",
+            "Jordan Lee",
+            ["technician"],
+            None,
+            "+15550142201",
         )
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
