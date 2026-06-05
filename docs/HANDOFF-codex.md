@@ -29,6 +29,46 @@
 
 ## Open threads
 
+### 2026-06-04 — Claude: auth slice rolled back, then rolled forward as working demo (FYI + coordination)
+Re: your three commits `6efae24..9c46227` (auth backend + `/auth/login`, `/auth/me`,
+`/provider/requests`, `/tickets/{id}/review`, migration `0005`, demo seed). The human confirms
+**this work was authorized** — no process issue. Two prod-hygiene problems existed though, so the
+human chose **roll back, then roll forward cleanly**. Here's the full sequence so we don't collide.
+
+**What I found (both real, independent of authorization):**
+1. `AUTH_SECRET` defaulted to the public source literal → forgeable JWTs if unset in prod.
+2. `_seed_demo_auth` plants `platform_admin`/`provider_admin` users with a **source-visible password**
+   on first prod boot. Since intake auto-deploys from `main`, this was latent-live on prod.
+3. Minor: your seed email `ops@cluexp.com` **diverged from `mock-data.ts`** (`avery@cluexp.com`), so
+   the ops sign-in prefilled an email the backend would reject. And seed org slug `metro-key-partners`
+   duplicated the already-seeded `metro-key` org.
+
+**What I did (infra = mine):**
+- Rolled prod intake back to clean `5b8a260` (closed the window), then rolled forward.
+- Set a **strong `AUTH_SECRET`** in `cluexp-intake` prod env.
+- Applied **migration `0005`** to prod (`alembic_version` = `0005_auth_and_job_reviews`; tables + RLS).
+- Set `NEXT_PUBLIC_CLUEXP_API_BASE_URL=https://intake.cluexp.com` on `cluexp-ops` + `cluexp-provider`
+  and redeployed both (so console `/signin` actually reaches the intake API; CORS already `*`).
+
+**App-code edits I made under explicit human "you do all now" authorization** (normally your domain —
+flagging so we stay in sync), committed `5cdd9ec`:
+- `apps/intake-web/api/store.py`: added `DEMO_PASSWORD` const (= `123456`, override via
+  `DEMO_SEED_PASSWORD`); seed now uses it; **aligned seeded identities to `mock-data.ts`**
+  (`avery@cluexp.com`/Avery Knox, `dispatch@metrokey.example`/Nadia Reyes, added
+  `jordan@cluexp.example`/Jordan Lee technician); reconciled seed org slug → **`metro-key`** (upserts
+  the existing prod org, no dup).
+- `apps/ops-web` + `apps/provider-web` `signin/page.tsx`: default password `demo-password` → `123456`.
+
+**Live demo now:** ops `avery@cluexp.com` / provider `dispatch@metrokey.example`, password `123456`
+(both prefilled). Verified: 3 users seeded, stored hash matches `123456`, auth routes live.
+
+**Coordination notes for you:**
+- **Do not re-add / edit migration `0005`** — it's applied to prod. Future auth DDL = new migration, ping me.
+- **Keep `mock-data.ts` identities and the backend seed in sync** going forward (that was the bug).
+- Consoles still render **mock** jobs, not live DB — wiring them to live `/jobs` is a future slice (yours, when scoped).
+- **Technician app** is still on old `f07dd86` (CLI-only, mock signin) — not yet redeployed to current `main`.
+- Seed should be **gated off** for any real (non-demo) tenant later; `DEMO_SEED_PASSWORD` is the lever. — Claude
+
 ### 2026-06-04 — DEV TASK for Codex: Sprint 2A code-language correction (execute)
 Human signed off the neutral-network model; **`adr/0004-tenancy-and-intake.md` is accepted** and the
 docs are realigned (SPEC §2.10, ROADMAP, EXECUTION-PLAN, DATABASE-AND-STORAGE, console spec banner).
