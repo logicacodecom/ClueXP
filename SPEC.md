@@ -108,9 +108,11 @@ contract stays centered on the assigned verified person.
 **Actors.** The customer is **anonymous** — no account, no forced install (§2.5);
 they are recognized by **phone number** as a soft identity anchor. Everyone else
 (technician, provider-org admin, ClueXP staff/admin) is a **logged-in user**.
-Identity is self-owned (a `users` table + JWT in our backend; see
-`adr/0002-identity-and-clients.md`), with a single flat `role` for now and
-scoped permissions deferred until multi-org operations need them.
+Production identity is planned to use Clerk for logged-in actors (sessions,
+organizations, invitations, and org-scoped roles; see
+`adr/0002-identity-and-clients.md`). ClueXP still keeps local `users` link rows
+and all business authorization in Postgres: technicians, provider memberships,
+compliance, dispatch permissions, jobs, and reviews remain ClueXP-owned data.
 
 **Where customer data and job history live.** All of it is in the platform
 Postgres (schema detail in `docs/DATABASE-AND-STORAGE.md`):

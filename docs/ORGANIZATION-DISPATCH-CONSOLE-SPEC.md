@@ -15,7 +15,9 @@
 >   ops/admin, E7) — separate deployable apps built on shared `packages/console-ui` +
 >   `api-client`, not one dual-mode app. "Organization Mode" / "ClueXP Mode" below describe
 >   the two surfaces' scopes, not runtime modes of a single app.
-> - **Auth:** `adr/0002-identity-and-clients.md` (platform `users` + JWT).
+> - **Auth:** `adr/0002-identity-and-clients.md` (future Clerk-backed identity,
+>   sessions, organizations, and role context; ClueXP Postgres remains the
+>   business source of truth).
 >
 > - **⚠️ Tenancy/positioning superseded by `adr/0004` (2026-06-04).** Where this spec's
 >   language diverges, **`adr/0004-tenancy-and-intake.md` wins.** ClueXP is a **neutral
@@ -316,7 +318,8 @@ Fields:
 - Password.
 
 Rules:
-- Auth follows `adr/0002-identity-and-clients.md`: platform `users` + JWT.
+- Auth follows `adr/0002-identity-and-clients.md`: future Clerk-backed sign-in
+  and org role context, mapped server-side to local ClueXP domain records.
 - OTP is not the default dispatcher login method.
 - Role/scope determines available console mode and actions.
 

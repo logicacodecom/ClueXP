@@ -58,7 +58,9 @@ ClueXP/
 | **Provider portal** (`provider-web`) | Org admin/owner | Web | E2 |
 | **Ops console** (`ops-web`) | ClueXP dispatcher + admin/back-office | Web | E7 |
 
-All non-intake surfaces share one login (self-owned JWT + `users`; `adr/0002`).
+All non-intake surfaces share one login. Production auth direction is **Clerk**
+for identity, sessions, organizations, invitations, and org-level roles; ClueXP
+keeps Postgres as the business source of truth (`adr/0002`).
 Provider-web and ops-web are **separate apps on a shared `console-ui` core** (two
 surfaces, not one dual-mode app, for tenant isolation; `adr/0003`). Their shared design
 contract is `ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`.
@@ -67,7 +69,7 @@ contract is `ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`.
 
 | Table | Purpose |
 |---|---|
-| `users` | logged-in actors (technician/staff/admin); flat `role`, self-owned JWT auth (added at E2; `adr/0002`) |
+| `users` | local app actor/link rows for logged-in users; planned Clerk external refs plus ClueXP-specific status/audit relationships (`adr/0002`) |
 | `customers` | the requester; `phone` is the identity anchor (anonymous, no login) |
 | `organizations` | company/group tenants that can register affiliated technicians; future subscription anchor |
 | `technicians` | supply-side people — individual or affiliated; skills, service area, availability, rating, location |
@@ -107,7 +109,7 @@ separate **domain-restricted** token for rendering only.
 
 - **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
 - **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
-- **E2 Technician & Access** — self-owned auth foundation (`users` + JWT, flat role; `adr/0002`); **extract `cluexp-api`** (first non-intake client); individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician app (PWA → React Native) + provider portal.
+- **E2 Technician & Access** — Clerk-backed auth foundation (`users` link rows + Clerk user/org refs; `adr/0002`); **extract `cluexp-api`** (first non-intake client); individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician app (PWA → React Native) + provider portal.
 - **E3 Dispatch engine** — deterministic/ranked matcher (territory + skill + availability + rating + verification; **no bidding/auction**, `adr/0004`); offer cascade; backend-enforced first-accept-wins concurrency; production technician offer delivery (polling acceptable for v1, push/websocket/native notifications required before relying on real-time mobile alerts). *(v1 = `cluexp_managed_routing` to providers/independent techs — routing, never ClueXP fulfillment. `dispatch_mode` `organization_managed` + `fulfillment_policy` network-overflow per `adr/0004`/SPEC §2.10. Open marketplace/bidding reserved, not scheduled.)*
 - **E4 Fulfillment** — real map, traffic ETA, live tracking, mutual arrival handshake.
 - **E5 Payments** — Stripe auth-hold at commit, capture at finalize; restore the deferred payment gate.
@@ -121,7 +123,7 @@ separate **domain-restricted** token for rendering only.
 |---|---|---|
 | **0 — Foundation** | Hardening + restructure + DB | live-app hardening, `apps/`+`packages/` layout (API co-located), CI, baseline dispatch schema on Supabase, intake still green |
 | **1 — Intake on real model** | Persist properly | Intake writes `customers`+`jobs`; real geocoding; photo upload to Storage |
-| **2 — Technician + matching v1** | Kill the stub tech | Auth foundation (`users`+JWT) + `cluexp-api` extraction; provider/team/technician registry + onboarding; deterministic dispatch + offers |
+| **2 — Technician + matching v1** | Kill the stub tech | Clerk-backed auth foundation + `cluexp-api` extraction; provider/team/technician registry + onboarding; deterministic dispatch + offers |
 | **3 — Fulfillment maps** | Real ETAs/tracking | Live map, traffic ETA, mutual arrival handshake |
 | **4 — Payments + OTP** | Restore deferred | Stripe auth-hold/capture; OTP back in flow |
 | **5 — Dispatcher console** | Human ops | Handoff queue, overrides, safety escalation |

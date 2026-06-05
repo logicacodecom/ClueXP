@@ -1,32 +1,45 @@
 # ADR 0002 — Identity, access, and client apps
 
-- **Status:** Accepted (2026-06-01)
+- **Status:** Accepted (2026-06-01), amended (2026-06-05)
 - **Context:** Sprints 2+ add logged-in actors (technicians, provider-org admins,
   ClueXP staff) and a technician mobile app. ADR 0001 deferred backend extraction
   and said nothing about auth. We need identity + authorization, and we want to
-  stay portable (the human asked for a simple, non–vendor-locked auth so we can
-  move Postgres providers later). This ADR revises 0001 §2 (extraction timing)
+  stay portable. The first demo implementation used simple self-owned JWT auth;
+  after the Sprint 2 auth discussion, the planned production direction is Clerk
+  for identity, sessions, organizations, and invitations while ClueXP keeps the
+  business domain model in Postgres. This ADR revises 0001 §2 (extraction timing)
   and adds the auth/roles/clients decisions.
 
 ## Decisions
 
-### 1. Self-owned auth (vendor-neutral) — not Supabase Auth
-Identity lives in our **own `users` table** in Postgres; auth logic lives in our
-FastAPI. Passwords hashed with bcrypt/argon2 (`passlib`); sessions are stateless
-**JWTs** signed with a secret from env (`PyJWT`). Rationale: portability — a
-provider move is `pg_dump | psql` + new `DATABASE_URL`, with nothing owned by the
-DB vendor. Supabase Auth (GoTrue, `auth` schema, `auth.uid()` RLS) was rejected
-because it couples identity to Supabase. The same JWT serves the web apps and the
-future native app.
+### 1. Production auth direction: Clerk, with Postgres as domain source of truth
+Use **Clerk** as the planned production identity provider for logged-in actors:
+provider admins, dispatchers, technicians, and ClueXP staff. Clerk should own
+sign-in, sessions, invitations, user profile basics, organization membership UI,
+and org-scoped roles/permissions.
 
-### 2. Roles: one flat column now; scoped RBAC deferred
-A single `users.role` from a small fixed set (`customer`, `technician`, `staff`,
-`admin`). Authorization is **simple FastAPI dependency checks** (`require_role`),
-not database RLS. Rationale: roles are plumbing, not the product — build the
-minimum that's safe and unblocks the business flows. **Explicitly deferred** (a
-real future task, not forgotten): membership-scoped RBAC (role-per-org/team),
-granular permissions, org-admin self-service boundaries — picked up when
-multi-org operations actually exist.
+ClueXP still owns the business model in Postgres. Store Clerk identifiers as
+external refs on our domain records, for example `users.clerk_user_id` and
+`organizations.clerk_organization_id`, while keeping `organizations`,
+`technicians`, `organization_technicians`, `jobs`, `reviews`, compliance status,
+and dispatch permissions authoritative in ClueXP tables.
+
+The current custom FastAPI `/auth/login` + signed-token flow is a **demo bridge**,
+not the long-term auth architecture. Replace it in a future Clerk migration
+slice. Supabase Auth (GoTrue, `auth` schema, `auth.uid()` RLS) remains rejected as
+the primary auth layer because it couples identity tightly to the DB provider.
+
+### 2. Roles and tenant scope
+Use Clerk organizations for provider-company membership and org-level roles such
+as `provider_admin` and `dispatcher`. Platform-wide roles such as
+`platform_admin` remain app-level authority and must be checked by the backend.
+Technicians are users too, but their dispatch eligibility still comes from
+ClueXP's `technicians`, `organization_technicians`, compliance, and availability
+tables.
+
+Authorization remains **API-enforced**, not UI-only. The FastAPI backend verifies
+Clerk-issued tokens, maps Clerk user/org context to ClueXP domain records, and
+scopes every query/action by the resulting authority.
 
 ### 3. Clients + API extraction pulled forward to E2
 The technician channel is a **PWA now → React Native (Expo) near-term**. A native
@@ -40,11 +53,14 @@ install); all other actors log in.
 - **Authorization is in the API layer, not RLS.** Every query is scoped by the
   backend (e.g. `WHERE org_id = <caller>`); the deny-by-default RLS from `0002`
   stays only as a backstop against the public anon key, not the primary mechanism.
-- **`users` table** is added (own migration) before E2 onboarding can mean
-  anything; `provider_documents.verified_by` / `media.uploaded_by` finally have a
-  real referent.
-- **Vendor swap-points to watch** (not blockers, just the only non-portable ties):
-  Supabase **Storage** (signed URLs) and the **pooler** connection string. Auth and
-  all relational data are portable.
+- **`users` table** remains a domain mirror/link table, not the identity source of
+  truth. It stores Clerk refs plus app-specific status, audit, and relationships;
+  `provider_documents.verified_by` / `media.uploaded_by` point to this local row.
+- **Vendor swap-points to watch** (not blockers): Clerk identity/org IDs,
+  Supabase **Storage** (signed URLs), and the **pooler** connection string. All
+  dispatch/business data remains portable Postgres data.
+- **Future migration task:** add Clerk SDKs to the Next.js console/technician
+  apps, add Clerk token verification to FastAPI, add Clerk external-ref columns,
+  and retire custom `/auth/login` once live auth is verified.
 - **OTP (Sprint 4 / E6)** remains the customer's light identity check; it layers on
-  the same `users`/phone model rather than a separate system.
+  the customer phone model rather than forcing a customer account.

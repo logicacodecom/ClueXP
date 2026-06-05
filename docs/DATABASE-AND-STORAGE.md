@@ -61,10 +61,13 @@ timeline is the `events` rows for that job. Reliable linking depends on intake
 **capturing the phone** so the `customers` upsert fires (today the `Ticket` has
 no phone field — see EXECUTION-PLAN Sprint 1).
 
-**Coming at E2 (`adr/0002`): `users`** — logged-in actors (technician/staff/admin)
-with a flat `role` and self-owned JWT auth; resolves the `verified_by` /
-`uploaded_by` referents. Customers stay anonymous (no `users` row). Authorization
-is enforced in the API layer, not RLS.
+**Auth direction (`adr/0002`): `users` link rows + Clerk external refs** —
+logged-in actors (technician/provider admin/dispatcher/staff) authenticate
+through Clerk in the planned production path. The local `users` table remains
+the ClueXP domain referent for `verified_by` / `uploaded_by`, app-specific
+status, audit, and relationships, with Clerk user/org IDs stored as external
+references. Customers stay anonymous (no forced account; phone remains the soft
+identity anchor). Authorization is enforced in the API layer, not RLS.
 
 **Indexes:** `jobs(status)`, `jobs(trust_state)`, `jobs(customer_id)`,
 `jobs(provider_organization_id)`, `technicians(is_available)`,

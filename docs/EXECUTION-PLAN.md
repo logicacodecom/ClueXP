@@ -154,7 +154,7 @@ human's explicit go + smoke test.
 
 > Decisions: **`adr/0004-tenancy-and-intake.md`** (tenancy/intake — neutral network,
 > no ClueXP Direct, three axes, no bidding) + `adr/0002-identity-and-clients.md`
-> (self-owned JWT auth, `cluexp-api` extraction).
+> (future Clerk-backed auth, `cluexp-api` extraction).
 >
 > **Sequencing (human, 2026-06-04):** do the **correction pass + document updates
 > FIRST (2A)**, then the auth/extraction/dispatch build (2B).
@@ -198,10 +198,12 @@ human's explicit go + smoke test.
       `chore/sprint2b-0004-apply` + the slice branch, shipped together.
 
 ### 2B — Auth + extraction + dispatch v1 (after 2A)
-- [ ] **Auth foundation** — `users` table (migration `0005_*`): `id, email, phone,
-      password_hash, role ('customer'|'technician'|'staff'|'admin'), status`;
-      bcrypt/argon2 hashing; JWT issue/verify in FastAPI; `require_role(...)`
-      dependency. No RLS-based authz; scoped RBAC deferred (`adr/0002` §2).
+- [ ] **Auth foundation** — migrate production auth direction to **Clerk**
+      (`adr/0002`): add Clerk to ops/provider/technician apps; verify Clerk-issued
+      tokens in FastAPI; map Clerk user/org context to local `users` /
+      `organizations` records via external refs; keep ClueXP tables authoritative
+      for technicians, compliance, dispatch permissions, jobs, and reviews; retire
+      the custom demo `/auth/login` flow once Clerk sign-in is verified.
 - [ ] **API extraction** — move the shared FastAPI to standalone `apps/api`
       (`cluexp-api`) + `packages/schema`; intake-web consumes it over HTTP.
 - [x] **Provider tenant schema** — support individual technicians and
