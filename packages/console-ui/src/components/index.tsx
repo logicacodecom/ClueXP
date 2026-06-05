@@ -234,6 +234,7 @@ export function AppShell({
   mode,
   modeBadge,
   nav = defaultNav,
+  onSignOut,
   session,
   surfaceLabel
 }: {
@@ -242,6 +243,7 @@ export function AppShell({
   mode: ConsoleMode;
   modeBadge: string;
   nav?: NavItem[];
+  onSignOut?: () => void;
   session?: AuthSession;
   surfaceLabel: string;
 }) {
@@ -252,7 +254,7 @@ export function AppShell({
       <div className="min-h-screen bg-background text-foreground">
         <Sidebar activePath={activePath} collapsed={collapsed} mode={mode} nav={scopedNav} onToggle={() => setCollapsed((value) => !value)} surfaceLabel={surfaceLabel} />
         <div className={cn("min-h-screen transition-[padding] duration-200", collapsed ? "pl-[76px]" : "pl-[264px]")}>
-          <Topbar modeBadge={modeBadge} session={session} surfaceLabel={surfaceLabel} />
+          <Topbar modeBadge={modeBadge} onSignOut={onSignOut} session={session} surfaceLabel={surfaceLabel} />
           <main className="mx-auto w-full max-w-[1760px] px-6 py-6 lg:px-8">{children}</main>
         </div>
       </div>
@@ -277,7 +279,7 @@ export function MockAuthBoundary({
     <EmptyState
       icon={ShieldAlert}
       title="Session required"
-      description="Mock route guard placeholder. Real JWT validation and tenant enforcement will come from the backend auth slice."
+      description="Sign in with an authorized account before opening this console."
       action={<Button asChild><Link href="/signin">Sign in</Link></Button>}
     />
   );
@@ -373,7 +375,7 @@ function initialsFor(name?: string) {
     .toUpperCase() || "OP";
 }
 
-export function Topbar({ modeBadge, session, surfaceLabel }: { modeBadge: string; session?: AuthSession; surfaceLabel: string }) {
+export function Topbar({ modeBadge, onSignOut, session, surfaceLabel }: { modeBadge: string; onSignOut?: () => void; session?: AuthSession; surfaceLabel: string }) {
   const orgLabel = session?.active_organization_id ? organizationLabel(session.active_organization_id) : "All network tenants";
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-background/85 px-6 backdrop-blur">
@@ -410,7 +412,7 @@ export function Topbar({ modeBadge, session, surfaceLabel }: { modeBadge: string
           <DropdownMenuSeparator />
           <DropdownMenuItem>Account</DropdownMenuItem>
           <DropdownMenuItem>Switch workspace</DropdownMenuItem>
-          <DropdownMenuItem>Sign out</DropdownMenuItem>
+          <DropdownMenuItem onClick={onSignOut}>Sign out</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </header>

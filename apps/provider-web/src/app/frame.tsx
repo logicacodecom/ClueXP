@@ -2,15 +2,16 @@
 
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import { providerSession } from "@cluexp/api-client";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AuthSession } from "@cluexp/api-client";
 
-function sessionFromStorage(fallback: AuthSession): AuthSession {
-  if (typeof window === "undefined") return fallback;
+function sessionFromStorage(fallback: AuthSession): AuthSession | null {
+  if (typeof window === "undefined") return null;
+  const token = window.localStorage.getItem("cluexp_access_token");
   const raw = window.localStorage.getItem("cluexp_session");
-  if (!raw) return fallback;
+  if (!token || !raw) return null;
   try {
     const session = JSON.parse(raw) as {
       user?: { id?: string; email?: string; phone?: string; display_name?: string };
@@ -33,14 +34,28 @@ function sessionFromStorage(fallback: AuthSession): AuthSession {
       }
     };
   } catch {
-    return fallback;
+    return null;
   }
 }
 
 export function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const [session, setSession] = useState<AuthSession>(providerSession);
-  useEffect(() => setSession(sessionFromStorage(providerSession)), []);
+  const router = useRouter();
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    const storedSession = sessionFromStorage(providerSession);
+    setSession(storedSession);
+    setHydrated(true);
+    if (!storedSession) router.replace("/signin");
+  }, [router]);
+  function signOut() {
+    window.localStorage.removeItem("cluexp_access_token");
+    window.localStorage.removeItem("cluexp_session");
+    setSession(null);
+    router.replace("/signin");
+  }
+  if (!hydrated) return null;
   const providerNav = defaultNav.map((item) =>
     item.label === "Technicians" ? { ...item, href: "/jobs/JOB-B-2248/assign" } : item
   );
@@ -50,10 +65,11 @@ export function AppFrame({ children }: { children: ReactNode }) {
       mode="org"
       modeBadge="ORGANIZATION MODE: METRO KEY PARTNERS"
       nav={providerNav}
-      session={session}
+      onSignOut={signOut}
+      session={session ?? undefined}
       surfaceLabel="PROVIDER CONSOLE"
     >
-      <MockAuthBoundary allowedRoles={["provider_admin", "dispatcher"]} session={session}>
+      <MockAuthBoundary allowedRoles={["provider_admin", "dispatcher"]} session={session ?? undefined}>
         {children}
       </MockAuthBoundary>
     </AppShell>

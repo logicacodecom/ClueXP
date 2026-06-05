@@ -2,15 +2,16 @@
 
 import { AppShell, MockAuthBoundary } from "@cluexp/console-ui";
 import { platformSession } from "@cluexp/api-client";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AuthSession } from "@cluexp/api-client";
 
-function sessionFromStorage(fallback: AuthSession): AuthSession {
-  if (typeof window === "undefined") return fallback;
+function sessionFromStorage(fallback: AuthSession): AuthSession | null {
+  if (typeof window === "undefined") return null;
+  const token = window.localStorage.getItem("cluexp_access_token");
   const raw = window.localStorage.getItem("cluexp_session");
-  if (!raw) return fallback;
+  if (!token || !raw) return null;
   try {
     const session = JSON.parse(raw) as {
       user?: { id?: string; email?: string; phone?: string; display_name?: string };
@@ -33,23 +34,38 @@ function sessionFromStorage(fallback: AuthSession): AuthSession {
       }
     };
   } catch {
-    return fallback;
+    return null;
   }
 }
 
 export function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const [session, setSession] = useState<AuthSession>(platformSession);
-  useEffect(() => setSession(sessionFromStorage(platformSession)), []);
+  const router = useRouter();
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    const storedSession = sessionFromStorage(platformSession);
+    setSession(storedSession);
+    setHydrated(true);
+    if (!storedSession) router.replace("/signin");
+  }, [router]);
+  function signOut() {
+    window.localStorage.removeItem("cluexp_access_token");
+    window.localStorage.removeItem("cluexp_session");
+    setSession(null);
+    router.replace("/signin");
+  }
+  if (!hydrated) return null;
   return (
     <AppShell
       activePath={pathname}
       mode="cluexp"
       modeBadge="NETWORK OPS"
-      session={session}
+      onSignOut={signOut}
+      session={session ?? undefined}
       surfaceLabel="PLATFORM OPERATIONS"
     >
-      <MockAuthBoundary allowedRoles={["platform_admin"]} session={session}>
+      <MockAuthBoundary allowedRoles={["platform_admin"]} session={session ?? undefined}>
         {children}
       </MockAuthBoundary>
     </AppShell>
