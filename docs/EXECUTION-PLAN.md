@@ -12,6 +12,14 @@
 
 ## Status snapshot (verified 2026-06-04)
 
+> **2026-06-06 — scope + execution decision (human):** **Localization (i18n) and auth (Clerk / 2B
+> auth foundation) are DEFERRED** to a later sprint. Both agents have **full autonomous permission**
+> to finish their Sprint 2 work without per-step approval (ownership split unchanged). Tonight Claude
+> is executing the **Sprint 2A apply bundle** (apply `0004` to prod → deploy `store.py` → trusted
+> `/o/[slug]` resolution → seed → smoke); Codex finishes the 2A **mock UI concepts**. Technician
+> mobile polish shipped to prod (`tech.cluexp.com`) earlier today. Per-app `vercel.json` +
+> ignore-build step merged (`main` no longer rebuilds all four on every push).
+
 | | |
 |---|---|
 | Intake app (production) | ✅ live — `www.cluexp.com` + `intake.cluexp.com` (project `cluexp-intake`). **Sprint 1 shipped to prod** (relational store + `/geocode` + photo upload) at commit `eeb3f7c` via `main`; both domains serving 200. `www` to be repurposed for a future public marketing site. |

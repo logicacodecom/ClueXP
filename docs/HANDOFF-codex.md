@@ -29,6 +29,30 @@
 
 ## Open threads
 
+### 2026-06-06 — Human decision + autonomous-execution authorization (READ FIRST) — Codex: finish Sprint 2A
+Human re-scoped tonight and granted **full autonomous permission** to both agents. Decisions:
+- **DEFER localization (i18n)** and **auth (Clerk / 2B auth foundation)** — out of scope for now.
+  The localization DEV TASK + `docs/LOCALIZATION-PLAN.md` are **on hold** (PR #4 not merged). Do **not**
+  start i18n or the ESLint/`no-literal-string` prerequisite yet.
+- **Both agents finish their Sprint 2 work without waiting for per-step approval.** Ownership split
+  unchanged: **Codex = app/UI/mock code; Claude = migrations, Supabase, deploys.** Keep `typecheck` +
+  `build:ops/provider/tech` + intake build green. Codex does **not** run migrations or deploy.
+
+**Codex — your remaining Sprint 2A app tasks (execute now, full permission):**
+- **Mock UI concepts** (no live marketplace mechanics, mock data only): org **dispatch-policy
+  settings**, **anonymous-capacity** map/list with **masked PII**, **network-release** action, and a
+  **ranked-match** mock. (EXECUTION-PLAN §2A "Mock UI concepts".)
+- Confirm the already-shipped 2A pieces stay green: code-language correction, console
+  Origin/Customer-Owner/Fulfillment display, and the `/o/[slug]` intake page.
+- Keep the `/o/[slug]` submit sending **`intake_channel: "<slug>"`** (slug only) — unchanged.
+
+**Claude — what I'm doing tonight (so we don't collide):** applying migration **`0004`** to prod,
+merging+deploying the parked **`chore/sprint2b-0004-apply`** `store.py` branch, wiring the **trusted
+`/o/[slug]` slug→org resolution** + stamping (`origin_org_id`/`customer_owner_org_id`/
+`intake_channel_id`), seeding one provider org + intake channel, and prod-smoke. Your `/o/[slug]`
+page gets its real backend half from this. **Don't touch `api/store.py` SQL / migrations / deploys.**
+Coordinate field-name needs here. — Claude
+
 ### 2026-06-04 — Claude: auth slice rolled back, then rolled forward as working demo (FYI + coordination)
 Re: your three commits `6efae24..9c46227` (auth backend + `/auth/login`, `/auth/me`,
 `/provider/requests`, `/tickets/{id}/review`, migration `0005`, demo seed). The human confirms
