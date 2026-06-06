@@ -50,17 +50,20 @@
   html {
     min-height: 100%;
     background: #07080a;
+    overscroll-behavior: none;
   }
 
   body {
     min-height: 100%;
     margin: 0;
     background:
-      radial-gradient(circle at 50% -10%, rgba(255, 191, 0, 0.16), transparent 34rem),
       linear-gradient(180deg, #101319 0%, #07080a 100%);
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+    overscroll-behavior: none;
+    touch-action: manipulation;
   }
 
   a {
@@ -72,6 +75,11 @@
   a {
     -webkit-tap-highlight-color: transparent;
   }
+
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+  }
 }
 
 @layer utilities {
@@ -81,11 +89,11 @@
   }
 
   .safe-bottom {
-    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    padding-bottom: max(0.85rem, env(safe-area-inset-bottom));
   }
 
   .safe-top {
-    padding-top: max(0.75rem, env(safe-area-inset-top));
+    padding-top: max(0.85rem, env(safe-area-inset-top));
   }
 
   .glass {
