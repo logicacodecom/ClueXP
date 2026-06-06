@@ -390,6 +390,28 @@ async def approve_organization(
     return result
 
 
+@app.post("/admin/technicians/{technician_id}/reject")
+async def reject_technician(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.reject_technician(technician_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
+@app.post("/admin/organizations/{organization_id}/reject")
+async def reject_organization(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.reject_organization(organization_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
 @app.get("/geocode")
 async def geocode_address(q: str) -> dict[str, Any]:
     """Resolve an address to coordinates using the server Maps key.

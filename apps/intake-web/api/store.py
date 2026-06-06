@@ -131,6 +131,12 @@ class Store:
     async def approve_organization(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def reject_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def reject_organization(self, organization_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
@@ -360,6 +366,12 @@ class InMemoryStore(Store):
         return None
 
     async def approve_organization(self, organization_id: UUID) -> dict | None:
+        return None
+
+    async def reject_technician(self, technician_id: UUID) -> dict | None:
+        return None
+
+    async def reject_organization(self, organization_id: UUID) -> dict | None:
         return None
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:
@@ -1106,6 +1118,30 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "update organizations set status = 'active', updated_at = now()"
+                " where id = %s returning id, display_name, status",
+                (str(organization_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2]}
+
+    async def reject_technician(self, technician_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set vetting_status = 'rejected', status = 'rejected', is_available = false"
+                " where id = %s returning id, display_name, status, vetting_status",
+                (str(technician_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2], "vetting_status": row[3]}
+
+    async def reject_organization(self, organization_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set status = 'rejected', updated_at = now()"
                 " where id = %s returning id, display_name, status",
                 (str(organization_id),),
             )
