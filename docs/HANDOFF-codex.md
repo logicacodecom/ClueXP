@@ -30,6 +30,7 @@
 ## Open threads
 
 ### 2026-06-06 — Codex: auth/localization/offer-delivery app slice implemented
+Branch: `codex/auth-localization-offers`; implementation commit: `83b668d`.
 Completed without editing `api/`, migrations, Vercel configuration, or deploys:
 - Shared EN/ES locale/session primitives, English fallback, browser detection, explicit cookie
   persistence, language selectors, and an authenticated locale-sync adapter.
