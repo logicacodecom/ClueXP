@@ -5,7 +5,7 @@ import math
 import os
 import random
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from api.geocode import geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
+from api.dispatch import rank_candidates
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -128,6 +129,35 @@ class JobReviewRequest(BaseModel):
     rating: int
     tags: list[str] = []
     comment: str | None = None
+
+
+class TechnicianRegisterRequest(BaseModel):
+    display_name: str
+    password: str
+    email: str | None = None
+    phone: str | None = None
+    skills: list[str] = []
+    service_area_center_lat: float | None = None
+    service_area_center_lng: float | None = None
+    service_area_radius_km: float | None = None
+    locale: str | None = None
+
+
+class OrganizationRegisterRequest(BaseModel):
+    organization_name: str
+    admin_display_name: str
+    admin_email: str
+    password: str
+    legal_name: str | None = None
+    phone: str | None = None
+    service_area_center_lat: float | None = None
+    service_area_center_lng: float | None = None
+    service_area_radius_km: float | None = None
+    locale: str | None = None
+
+
+class LocaleUpdateRequest(BaseModel):
+    locale: str
 
 
 async def envelope(ticket: Ticket) -> TicketEnvelope:
@@ -287,6 +317,99 @@ async def login(payload: LoginRequest) -> AuthResponse:
 @app.get("/auth/me")
 async def me(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
     return session
+
+
+@app.post("/auth/register/technician", response_model=AuthResponse)
+async def register_technician(payload: TechnicianRegisterRequest) -> AuthResponse:
+    """Self-service individual-technician signup. Creates the login + a PENDING
+    technician profile (cannot receive offers until a platform admin approves —
+    the dispatch engine already filters active+verified)."""
+    await latency()
+    if not payload.email and not payload.phone:
+        raise HTTPException(status_code=422, detail="Email or phone is required")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    try:
+        session = await store.register_technician(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    token = create_access_token(
+        {"sub": session["user"]["id"], "roles": session.get("roles", []), "org": None}
+    )
+    return AuthResponse(access_token=token, session=session)
+
+
+@app.post("/auth/register/organization", response_model=AuthResponse)
+async def register_organization(payload: OrganizationRegisterRequest) -> AuthResponse:
+    """Self-service company signup. Creates a PENDING organization + its first
+    provider-admin user. Pending until a platform admin approves."""
+    await latency()
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    try:
+        session = await store.register_organization(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    token = create_access_token(
+        {
+            "sub": session["user"]["id"],
+            "roles": session.get("roles", []),
+            "org": session.get("active_organization_id"),
+        }
+    )
+    return AuthResponse(access_token=token, session=session)
+
+
+@app.patch("/auth/me/locale")
+async def update_locale(
+    payload: LocaleUpdateRequest, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    await store.update_user_locale(session["user"]["id"], payload.locale)
+    return {"locale": payload.locale}
+
+
+@app.post("/admin/technicians/{technician_id}/approve")
+async def approve_technician(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.approve_technician(technician_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
+@app.post("/admin/organizations/{organization_id}/approve")
+async def approve_organization(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.approve_organization(organization_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
+@app.post("/admin/technicians/{technician_id}/reject")
+async def reject_technician(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.reject_technician(technician_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
+@app.post("/admin/organizations/{organization_id}/reject")
+async def reject_organization(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.reject_organization(organization_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
 
 
 @app.get("/geocode")
@@ -497,6 +620,59 @@ async def dispatch(ticket_id: UUID) -> TicketEnvelope:
     await save(ticket)
     await log_transition(ticket, "matched")
     return await envelope(ticket)
+
+
+@app.post("/tickets/{ticket_id}/offers")
+async def create_offers(ticket_id: UUID) -> dict[str, Any]:
+    """Dispatch engine v1: rank available technicians by rule and create
+    ``dispatch_offers`` for the top candidates. **Additive** to the legacy stub
+    ``/dispatch`` — this does NOT flip the job to MATCHED (that happens only on
+    an accepted offer). Returns the ranked offers (identity masking is a frontend
+    concern; the customer is never shown a technician before assignment)."""
+    await latency()
+    job = await store.get_dispatch_job(ticket_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("fulfillment_technician_id"):
+        raise HTTPException(status_code=409, detail="Job already matched")
+    technicians = await store.list_available_technicians()
+    ranked = rank_candidates(job, technicians, top_n=3)
+    if not ranked:
+        return {"offers": [], "matched": False, "reason": "no_eligible_technician"}
+    expires_at = now() + timedelta(seconds=90)
+    offers = await store.create_dispatch_offers(ticket_id, ranked, expires_at)
+    return {"offers": offers, "matched": False, "expires_at": expires_at.isoformat()}
+
+
+@app.post("/offers/{offer_id}/accept")
+async def accept_offer(offer_id: UUID) -> dict[str, Any]:
+    """First-accept-wins: atomically claim the job for the offer's technician,
+    set ``fulfillment_technician_id``/``fulfillment_org_id``, flip
+    ``trust_state=matched``, and supersede the sibling offers. Enforced in the
+    backend (not UI timing); a losing or stale accept gets 409."""
+    await latency()
+    result = await store.accept_dispatch_offer(offer_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    if not result.get("accepted"):
+        raise HTTPException(status_code=409, detail=result.get("reason", "not_accepted"))
+    return result
+
+
+@app.get("/technicians/{technician_id}/offers")
+async def technician_offers(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Offer-delivery read: a technician's currently-pending offers (masked to a
+    coarse area — no exact address / customer before acceptance). A technician may
+    only read their own; platform_admin/dispatcher may read any."""
+    roles = set(session.get("roles", []))
+    if not ({"platform_admin", "dispatcher"} & roles):
+        tech = session.get("technician")
+        if not tech or tech.get("id") != str(technician_id):
+            raise HTTPException(status_code=403, detail="Not your offers")
+    offers = await store.list_technician_offers(technician_id)
+    return {"offers": offers}
 
 
 @app.get("/tickets/{ticket_id}/tracking", response_model=TicketEnvelope)
