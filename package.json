@@ -5,7 +5,8 @@
   "workspaces": [
     "apps/*",
     "packages/console-ui",
-    "packages/api-client"
+    "packages/api-client",
+    "packages/app-core"
   ],
   "scripts": {
     "dev:ops": "npm run dev --workspace @cluexp/ops-web",
@@ -15,6 +16,6 @@
     "build:ops": "npm run build --workspace @cluexp/ops-web",
     "build:provider": "npm run build --workspace @cluexp/provider-web",
     "build:tech": "npm run build --workspace @cluexp/technician-web",
-    "typecheck": "tsc -b packages/api-client packages/console-ui"
+    "typecheck": "tsc -b packages/api-client packages/app-core packages/console-ui"
   }
 }

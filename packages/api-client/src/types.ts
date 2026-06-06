@@ -97,6 +97,7 @@ export interface AuthUser {
   display_name: string;
   email?: string;
   phone?: string;
+  locale?: "en" | "es";
   roles: AuthRole[];
   organization_ids: string[];
   technician_id?: string;
@@ -108,6 +109,14 @@ export interface AuthSession {
   active_role: AuthRole;
   active_organization_id?: string;
   surface: "platform" | "provider" | "technician" | "customer";
+  organization_name?: string;
+  technician?: {
+    id: string;
+    status: string;
+    vetting_status: string;
+    is_available: boolean;
+    approved: boolean;
+  } | null;
 }
 
 export interface Team {

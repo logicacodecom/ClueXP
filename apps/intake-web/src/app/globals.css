@@ -59,6 +59,16 @@ button {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.language-select {
+  margin-inline-start: auto;
+}
+
+.language-select select {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface);
+}
+
 .mark {
   width: 28px;
   height: 28px;

@@ -12,13 +12,26 @@
 
 ## Status snapshot (verified 2026-06-04)
 
-> **2026-06-06 — scope + execution decision (human):** **Localization (i18n) and auth (Clerk / 2B
-> auth foundation) are DEFERRED** to a later sprint. Both agents have **full autonomous permission**
-> to finish their Sprint 2 work without per-step approval (ownership split unchanged). Tonight Claude
-> is executing the **Sprint 2A apply bundle** (apply `0004` to prod → deploy `store.py` → trusted
-> `/o/[slug]` resolution → seed → smoke); Codex finishes the 2A **mock UI concepts**. Technician
-> mobile polish shipped to prod (`tech.cluexp.com`) earlier today. Per-app `vercel.json` +
-> ignore-build step merged (`main` no longer rebuilds all four on every push).
+> **2026-06-06 — progress + re-sequenced plan (human):**
+> **Done today:** Sprint **2A** multi-tenant intake shipped + smoke-verified in prod; technician
+> mobile polish live (`tech.cluexp.com`); **2B dispatch engine v1 LIVE + smoke-verified** (additive
+> `/api/tickets/{id}/offers` + `/api/offers/{id}/accept`, deterministic ranking, atomic
+> first-accept-wins). 2A mock UI concepts done (Codex).
+> **Re-sequenced (supersedes the earlier "defer auth+localization"):** now do **(1) first-party auth
+> foundation → (2) localization foundation + integration → (3) authenticated technician
+> offer-delivery UI → (4) coordinated intake cutover** from the legacy instant-match stub to the
+> offer→accept loop. The legacy `/dispatch` stub stays live until that cutover.
+> **Language (locked):** EN + ES (extensible), English fallback, **never infer from geography**, **no
+> locale-prefixed routes for v1**. Public intake = browser-preferred on first visit + explicit toggle
+> (persist the explicit choice); technician/provider/ops = language in Settings/Profile persisted to
+> the authenticated user (+ choice at sign-in/onboarding). Locale preference stored in **ClueXP data**
+> (`users.locale`/`customers.locale`).
+> **Auth decision (human, 2026-06-06):** use ClueXP's existing FastAPI + Postgres auth. Do not add
+> Clerk or another proprietary identity provider. Apps keep FastAPI-issued JWTs in same-site
+> httpOnly cookies.
+> **Infra notes:**
+> The broken `vercel.json` `ignoreCommand` was removed (it errored every intake deploy since PR#5);
+> deploys are healthy again — **all four projects rebuild on each `main` push**.
 
 | | |
 |---|---|
@@ -162,7 +175,8 @@ human's explicit go + smoke test.
 
 > Decisions: **`adr/0004-tenancy-and-intake.md`** (tenancy/intake — neutral network,
 > no ClueXP Direct, three axes, no bidding) + `adr/0002-identity-and-clients.md`
-> (future Clerk-backed auth, `cluexp-api` extraction).
+> (`cluexp-api` extraction; its Clerk direction was superseded by the 2026-06-06
+> first-party FastAPI + Postgres auth decision).
 >
 > **Sequencing (human, 2026-06-04):** do the **correction pass + document updates
 > FIRST (2A)**, then the auth/extraction/dispatch build (2B).
@@ -180,9 +194,9 @@ human's explicit go + smoke test.
       `provider_organization_id` → `fulfillment_org_id`; mock fixtures re-expressed as
       Origin=ClueXP / Fulfillment=partner-or-tech; console/technician copy on the neutral
       lexicon ("ClueXP Direct / our techs / ClueXP MODE / direct-release" removed). Builds green.
-- [ ] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
+- [x] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
       settings, anonymous-capacity map/list (masked PII), network-release action,
-      ranked-match mock. *(Codex — in progress 2026-06-06.)*
+      ranked-match mock. *(Codex — completed 2026-06-06; shared console mock UI.)*
 
 ### 2A+ — Multi-tenant intake & dispatch update (pulled into current scope, human 2026-06-04)
 > Priority: make the **existing** intake + dispatch systems multi-tenant now. Plain
@@ -200,12 +214,14 @@ human's explicit go + smoke test.
       smoke passed** 2026-06-06.
 
 ### 2B — Auth + extraction + dispatch v1 (after 2A)
-- [ ] **Auth foundation** — migrate production auth direction to **Clerk**
-      (`adr/0002`): add Clerk to ops/provider/technician apps; verify Clerk-issued
-      tokens in FastAPI; map Clerk user/org context to local `users` /
-      `organizations` records via external refs; keep ClueXP tables authoritative
-      for technicians, compliance, dispatch permissions, jobs, and reviews; retire
-      the custom demo `/auth/login` flow once Clerk sign-in is verified.
+- [x] **First-party auth foundation** — FastAPI + Postgres login, technician and
+      organization registration, role/session mapping, platform approval/rejection,
+      pending technician gating, and same-site httpOnly cookie BFF adapters across
+      ops/provider/technician. ClueXP tables remain authoritative; no Clerk dependency.
+- [x] **Localization foundation + integration** — shared EN/ES catalog with English
+      fallback; intake reads browser preference first and keeps an explicit toggle;
+      authenticated apps expose Settings/Profile language controls and persist
+      `users.locale`.
 - [ ] **API extraction** — move the shared FastAPI to standalone `apps/api`
       (`cluexp-api`) + `packages/schema`; intake-web consumes it over HTTP.
 - [x] **Provider tenant schema** — support individual technicians and
@@ -221,17 +237,18 @@ human's explicit go + smoke test.
       and assigned one or many affiliated technicians.
 - [ ] Compliance documents: upload/review/expire documents for organizations
       and technicians only; teams are virtual and have no legal docs.
-- [ ] Individual technician onboarding remains supported for solo operators.
+- [x] Individual technician onboarding remains supported for solo operators.
 - [ ] Seed `organizations` + teams + `technicians` (individual + affiliated;
       varied skills/areas) + a minimal admin list view.
-- [ ] **Dispatch engine v1** (deterministic, outside the intake graph per SPEC §2.7):
+- [x] **Dispatch engine v1** (deterministic, outside the intake graph per SPEC §2.7):
       score by distance (service_area), skill (`access_type`/key type), availability, rating.
-- [ ] `/dispatch` creates `dispatch_offers` for top-N; first accept wins via
+- [x] `/dispatch` creates `dispatch_offers` for top-N; first accept wins via
       backend transaction/constraint (not UI timing); timeout → next; sets
       `jobs.fulfillment_technician_id` (and `fulfillment_org_id` when an org fulfills,
       else null for an independent tech — `adr/0004` §2/§9); preserves the job's
       `origin_org_id`/`customer_owner_org_id`; flips `trust_state=matched`.
-- [ ] Technician offer delivery v1 may poll `dispatch_offers`; production-grade
+- [x] Technician offer delivery v1 polls authenticated, privacy-masked offers and
+      accepts through the backend first-accept-wins endpoint. Production-grade
       real-time delivery (push/websocket/native notifications), expiry countdown
       correctness, and mobile alert reliability are tracked under Roadmap E3
       before relying on live server→device alerts.

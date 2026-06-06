@@ -98,15 +98,17 @@ function nextAction(job: Job) {
 export function TechnicianShell({
   children,
   nav = true,
+  topbar = true,
   title = "ClueXP Tech"
 }: {
   children: ReactNode;
   nav?: boolean;
+  topbar?: boolean;
   title?: string;
 }) {
   return (
     <main className="mx-auto flex min-h-[100svh] w-full max-w-[480px] flex-col overflow-hidden bg-background text-foreground shadow-[0_30px_120px_rgba(0,0,0,.42)] md:my-6 md:min-h-[920px] md:rounded-[28px] md:border md:border-border">
-      <TechnicianTopBar title={title} />
+      {topbar ? <TechnicianTopBar title={title} /> : null}
       <div className={cx("min-h-0 flex-1 overflow-hidden", nav && "pb-[92px]")}>{children}</div>
       {nav ? <TechnicianBottomNav /> : null}
     </main>
