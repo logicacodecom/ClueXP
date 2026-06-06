@@ -19,6 +19,12 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from api.auth import hash_password, verify_password
+from api.dispatch import (
+    eta_range_from_km,
+    haversine_km,
+    is_terminal,
+    resolve_dispatch_state,
+)
 from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -165,6 +171,22 @@ class Store:
         raise NotImplementedError
 
     async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def bump_dispatch_attempt(self, job_id: UUID) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    async def expire_stale_offers(self) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_dispatchable_jobs(
+        self, *, max_attempts: int, total_timeout_seconds: int, limit: int = 100
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_dispatch_status(
+        self, ticket_id: UUID, *, max_attempts: int, total_timeout_seconds: int
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -354,6 +376,42 @@ class InMemoryStore(Store):
             "job_id": rec["job_id"],
             "technician_id": rec["technician_id"],
             "organization_id": rec.get("organization_id"),
+        }
+
+    async def bump_dispatch_attempt(self, job_id: UUID) -> int:
+        self._attempts = getattr(self, "_attempts", {})
+        self._attempts[str(job_id)] = self._attempts.get(str(job_id), 0) + 1
+        return self._attempts[str(job_id)]
+
+    async def expire_stale_offers(self) -> int:
+        return 0
+
+    async def list_dispatchable_jobs(
+        self, *, max_attempts: int, total_timeout_seconds: int, limit: int = 100
+    ) -> list[dict]:
+        return []
+
+    async def get_dispatch_status(
+        self, ticket_id: UUID, *, max_attempts: int, total_timeout_seconds: int
+    ) -> dict | None:
+        offers = getattr(self, "_offers", {})
+        jid = str(ticket_id)
+        active = sum(1 for o in offers.values() if o["job_id"] == jid and o["status"] == "offered")
+        total = sum(1 for o in offers.values() if o["job_id"] == jid)
+        matched = any(o["job_id"] == jid and o["status"] == "accepted" for o in offers.values())
+        attempts = getattr(self, "_attempts", {}).get(jid, 0)
+        state = resolve_dispatch_state(
+            matched=matched, active_offers=active, total_offers=total,
+            attempts=attempts, max_attempts=max_attempts, timed_out=False,
+        )
+        return {
+            "state": state,
+            "terminal": is_terminal(state, attempts=attempts, max_attempts=max_attempts, timed_out=False),
+            "attempts": attempts,
+            "max_attempts": max_attempts,
+            "offers_pending": active,
+            "offer_expires_at": None,
+            "assignment": None,
         }
 
     async def register_technician(self, data: dict) -> dict:
@@ -896,7 +954,8 @@ class PostgresStore(Store):
     async def get_dispatch_job(self, job_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, lat, lng, access_type, fulfillment_technician_id"
+                "select id, lat, lng, access_type, fulfillment_technician_id,"
+                " customer_owner_org_id, fulfillment_policy, dispatch_attempts, trust_state"
                 " from jobs where id = %s",
                 (str(job_id),),
             )
@@ -909,34 +968,48 @@ class PostgresStore(Store):
             "lng": row[2],
             "access_type": row[3],
             "fulfillment_technician_id": str(row[4]) if row[4] else None,
+            "customer_owner_org_id": str(row[5]) if row[5] else None,
+            "fulfillment_policy": row[6],
+            "dispatch_attempts": row[7] or 0,
+            "trust_state": row[8],
         }
 
     async def list_available_technicians(self) -> list[dict]:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, display_name, skills, service_area_center_lat,"
-                " service_area_center_lng, service_area_radius_km, rating,"
-                " is_available, provider_type, primary_organization_id"
-                " from technicians"
-                " where status = 'active' and vetting_status = 'verified'"
-                " and is_available = true"
+                "select t.id, t.display_name, t.skills, t.service_area_center_lat,"
+                " t.service_area_center_lng, t.service_area_radius_km, t.rating,"
+                " t.is_available, t.provider_type, t.primary_organization_id,"
+                " coalesce(array_remove(array_agg(distinct ot.organization_id)"
+                "   filter (where ot.status = 'active'), null), '{}') as affiliated"
+                " from technicians t"
+                " left join organization_technicians ot on ot.technician_id = t.id"
+                " where t.status = 'active' and t.vetting_status = 'verified'"
+                " and t.is_available = true"
+                " group by t.id"
             )
             rows = await cur.fetchall()
-        return [
-            {
-                "id": str(r[0]),
-                "display_name": r[1],
-                "skills": list(r[2] or []),
-                "service_area_center_lat": r[3],
-                "service_area_center_lng": r[4],
-                "service_area_radius_km": r[5],
-                "rating": float(r[6]) if r[6] is not None else 0.0,
-                "is_available": r[7],
-                "provider_type": r[8],
-                "primary_organization_id": str(r[9]) if r[9] else None,
-            }
-            for r in rows
-        ]
+        result = []
+        for r in rows:
+            primary = str(r[9]) if r[9] else None
+            affiliated = [str(o) for o in (r[10] or [])]
+            org_ids = list({oid for oid in ([primary] + affiliated) if oid})
+            result.append(
+                {
+                    "id": str(r[0]),
+                    "display_name": r[1],
+                    "skills": list(r[2] or []),
+                    "service_area_center_lat": r[3],
+                    "service_area_center_lng": r[4],
+                    "service_area_radius_km": r[5],
+                    "rating": float(r[6]) if r[6] is not None else 0.0,
+                    "is_available": r[7],
+                    "provider_type": r[8],
+                    "primary_organization_id": primary,
+                    "org_ids": org_ids,
+                }
+            )
+        return result
 
     async def create_dispatch_offers(
         self, job_id: UUID, ranked: list[dict], expires_at: datetime
@@ -1015,6 +1088,176 @@ class PostgresStore(Store):
             "job_id": str(job_id),
             "technician_id": str(tech_id),
             "organization_id": str(org_id) if org_id else None,
+        }
+
+    async def bump_dispatch_attempt(self, job_id: UUID) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update jobs set dispatch_attempts = dispatch_attempts + 1, updated_at = now()"
+                " where id = %s returning dispatch_attempts",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def expire_stale_offers(self) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update dispatch_offers set status = 'expired', responded_at = now()"
+                " where status = 'offered' and expires_at is not null and expires_at < now()"
+                " returning 1"
+            )
+            rows = await cur.fetchall()
+        return len(rows)
+
+    async def list_dispatchable_jobs(
+        self, *, max_attempts: int, total_timeout_seconds: int, limit: int = 100
+    ) -> list[dict]:
+        """Unmatched jobs already in the dispatch pipeline whose offers have all
+        lapsed, that are not exhausted (attempts<max) and within the total window.
+        These are the jobs the sweep re-dispatches."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, lat, lng, access_type, customer_owner_org_id,"
+                " fulfillment_policy, dispatch_attempts"
+                " from jobs j"
+                " where j.fulfillment_technician_id is null"
+                "   and j.dispatch_attempts > 0"
+                "   and j.dispatch_attempts < %s"
+                "   and extract(epoch from (now() - j.created_at)) < %s"
+                "   and not exists ("
+                "     select 1 from dispatch_offers o where o.job_id = j.id"
+                "       and o.status = 'offered' and (o.expires_at is null or o.expires_at > now()))"
+                " order by j.created_at asc limit %s",
+                (max_attempts, total_timeout_seconds, limit),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "lat": r[1],
+                "lng": r[2],
+                "access_type": r[3],
+                "customer_owner_org_id": str(r[4]) if r[4] else None,
+                "fulfillment_policy": r[5],
+                "dispatch_attempts": r[6] or 0,
+            }
+            for r in rows
+        ]
+
+    async def get_dispatch_status(
+        self, ticket_id: UUID, *, max_attempts: int, total_timeout_seconds: int
+    ) -> dict | None:
+        """Customer-safe tracking read. Pure relational; never creates offers and
+        never exposes candidates, scoring, rosters, or internal IDs."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select fulfillment_technician_id, fulfillment_org_id, customer_owner_org_id,"
+                " status, dispatch_attempts, lat, lng,"
+                " extract(epoch from (now() - created_at))::int"
+                " from jobs where id = %s",
+                (str(ticket_id),),
+            )
+            job = await cur.fetchone()
+            if not job:
+                return None
+            tech_id, org_id, owner_org_id, job_status, attempts, lat, lng, age = job
+            attempts = attempts or 0
+            cur = await conn.execute(
+                "select"
+                " count(*) filter (where status='offered' and (expires_at is null or expires_at > now())),"
+                " count(*),"
+                " max(expires_at) filter (where status='offered' and (expires_at is null or expires_at > now()))"
+                " from dispatch_offers where job_id = %s",
+                (str(ticket_id),),
+            )
+            orow = await cur.fetchone()
+            active, total, next_expiry = orow[0] or 0, orow[1] or 0, orow[2]
+            matched = tech_id is not None
+            timed_out = (age or 0) >= total_timeout_seconds
+            state = resolve_dispatch_state(
+                matched=matched,
+                active_offers=active,
+                total_offers=total,
+                attempts=attempts,
+                max_attempts=max_attempts,
+                timed_out=timed_out,
+            )
+            terminal = is_terminal(
+                state, attempts=attempts, max_attempts=max_attempts, timed_out=timed_out
+            )
+            assignment = None
+            if matched:
+                assignment = await self._safe_assignment(
+                    conn, tech_id, org_id, owner_org_id, lat, lng, ticket_id, job_status
+                )
+        return {
+            "state": state,
+            "terminal": terminal,
+            "attempts": attempts,
+            "max_attempts": max_attempts,
+            "offers_pending": active,
+            "offer_expires_at": next_expiry.isoformat() if next_expiry else None,
+            "assignment": assignment,
+        }
+
+    async def _safe_assignment(
+        self, conn, tech_id, fulfillment_org_id, owner_org_id, job_lat, job_lng, job_id, job_status
+    ) -> dict | None:
+        cur = await conn.execute(
+            "select display_name, rating, provider_type, current_lat, current_lng,"
+            " service_area_center_lat, service_area_center_lng"
+            " from technicians where id = %s",
+            (str(tech_id),),
+        )
+        t = await cur.fetchone()
+        if not t:
+            return None
+        display_name, rating, _provider_type, cur_lat, cur_lng, sa_lat, sa_lng = t
+
+        async def _org_name(oid):
+            if not oid:
+                return None
+            c = await conn.execute("select display_name from organizations where id = %s", (str(oid),))
+            r = await c.fetchone()
+            return r[0] if r else None
+
+        customer_owner = await _org_name(owner_org_id)
+        provider_company = await _org_name(fulfillment_org_id)
+        if fulfillment_org_id:
+            fulfillment_type = (
+                "company_technician"
+                if str(fulfillment_org_id) == str(owner_org_id)
+                else "network_provider"
+            )
+        else:
+            fulfillment_type = "independent_technician"
+
+        t_lat = cur_lat if cur_lat is not None else sa_lat
+        t_lng = cur_lng if cur_lng is not None else sa_lng
+        eta_min, eta_max = eta_range_from_km(haversine_km(job_lat, job_lng, t_lat, t_lng))
+
+        cur = await conn.execute(
+            "select responded_at from dispatch_offers"
+            " where job_id = %s and technician_id = %s and status = 'accepted'"
+            " order by responded_at desc limit 1",
+            (str(job_id), str(tech_id)),
+        )
+        ar = await cur.fetchone()
+        assigned_at = ar[0] if ar else None
+
+        return {
+            "customer_owner": customer_owner,
+            "fulfillment_type": fulfillment_type,
+            "provider_company": provider_company,
+            "technician_display_name": display_name,
+            "role": "Verified Technician",
+            "rating": float(rating) if rating is not None else None,
+            "eta_min": eta_min,
+            "eta_max": eta_max,
+            "eta_is_estimate": True,
+            "assigned_at": assigned_at.isoformat() if assigned_at else None,
+            "job_status": job_status or "assigned",
         }
 
     async def register_technician(self, data: dict) -> dict:

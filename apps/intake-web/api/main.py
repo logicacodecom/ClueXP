@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import math
 import os
 import random
@@ -16,7 +17,8 @@ from pydantic import BaseModel
 from api.geocode import geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
-from api.dispatch import rank_candidates
+from api import config
+from api.dispatch import normalize_policy, select_candidates
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -634,14 +636,63 @@ async def create_offers(ticket_id: UUID) -> dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.get("fulfillment_technician_id"):
-        raise HTTPException(status_code=409, detail="Job already matched")
+        return {"state": "matched", "offers": [], "attempts": job.get("dispatch_attempts", 0)}
+    attempts = job.get("dispatch_attempts", 0)
+    if attempts >= config.MAX_REDISPATCH_ROUNDS:
+        return {"state": "no_eligible", "offers": [], "attempts": attempts, "reason": "max_rounds_reached"}
+    owner_org_id = job.get("customer_owner_org_id")
+    policy = normalize_policy(job.get("fulfillment_policy"), owner_org_id)
     technicians = await store.list_available_technicians()
-    ranked = rank_candidates(job, technicians, top_n=3)
+    ranked = select_candidates(
+        job, technicians, policy=policy, owner_org_id=owner_org_id,
+        round_index=attempts, top_n=config.TOP_N_OFFERS,
+    )
+    new_attempts = await store.bump_dispatch_attempt(ticket_id)
     if not ranked:
-        return {"offers": [], "matched": False, "reason": "no_eligible_technician"}
-    expires_at = now() + timedelta(seconds=90)
+        return {"state": "no_eligible", "offers": [], "attempts": new_attempts, "policy": policy}
+    expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
     offers = await store.create_dispatch_offers(ticket_id, ranked, expires_at)
-    return {"offers": offers, "matched": False, "expires_at": expires_at.isoformat()}
+    return {
+        "state": "waiting", "offers": offers, "attempts": new_attempts,
+        "policy": policy, "expires_at": expires_at.isoformat(),
+    }
+
+
+@app.post("/cron/dispatch-sweep")
+async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """Scheduler-driven sweep — callable by Vercel Cron OR Supabase pg_cron/pg_net
+    OR any external scheduler. Secret-protected via ``Authorization: Bearer
+    ${CRON_SECRET}``. Expires stale offers and re-dispatches unmatched jobs per
+    their fulfillment policy (owner pool first, then network as rounds advance),
+    enforcing max rounds + total timeout so a customer never waits forever. This
+    is a WRITE owned by the scheduler — the customer tracking poll never triggers it."""
+    if not config.CRON_SECRET:
+        raise HTTPException(status_code=503, detail="Sweep disabled: CRON_SECRET unset")
+    presented = authorization.split(" ", 1)[1].strip() if (
+        authorization and authorization.lower().startswith("bearer ")
+    ) else ""
+    if not hmac.compare_digest(presented, config.CRON_SECRET):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    expired = await store.expire_stale_offers()
+    jobs = await store.list_dispatchable_jobs(
+        max_attempts=config.MAX_REDISPATCH_ROUNDS,
+        total_timeout_seconds=config.TOTAL_TIMEOUT_SECONDS,
+    )
+    technicians = await store.list_available_technicians() if jobs else []
+    redispatched = 0
+    for job in jobs:
+        owner_org_id = job.get("customer_owner_org_id")
+        policy = normalize_policy(job.get("fulfillment_policy"), owner_org_id)
+        ranked = select_candidates(
+            job, technicians, policy=policy, owner_org_id=owner_org_id,
+            round_index=job.get("dispatch_attempts", 0), top_n=config.TOP_N_OFFERS,
+        )
+        await store.bump_dispatch_attempt(job["id"])
+        if ranked:
+            expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
+            await store.create_dispatch_offers(job["id"], ranked, expires_at)
+            redispatched += 1
+    return {"expired_offers": expired, "dispatchable_jobs": len(jobs), "redispatched": redispatched}
 
 
 @app.post("/offers/{offer_id}/accept")
@@ -675,19 +726,27 @@ async def technician_offers(
     return {"offers": offers}
 
 
-@app.get("/tickets/{ticket_id}/tracking", response_model=TicketEnvelope)
-async def tracking(ticket_id: UUID) -> TicketEnvelope:
+@app.get("/tickets/{ticket_id}/tracking")
+async def tracking(ticket_id: UUID) -> dict[str, Any]:
+    """Customer-safe dispatch tracking READ. Returns an explicit ``state``
+    (``waiting`` | ``matched`` | ``no_eligible`` | ``expired_retry`` | ``error``)
+    and, only when matched, a customer-safe ``assignment`` (owner/fulfillment
+    names, technician display name, role, rating, coarse ETA estimate,
+    assigned_at, job status). Never 409s for a normal dispatch state, never
+    exposes candidates/scoring/rosters/internal IDs, and never creates offers
+    (pure read — offer creation is owned by the dispatch write + scheduled sweep)."""
     await latency()
-    ticket = await require_ticket(ticket_id)
-    if ticket.technician_assignment is None:
-        raise HTTPException(status_code=409, detail="No technician assigned")
-    ticket.trust_state = TrustState.FULFILLMENT
-    minutes = int(abs(math.sin(now().timestamp() / 60)) * 8) + 6
-    ticket.technician_assignment.eta_minutes_min = minutes
-    ticket.technician_assignment.eta_minutes_max = minutes + 4
-    await save(ticket)
-    await log_transition(ticket, "tracking")
-    return await envelope(ticket)
+    try:
+        status = await store.get_dispatch_status(
+            ticket_id,
+            max_attempts=config.MAX_REDISPATCH_ROUNDS,
+            total_timeout_seconds=config.TOTAL_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return {"state": "error", "terminal": False, "assignment": None}
+    if status is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return status
 
 
 @app.post("/tickets/{ticket_id}/arrival-handshake")

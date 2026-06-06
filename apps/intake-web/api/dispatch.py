@@ -59,3 +59,106 @@ def rank_candidates(
         candidates.append({**tech, "dist_km": round(dist, 2), "rating": rating})
     candidates.sort(key=lambda c: (c["dist_km"], -c["rating"]))
     return candidates[:top_n]
+
+
+# --- dispatch policy (maps the stored fulfillment_policy column to semantics) ---
+POLICY_PRIVATE = "private_owner_only"        # column value: "private"
+POLICY_OWNER_FIRST = "owner_first_then_network"  # column value: "network_overflow"
+POLICY_NETWORK_OPEN = "network_open"         # column value: "network_open"
+
+_POLICY_BY_COLUMN = {
+    "private": POLICY_PRIVATE,
+    "network_overflow": POLICY_OWNER_FIRST,
+    "network_open": POLICY_NETWORK_OPEN,
+}
+
+
+def normalize_policy(fulfillment_policy: str | None, owner_org_id: str | None) -> str:
+    """Resolve the effective dispatch policy. A job with no customer-owner org is
+    always network_open (nothing to keep private to). Unknown values default to
+    owner-first when an owner exists."""
+    if not owner_org_id:
+        return POLICY_NETWORK_OPEN
+    return _POLICY_BY_COLUMN.get(fulfillment_policy or "", POLICY_OWNER_FIRST)
+
+
+def _in_owner_pool(tech: dict[str, Any], owner_org_id: str | None) -> bool:
+    return owner_org_id is not None and owner_org_id in (tech.get("org_ids") or [])
+
+
+def select_candidates(
+    job: dict[str, Any],
+    technicians: list[dict[str, Any]],
+    *,
+    policy: str,
+    owner_org_id: str | None,
+    round_index: int = 0,
+    top_n: int = 3,
+) -> list[dict[str, Any]]:
+    """Policy-aware candidate selection (then ranked by `rank_candidates`).
+
+    - private_owner_only: only the customer-owner's own/affiliated technicians.
+    - owner_first_then_network: owner pool on the first round, then widen to the
+      whole verified network on later rounds.
+    - network_open (or no owner org): the whole verified network.
+    The owner pool = technicians whose `org_ids` include `owner_org_id`
+    (primary org + active affiliations), provided by the store.
+    """
+    if policy == POLICY_NETWORK_OPEN or not owner_org_id:
+        pool = technicians
+    elif policy == POLICY_PRIVATE:
+        pool = [t for t in technicians if _in_owner_pool(t, owner_org_id)]
+    else:  # owner_first_then_network
+        owner_pool = [t for t in technicians if _in_owner_pool(t, owner_org_id)]
+        pool = owner_pool if round_index <= 0 else technicians
+    return rank_candidates(job, pool, top_n=top_n)
+
+
+# --- customer-facing tracking state machine (pure) ---
+def resolve_dispatch_state(
+    *,
+    matched: bool,
+    active_offers: int,
+    total_offers: int,
+    attempts: int,
+    max_attempts: int,
+    timed_out: bool,
+) -> str:
+    """Resolve the customer-safe tracking state from relational facts. Pure +
+    deterministic so it is unit-tested without a database.
+
+    Returns one of: matched | waiting | expired_retry | no_eligible | (error is
+    raised at the I/O boundary, not here).
+    """
+    if matched:
+        return "matched"
+    if active_offers > 0:
+        return "waiting"
+    if timed_out or attempts >= max_attempts:
+        return "no_eligible"  # terminal: exhausted the window/rounds
+    if attempts == 0:
+        return "waiting"  # not dispatched yet (first dispatch happens at intake)
+    if total_offers > 0:
+        return "expired_retry"  # had offers, all expired/superseded → sweep re-dispatches
+    return "no_eligible"  # a round ran but found no eligible tech (sweep may retry)
+
+
+def is_terminal(state: str, *, attempts: int, max_attempts: int, timed_out: bool) -> bool:
+    """A tracking state is terminal when no further automatic progress will happen."""
+    if state == "matched":
+        return True
+    if state == "no_eligible" and (timed_out or attempts >= max_attempts):
+        return True
+    return False
+
+
+def eta_range_from_km(dist_km: float | None) -> tuple[int | None, int | None]:
+    """Coarse, honest ETA estimate from straight-line distance (no live routing).
+    ~8 min base + travel at ~30 km/h, widened to a range. None if distance unknown."""
+    if dist_km is None or dist_km == float("inf"):
+        return (None, None)
+    travel_min = (dist_km / 30.0) * 60.0
+    mid = 8.0 + travel_min
+    low = max(10, int(mid * 0.8))
+    high = int(mid * 1.3) + 5
+    return (low, high)
