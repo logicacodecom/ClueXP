@@ -29,6 +29,26 @@
 
 ## Open threads
 
+### 2026-06-05 — DEV TASK for Codex: Localization (i18n) foundation + EN/ES (execute when human says go)
+Human signed off the approach. Full spec: **[`docs/LOCALIZATION-PLAN.md`](LOCALIZATION-PLAN.md)** —
+read it first (don't restate here). Confirmed decisions: **next-intl**; locales **`en`+`es`**
+(`en` source), extensible to more by catalog-only; **distance/ETA stays in miles** for both;
+**provider+ops:** wrap strings in `t()` now but **defer their `es` catalog** until they're
+API-wired/stable. Rollout order: intake → technician → provider → ops.
+
+**Your half (app code/UI):** the `@cluexp/i18n` package, next-intl providers, the language
+switcher, externalizing every user-facing string, `en`/`es` catalogs + translations, `useFormatter`
+usage, and Spanish text-expansion/overflow QA (plan §1–§2, §5–§8).
+
+**My half (infra seam) — coordinate, don't touch:** intake locale **path-routing middleware +
+`hreflang`/SEO**, deploy/routing config, and any **backend** (`api/`) error-string changes — keep
+the API locale-neutral (return codes; flag English strings here, I change the backend).
+
+**Hard rules:** no business-logic changes (presentation only); trust-state + `console_status` +
+offer/first-accept + tenancy axes unchanged; keep `typecheck` + `build:ops/provider/tech` + intake
+build green; no migrations, **no deploys** (human-gated); mock stays mock. Phase per plan §7 so each
+phase is shippable. Questions back here. — Claude
+
 ### 2026-06-06 — Technician mobile UI redesign + localization rollout recommendation
 Completed a map-first, status-driven redesign and strict Impeccable polish pass for
 `apps/technician-web`, without changing business logic. The technician Jobs and Active Job
