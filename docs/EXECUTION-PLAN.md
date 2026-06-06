@@ -12,13 +12,26 @@
 
 ## Status snapshot (verified 2026-06-04)
 
-> **2026-06-06 — scope + execution decision (human):** **Localization (i18n) and auth (Clerk / 2B
-> auth foundation) are DEFERRED** to a later sprint. Both agents have **full autonomous permission**
-> to finish their Sprint 2 work without per-step approval (ownership split unchanged). Tonight Claude
-> is executing the **Sprint 2A apply bundle** (apply `0004` to prod → deploy `store.py` → trusted
-> `/o/[slug]` resolution → seed → smoke); Codex finishes the 2A **mock UI concepts**. Technician
-> mobile polish shipped to prod (`tech.cluexp.com`) earlier today. Per-app `vercel.json` +
-> ignore-build step merged (`main` no longer rebuilds all four on every push).
+> **2026-06-06 — progress + re-sequenced plan (human):**
+> **Done today:** Sprint **2A** multi-tenant intake shipped + smoke-verified in prod; technician
+> mobile polish live (`tech.cluexp.com`); **2B dispatch engine v1 LIVE + smoke-verified** (additive
+> `/api/tickets/{id}/offers` + `/api/offers/{id}/accept`, deterministic ranking, atomic
+> first-accept-wins). 2A mock UI concepts done (Codex).
+> **Re-sequenced (supersedes the earlier "defer auth+localization"):** now do **(1) first-party auth
+> foundation → (2) localization foundation + integration → (3) authenticated technician
+> offer-delivery UI → (4) coordinated intake cutover** from the legacy instant-match stub to the
+> offer→accept loop. The legacy `/dispatch` stub stays live until that cutover.
+> **Language (locked):** EN + ES (extensible), English fallback, **never infer from geography**, **no
+> locale-prefixed routes for v1**. Public intake = browser-preferred on first visit + explicit toggle
+> (persist the explicit choice); technician/provider/ops = language in Settings/Profile persisted to
+> the authenticated user (+ choice at sign-in/onboarding). Locale preference stored in **ClueXP data**
+> (`users.locale`/`customers.locale`).
+> **Auth decision (human, 2026-06-06):** use ClueXP's existing FastAPI + Postgres auth. Do not add
+> Clerk or another proprietary identity provider. Apps keep FastAPI-issued JWTs in same-site
+> httpOnly cookies.
+> **Infra notes:**
+> The broken `vercel.json` `ignoreCommand` was removed (it errored every intake deploy since PR#5);
+> deploys are healthy again — **all four projects rebuild on each `main` push**.
 
 | | |
 |---|---|

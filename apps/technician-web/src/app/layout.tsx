@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
+import { Providers } from "./providers";
 
 const archivo = localFont({
   src: "../../../../packages/console-ui/src/fonts/archivo-narrow-latin.woff2",
@@ -38,7 +39,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`dark ${archivo.variable} ${inter.variable}`}>
-      <body>{children}</body>
+      <body><Providers>{children}</Providers></body>
     </html>
   );
 }

@@ -1,11 +1,13 @@
 "use client";
 
 import { providerSession } from "@cluexp/api-client";
+import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 export default function SignInPage() {
+  const { t } = useLocale();
   const router = useRouter();
   const [identifier, setIdentifier] = useState(providerSession.user.email ?? "");
   const [password, setPassword] = useState("123456");
@@ -16,16 +18,10 @@ export default function SignInPage() {
     setBusy(true);
     setError(null);
     try {
-      const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "";
-      const response = await fetch(`${apiBase}/api/auth/login`, {
+      await sessionRequest("/api/session", {
         method: "POST",
-        headers: { "content-type": "application/json" },
         body: JSON.stringify({ identifier, password })
       });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || `Sign in failed: ${response.status}`);
-      window.localStorage.setItem("cluexp_access_token", body.access_token);
-      window.localStorage.setItem("cluexp_session", JSON.stringify(body.session));
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in");
@@ -35,7 +31,8 @@ export default function SignInPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
+    <main className="relative flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
+      <LanguageSelect className="absolute right-6 top-6" />
       <Card className="w-full max-w-md">
         <CardHeader>
           <div>
@@ -45,10 +42,11 @@ export default function SignInPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Input value={identifier} onChange={(event) => setIdentifier(event.target.value)} />
-          <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <Input aria-label={t("identifier")} autoComplete="username" value={identifier} onChange={(event) => setIdentifier(event.target.value)} />
+          <Input aria-label={t("password")} autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
           {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
-          <Button className="w-full" disabled={busy} onClick={signIn}>{busy ? "Signing in..." : "Enter Provider Console"}</Button>
+          <Button className="min-h-11 w-full" disabled={busy || !identifier || !password} onClick={signIn}>{busy ? t("loading") : "Enter Provider Console"}</Button>
+          <a className="block min-h-11 pt-3 text-center text-sm font-semibold text-muted-foreground hover:text-foreground" href="/signup">{t("signUp")}</a>
         </CardContent>
       </Card>
     </main>

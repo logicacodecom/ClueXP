@@ -1,29 +1,24 @@
 import {
   activeTechnicianJobIds,
   jobById,
-  technicianAppOffers,
   technicianJobs
 } from "@cluexp/api-client";
 import {
   ActiveJobCard,
-  EmptyJobState,
   FieldMapPanel,
   JobActionSheet,
-  JobOfferCard,
   Screen,
   TechnicianShell
 } from "@/components/mobile";
+import { LiveOffersFeed } from "@/components/live-offers";
 
 export default function JobsPage() {
   const activeJob = jobById(activeTechnicianJobIds[0]);
   const assignedJobs = technicianJobs().filter((job) => job.id !== activeJob?.id);
-  const openOffers = technicianAppOffers.filter((offer) => offer.status !== "superseded");
-  const primaryOffer = openOffers[0];
-  const offerJob = jobById(primaryOffer?.job_id);
   return (
     <TechnicianShell>
       <Screen flush>
-        <FieldMapPanel job={activeJob ?? offerJob} />
+        <FieldMapPanel job={activeJob} />
         <div className="px-4 pt-4">
           <div className="mb-3 flex items-end justify-between gap-3">
             <div>
@@ -35,12 +30,12 @@ export default function JobsPage() {
             </div>
           </div>
           <div className="space-y-3">
-            {primaryOffer ? <JobOfferCard offer={primaryOffer} /> : activeJob ? <ActiveJobCard job={activeJob} /> : <EmptyJobState />}
-            {openOffers.slice(1).map((offer) => <JobOfferCard key={offer.offer_id} offer={offer} />)}
+            <LiveOffersFeed />
+            {activeJob ? <ActiveJobCard job={activeJob} /> : null}
             {assignedJobs.map((job) => <ActiveJobCard key={job.id} job={job} />)}
           </div>
         </div>
-        <JobActionSheet job={activeJob} offer={primaryOffer} />
+        <JobActionSheet job={activeJob} />
       </Screen>
     </TechnicianShell>
   );

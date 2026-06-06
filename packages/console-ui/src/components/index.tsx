@@ -111,6 +111,7 @@ export const defaultNav: NavItem[] = [
   { href: "/jobs/JOB-A-2201/assign", label: "Technicians", icon: Users, group: "Network" },
   { href: "/teams", label: "Teams", icon: Briefcase, group: "Network" },
   { href: "/documents", label: "Documents", icon: FileText, group: "Network" },
+  { href: "/approvals", label: "Approvals", icon: ShieldCheck, group: "Admin", cluexpOnly: true },
   { href: "/reports", label: "Reports", icon: ClipboardCheck, group: "Finance" },
   { href: "/settings", label: "Settings", icon: Settings, group: "Admin" },
   { href: "/audit", label: "Audit Log", icon: History, group: "Admin" }

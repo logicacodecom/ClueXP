@@ -1,6 +1,7 @@
 "use client";
 
 import { Car, Home, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
+import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { useEffect, useMemo, useState } from "react";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
 
@@ -90,6 +91,7 @@ function money(value?: number | null, currency = "USD") {
 }
 
 function TopBar({ organizationName }: { organizationName?: string }) {
+  const { locale } = useLocale();
   return (
     <header className="topbar">
       <div className="mark" aria-hidden="true">
@@ -97,8 +99,13 @@ function TopBar({ organizationName }: { organizationName?: string }) {
       </div>
       <div className="brand">
         <div className="wordmark">ClueXP</div>
-        <div className="subtitle">{organizationName ? `${organizationName} intake` : "Urgent Service Dispatch"}</div>
+        <div className="subtitle">
+          {organizationName
+            ? `${organizationName} ${locale === "es" ? "solicitud" : "intake"}`
+            : locale === "es" ? "Despacho de servicio urgente" : "Urgent Service Dispatch"}
+        </div>
       </div>
+      <LanguageSelect className="language-select" />
     </header>
   );
 }
@@ -125,9 +132,10 @@ function AgentMessage({ children, support }: { children: React.ReactNode; suppor
 }
 
 function CallAPersonButton({ onClick }: { onClick: () => void }) {
+  const { locale } = useLocale();
   return (
     <button className="secondary" type="button" onClick={onClick}>
-      <Phone size={18} aria-hidden="true" /> Call a person instead
+      <Phone size={18} aria-hidden="true" /> {locale === "es" ? "Llamar a una persona" : "Call a person instead"}
     </button>
   );
 }

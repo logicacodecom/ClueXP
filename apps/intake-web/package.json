@@ -8,6 +8,7 @@
     "generate:types": "uv run python scripts/generate_types.py"
   },
   "dependencies": {
+    "@cluexp/app-core": "*",
     "next": "^16.0.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

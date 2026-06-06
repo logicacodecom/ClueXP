@@ -1,9 +1,11 @@
 import { AppFrame, MiniStat, Pill, Screen, Section, icons } from "@/components/mobile";
+import { LanguageSettings } from "@cluexp/app-core";
 
 export default function SettingsPage() {
   return (
     <AppFrame title="Settings">
       <Screen>
+        <Section title="Language"><LanguageSettings /></Section>
         <Section action={<Pill tone="success" icon={icons.BellRing}>Alarm on</Pill>} title="Dispatch preferences">
           <div className="space-y-2">
             <SettingRow label="Auto accept eligible jobs" value="Off" />
