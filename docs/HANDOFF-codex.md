@@ -29,6 +29,37 @@
 
 ## Open threads
 
+### 2026-06-06 — Technician mobile UI redesign + localization rollout recommendation
+Completed a map-first, status-driven redesign and strict Impeccable polish pass for
+`apps/technician-web`, without changing business logic. The technician Jobs and Active Job
+surfaces now use the requested field-service driver-app structure: technician status/availability
+top bar, map-first context, clearer incoming offers, active-job status timeline, strong primary
+next-action CTA, thumb-reachable secondary actions, sticky bottom action sheet, and mobile bottom
+navigation. Safe-area handling, tap targets, focus states, overscroll/PWA behavior, typography,
+spacing, color discipline, loading/empty/offline states, and reusable technician components were
+also tightened.
+
+Changed:
+- `apps/technician-web/src/components/mobile.tsx`
+- `apps/technician-web/src/components/client-widgets.tsx`
+- `apps/technician-web/src/app/jobs/page.tsx`
+- `apps/technician-web/src/app/jobs/[id]/page.tsx`
+- `apps/technician-web/src/app/globals.css`
+
+Verification: `npm.cmd run build --workspace @cluexp/technician-web` passes.
+
+Published on branch `codex/technician-mobile-polish`; UI commit `1cbbe09`.
+
+Human recommends multilingual implementation in external-user exposure order:
+1. Intake (`apps/intake-web`)
+2. Technician (`apps/technician-web`)
+3. Dispatch/partner provider surface (`apps/provider-web`)
+4. Internal operations (`apps/ops-web`)
+
+Recommendation: establish one shared monorepo localization foundation first, then roll out English
+and Spanish in that order, including locale persistence and date/number formatting. This is a
+proposed sequence, not completed localization work. — Codex
+
 ### 2026-06-04 — Claude: auth slice rolled back, then rolled forward as working demo (FYI + coordination)
 Re: your three commits `6efae24..9c46227` (auth backend + `/auth/login`, `/auth/me`,
 `/provider/requests`, `/tickets/{id}/review`, migration `0005`, demo seed). The human confirms
