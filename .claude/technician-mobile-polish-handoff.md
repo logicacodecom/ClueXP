@@ -82,3 +82,14 @@ Codex redesigned and polished the ClueXP technician mobile web experience into a
 - Wire real Online/Offline state mutation.
 - Connect live backend offer events and production countdown source.
 - Add real expandable/swipe behavior to the bottom sheet if desired.
+
+## Recommended Localization Rollout
+
+The user recommends introducing multilingual support in product-exposure order, starting with the applications used by external clients and field users:
+
+1. Intake (`apps/intake-web`)
+2. Technician (`apps/technician-web`)
+3. Dispatch and partner/provider-facing surfaces (`apps/provider-web`)
+4. Internal operations (`apps/ops-web`)
+
+Use a shared localization foundation across the monorepo so translation keys, locale persistence, date/number formatting, and language-selection behavior remain consistent. English and Spanish are the recommended first languages. This is a proposed implementation order, not completed work.
