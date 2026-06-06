@@ -5,7 +5,7 @@ import math
 import os
 import random
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from api.geocode import geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
+from api.dispatch import rank_candidates
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -497,6 +498,43 @@ async def dispatch(ticket_id: UUID) -> TicketEnvelope:
     await save(ticket)
     await log_transition(ticket, "matched")
     return await envelope(ticket)
+
+
+@app.post("/tickets/{ticket_id}/offers")
+async def create_offers(ticket_id: UUID) -> dict[str, Any]:
+    """Dispatch engine v1: rank available technicians by rule and create
+    ``dispatch_offers`` for the top candidates. **Additive** to the legacy stub
+    ``/dispatch`` — this does NOT flip the job to MATCHED (that happens only on
+    an accepted offer). Returns the ranked offers (identity masking is a frontend
+    concern; the customer is never shown a technician before assignment)."""
+    await latency()
+    job = await store.get_dispatch_job(ticket_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("fulfillment_technician_id"):
+        raise HTTPException(status_code=409, detail="Job already matched")
+    technicians = await store.list_available_technicians()
+    ranked = rank_candidates(job, technicians, top_n=3)
+    if not ranked:
+        return {"offers": [], "matched": False, "reason": "no_eligible_technician"}
+    expires_at = now() + timedelta(seconds=90)
+    offers = await store.create_dispatch_offers(ticket_id, ranked, expires_at)
+    return {"offers": offers, "matched": False, "expires_at": expires_at.isoformat()}
+
+
+@app.post("/offers/{offer_id}/accept")
+async def accept_offer(offer_id: UUID) -> dict[str, Any]:
+    """First-accept-wins: atomically claim the job for the offer's technician,
+    set ``fulfillment_technician_id``/``fulfillment_org_id``, flip
+    ``trust_state=matched``, and supersede the sibling offers. Enforced in the
+    backend (not UI timing); a losing or stale accept gets 409."""
+    await latency()
+    result = await store.accept_dispatch_offer(offer_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    if not result.get("accepted"):
+        raise HTTPException(status_code=409, detail=result.get("reason", "not_accepted"))
+    return result
 
 
 @app.get("/tickets/{ticket_id}/tracking", response_model=TicketEnvelope)
