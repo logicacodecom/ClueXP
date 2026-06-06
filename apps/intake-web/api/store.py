@@ -67,6 +67,19 @@ def _uuid_or_none(value: str | UUID | None) -> UUID | None:
         return None
 
 
+def _slugify(name: str) -> str:
+    out = []
+    for ch in (name or "").strip().lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in " -_":
+            out.append("-")
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "org"
+
+
 class Store:
     async def startup(self) -> None:  # pragma: no cover - interface
         ...
@@ -104,6 +117,24 @@ class Store:
         raise NotImplementedError
 
     async def get_user_session(self, user_id: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def register_technician(self, data: dict) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def register_organization(self, data: dict) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def approve_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def approve_organization(self, organization_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_offers(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
     async def record_review(
@@ -318,6 +349,24 @@ class InMemoryStore(Store):
             "technician_id": rec["technician_id"],
             "organization_id": rec.get("organization_id"),
         }
+
+    async def register_technician(self, data: dict) -> dict:
+        raise NotImplementedError("registration requires the Postgres store")
+
+    async def register_organization(self, data: dict) -> dict:
+        raise NotImplementedError("registration requires the Postgres store")
+
+    async def approve_technician(self, technician_id: UUID) -> dict | None:
+        return None
+
+    async def approve_organization(self, organization_id: UUID) -> dict | None:
+        return None
+
+    async def update_user_locale(self, user_id: str, locale: str) -> None:
+        return None
+
+    async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
+        return []
 
 
 class PostgresStore(Store):
@@ -712,7 +761,8 @@ class PostgresStore(Store):
 
     async def _session_for_user(self, conn, user_id: str) -> dict | None:
         cur = await conn.execute(
-            "select id, email, phone, display_name from users where id = %s and status = 'active'",
+            "select id, email, phone, display_name, locale from users"
+            " where id = %s and status = 'active'",
             (user_id,),
         )
         user_row = await cur.fetchone()
@@ -733,16 +783,32 @@ class PostgresStore(Store):
             (user_id,),
         )
         org_row = await cur.fetchone()
+        # Technician profile is 1:1 with the user (same id) when self-registered.
+        cur = await conn.execute(
+            "select id, status, vetting_status, is_available from technicians where id = %s",
+            (user_id,),
+        )
+        tech_row = await cur.fetchone()
         return {
             "user": {
                 "id": str(user_row[0]),
                 "email": user_row[1],
                 "phone": user_row[2],
                 "display_name": user_row[3],
+                "locale": user_row[4],
             },
             "roles": roles,
             "active_organization_id": str(org_row[0]) if org_row else None,
             "organization_name": org_row[1] if org_row else None,
+            "technician": {
+                "id": str(tech_row[0]),
+                "status": tech_row[1],
+                "vetting_status": tech_row[2],
+                "is_available": tech_row[3],
+                "approved": tech_row[1] == "active" and tech_row[2] == "verified",
+            }
+            if tech_row
+            else None,
         }
 
     async def record_review(
@@ -938,6 +1004,150 @@ class PostgresStore(Store):
             "technician_id": str(tech_id),
             "organization_id": str(org_id) if org_id else None,
         }
+
+    async def register_technician(self, data: dict) -> dict:
+        email = (data.get("email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
+        pw_hash = hash_password(data["password"])
+        async with await self._connect() as conn:
+            if email:
+                cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
+                if await cur.fetchone():
+                    raise ValueError("email_taken")
+            if phone:
+                cur = await conn.execute("select 1 from users where phone = %s", (phone,))
+                if await cur.fetchone():
+                    raise ValueError("phone_taken")
+            cur = await conn.execute(
+                "insert into users (email, phone, password_hash, display_name, status, locale)"
+                " values (%s, %s, %s, %s, 'active', %s) returning id",
+                (email, phone, pw_hash, data["display_name"], data.get("locale")),
+            )
+            user_id = (await cur.fetchone())[0]
+            await conn.execute(
+                "insert into user_roles (user_id, role) values (%s, 'technician') on conflict do nothing",
+                (user_id,),
+            )
+            # 1:1 technician profile, same id; PENDING approval (dispatch excludes it).
+            await conn.execute(
+                "insert into technicians (id, display_name, email, phone, status, vetting_status,"
+                " skills, service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                " is_available, provider_type)"
+                " values (%s, %s, %s, %s, 'pending_vetting', 'unverified', %s, %s, %s, %s, false, 'individual')",
+                (
+                    user_id, data["display_name"], email, phone, data.get("skills") or [],
+                    data.get("service_area_center_lat"), data.get("service_area_center_lng"),
+                    data.get("service_area_radius_km"),
+                ),
+            )
+            return await self._session_for_user(conn, str(user_id))
+
+    async def register_organization(self, data: dict) -> dict:
+        email = (data.get("admin_email") or "").strip() or None
+        pw_hash = hash_password(data["password"])
+        org_name = data["organization_name"]
+        async with await self._connect() as conn:
+            if email:
+                cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
+                if await cur.fetchone():
+                    raise ValueError("email_taken")
+            base = _slugify(org_name)
+            slug, n = base, 1
+            while True:
+                cur = await conn.execute("select 1 from organizations where slug = %s", (slug,))
+                if not await cur.fetchone():
+                    break
+                n += 1
+                slug = f"{base}-{n}"
+            cur = await conn.execute(
+                "insert into organizations (display_name, legal_name, slug, status, subscription_status,"
+                " email, service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                " dispatch_mode, organization_type)"
+                " values (%s, %s, %s, 'pending_vetting', 'none', %s, %s, %s, %s,"
+                " 'organization_managed', 'company') returning id",
+                (
+                    org_name, data.get("legal_name") or org_name, slug, email,
+                    data.get("service_area_center_lat"), data.get("service_area_center_lng"),
+                    data.get("service_area_radius_km"),
+                ),
+            )
+            org_id = (await cur.fetchone())[0]
+            cur = await conn.execute(
+                "insert into users (email, phone, password_hash, display_name, status, locale)"
+                " values (%s, %s, %s, %s, 'active', %s) returning id",
+                (email, data.get("phone"), pw_hash, data["admin_display_name"], data.get("locale")),
+            )
+            user_id = (await cur.fetchone())[0]
+            await conn.execute(
+                "insert into user_roles (user_id, role) values (%s, 'provider_admin') on conflict do nothing",
+                (user_id,),
+            )
+            await conn.execute(
+                "insert into user_organization_memberships (user_id, organization_id, role, status)"
+                " values (%s, %s, 'provider_admin', 'active')"
+                " on conflict (user_id, organization_id) do nothing",
+                (user_id, org_id),
+            )
+            return await self._session_for_user(conn, str(user_id))
+
+    async def approve_technician(self, technician_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set vetting_status = 'verified', status = 'active'"
+                " where id = %s returning id, display_name, status, vetting_status",
+                (str(technician_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2], "vetting_status": row[3]}
+
+    async def approve_organization(self, organization_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set status = 'active', updated_at = now()"
+                " where id = %s returning id, display_name, status",
+                (str(organization_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2]}
+
+    async def update_user_locale(self, user_id: str, locale: str) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "update users set locale = %s, updated_at = now() where id = %s",
+                (locale, str(user_id)),
+            )
+
+    async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select o.id, o.job_id, o.status, o.rank, o.offered_at, o.expires_at,"
+                " j.access_type, j.lat, j.lng"
+                " from dispatch_offers o join jobs j on j.id = o.job_id"
+                " where o.technician_id = %s and o.status = 'offered'"
+                " and (o.expires_at is null or o.expires_at > now())"
+                " order by o.offered_at desc",
+                (str(technician_id),),
+            )
+            rows = await cur.fetchall()
+        # Masked: coarse area only (~1km) — no exact address / customer before acceptance.
+        return [
+            {
+                "id": str(r[0]),
+                "job_id": str(r[1]),
+                "status": r[2],
+                "rank": r[3],
+                "offered_at": r[4].isoformat() if r[4] else None,
+                "expires_at": r[5].isoformat() if r[5] else None,
+                "access_type": r[6],
+                "area_lat": round(r[7], 2) if r[7] is not None else None,
+                "area_lng": round(r[8], 2) if r[8] is not None else None,
+            }
+            for r in rows
+        ]
 
 
 def make_store() -> Store:
