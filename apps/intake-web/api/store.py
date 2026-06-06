@@ -116,6 +116,20 @@ class Store:
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_dispatch_job(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_available_technicians(self) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_dispatch_offers(
+        self, job_id: UUID, ranked: list[dict], expires_at: datetime
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
 
 class InMemoryStore(Store):
     def __init__(self) -> None:
@@ -245,6 +259,65 @@ class InMemoryStore(Store):
         }
         self.reviews.append(review)
         return review
+
+    async def get_dispatch_job(self, job_id: UUID) -> dict | None:
+        ticket = await self.get(job_id)
+        if ticket is None:
+            return None
+        loc = getattr(ticket, "location", None)
+        return {
+            "id": str(job_id),
+            "lat": getattr(loc, "lat", None),
+            "lng": getattr(loc, "lng", None),
+            "access_type": ticket.access_type.value if ticket.access_type else None,
+            "fulfillment_technician_id": None,
+        }
+
+    async def list_available_technicians(self) -> list[dict]:
+        return list(getattr(self, "_technicians", []))
+
+    async def create_dispatch_offers(
+        self, job_id: UUID, ranked: list[dict], expires_at: datetime
+    ) -> list[dict]:
+        offers = getattr(self, "_offers", None)
+        if offers is None:
+            offers = self._offers = {}
+        created = []
+        for rank, tech in enumerate(ranked):
+            rec = {
+                "id": str(uuid4()),
+                "job_id": str(job_id),
+                "technician_id": str(tech["id"]),
+                "organization_id": tech.get("primary_organization_id"),
+                "rank": rank,
+                "status": "offered",
+                "dist_km": tech.get("dist_km"),
+            }
+            offers[rec["id"]] = rec
+            created.append(rec)
+        return created
+
+    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:
+        offers = getattr(self, "_offers", {})
+        rec = offers.get(str(offer_id))
+        if rec is None:
+            return None
+        if rec["status"] != "offered":
+            return {"accepted": False, "reason": rec["status"], "job_id": rec["job_id"]}
+        rec["status"] = "accepted"
+        for other in offers.values():
+            if (
+                other["job_id"] == rec["job_id"]
+                and other["id"] != rec["id"]
+                and other["status"] == "offered"
+            ):
+                other["status"] = "superseded"
+        return {
+            "accepted": True,
+            "job_id": rec["job_id"],
+            "technician_id": rec["technician_id"],
+            "organization_id": rec.get("organization_id"),
+        }
 
 
 class PostgresStore(Store):
@@ -740,6 +813,130 @@ class PostgresStore(Store):
             "comment": comment,
             "technician_ref": technician_ref,
             "organization_id": str(fulfillment_org_id) if fulfillment_org_id else None,
+        }
+
+    async def get_dispatch_job(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, lat, lng, access_type, fulfillment_technician_id"
+                " from jobs where id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]),
+            "lat": row[1],
+            "lng": row[2],
+            "access_type": row[3],
+            "fulfillment_technician_id": str(row[4]) if row[4] else None,
+        }
+
+    async def list_available_technicians(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, skills, service_area_center_lat,"
+                " service_area_center_lng, service_area_radius_km, rating,"
+                " is_available, provider_type, primary_organization_id"
+                " from technicians"
+                " where status = 'active' and vetting_status = 'verified'"
+                " and is_available = true"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "display_name": r[1],
+                "skills": list(r[2] or []),
+                "service_area_center_lat": r[3],
+                "service_area_center_lng": r[4],
+                "service_area_radius_km": r[5],
+                "rating": float(r[6]) if r[6] is not None else 0.0,
+                "is_available": r[7],
+                "provider_type": r[8],
+                "primary_organization_id": str(r[9]) if r[9] else None,
+            }
+            for r in rows
+        ]
+
+    async def create_dispatch_offers(
+        self, job_id: UUID, ranked: list[dict], expires_at: datetime
+    ) -> list[dict]:
+        offers: list[dict] = []
+        async with await self._connect() as conn:
+            # Re-dispatch is idempotent: retire any still-open offers first.
+            await conn.execute(
+                "update dispatch_offers set status = 'superseded', responded_at = now()"
+                " where job_id = %s and status = 'offered'",
+                (str(job_id),),
+            )
+            for rank, tech in enumerate(ranked):
+                org_id = tech.get("primary_organization_id")
+                cur = await conn.execute(
+                    "insert into dispatch_offers"
+                    " (id, job_id, technician_id, status, rank, offered_at, expires_at, organization_id)"
+                    " values (gen_random_uuid(), %s, %s, 'offered', %s, now(), %s, %s)"
+                    " returning id",
+                    (str(job_id), str(tech["id"]), rank, expires_at, org_id),
+                )
+                row = await cur.fetchone()
+                offers.append(
+                    {
+                        "id": str(row[0]),
+                        "job_id": str(job_id),
+                        "technician_id": str(tech["id"]),
+                        "organization_id": org_id,
+                        "rank": rank,
+                        "status": "offered",
+                        "dist_km": tech.get("dist_km"),
+                    }
+                )
+        return offers
+
+    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select job_id, technician_id, organization_id, status"
+                " from dispatch_offers where id = %s",
+                (str(offer_id),),
+            )
+            offer = await cur.fetchone()
+            if not offer:
+                return None
+            job_id, tech_id, org_id, status = offer[0], offer[1], offer[2], offer[3]
+            if status != "offered":
+                return {"accepted": False, "reason": status, "job_id": str(job_id)}
+            # Atomic first-accept-wins: only one accept can flip the null job.
+            cur = await conn.execute(
+                "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
+                " trust_state = 'matched', updated_at = now()"
+                " where id = %s and fulfillment_technician_id is null"
+                " returning id",
+                (str(tech_id), str(org_id) if org_id else None, str(job_id)),
+            )
+            won = await cur.fetchone()
+            if not won:
+                await conn.execute(
+                    "update dispatch_offers set status = 'superseded', responded_at = now()"
+                    " where id = %s and status = 'offered'",
+                    (str(offer_id),),
+                )
+                return {"accepted": False, "reason": "already_matched", "job_id": str(job_id)}
+            await conn.execute(
+                "update dispatch_offers set status = 'accepted', responded_at = now() where id = %s",
+                (str(offer_id),),
+            )
+            await conn.execute(
+                "update dispatch_offers set status = 'superseded', responded_at = now()"
+                " where job_id = %s and id <> %s and status = 'offered'",
+                (str(job_id), str(offer_id)),
+            )
+        return {
+            "accepted": True,
+            "job_id": str(job_id),
+            "technician_id": str(tech_id),
+            "organization_id": str(org_id) if org_id else None,
         }
 
 
