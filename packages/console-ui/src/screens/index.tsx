@@ -14,6 +14,16 @@ import {
   technicians
 } from "@cluexp/api-client";
 import type { ConsoleMode, ConsoleStatus, Job } from "@cluexp/api-client";
+import {
+  Building2,
+  CheckCircle2,
+  CircleDot,
+  Lock,
+  MapPin,
+  RadioTower,
+  SlidersHorizontal,
+  UserCheck
+} from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import {
@@ -170,6 +180,24 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
       </div>
     </div>
   );
+}
+
+const capacityCells = [
+  { area: "Downtown", available: 4, eta: "6-9 min", skill: "Auto access", freshness: "Live", pressure: "low" },
+  { area: "North Hills", available: 2, eta: "12-16 min", skill: "Residential", freshness: "2 min", pressure: "medium" },
+  { area: "Midtown", available: 1, eta: "9-13 min", skill: "Auto access", freshness: "Live", pressure: "high" },
+  { area: "East Side", available: 3, eta: "15-20 min", skill: "Commercial", freshness: "4 min", pressure: "medium" }
+] as const;
+
+function rankedScore(techId: string) {
+  const scores: Record<string, { score: number; reasons: string[] }> = {
+    "tech-jordan": { score: 94, reasons: ["0.8 mi away", "Auto access match", "GPS updated 1 min ago"] },
+    "tech-samir": { score: 88, reasons: ["High completion rating", "Verified provider roster", "Current workload: 1"] },
+    "tech-lina": { score: 81, reasons: ["Available now", "Residential skill overlap", "GPS updated 4 min ago"] },
+    "tech-marcus": { score: 42, reasons: ["Strong skill match", "Documents block dispatch", "Manual review required"] },
+    "tech-morgan": { score: 38, reasons: ["3.3 mi away", "GPS stale 18 min", "Existing workload"] }
+  };
+  return scores[techId] ?? { score: 50, reasons: ["Eligible profile", "Service-area match pending", "Availability check pending"] };
 }
 
 export function ProviderNewRequest() {
@@ -363,22 +391,65 @@ export function TechnicianAssignment({ mode }: { mode: ConsoleMode }) {
   const job = primaryJob(mode);
   const offer = offers.find((item) => item.job_id === job.id) ?? firstOffer();
   const candidates = mode === "org" ? technicians.filter((tech) => tech.primary_organization_id === orgId) : technicians;
+  const rankedCandidates = [...candidates].sort((a, b) => rankedScore(b.id).score - rankedScore(a.id).score);
   return (
     <div>
       <PageHeader
-        kicker="Technician assignment"
+        kicker="Ranked match preview"
         title="Choose verified access technician"
-        description="Offer countdowns use backend expires_at. First accept wins is backend-enforced; the UI only reflects the result."
+        description="Mock ranking explains distance, skill, availability, verification, and workload. It does not dispatch or override backend eligibility."
         actions={<><StatusBadge status={job.console_status} /><TrustStateChip trustState={job.trust_state} /><SlaCountdown deadline={offer.expires_at} /></>}
       />
       <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
-        <div className="space-y-3">{candidates.map((tech) => <TechnicianCard key={tech.id} mode={mode} technician={tech} />)}</div>
+        <div className="space-y-3">
+          {rankedCandidates.map((tech, index) => {
+            const match = rankedScore(tech.id);
+            return (
+              <div className="relative" key={tech.id}>
+                <div className="absolute left-4 top-4 z-10 flex items-center gap-2">
+                  <Badge variant={index === 0 ? "success" : "outline"}>Rank {index + 1}</Badge>
+                  <Badge variant={match.score >= 85 ? "success" : match.score >= 70 ? "info" : "warn"}>{match.score}% match</Badge>
+                </div>
+                <div className="pt-11">
+                  <TechnicianCard mode={mode} technician={tech} />
+                </div>
+                <div className="mx-4 -mt-3 mb-4 rounded-md border border-border bg-background p-3">
+                  <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Why this rank</div>
+                  <div className="flex flex-wrap gap-2">
+                    {match.reasons.map((reason) => <Badge key={reason} variant="outline">{reason}</Badge>)}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
         <div className="space-y-6">
           <Card>
             <CardHeader><CardTitle>Job context</CardTitle><CardDescription>{job.address}</CardDescription></CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-2"><Badge variant="outline">{job.access_type}</Badge><Badge variant="warn">{job.situation}</Badge><Badge variant="outline">{job.area}</Badge><StatusBadge status={offer.status} /></div>
               <div className="rounded-md border border-primary/30 bg-primary/10 p-3 text-sm text-primary">Backend enforces first-accept-wins. If another technician accepts first, this screen must show the superseded offer state from the API.</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <div>
+                <CardTitle>Ranking inputs</CardTitle>
+                <CardDescription>Transparent mock weights for operator review. No auction or bidding.</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {[
+                ["Distance and ETA", "35%"],
+                ["Skill fit", "30%"],
+                ["Availability and workload", "20%"],
+                ["Verification and reliability", "15%"]
+              ].map(([label, weight]) => (
+                <div className="flex items-center justify-between rounded-md border border-border p-3" key={label}>
+                  <span className="text-sm font-medium">{label}</span>
+                  <Badge variant="outline">{weight}</Badge>
+                </div>
+              ))}
             </CardContent>
           </Card>
           <TrustSafety flags={job.safety_flags} status={job.trust_state} />
@@ -446,9 +517,42 @@ export function OrgJobIntake() {
             <div className="flex flex-wrap gap-2"><Button>Accept for Organization</Button><Button variant="secondary">Assign Technician</Button><Button variant="outline">Request Network Overflow</Button><Button variant="destructive">Decline with Reason</Button></div>
           </CardContent>
         </Card>
-        <div className="space-y-3">{technicians.filter((tech) => tech.primary_organization_id === orgId).map((tech) => <TechnicianCard key={tech.id} mode="org" technician={tech} />)}</div>
+        <div className="space-y-6">
+          <NetworkReleasePanel job={job} />
+          <div className="space-y-3">{technicians.filter((tech) => tech.primary_organization_id === orgId).map((tech) => <TechnicianCard key={tech.id} mode="org" technician={tech} />)}</div>
+        </div>
       </div>
     </div>
+  );
+}
+
+function NetworkReleasePanel({ job }: { job: Job }) {
+  const [released, setReleased] = useState(false);
+  return (
+    <Card className={cn(released ? "border-success/40 bg-success/5" : "border-primary/35 bg-primary/5")}>
+      <CardHeader>
+        <div>
+          <CardTitle>Network release preview</CardTitle>
+          <CardDescription>Keep customer ownership with the origin organization while requesting verified external capacity.</CardDescription>
+        </div>
+        <Badge variant={released ? "success" : "warn"}>{released ? "Preview released" : "Private queue"}</Badge>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-md border border-border p-3"><div className="text-xs uppercase text-muted-foreground">Origin</div><div className="mt-1 font-medium">{organizationLabel(job.origin_org_id)}</div></div>
+          <div className="rounded-md border border-border p-3"><div className="text-xs uppercase text-muted-foreground">Customer owner</div><div className="mt-1 font-medium">{organizationLabel(job.customer_owner_org_id)}</div></div>
+          <div className="rounded-md border border-border p-3"><div className="text-xs uppercase text-muted-foreground">Fulfillment</div><div className="mt-1 font-medium">{released ? "Verified network capacity" : "Organization roster"}</div></div>
+        </div>
+        <div className="rounded-md border border-info/30 bg-info/5 p-3 text-sm leading-6 text-info">
+          Release changes the fulfillment search only. It does not transfer customer ownership, expose customer PII to anonymous capacity views, or make the customer MATCHED.
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => setReleased(true)} disabled={released}><RadioTower className="size-4" />Release to Network</Button>
+          <Button onClick={() => setReleased(false)} disabled={!released} variant="outline">Withdraw Preview</Button>
+          <Button variant="ghost">Review No-Solicit Terms</Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -504,10 +608,133 @@ export function MapOperations({ mode }: { mode: ConsoleMode }) {
   const activeJobs = scopedJobs(mode);
   return (
     <div>
-      <PageHeader kicker="Map operations" title="Jobs and technicians" description="Static operational map: job markers, technician markers, service area, route/ETA and location staleness." actions={<><Button><Navigation className="size-4" />Assign from Map</Button><Button variant="secondary">Dispatch</Button></>} />
+      <PageHeader kicker="Anonymous capacity" title="Network capacity map" description="Area-level supply signals support routing decisions without exposing technician identity or exact location before assignment." actions={<><Button><Navigation className="size-4" />Assign from Map</Button><Button variant="secondary">Dispatch</Button></>} />
       <div className="mb-6 grid gap-4 md:grid-cols-3"><StatCard label="Active technicians" value={String(technicians.filter((tech) => tech.is_available).length)} /><StatCard label="Pending jobs" value={String(activeJobs.filter((job) => job.trust_state === "INTAKE").length)} /><StatCard label="Emergency alerts" value={String(activeJobs.filter((job) => job.urgency === "critical").length)} intent="warn" /></div>
       <div className="mb-4"><FilterBar filters={["Auto Team", "Home Team", "Business Access", "Broken Key", "Stale GPS", "Within Service Area"]} /></div>
-      <MapCard jobs={activeJobs} technicians={technicians} />
+      <div className="grid gap-6 xl:grid-cols-[1.15fr_.85fr]">
+        <MapCard jobs={activeJobs} technicians={[]} />
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>Masked capacity by area</CardTitle>
+              <CardDescription>Aggregated counts and ETA bands only. Names, exact coordinates, phone numbers, and provider identity stay hidden.</CardDescription>
+            </div>
+            <Badge variant="success"><Lock className="size-3" />PII masked</Badge>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {capacityCells.map((cell) => (
+              <div className="rounded-md border border-border p-3" key={cell.area}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 font-medium"><MapPin className="size-4 text-primary" />{cell.area}</div>
+                    <div className="mt-1 text-sm text-muted-foreground">{cell.skill} · ETA band {cell.eta}</div>
+                  </div>
+                  <Badge variant={cell.pressure === "high" ? "warn" : cell.pressure === "medium" ? "info" : "success"}>{cell.pressure} pressure</Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                  <div className="rounded-md bg-secondary p-2"><div className="text-xs text-muted-foreground">Available</div><div className="mt-1 font-semibold">{cell.available}</div></div>
+                  <div className="rounded-md bg-secondary p-2"><div className="text-xs text-muted-foreground">Location</div><div className="mt-1 font-semibold">{cell.freshness}</div></div>
+                  <div className="rounded-md bg-secondary p-2"><div className="text-xs text-muted-foreground">Identity</div><div className="mt-1 font-semibold">Masked</div></div>
+                </div>
+              </div>
+            ))}
+            <div className="rounded-md border border-info/30 bg-info/5 p-3 text-sm leading-6 text-info">
+              Exact technician identity becomes available only through an authorized assignment or offer workflow.
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+export function DispatchPolicySettings({ mode }: { mode: ConsoleMode }) {
+  const [dispatchMode, setDispatchMode] = useState<"organization_managed" | "cluexp_managed_routing">(mode === "org" ? "organization_managed" : "cluexp_managed_routing");
+  const [policy, setPolicy] = useState<"private" | "network_overflow" | "network_open">(mode === "org" ? "network_overflow" : "network_open");
+  const [overflowMinutes, setOverflowMinutes] = useState("12");
+  const [saved, setSaved] = useState(false);
+  const organization = organizationById(orgId);
+
+  return (
+    <div>
+      <PageHeader
+        kicker="Mock policy concept"
+        title="Dispatch Policy"
+        description="Configure who manages dispatch and when a private provider queue may request verified network capacity. This preview does not persist changes."
+        actions={<Badge variant="outline"><SlidersHorizontal className="size-3" />Draft configuration</Badge>}
+      />
+      <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <div><CardTitle>Dispatch control</CardTitle><CardDescription>Choose the operating model without changing origin or customer ownership.</CardDescription></div>
+            </CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-2">
+              <button
+                className={cn("rounded-md border p-4 text-left transition-colors", dispatchMode === "organization_managed" ? "border-primary bg-primary/10" : "border-border hover:border-primary/40")}
+                onClick={() => { setDispatchMode("organization_managed"); setSaved(false); }}
+              >
+                <Building2 className="size-5 text-primary" />
+                <div className="mt-3 font-medium">Organization managed</div>
+                <div className="mt-1 text-sm leading-6 text-muted-foreground">The provider controls assignment from its private roster and may trigger overflow by policy.</div>
+              </button>
+              <button
+                className={cn("rounded-md border p-4 text-left transition-colors", dispatchMode === "cluexp_managed_routing" ? "border-primary bg-primary/10" : "border-border hover:border-primary/40")}
+                onClick={() => { setDispatchMode("cluexp_managed_routing"); setSaved(false); }}
+              >
+                <RadioTower className="size-5 text-primary" />
+                <div className="mt-3 font-medium">ClueXP managed routing</div>
+                <div className="mt-1 text-sm leading-6 text-muted-foreground">The network operator ranks eligible providers and independent technicians using trusted routing.</div>
+              </button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div><CardTitle>Fulfillment policy</CardTitle><CardDescription>Private by default with explicit, auditable release behavior.</CardDescription></div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {[
+                ["private", "Private only", "Keep every request inside the organization roster."],
+                ["network_overflow", "Network overflow", "Search verified network capacity after a configured threshold or manual release."],
+                ["network_open", "Network open", "Allow immediate trusted routing across eligible network supply."]
+              ].map(([value, label, description]) => (
+                <button
+                  className={cn("flex w-full items-start gap-3 rounded-md border p-4 text-left transition-colors", policy === value ? "border-primary bg-primary/10" : "border-border hover:border-primary/40")}
+                  key={value}
+                  onClick={() => { setPolicy(value as typeof policy); setSaved(false); }}
+                >
+                  <CircleDot className={cn("mt-0.5 size-5", policy === value ? "text-primary" : "text-muted-foreground")} />
+                  <span><span className="block font-medium">{label}</span><span className="mt-1 block text-sm leading-6 text-muted-foreground">{description}</span></span>
+                </button>
+              ))}
+              {policy === "network_overflow" ? (
+                <label className="block space-y-2 text-sm font-medium">
+                  Automatic overflow threshold
+                  <div className="flex items-center gap-2"><Input className="max-w-28" min="1" onChange={(event) => { setOverflowMinutes(event.target.value); setSaved(false); }} type="number" value={overflowMinutes} /><span className="text-muted-foreground">minutes without an assigned technician</span></div>
+                </label>
+              ) : null}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader><CardTitle>Policy preview</CardTitle><CardDescription>{organization?.display_name ?? "Current workspace"}</CardDescription></CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between rounded-md border border-border p-3"><span className="text-sm text-muted-foreground">Dispatch mode</span><Badge variant="outline">{dispatchMode.replaceAll("_", " ")}</Badge></div>
+              <div className="flex items-center justify-between rounded-md border border-border p-3"><span className="text-sm text-muted-foreground">Fulfillment policy</span><Badge variant="outline">{policy.replaceAll("_", " ")}</Badge></div>
+              <div className="flex items-center justify-between rounded-md border border-border p-3"><span className="text-sm text-muted-foreground">Customer owner</span><span className="text-sm font-medium">Unchanged</span></div>
+              <div className="flex items-center justify-between rounded-md border border-border p-3"><span className="text-sm text-muted-foreground">Network bidding</span><Badge variant="success">Disabled</Badge></div>
+              <div className="rounded-md border border-info/30 bg-info/5 p-3 text-sm leading-6 text-info">
+                Network release changes fulfillment search only. Origin and customer ownership remain attached to the request.
+              </div>
+              {saved ? <div className="flex items-center gap-2 rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success"><CheckCircle2 className="size-4" />Mock draft saved locally for this screen.</div> : null}
+              <Button className="w-full" onClick={() => setSaved(true)}><UserCheck className="size-4" />Save Draft Preview</Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }

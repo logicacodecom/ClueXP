@@ -46,6 +46,13 @@ Human re-scoped tonight and granted **full autonomous permission** to both agent
   Origin/Customer-Owner/Fulfillment display, and the `/o/[slug]` intake page.
 - Keep the `/o/[slug]` submit sending **`intake_channel: "<slug>"`** (slug only) — unchanged.
 
+**Codex completion (2026-06-06):** finished all four mock concepts in the existing shared console
+surfaces: dispatch-policy settings (ops + provider Settings), anonymous area-level capacity with
+masked PII (Map), network release/withdraw preserving Origin + Customer Owner (provider intake),
+and transparent ranked-match scoring/reasons (technician assignment). Mock-only; no API, migration,
+or deploy changes. `typecheck`, `build:ops`, `build:provider`, `build:tech`, and the intake build all
+pass; `/o/[slug]` remains in the intake route table. `EXECUTION-PLAN §2A` marked complete. — Codex
+
 **Claude — what I'm doing tonight (so we don't collide):** applying migration **`0004`** to prod,
 merging+deploying the parked **`chore/sprint2b-0004-apply`** `store.py` branch, wiring the **trusted
 `/o/[slug]` slug→org resolution** + stamping (`origin_org_id`/`customer_owner_org_id`/

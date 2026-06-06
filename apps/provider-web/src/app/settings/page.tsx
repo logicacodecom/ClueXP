@@ -1,6 +1,6 @@
-import { NotInPrototype } from "@cluexp/console-ui";
+import { DispatchPolicySettings } from "@cluexp/console-ui";
 import { AppFrame } from "../frame";
 
 export default function SettingsPage() {
-  return <AppFrame><NotInPrototype label="Settings" /></AppFrame>;
+  return <AppFrame><DispatchPolicySettings mode="org" /></AppFrame>;
 }

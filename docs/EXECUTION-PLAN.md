@@ -180,9 +180,9 @@ human's explicit go + smoke test.
       `provider_organization_id` → `fulfillment_org_id`; mock fixtures re-expressed as
       Origin=ClueXP / Fulfillment=partner-or-tech; console/technician copy on the neutral
       lexicon ("ClueXP Direct / our techs / ClueXP MODE / direct-release" removed). Builds green.
-- [ ] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
+- [x] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
       settings, anonymous-capacity map/list (masked PII), network-release action,
-      ranked-match mock. *(Codex — in progress 2026-06-06.)*
+      ranked-match mock. *(Codex — completed 2026-06-06; shared console mock UI.)*
 
 ### 2A+ — Multi-tenant intake & dispatch update (pulled into current scope, human 2026-06-04)
 > Priority: make the **existing** intake + dispatch systems multi-tenant now. Plain
