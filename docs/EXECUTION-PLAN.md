@@ -168,42 +168,36 @@ human's explicit go + smoke test.
 > FIRST (2A)**, then the auth/extraction/dispatch build (2B).
 
 ### 2A — Tenancy correction pass (do first, per `adr/0004`)
-- [~] **ADR 0004** authored (neutral network; origin/customer-owner/fulfillment;
+- [x] **ADR 0004** authored (neutral network; origin/customer-owner/fulfillment;
       `dispatch_mode` vs `fulfillment_policy`; no bidding; trusted-channel resolution).
-- [~] **Docs realigned** — SPEC §2.10 reworded; ROADMAP/this plan reframed to the
+- [x] **Docs realigned** — SPEC §2.10 reworded; ROADMAP/this plan reframed to the
       neutral-network model; console spec + `DATABASE-AND-STORAGE` updated.
-- [~] **Infra (Claude):** migration `0004_tenancy_and_intake` drafted + offline-verified
-      (**UNAPPLIED**); the coupled `api/store.py` column rename is **parked on branch
-      `chore/sprint2b-0004-apply`** (kept off `main` so prod can't pick it up early).
-      **Apply bundle → 2B:** run `0004` on prod, then merge+deploy the store.py branch
-      (brief writer window acceptable at current scale); needs prod-DDL authorization.
-- [ ] **Code language correction** — retire `dispatch_owner`; reconcile
-      `provider_organization_id` → `fulfillment_org_id`; re-express mock fixtures
-      (`routing_source:"ClueXP-routed"`, `dispatch_owner:"cluexp"`) as Origin=ClueXP /
-      Fulfillment=partner-or-tech; audit console/technician copy to the neutral
-      lexicon (Dispatch Network, Provider Organizations, Verified Technicians, Service
-      Requests, Network Overflow, Origin/Fulfillment/Customer Owner, Trusted Routing,
-      Service Capacity) — remove "ClueXP Direct / our techs / ClueXP MODE /
-      direct-release / marketplace bidding". Keep typecheck + builds green.
+- [x] **Infra (Claude):** migration `0004_tenancy_and_intake` **APPLIED to prod** (verified
+      `alembic_version = 0005`; `0004` is its parent in the linear graph, so necessarily applied).
+      The coupled `api/store.py` tenancy writes are **on `main` and live** (intake auto-deploys).
+      The old `chore/sprint2b-0004-apply` branch is now **behind `main`** (superseded).
+- [x] **Code language correction** (Codex, merged) — `dispatch_owner` retired;
+      `provider_organization_id` → `fulfillment_org_id`; mock fixtures re-expressed as
+      Origin=ClueXP / Fulfillment=partner-or-tech; console/technician copy on the neutral
+      lexicon ("ClueXP Direct / our techs / ClueXP MODE / direct-release" removed). Builds green.
 - [ ] **Mock UI concepts** (no live marketplace mechanics): org dispatch-policy
       settings, anonymous-capacity map/list (masked PII), network-release action,
-      ranked-match mock.
+      ranked-match mock. *(Codex — in progress 2026-06-06.)*
 
 ### 2A+ — Multi-tenant intake & dispatch update (pulled into current scope, human 2026-06-04)
 > Priority: make the **existing** intake + dispatch systems multi-tenant now. Plain
 > mobile-web (no PWA). Ships as one bundle with the `0004` apply.
-- [ ] **Per-org intake link (REAL):** route `/o/[slug]` (mobile-web, same intake form,
-      light org branding) → **server-side resolve slug→owning org** (trusted, browser
-      `org_id` is never authority) → on submit stamp `origin_org_id` /
-      `customer_owner_org_id` / `intake_channel_id` on the job. *(Codex = page; Claude =
-      API resolution + `store.py` writes.)*
-- [ ] **Dispatch consoles (display update):** show **Origin / Customer-Owner /
-      Fulfillment** + `dispatch_mode` / `fulfillment_policy` in the board/table/drawer;
-      neutral lexicon. Mock data still (real `cluexp-api` wiring stays 2B). *(Codex.)*
-- [ ] **Infra ship (Claude, gated):** apply `0004` to prod (explicit prod-DDL go) +
-      seed one provider org + intake channel; deploy `store.py` + intake API; prod smoke
-      (create via `/o/[slug]` → job carries `origin_org_id`). Bundle: migration +
-      `chore/sprint2b-0004-apply` + the slice branch, shipped together.
+- [x] **Per-org intake link (REAL):** `/o/[slug]` page (Codex) + **trusted server-side
+      slug→org resolution** stamping `origin_org_id` / `customer_owner_org_id` /
+      `intake_channel_id` (Claude, `store.py`). **Verified live in prod 2026-06-06** — smoke:
+      `POST /api/tickets` with `intake_channel:"metro-key"` → job carried `origin_org_id` =
+      metro-key org (browser org id never trusted). Test artifact cleaned up.
+- [x] **Dispatch consoles (display update):** **Origin / Customer-Owner / Fulfillment** +
+      `dispatch_mode` / `fulfillment_policy` in board/table/drawer; neutral lexicon. (Codex; mock
+      data — real `cluexp-api` wiring stays 2B.)
+- [x] **Infra ship (Claude):** `0004` applied to prod; one provider org (`metro-key`,
+      Metro Key Partners) + active intake channel seeded; `store.py` + intake API live; **prod
+      smoke passed** 2026-06-06.
 
 ### 2B — Auth + extraction + dispatch v1 (after 2A)
 - [ ] **Auth foundation** — migrate production auth direction to **Clerk**
