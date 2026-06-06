@@ -371,6 +371,7 @@ const es: Record<string, string> = {
   "Urgent service request": "Solicitud de servicio urgente",
   "Value": "Valor",
   "Verification required": "Verificación requerida",
+  "Verification pending": "Verificación pendiente",
   "Verified entities": "Entidades verificadas",
   "Verified network capacity": "Capacidad verificada de la red",
   "Verified phone": "Teléfono verificado",
@@ -462,7 +463,8 @@ const es: Record<string, string> = {
   "Trust-state column uses only INTAKE, MATCHED, or FULFILLMENT. Severity and reasons stay separate.": "La columna de confianza solo usa INGRESO, ASIGNADO o CUMPLIMIENTO. La gravedad y los motivos permanecen separados.",
   "Use GPS if you can. A typed address is fine too.": "Usa el GPS si puedes. También puedes escribir una dirección.",
   "We are connecting you to a person who can help faster from here.": "Te estamos conectando con una persona que puede ayudarte más rápido.",
-  "Your review is tied to this completed job. It helps future routing without changing customer ownership.": "Tu reseña está vinculada a este trabajo completado. Ayuda al enrutamiento futuro sin cambiar la responsabilidad del cliente."
+  "Your review is tied to this completed job. It helps future routing without changing customer ownership.": "Tu reseña está vinculada a este trabajo completado. Ayuda al enrutamiento futuro sin cambiar la responsabilidad del cliente.",
+  "Your technician registration is awaiting ClueXP approval. Job offers remain unavailable until verification is complete.": "Tu registro de técnico está esperando la aprobación de ClueXP. Las ofertas no estarán disponibles hasta completar la verificación."
 };
 
 const patterns: Array<[RegExp, (...groups: string[]) => string]> = [
