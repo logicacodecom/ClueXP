@@ -1,7 +1,8 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { translateUiText } from "./ui-catalog-es";
 
 export const supportedLocales = ["en", "es"] as const;
 export type Locale = (typeof supportedLocales)[number];
@@ -116,7 +117,19 @@ export function LocaleProvider({ children, persistAuthenticated = false }: { chi
 
   useEffect(() => {
     setLocaleState(initialLocale());
-  }, []);
+    if (persistAuthenticated) {
+      void fetch("/api/session", { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((body) => {
+          const stored = normalizeLocale(body?.session?.user?.locale);
+          if (stored) {
+            setLocaleState(stored);
+            document.cookie = `${COOKIE_NAME}=${stored}; Path=/; Max-Age=31536000; SameSite=Lax`;
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [persistAuthenticated]);
 
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);
@@ -141,7 +154,11 @@ export function LocaleProvider({ children, persistAuthenticated = false }: { chi
     () => ({ locale, setLocale, t: (key) => messages[locale][key] }),
     [locale, setLocale]
   );
-  return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>;
+  return (
+    <LocaleContext.Provider value={value}>
+      <UiTranslationBoundary locale={locale}>{children}</UiTranslationBoundary>
+    </LocaleContext.Provider>
+  );
 }
 
 export function useLocale() {
@@ -193,4 +210,80 @@ export function LanguageSettings({ className }: { className?: string }) {
       </div>
     </section>
   );
+}
+
+const translatedAttributes = ["aria-label", "placeholder", "title"] as const;
+
+function UiTranslationBoundary({ children, locale }: { children: ReactNode; locale: Locale }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const textState = useRef(new WeakMap<Text, { original: string; rendered: string }>());
+  const attributeState = useRef(new WeakMap<Element, Map<string, { original: string; rendered: string }>>());
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    function translateTextNode(node: Text) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest("[data-no-translate],script,style,code,pre")) return;
+      const current = node.nodeValue ?? "";
+      let state = textState.current.get(node);
+      if (!state || current !== state.rendered) {
+        state = { original: current, rendered: current };
+        textState.current.set(node, state);
+      }
+      const next = locale === "es" ? translateUiText(state.original) : state.original;
+      state.rendered = next;
+      if (current !== next) node.nodeValue = next;
+    }
+
+    function translateElement(element: Element) {
+      if (element.closest("[data-no-translate]")) return;
+      let states = attributeState.current.get(element);
+      if (!states) {
+        states = new Map();
+        attributeState.current.set(element, states);
+      }
+      for (const attribute of translatedAttributes) {
+        const current = element.getAttribute(attribute);
+        if (current == null) continue;
+        let state = states.get(attribute);
+        if (!state || current !== state.rendered) {
+          state = { original: current, rendered: current };
+          states.set(attribute, state);
+        }
+        const next = locale === "es" ? translateUiText(state.original) : state.original;
+        state.rendered = next;
+        if (current !== next) element.setAttribute(attribute, next);
+      }
+    }
+
+    function translateTree(target: Node) {
+      if (target.nodeType === Node.TEXT_NODE) {
+        translateTextNode(target as Text);
+        return;
+      }
+      if (!(target instanceof Element)) return;
+      translateElement(target);
+      const walker = document.createTreeWalker(target, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      let current = walker.nextNode();
+      while (current) {
+        if (current.nodeType === Node.TEXT_NODE) translateTextNode(current as Text);
+        else translateElement(current as Element);
+        current = walker.nextNode();
+      }
+    }
+
+    translateTree(root);
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "characterData") translateTree(mutation.target);
+        mutation.addedNodes.forEach((added) => translateTree(added));
+      }
+    });
+    observer.observe(root, { childList: true, characterData: true, subtree: true });
+    return () => observer.disconnect();
+  }, [locale]);
+
+  return <div ref={rootRef} style={{ display: "contents" }}>{children}</div>;
 }

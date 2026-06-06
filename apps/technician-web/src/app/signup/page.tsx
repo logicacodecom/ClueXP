@@ -14,11 +14,11 @@ export default function SignUpPage() {
     setBusy(true);
     setMessage(null);
     try {
-      await sessionRequest("/api/register", {
+      const result = await sessionRequest<{ session?: { technician?: { id?: string } } }>("/api/register", {
         method: "POST",
-        body: JSON.stringify({ ...form, locale })
+        body: JSON.stringify({ ...form, locale, skills: ["home", "business", "vehicle"] })
       });
-      setMessage("Account request received. Dispatch will notify you after verification.");
+      setMessage(`Account request received. Registration ID: ${result.session?.technician?.id ?? "pending assignment"}`);
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : t("unableToConnect"));
     } finally {

@@ -24,11 +24,24 @@ interface LiveOffer {
 }
 
 function normalizeOffers(body: unknown): LiveOffer[] {
-  if (Array.isArray(body)) return body as LiveOffer[];
-  if (body && typeof body === "object" && Array.isArray((body as { offers?: unknown }).offers)) {
-    return (body as { offers: LiveOffer[] }).offers;
-  }
-  return [];
+  const raw = Array.isArray(body)
+    ? body
+    : body && typeof body === "object" && Array.isArray((body as { offers?: unknown }).offers)
+      ? (body as { offers: Array<Record<string, unknown>> }).offers
+      : [];
+  return raw.map((item) => ({
+    ...(item as unknown as LiveOffer),
+    id: String(item.id ?? item.offer_id ?? ""),
+    job_id: String(item.job_id ?? ""),
+    status: (item.status ?? "offered") as LiveOffer["status"],
+    expires_at: String(item.expires_at ?? new Date().toISOString()),
+    service_type: String(item.service_type ?? item.access_type ?? "Service request"),
+    area: item.area
+      ? String(item.area)
+      : typeof item.area_lat === "number" && typeof item.area_lng === "number"
+        ? "Approximate service area"
+        : "Nearby service area"
+  }));
 }
 
 export function LiveOffersFeed() {
