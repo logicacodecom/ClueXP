@@ -32,9 +32,19 @@
 ### 2026-06-05 — DEV TASK for Codex: Localization (i18n) foundation + EN/ES (execute when human says go)
 Human signed off the approach. Full spec: **[`docs/LOCALIZATION-PLAN.md`](LOCALIZATION-PLAN.md)** —
 read it first (don't restate here). Confirmed decisions: **next-intl**; locales **`en`+`es`**
-(`en` source), extensible to more by catalog-only; **distance/ETA stays in miles** for both;
-**provider+ops:** wrap strings in `t()` now but **defer their `es` catalog** until they're
-API-wired/stable. Rollout order: intake → technician → provider → ops.
+(`en` source), extensible to more by catalog-only; **es = Latin American (es-419 / US-Latino)**, not
+es-ES; **distance/ETA stays in miles**; **provider+ops:** wrap strings in `t()` now but **defer their
+`es` catalog** until API-wired/stable. Rollout order: intake → technician → provider → ops.
+
+**Newly locked (human 2026-06-05, folded into the plan):**
+- **P0 prerequisite — ESLint first (plan §10):** migrate `next lint` → ESLint CLI + flat config + a
+  `no-literal-string` rule (warn) wired into CI, so new hardcoded UI text is flagged *before* you
+  start externalizing. This enforces "new text must use keys."
+- **Translate by complete workflow, not scattered screens** (plan §2b) — workflow = unit of done.
+- **Catalogs = static UI only** — never DB/customer/user-generated content (plan §6).
+- **Notifications (SMS/email/push) are server-side** (plan §4b) — you flag the UI **locale-capture**
+  point at intake; **Claude** owns the stored `locale` column + backend templates. Coordinate.
+- Include validation, toasts, dates, currency, and **a11y copy** (aria/alt/sr-only) in scope.
 
 **Your half (app code/UI):** the `@cluexp/i18n` package, next-intl providers, the language
 switcher, externalizing every user-facing string, `en`/`es` catalogs + translations, `useFormatter`
