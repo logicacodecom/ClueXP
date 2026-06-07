@@ -21,6 +21,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 UPLOAD_TTL_SECONDS = 60
 DOWNLOAD_TTL_SECONDS = 300
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+ALLOWED_DOCUMENT_TYPES = ALLOWED_IMAGE_TYPES | {"application/pdf"}
 
 
 @dataclass(frozen=True)
@@ -36,15 +37,19 @@ def storage_configured() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
 
 
-def validate_upload_claim(content_type: str, size: int) -> None:
+def validate_upload_claim(content_type: str, size: int, *, allow_pdf: bool = False) -> None:
     # Advisory preflight from browser-stated metadata. Supabase Storage bucket
     # limits (`file_size_limit` + `allowed_mime_types`) are the hard boundary.
     if size <= 0:
         raise ValueError("File is empty")
     if size > MAX_UPLOAD_BYTES:
         raise ValueError("File exceeds 10 MB")
-    if content_type not in ALLOWED_IMAGE_TYPES:
-        raise ValueError("Only PNG, JPEG, or WebP images are accepted here")
+    allowed = ALLOWED_DOCUMENT_TYPES if allow_pdf else ALLOWED_IMAGE_TYPES
+    if content_type not in allowed:
+        raise ValueError(
+            "Only PNG, JPEG, WebP, or PDF files are accepted here"
+            if allow_pdf else "Only PNG, JPEG, or WebP images are accepted here"
+        )
 
 
 async def create_signed_upload_url(bucket: str, path: str) -> UploadIntent:

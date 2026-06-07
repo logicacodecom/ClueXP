@@ -15,7 +15,7 @@ The Ticket Pydantic model stays the single source of truth: we persist
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from api.auth import hash_password, verify_password
@@ -25,6 +25,7 @@ from api.dispatch import (
     is_terminal,
     resolve_dispatch_state,
 )
+from api import config
 from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -122,6 +123,14 @@ class Store:
     async def authenticate_user(self, identifier: str, password: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def login_rate_limited(self, identifier: str) -> bool:  # pragma: no cover
+        return False
+
+    async def record_login_attempt(
+        self, identifier: str, *, success: bool, ip: str | None
+    ) -> None:  # pragma: no cover
+        return None
+
     async def get_user_session(self, user_id: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -144,6 +153,56 @@ class Store:
         raise NotImplementedError
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_pending_registrations(self) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def list_pending_documents(self) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def get_provider_document(self, document_id: UUID) -> dict | None:  # pragma: no cover
+        return None
+
+    async def get_provider_workspace(self, organization_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_organization_profile(
+        self, organization_id: UUID, data: dict
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_team(self, organization_id: UUID, data: dict) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_team(
+        self, organization_id: UUID, team_id: UUID, data: dict
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_affiliated_technician(
+        self, organization_id: UUID, data: dict
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_provider_document(
+        self, organization_id: UUID, data: dict
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def review_provider_document(
+        self, document_id: UUID, *, status: str, reviewer_id: UUID | None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_technician_location(
+        self, technician_id: UUID, *, lat: float, lng: float
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_technician_availability(
+        self, technician_id: UUID, *, is_available: bool
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
@@ -229,6 +288,7 @@ class InMemoryStore(Store):
             },
         }
         self.reviews: list[dict] = []
+        self.login_attempts: list[dict] = []
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         return self._tickets.get(ticket_id)
@@ -293,6 +353,64 @@ class InMemoryStore(Store):
             "active_organization_id": user["active_organization_id"],
             "organization_name": user["organization_name"],
         }
+
+    async def list_pending_registrations(self) -> list[dict]:
+        return []
+
+    async def list_pending_documents(self) -> list[dict]:
+        return []
+
+    async def get_provider_document(self, document_id: UUID) -> dict | None:
+        return None
+
+    async def get_provider_workspace(self, organization_id: UUID) -> dict | None:
+        return {
+            "organization": {"id": str(organization_id), "display_name": "Local provider"},
+            "teams": [],
+            "technicians": [],
+            "documents": [],
+        }
+
+    async def update_organization_profile(self, organization_id: UUID, data: dict) -> dict | None:
+        return {"id": str(organization_id), **data}
+
+    async def create_team(self, organization_id: UUID, data: dict) -> dict:
+        return {"id": str(uuid4()), "organization_id": str(organization_id), "status": "active", **data}
+
+    async def update_team(self, organization_id: UUID, team_id: UUID, data: dict) -> dict | None:
+        return {"id": str(team_id), "organization_id": str(organization_id), **data}
+
+    async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
+        return {
+            "id": str(uuid4()),
+            "organization_id": str(organization_id),
+            "status": "pending_vetting",
+            "vetting_status": "unverified",
+            **{key: value for key, value in data.items() if key != "password"},
+        }
+
+    async def create_provider_document(self, organization_id: UUID, data: dict) -> dict:
+        return {
+            "id": str(uuid4()),
+            "organization_id": str(organization_id),
+            "status": "pending_review",
+            **data,
+        }
+
+    async def review_provider_document(
+        self, document_id: UUID, *, status: str, reviewer_id: UUID | None
+    ) -> dict | None:
+        return {"id": str(document_id), "status": status}
+
+    async def update_technician_location(
+        self, technician_id: UUID, *, lat: float, lng: float
+    ) -> dict | None:
+        return {"id": str(technician_id), "current_lat": lat, "current_lng": lng}
+
+    async def update_technician_availability(
+        self, technician_id: UUID, *, is_available: bool
+    ) -> dict | None:
+        return {"id": str(technician_id), "is_available": is_available}
 
     async def record_review(
         self,
@@ -562,6 +680,15 @@ class PostgresStore(Store):
                 "  primary key (target_type, target_id)"
                 ")"
             )
+            await conn.execute(
+                "create table if not exists login_attempts ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  identifier text not null,"
+                "  ip text,"
+                "  success boolean not null default false,"
+                "  created_at timestamptz not null default now()"
+                ")"
+            )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
                 "create index if not exists idx_jobs_trust_state on jobs (trust_state)"
@@ -580,7 +707,12 @@ class PostgresStore(Store):
                 "create index if not exists idx_job_reviews_technician"
                 " on job_reviews (fulfillment_technician_ref)"
             )
-            await self._seed_demo_auth(conn)
+            await conn.execute(
+                "create index if not exists idx_login_attempts_identifier_time"
+                " on login_attempts (lower(identifier), created_at)"
+            )
+            if config.DEMO_SEED:
+                await self._seed_demo_auth(conn)
 
     async def _seed_demo_auth(self, conn) -> None:
         password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
@@ -605,7 +737,14 @@ class PostgresStore(Store):
         except Exception:
             provider_org_id = None
 
-        async def ensure_user(email: str, display_name: str, roles: list[str], org_id=None, phone=None):
+        async def ensure_user(
+            email: str,
+            display_name: str,
+            roles: list[str],
+            org_id=None,
+            phone=None,
+            membership_role: str = "provider_admin",
+        ):
             cur = await conn.execute(
                 "insert into users (email, phone, password_hash, display_name, status)"
                 " values (%s, %s, %s, %s, 'active')"
@@ -618,7 +757,7 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
             if not row:
-                return
+                return None
             user_id = row[0]
             for role in roles:
                 await conn.execute(
@@ -632,8 +771,9 @@ class PostgresStore(Store):
                     " values (%s, %s, %s, 'active')"
                     " on conflict (user_id, organization_id) do update"
                     " set role = excluded.role, status = 'active'",
-                    (user_id, org_id, "provider_admin"),
+                    (user_id, org_id, membership_role),
                 )
+            return user_id
 
         await ensure_user("avery@cluexp.com", "Avery Knox", ["platform_admin"])
         await ensure_user(
@@ -643,13 +783,80 @@ class PostgresStore(Store):
             provider_org_id,
             "+15550140199",
         )
-        await ensure_user(
+        jordan_id = await ensure_user(
             "jordan@cluexp.example",
             "Jordan Lee",
             ["technician"],
             None,
             "+15550142201",
         )
+        if jordan_id:
+            await conn.execute(
+                "insert into technicians"
+                " (id, display_name, email, phone, status, vetting_status, skills,"
+                " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                " rating, is_available, provider_type)"
+                " values (%s, 'Jordan Lee', 'jordan@cluexp.example', '+15550142201',"
+                " 'active', 'verified', '{home,business,vehicle}', 40.7580, -73.9855, 30,"
+                " 4.9, true, 'individual')"
+                " on conflict (id) do update set status = 'active', vetting_status = 'verified'",
+                (jordan_id,),
+            )
+        if provider_org_id:
+            cur = await conn.execute(
+                "insert into organization_teams"
+                " (organization_id, name, description, team_type, status)"
+                " values (%s, 'Manhattan Response', 'Primary urgent-response roster', 'department', 'active')"
+                " on conflict do nothing returning id",
+                (provider_org_id,),
+            )
+            team_row = await cur.fetchone()
+            if not team_row:
+                cur = await conn.execute(
+                    "select id from organization_teams"
+                    " where organization_id = %s and name = 'Manhattan Response' limit 1",
+                    (provider_org_id,),
+                )
+                team_row = await cur.fetchone()
+            team_id = team_row[0] if team_row else None
+            for email, name, phone, lat, lng, rating in [
+                ("marcus@metrokey.example", "Marcus Reyes", "+15550142211", 40.7831, -73.9712, 4.9),
+                ("lena@metrokey.example", "Lena Ortiz", "+15550142212", 40.7484, -73.9857, 4.7),
+            ]:
+                technician_id = await ensure_user(
+                    email, name, ["technician"], provider_org_id, phone, "technician"
+                )
+                if not technician_id:
+                    continue
+                await conn.execute(
+                    "insert into technicians"
+                    " (id, display_name, email, phone, status, vetting_status, skills,"
+                    " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                    " current_lat, current_lng, location_updated_at, rating, is_available,"
+                    " provider_type, primary_organization_id)"
+                    " values (%s, %s, %s, %s, 'active', 'verified', '{home,business,vehicle}',"
+                    " %s, %s, 25, %s, %s, now(), %s, true, 'affiliate', %s)"
+                    " on conflict (id) do update set status = 'active', vetting_status = 'verified',"
+                    " is_available = true, current_lat = excluded.current_lat,"
+                    " current_lng = excluded.current_lng, location_updated_at = now()",
+                    (
+                        technician_id, name, email, phone, lat, lng, lat, lng,
+                        rating, provider_org_id,
+                    ),
+                )
+                await conn.execute(
+                    "insert into organization_technicians"
+                    " (organization_id, technician_id, role, status, activated_at)"
+                    " values (%s, %s, 'affiliate_technician', 'active', now())"
+                    " on conflict (organization_id, technician_id) do update set status = 'active'",
+                    (provider_org_id, technician_id),
+                )
+                if team_id:
+                    await conn.execute(
+                        "insert into organization_team_technicians (team_id, technician_id)"
+                        " values (%s, %s) on conflict do nothing",
+                        (team_id, technician_id),
+                    )
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         async with await self._connect() as conn:
@@ -825,6 +1032,37 @@ class PostgresStore(Store):
                 return None
             return await self._session_for_user(conn, str(row[0]))
 
+    async def login_rate_limited(self, identifier: str) -> bool:
+        normalized = identifier.strip().lower()
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from login_attempts"
+                " where lower(identifier) = %s and success = false"
+                " and created_at >= now() - (%s * interval '1 second')",
+                (normalized, config.LOGIN_WINDOW_SECONDS),
+            )
+            row = await cur.fetchone()
+        return bool(row and row[0] >= config.LOGIN_MAX_FAILURES)
+
+    async def record_login_attempt(
+        self, identifier: str, *, success: bool, ip: str | None
+    ) -> None:
+        normalized = identifier.strip().lower()
+        async with await self._connect() as conn:
+            if success:
+                await conn.execute(
+                    "delete from login_attempts where lower(identifier) = %s",
+                    (normalized,),
+                )
+                return
+            await conn.execute(
+                "insert into login_attempts (identifier, ip, success) values (%s, %s, false)",
+                (normalized, ip),
+            )
+            await conn.execute(
+                "delete from login_attempts where created_at < now() - interval '7 days'"
+            )
+
     async def get_user_session(self, user_id: str) -> dict | None:
         async with await self._connect() as conn:
             return await self._session_for_user(conn, user_id)
@@ -894,16 +1132,16 @@ class PostgresStore(Store):
         ticket = await self.get(ticket_id)
         if ticket is None:
             raise KeyError(str(ticket_id))
-        technician_ref = (
-            ticket.technician_assignment.technician_id if ticket.technician_assignment else None
-        )
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select fulfillment_org_id from jobs where id = %s",
+                "select fulfillment_technician_id, fulfillment_org_id from jobs where id = %s",
                 (str(ticket_id),),
             )
             row = await cur.fetchone()
-            fulfillment_org_id = row[0] if row else None
+            technician_ref = str(row[0]) if row and row[0] else (
+                ticket.technician_assignment.technician_id if ticket.technician_assignment else None
+            )
+            fulfillment_org_id = row[1] if row else None
             cur = await conn.execute(
                 "insert into job_reviews ("
                 " job_id, rating, tags, comment, fulfillment_technician_ref, fulfillment_org_id"
@@ -929,6 +1167,14 @@ class PostgresStore(Store):
                     "  review_count = excluded.review_count,"
                     "  updated_at = now()",
                     (target_type, target_id, target_type, target_id, target_type, target_id),
+                )
+            if technician_ref:
+                await conn.execute(
+                    "update technicians t set rating = s.average_rating"
+                    " from rating_summaries s"
+                    " where s.target_type = 'technician' and s.target_id = %s"
+                    " and t.id::text = s.target_id",
+                    (technician_ref,),
                 )
             payload = ticket.model_dump(mode="json")
             payload["latest_review"] = {
@@ -1399,6 +1645,411 @@ class PostgresStore(Store):
                 "update users set locale = %s, updated_at = now() where id = %s",
                 (locale, str(user_id)),
             )
+
+    async def list_pending_registrations(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select 'technician' as kind, t.id, t.display_name, t.email, t.phone,"
+                " t.status, t.vetting_status, t.created_at"
+                " from technicians t"
+                " where t.status = 'pending_vetting' or t.vetting_status = 'unverified'"
+                " union all"
+                " select 'organization' as kind, o.id, o.display_name, o.email, o.phone,"
+                " o.status, null, o.created_at"
+                " from organizations o where o.status in ('pending', 'pending_vetting')"
+                " order by created_at"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "kind": row[0],
+                "id": str(row[1]),
+                "display_name": row[2],
+                "email": row[3],
+                "phone": row[4],
+                "status": row[5],
+                "vetting_status": row[6],
+                "created_at": row[7].isoformat() if row[7] else None,
+            }
+            for row in rows
+        ]
+
+    async def list_pending_documents(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select d.id, d.owner_type, d.owner_id, d.document_type, d.document_number,"
+                " d.issuing_authority, d.jurisdiction, d.expires_at, d.status, d.submitted_at,"
+                " case when d.owner_type = 'organization' then o.display_name else t.display_name end"
+                " from provider_documents d"
+                " left join organizations o on d.owner_type = 'organization' and o.id = d.owner_id"
+                " left join technicians t on d.owner_type = 'technician' and t.id = d.owner_id"
+                " where d.status = 'pending_review' order by d.submitted_at"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(row[0]), "owner_type": row[1], "owner_id": str(row[2]),
+                "document_type": row[3], "document_number": row[4],
+                "issuing_authority": row[5], "jurisdiction": row[6],
+                "expires_at": row[7].isoformat() if row[7] else None,
+                "status": row[8], "submitted_at": row[9].isoformat() if row[9] else None,
+                "owner_name": row[10],
+            }
+            for row in rows
+        ]
+
+    async def get_provider_document(self, document_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, storage_bucket, storage_path, document_type"
+                " from provider_documents where id = %s",
+                (str(document_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]), "storage_bucket": row[1], "storage_path": row[2],
+            "document_type": row[3],
+        }
+
+    async def get_provider_workspace(self, organization_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, legal_name, description, slug, status, phone, email,"
+                " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                " dispatch_mode, fulfillment_policy"
+                " from organizations where id = %s",
+                (str(organization_id),),
+            )
+            org = await cur.fetchone()
+            if not org:
+                return None
+            cur = await conn.execute(
+                "select t.id, t.parent_team_id, t.name, t.description, t.team_type, t.status,"
+                " count(ott.technician_id)::integer"
+                " from organization_teams t"
+                " left join organization_team_technicians ott on ott.team_id = t.id"
+                " where t.organization_id = %s"
+                " group by t.id order by t.name",
+                (str(organization_id),),
+            )
+            team_rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
+                " t.skills, t.provider_type, t.is_available,"
+                " coalesce(array_remove(array_agg(distinct ott.team_id), null), '{}')"
+                " from technicians t"
+                " join organization_technicians ot on ot.technician_id = t.id"
+                " left join organization_team_technicians ott on ott.technician_id = t.id"
+                " where ot.organization_id = %s"
+                " group by t.id order by t.display_name",
+                (str(organization_id),),
+            )
+            technician_rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select id, owner_type, owner_id, document_type, document_number,"
+                " issuing_authority, jurisdiction, issued_at, expires_at, status,"
+                " storage_bucket, storage_path, notes, submitted_at, verified_at"
+                " from provider_documents"
+                " where (owner_type = 'organization' and owner_id = %s)"
+                " or (owner_type = 'technician' and owner_id in ("
+                "   select technician_id from organization_technicians where organization_id = %s"
+                " )) order by submitted_at desc",
+                (str(organization_id), str(organization_id)),
+            )
+            document_rows = await cur.fetchall()
+        return {
+            "organization": {
+                "id": str(org[0]),
+                "display_name": org[1],
+                "legal_name": org[2],
+                "description": org[3],
+                "slug": org[4],
+                "status": org[5],
+                "phone": org[6],
+                "email": org[7],
+                "service_area_center_lat": org[8],
+                "service_area_center_lng": org[9],
+                "service_area_radius_km": org[10],
+                "dispatch_mode": org[11],
+                "fulfillment_policy": org[12],
+            },
+            "teams": [
+                {
+                    "id": str(row[0]),
+                    "parent_team_id": str(row[1]) if row[1] else None,
+                    "name": row[2],
+                    "description": row[3],
+                    "team_type": row[4],
+                    "status": row[5],
+                    "member_count": row[6],
+                }
+                for row in team_rows
+            ],
+            "technicians": [
+                {
+                    "id": str(row[0]),
+                    "display_name": row[1],
+                    "email": row[2],
+                    "phone": row[3],
+                    "status": row[4],
+                    "vetting_status": row[5],
+                    "skills": row[6] or [],
+                    "provider_type": row[7],
+                    "is_available": row[8],
+                    "team_ids": [str(team_id) for team_id in (row[9] or [])],
+                }
+                for row in technician_rows
+            ],
+            "documents": [
+                {
+                    "id": str(row[0]),
+                    "owner_type": row[1],
+                    "owner_id": str(row[2]),
+                    "document_type": row[3],
+                    "document_number": row[4],
+                    "issuing_authority": row[5],
+                    "jurisdiction": row[6],
+                    "issued_at": row[7].isoformat() if row[7] else None,
+                    "expires_at": row[8].isoformat() if row[8] else None,
+                    "status": row[9],
+                    "storage_bucket": row[10],
+                    "storage_path": row[11],
+                    "notes": row[12],
+                    "submitted_at": row[13].isoformat() if row[13] else None,
+                    "verified_at": row[14].isoformat() if row[14] else None,
+                }
+                for row in document_rows
+            ],
+        }
+
+    async def update_organization_profile(self, organization_id: UUID, data: dict) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set"
+                " display_name = coalesce(%s, display_name),"
+                " legal_name = coalesce(%s, legal_name),"
+                " description = coalesce(%s, description),"
+                " phone = coalesce(%s, phone),"
+                " email = coalesce(%s, email),"
+                " service_area_center_lat = coalesce(%s, service_area_center_lat),"
+                " service_area_center_lng = coalesce(%s, service_area_center_lng),"
+                " service_area_radius_km = coalesce(%s, service_area_radius_km),"
+                " dispatch_mode = coalesce(%s, dispatch_mode),"
+                " fulfillment_policy = coalesce(%s, fulfillment_policy),"
+                " updated_at = now()"
+                " where id = %s returning id, display_name, status",
+                (
+                    data.get("display_name"), data.get("legal_name"), data.get("description"),
+                    data.get("phone"), data.get("email"), data.get("service_area_center_lat"),
+                    data.get("service_area_center_lng"), data.get("service_area_radius_km"),
+                    data.get("dispatch_mode"), data.get("fulfillment_policy"),
+                    str(organization_id),
+                ),
+            )
+            row = await cur.fetchone()
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2]} if row else None
+
+    async def create_team(self, organization_id: UUID, data: dict) -> dict:
+        parent_id = data.get("parent_team_id")
+        async with await self._connect() as conn:
+            if parent_id:
+                cur = await conn.execute(
+                    "select 1 from organization_teams where id = %s and organization_id = %s",
+                    (parent_id, str(organization_id)),
+                )
+                if not await cur.fetchone():
+                    raise ValueError("parent_team_not_found")
+            cur = await conn.execute(
+                "insert into organization_teams"
+                " (organization_id, parent_team_id, name, description, team_type, status)"
+                " values (%s, %s, %s, %s, %s, 'active')"
+                " returning id, parent_team_id, name, description, team_type, status",
+                (
+                    str(organization_id), parent_id, data["name"], data.get("description"),
+                    data.get("team_type") or "team",
+                ),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "parent_team_id": str(row[1]) if row[1] else None,
+            "name": row[2], "description": row[3], "team_type": row[4], "status": row[5],
+            "member_count": 0,
+        }
+
+    async def update_team(
+        self, organization_id: UUID, team_id: UUID, data: dict
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organization_teams set"
+                " name = coalesce(%s, name), description = coalesce(%s, description),"
+                " status = coalesce(%s, status), updated_at = now()"
+                " where id = %s and organization_id = %s"
+                " returning id, parent_team_id, name, description, team_type, status",
+                (
+                    data.get("name"), data.get("description"), data.get("status"),
+                    str(team_id), str(organization_id),
+                ),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]), "parent_team_id": str(row[1]) if row[1] else None,
+            "name": row[2], "description": row[3], "team_type": row[4], "status": row[5],
+        }
+
+    async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
+        email = (data.get("email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
+        async with await self._connect() as conn:
+            if email:
+                cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
+                if await cur.fetchone():
+                    raise ValueError("email_taken")
+            password_hash = hash_password(data["password"])
+            cur = await conn.execute(
+                "insert into users (email, phone, password_hash, display_name, status, locale)"
+                " values (%s, %s, %s, %s, 'active', %s) returning id",
+                (email, phone, password_hash, data["display_name"], data.get("locale")),
+            )
+            technician_id = (await cur.fetchone())[0]
+            await conn.execute(
+                "insert into user_roles (user_id, role) values (%s, 'technician') on conflict do nothing",
+                (technician_id,),
+            )
+            await conn.execute(
+                "insert into technicians"
+                " (id, display_name, email, phone, status, vetting_status, skills,"
+                " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                " is_available, provider_type, primary_organization_id)"
+                " values (%s, %s, %s, %s, 'pending_vetting', 'unverified', %s, %s, %s, %s,"
+                " false, 'affiliate', %s)",
+                (
+                    technician_id, data["display_name"], email, phone, data.get("skills") or [],
+                    data.get("service_area_center_lat"), data.get("service_area_center_lng"),
+                    data.get("service_area_radius_km"), str(organization_id),
+                ),
+            )
+            await conn.execute(
+                "insert into organization_technicians"
+                " (organization_id, technician_id, role, status, activated_at)"
+                " values (%s, %s, 'affiliate_technician', 'active', now())",
+                (str(organization_id), technician_id),
+            )
+            await conn.execute(
+                "insert into user_organization_memberships"
+                " (user_id, organization_id, role, status)"
+                " values (%s, %s, 'technician', 'active')"
+                " on conflict (user_id, organization_id) do nothing",
+                (technician_id, str(organization_id)),
+            )
+            for team_id in data.get("team_ids") or []:
+                cur = await conn.execute(
+                    "select 1 from organization_teams where id = %s and organization_id = %s",
+                    (team_id, str(organization_id)),
+                )
+                if await cur.fetchone():
+                    await conn.execute(
+                        "insert into organization_team_technicians (team_id, technician_id)"
+                        " values (%s, %s) on conflict do nothing",
+                        (team_id, technician_id),
+                    )
+        return {
+            "id": str(technician_id), "display_name": data["display_name"],
+            "email": email, "phone": phone, "status": "pending_vetting",
+            "vetting_status": "unverified", "provider_type": "affiliate",
+            "team_ids": data.get("team_ids") or [],
+        }
+
+    async def create_provider_document(self, organization_id: UUID, data: dict) -> dict:
+        owner_type = data["owner_type"]
+        owner_id = str(data.get("owner_id") or organization_id)
+        async with await self._connect() as conn:
+            if owner_type == "organization" and owner_id != str(organization_id):
+                raise ValueError("invalid_document_owner")
+            if owner_type == "technician":
+                cur = await conn.execute(
+                    "select 1 from organization_technicians"
+                    " where organization_id = %s and technician_id = %s",
+                    (str(organization_id), owner_id),
+                )
+                if not await cur.fetchone():
+                    raise ValueError("invalid_document_owner")
+            cur = await conn.execute(
+                "insert into provider_documents"
+                " (owner_type, owner_id, document_type, document_number, issuing_authority,"
+                " jurisdiction, issued_at, expires_at, storage_bucket, storage_path, notes)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " returning id, status, submitted_at",
+                (
+                    owner_type, owner_id, data["document_type"], data.get("document_number"),
+                    data.get("issuing_authority"), data.get("jurisdiction"), data.get("issued_at"),
+                    data.get("expires_at"), data.get("storage_bucket") or "private-verification",
+                    data.get("storage_path"), data.get("notes"),
+                ),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "owner_type": owner_type, "owner_id": owner_id,
+            "document_type": data["document_type"], "status": row[1],
+            "storage_bucket": data.get("storage_bucket") or "private-verification",
+            "storage_path": data.get("storage_path"),
+            "submitted_at": row[2].isoformat() if row[2] else None,
+        }
+
+    async def review_provider_document(
+        self, document_id: UUID, *, status: str, reviewer_id: UUID | None
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update provider_documents set status = %s,"
+                " verified_at = case when %s = 'verified' then now() else null end,"
+                " verified_by = %s, updated_at = now() where id = %s"
+                " returning id, owner_type, owner_id, document_type, status, verified_at",
+                (status, status, str(reviewer_id) if reviewer_id else None, str(document_id)),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]), "owner_type": row[1], "owner_id": str(row[2]),
+            "document_type": row[3], "status": row[4],
+            "verified_at": row[5].isoformat() if row[5] else None,
+        }
+
+    async def update_technician_location(
+        self, technician_id: UUID, *, lat: float, lng: float
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set current_lat = %s, current_lng = %s,"
+                " location_updated_at = now()"
+                " where id = %s returning id, current_lat, current_lng, location_updated_at",
+                (lat, lng, str(technician_id)),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]), "current_lat": row[1], "current_lng": row[2],
+            "last_location_at": row[3].isoformat() if row[3] else None,
+        }
+
+    async def update_technician_availability(
+        self, technician_id: UUID, *, is_available: bool
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set is_available = %s"
+                " where id = %s and status = 'active' and vetting_status = 'verified'"
+                " returning id, is_available",
+                (is_available, str(technician_id)),
+            )
+            row = await cur.fetchone()
+        return {"id": str(row[0]), "is_available": row[1]} if row else None
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         async with await self._connect() as conn:
