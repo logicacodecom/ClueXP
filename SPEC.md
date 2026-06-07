@@ -108,11 +108,12 @@ contract stays centered on the assigned verified person.
 **Actors.** The customer is **anonymous** — no account, no forced install (§2.5);
 they are recognized by **phone number** as a soft identity anchor. Everyone else
 (technician, provider-org admin, ClueXP staff/admin) is a **logged-in user**.
-Production identity is planned to use Clerk for logged-in actors (sessions,
-organizations, invitations, and org-scoped roles; see
-`adr/0002-identity-and-clients.md`). ClueXP still keeps local `users` link rows
-and all business authorization in Postgres: technicians, provider memberships,
-compliance, dispatch permissions, jobs, and reviews remain ClueXP-owned data.
+Production identity uses ClueXP's FastAPI/Postgres authentication for logged-in
+actors (sessions, users, organization memberships, and roles; see the
+2026-06-06 amendment to `adr/0002-identity-and-clients.md`). FastAPI-issued JWTs
+are bridged by the web apps through same-site httpOnly cookies. Technicians,
+provider memberships, compliance, dispatch permissions, jobs, and reviews remain
+ClueXP-owned data.
 
 **Where customer data and job history live.** All of it is in the platform
 Postgres (schema detail in `docs/DATABASE-AND-STORAGE.md`):

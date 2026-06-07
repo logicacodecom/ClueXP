@@ -15,9 +15,9 @@
 >   ops/admin, E7) — separate deployable apps built on shared `packages/console-ui` +
 >   `api-client`, not one dual-mode app. "Organization Mode" / "ClueXP Mode" below describe
 >   the two surfaces' scopes, not runtime modes of a single app.
-> - **Auth:** `adr/0002-identity-and-clients.md` (future Clerk-backed identity,
->   sessions, organizations, and role context; ClueXP Postgres remains the
->   business source of truth).
+> - **Auth:** `adr/0002-identity-and-clients.md` as amended 2026-06-06
+>   (first-party FastAPI/Postgres identity, sessions, organization memberships,
+>   and role context).
 >
 > - **⚠️ Tenancy/positioning superseded by `adr/0004` (2026-06-04).** Where this spec's
 >   language diverges, **`adr/0004-tenancy-and-intake.md` wins.** ClueXP is a **neutral

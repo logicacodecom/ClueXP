@@ -14,9 +14,9 @@ cross-cutting change across repos. Vercel supports multiple projects from one
 repo via per-project Root Directory.
 
 ### 2. One shared FastAPI backend (extraction deferred)
-> **Superseded in part by ADR 0002 §3:** the "extract later" timing is now fixed
-> to **E2** (the technician app is the triggering second client, and a native app
-> can't co-locate). The "one logical shared backend" principle below still holds.
+> **Amended by ADR 0002 §3 (2026-06-06):** the "one logical shared backend"
+> principle still holds. Physical extraction is need-driven rather than tied to
+> a sprint number.
 
 There is **one logical backend** shared by all frontends (not one API per app),
 keeping the SPEC §2.7 separation (agent collects; deterministic engines
@@ -49,8 +49,8 @@ signed URLs; Postgres stores only object paths.
 - A one-time Sprint-0 restructure moves the current root-level Next app into
   `apps/intake-web` (the API stays co-located at `apps/intake-web/api`); the
   Vercel project's Root Directory must be updated and the deploy re-verified.
-- Standalone API extraction (`apps/api` + its own Vercel project) is a known
-  future step, triggered by the second frontend.
+- Standalone API extraction (`apps/api` + its own deployment) is a known future
+  option, triggered by client, reliability, security or scaling evidence.
 - **Migration connection policy:** use the Supabase **direct** connection (5432)
   for local/admin migrations *when reachable*; the **transaction pooler** (6543)
   is the verified fallback for CI or when the direct host is unavailable (it can

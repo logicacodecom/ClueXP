@@ -1,140 +1,176 @@
-# ClueXP — Product Roadmap
+# ClueXP Product Roadmap
 
-> Living plan for building the full ClueXP platform gradually.
-> The long-term product contract is `SPEC.md`; this file is the delivery plan.
+> **Updated:** 2026-06-07
+> **Product objective:** deliver a production-safe business cycle from urgent
+> customer request through verified fulfillment, customer confirmation, review,
+> operational resolution, and job closure.
+>
+> Durable product rules live in `SPEC.md` and `docs/adr/`. Current task status
+> and acceptance gates live in `docs/EXECUTION-PLAN.md`. Historical UI build
+> plans are implementation references, not status boards.
 
-> **Positioning (`adr/0004`, 2026-06-04):** ClueXP is a **neutral multi-tenant
-> dispatch network for urgent services** — *Clue Express + Clue Experts; "the trusted
-> dispatch network for urgent services."* **Locksmith/access is the first vertical**,
-> but the architecture must extend to other urgent local services (roadside, garage
-> door, towing, emergency glass, plumbing/HVAC, appliance repair). ClueXP **routes**
-> demand to verified providers/independent technicians and **never competes as a
-> service company** (no "ClueXP Direct"). Jobs track three independent axes — origin /
-> customer-owner / fulfillment; private-by-default with explicit network overflow; no
-> bidding in the MVP. See `adr/0004-tenancy-and-intake.md`.
+## Product Position
 
-## Locked architecture decisions (see `docs/adr/0001-foundation-architecture.md`)
+ClueXP is a neutral, multi-tenant dispatch network for urgent local services.
+It routes demand to verified provider organizations and independent
+technicians; it does not compete with providers as a service company.
+Locksmith/access is the first vertical.
 
-- **Monorepo**, one git repo (`logicacodecom/ClueXP`), `apps/` + `packages/`. Each
-  subsystem is a folder, not a separate repo. Separate Vercel projects per app,
-  all from this one repo.
-- **One shared FastAPI backend** (one logical service), not one API per frontend.
-  Co-located inside the intake app for now; standalone `cluexp-api` extraction
-  scheduled for **E2** (the technician app is the triggering client; `adr/0002`).
-- **Maps:** Google Maps Platform (Geocoding + Routes + Maps JS).
-- **DB access:** raw SQL + Alembic migrations (lean, explicit), in `packages/db`.
-- **Storage:** Supabase Storage — public bucket for technician media, private
-  (RLS) bucket for ID docs / customer job photos.
+Every job preserves three independent business axes:
 
-## Target repo structure
+- **Origin:** who brought the request.
+- **Customer owner:** who owns the customer relationship.
+- **Fulfillment:** the organization and named technician performing the work.
 
-```
-ClueXP/
-├─ apps/
-│  ├─ intake-web/      # customer PWA + co-located API (until E2) → Vercel: cluexp-intake
-│  │  └─ api/          #   FastAPI (Python functions)
-│  ├─ api/             # standalone cluexp-api (extracted at E2)  → Vercel: cluexp-api
-│  ├─ technician/      # technician app: PWA → React Native/Expo  → cluexp-tech
-│  ├─ provider-web/    # org admin/dispatch console (E2)          → cluexp-provider
-│  └─ ops-web/         # ClueXP dispatch + admin console (E7)     → cluexp-ops
-├─ packages/
-│  ├─ db/              # Alembic migrations (raw SQL)
-│  ├─ console-ui/      # shared dispatch-console components (provider-web + ops-web; adr/0003)
-│  └─ api-client/      # shared cluexp-api client + generated types
-├─ docs/               # SPEC.md, ROADMAP.md, ADRs
-└─ supabase/           # storage buckets + RLS, seed scripts
+Customer privacy is controlled by `trust_state`
+(`INTAKE -> MATCHED -> FULFILLMENT`). Operational progress is controlled by the
+job lifecycle. These fields must never be merged.
 
-# API extraction (apps/api) + packages/schema land at E2 — the first non-intake
-# client. Until then the schema is co-located at apps/intake-web/api/schema.py.
-# See adr/0002-identity-and-clients.md.
-```
+## Current Product Baseline
 
-## UI surfaces (front-end systems)
+### Production-capable
 
-| Surface | User | Channel | Lands |
-|---|---|---|---|
-| **Intake** | Customer (anonymous, phone-anchored) | Mobile-web PWA | ✅ live |
-| **Technician** | Technician (solo + affiliated) | PWA → **React Native** | E2 |
-| **Provider portal** (`provider-web`) | Org admin/owner | Web | E2 |
-| **Ops console** (`ops-web`) | ClueXP dispatcher + admin/back-office | Web | E7 |
+- Multi-tenant customer intake, trusted intake-channel resolution, geocoding,
+  job persistence, and private photo upload.
+- First-party FastAPI/Postgres authentication for technicians, provider users,
+  and ClueXP staff.
+- Technician and provider registration, platform approval/rejection, teams,
+  workspace management, compliance document upload/review, technician
+  availability, and location updates.
+- English and Spanish localization foundation across all four apps.
+- Deterministic dispatch ranking, privacy-safe offers, offer expiry/re-dispatch,
+  and atomic first-accept-wins.
+- Authenticated technician offer delivery and acceptance.
+- Read-only customer waiting/matched tracking with safe assignment data.
+- Separate production deployments for intake, technician, provider, and ops.
 
-All non-intake surfaces share one login. Production auth direction is **Clerk**
-for identity, sessions, organizations, invitations, and org-level roles; ClueXP
-keeps Postgres as the business source of truth (`adr/0002`).
-Provider-web and ops-web are **separate apps on a shared `console-ui` core** (two
-surfaces, not one dual-mode app, for tenant isolation; `adr/0003`). Their shared design
-contract is `ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`.
+### Partial or prototype
 
-## Phase 1 data model (relational core + JSONB detail)
+- The live intake flow still retains the legacy instant-match route; the real
+  offer/accept path is not yet the default customer journey.
+- Technician active-job, arrival, service, communication, completion, earnings,
+  and history screens are substantially built but mostly mock-driven.
+- Provider and ops operational consoles have production shells and some real
+  onboarding/compliance functions, while job operations remain largely
+  mock-driven.
+- Maps render, but traffic-aware ETA, durable live movement, and arrival proof
+  are not complete.
 
-| Table | Purpose |
+### Not production-complete
+
+- Secure customer tracking capability token.
+- Technician lifecycle mutations from en route through completion.
+- Customer completion confirmation, ticket-scoped review, and dispute.
+- Dispatcher dispute resolution and manual close.
+- Automatic closure after the customer response window.
+- Reliable SMS/email/push delivery and masked communications.
+- Real payments, settlement, refunds, and invoicing.
+- Full operational observability, retention, and disaster-recovery practice.
+
+## Delivery Principles
+
+1. Finish one real end-to-end cycle before broadening the feature surface.
+2. Ship backend capabilities behind per-channel flags and pilot before widening.
+3. Keep customer polling read-only; only dispatch services create offers.
+4. A technician may report work complete, but only the customer, dispatcher, or
+   timeout policy closes the customer-confirmation boundary.
+5. Do not expose candidate identities, customer PII, internal scoring, or
+   cross-tenant data.
+6. Do not treat a polished mock screen as a functioning business capability.
+7. Payments follow a stable fulfillment lifecycle; they do not define it.
+8. API extraction is architectural work, not a prerequisite for closing the
+   first production cycle unless the current deployment shape blocks delivery.
+
+## Prioritized Release Sequence
+
+### Release 1 - Fulfillment Cutover
+
+**Outcome:** one pilot intake channel completes a real request-to-close cycle
+without the legacy instant-match, demo finalize, or demo review path.
+
+- Add tracking capability token and expanded lifecycle statuses/timestamps.
+- Add channel-level cutover flag and emergency global kill switch.
+- Add token-gated customer tracking, confirm, review, and dispute endpoints.
+- Add assigned-technician-only forward status transitions.
+- Add dispatcher resolution/manual-close endpoint.
+- Add 72-hour automatic close to the scheduled sweep.
+- Connect intake tracking and technician completion UI to those contracts.
+- Pilot one channel, run the full acceptance matrix, then widen by channel.
+
+This is the immediate product priority. Detailed contract:
+`docs/SPRINT-2B-CUTOVER-PLAN.md`.
+
+### Release 2 - Field Fulfillment Integrity
+
+**Outcome:** customers and dispatchers can trust where the technician is and
+whether arrival and service milestones actually occurred.
+
+- Traffic-aware Routes API ETA.
+- Active-job location pings and customer-safe live polling.
+- Real technician active-job read model and status restoration.
+- Mutual arrival verification with audited PIN/QR/dispatcher override.
+- Cancellation and no-show rules.
+- Production job timeline shared by customer, technician, provider, and ops.
+- Remove remaining mock active-job transitions from the real path.
+
+### Release 3 - Human Operations and Communications
+
+**Outcome:** a dispatcher can observe, contact, reassign, escalate, resolve, and
+audit any live or disputed job.
+
+- Wire ops and provider queues, job detail, board, and timeline to real data.
+- Real reassignment, cancellation, escalation, dispute resolution, and notes.
+- Tenant-scoped provider operations and platform-wide ClueXP operations.
+- Masked customer/technician messaging and call handoff.
+- SMS/email delivery of the customer tracking link and critical status changes.
+- Reliable technician offer notifications; retain polling fallback.
+
+### Release 4 - Commercial Completion
+
+**Outcome:** a completed job can be authorized, charged, settled, refunded, and
+reconciled safely.
+
+- Decide merchant-of-record and provider/independent settlement policy.
+- Stripe payment method and authorization hold.
+- Final-price approval when scope exceeds the estimate.
+- Idempotent capture, cancellation/no-show fees, refunds, and disputes.
+- Provider/technician settlement visibility and customer receipt.
+- Replace demo earnings and payment surfaces with ledger-backed data.
+
+### Release 5 - Trust, Compliance, and Scale
+
+**Outcome:** dispatch eligibility, data handling, and operations are safe enough
+for broader geographic and vertical expansion.
+
+- Enforce required, valid, non-expired documents in dispatch eligibility.
+- Jurisdiction-specific licensing and insurance rules.
+- Customer phone verification and returning-customer history policy.
+- PII/media retention, audit archival, backup restore drills, and incident runbook.
+- Error tracking, API health checks, dispatch/payment alerts, and SLOs.
+- Complete CI coverage for Python tests and all four app builds.
+- Reconcile fulfillment-policy names across organization, channel, and job data.
+- Extract the shared API when operational load or client needs justify it.
+
+### Release 6 - Expansion
+
+**Outcome:** ClueXP can add new urgent-service verticals and provider business
+models without weakening the first production cycle.
+
+- Service-vertical configuration and eligibility rules.
+- Custom domains and expanded intake channels.
+- Provider subscription and billing.
+- Advanced organization-managed routing and capacity controls.
+- Native technician app only where background GPS/push reliability requires it.
+- Additional languages using the established locale framework.
+
+## Business Readiness Gates
+
+| Gate | Required evidence |
 |---|---|
-| `users` | local app actor/link rows for logged-in users; planned Clerk external refs plus ClueXP-specific status/audit relationships (`adr/0002`) |
-| `customers` | the requester; `phone` is the identity anchor (anonymous, no login) |
-| `organizations` | company/group tenants that can register affiliated technicians; future subscription anchor |
-| `technicians` | supply-side people — individual or affiliated; skills, service area, availability, rating, location |
-| `organization_technicians` | company/group membership for affiliated technicians |
-| `organization_teams` | recursive departments/groups/business units inside a provider organization |
-| `organization_team_technicians` | technician membership in one or many organization teams |
-| `provider_documents` | legal/compliance documents, status, storage pointer, and expiration for organizations or technicians |
-| `jobs` | the dispatch spine (evolves from `tickets`); queryable columns + `detail` JSONB holding the `Ticket` payload |
-| `dispatch_offers` | offer → accept → fallback cascade (replaces the stubbed single technician) |
-| `media` | pointers to files in Supabase Storage |
-| `events` | append-only audit log (extended with `job_id`) |
+| Dispatch-ready | Real request creates offers; eligible technician accepts; no privacy leak; first-accept-wins proven |
+| Fulfillment-ready | Assigned technician progresses through audited statuses; customer sees truthful state |
+| Closure-ready | Customer confirms, reviews, or disputes through a secure token; timeout and dispatcher resolution work |
+| Revenue-ready | Payment authorization/capture/refund and settlement are idempotent and reconciled |
+| Scale-ready | Compliance blocks invalid supply; tenant isolation, monitoring, retention, backups, and incident response are tested |
 
-Baseline migration: `packages/db/alembic/versions/0001_baseline.py`; provider
-tenant extension: `packages/db/alembic/versions/0003_provider_organizations.py`.
-
-## File storage (Supabase Storage)
-
-- `public-tech-media` (public): technician profile + vehicle photos (CDN).
-- `private-verification` (private, RLS): ID docs, customer job photos (PII).
-- Flow: API issues a **signed upload URL** → browser uploads **direct to
-  Storage** → API records the path in `media`. Private files served via
-  short-lived signed download URLs.
-
-## Maps (Google Maps Platform)
-
-| Need | Side | API |
-|---|---|---|
-| Address → lat/lng (intake) | backend | Geocoding |
-| Map render | frontend | Maps JS (domain-restricted public token) |
-| Tech→customer ETA | backend | Routes (traffic-aware) |
-| Live tracking | frontend | map + polled position |
-
-Geocoding/routing run **server-side** with the secret key; the browser uses a
-separate **domain-restricted** token for rendering only.
-
-## Epics
-
-- **E0 Foundation** — live-app hardening, monorepo restructure (API co-located), `packages/db` + the Phase-1 schema, Storage buckets, CI, Google Maps keys.
-- **E1 Intake** — *(Sprint 1 live)* wire intake to `customers`/`jobs`; real geocoding; photo upload to Storage.
-- **E2 Technician & Access** — Clerk-backed auth foundation (`users` link rows + Clerk user/org refs; `adr/0002`); **extract `cluexp-api`** (first non-intake client); individual + company/group registry, recursive organization teams, legal/compliance document capture, affiliated technician onboarding, profile + vetting, availability, location ping; technician app (PWA → React Native) + provider portal.
-- **E3 Dispatch engine** — deterministic/ranked matcher (territory + skill + availability + rating + verification; **no bidding/auction**, `adr/0004`); offer cascade; backend-enforced first-accept-wins concurrency; production technician offer delivery (polling acceptable for v1, push/websocket/native notifications required before relying on real-time mobile alerts). *(v1 = `cluexp_managed_routing` to providers/independent techs — routing, never ClueXP fulfillment. `dispatch_mode` `organization_managed` + `fulfillment_policy` network-overflow per `adr/0004`/SPEC §2.10. Open marketplace/bidding reserved, not scheduled.)*
-- **E4 Fulfillment** — real map, traffic ETA, live tracking, mutual arrival handshake.
-- **E5 Payments** — Stripe auth-hold at commit, capture at finalize; restore the deferred payment gate.
-- **E6 Identity/OTP** — restore OTP; ID verification into the private bucket.
-- **E7 Dispatcher console** — handoff queue, overrides, safety escalation.
-- **E8 Trust, Safety & Hardening** — the README "Fix Later Backlog" (lock down server-owned fields on POST/PATCH, ticket-id rehydration, real handoff action, CORS restriction, demo/prod flag), plus RLS, PII retention, audit, licensing checks.
-
-## Sprint plan (2-week)
-
-| Sprint | Goal | Headline deliverable |
-|---|---|---|
-| **0 — Foundation** | Hardening + restructure + DB | live-app hardening, `apps/`+`packages/` layout (API co-located), CI, baseline dispatch schema on Supabase, intake still green |
-| **1 — Intake on real model** | Persist properly | Intake writes `customers`+`jobs`; real geocoding; photo upload to Storage |
-| **2 — Technician + matching v1** | Kill the stub tech | Clerk-backed auth foundation + `cluexp-api` extraction; provider/team/technician registry + onboarding; deterministic dispatch + offers |
-| **3 — Fulfillment maps** | Real ETAs/tracking | Live map, traffic ETA, mutual arrival handshake |
-| **4 — Payments + OTP** | Restore deferred | Stripe auth-hold/capture; OTP back in flow |
-| **5 — Dispatcher console** | Human ops | Handoff queue, overrides, safety escalation |
-
-## Sprint 0 — task order (production-safe)
-
-1. **`packages/db`** — Alembic + raw-SQL baseline on Supabase. ✅ done
-2. **Live hardening** — the app is already public: payload lockdown on POST/PATCH, restricted CORS, ticket-id rehydration, demo/prod flag, real handoff action.
-3. **CI** — `.github/workflows/ci.yml` (typecheck, build, py compile, types drift, Alembic offline render).
-4. **Monorepo move** — `apps/intake-web` (API + schema co-located at `apps/intake-web/api`); update imports, `vercel.json`, and the Vercel Root Directory. *(only step that touches the live deploy — verify + redeploy)*
-5. **Storage buckets** — both buckets **with RLS policies + size/MIME limits** + signed-URL upload endpoint.
-6. **Google Maps keys** — provision two restricted keys (server + browser); server-side geocoding.
-
-Full detail + acceptance criteria: `EXECUTION-PLAN.md`.
+The next release gate is **Closure-ready**, not more mock screen coverage.

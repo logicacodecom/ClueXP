@@ -134,8 +134,8 @@ phone, exact identity, or customer PII; identity is revealed only on assignment.
   direct-release / marketplace bidding."
 - **`adr/0003` still holds** (two console surfaces); the **`ops-web` surface is the
   platform operator console**, not a ClueXP fulfillment cockpit.
-- **`adr/0002`** (future Clerk-backed identity/session/org context mapped to
-  local ClueXP records) is the substrate for org-scoped RBAC: platform admin =
+- **`adr/0002` as amended 2026-06-06** (first-party FastAPI/Postgres identity,
+  session and organization context) is the substrate for org-scoped RBAC: platform admin =
   cross-org; provider admin/dispatcher = own org(s) only.
 - **Sequencing (Decision G):** apply the corrections + document updates **first**;
   the auth foundation + `cluexp-api` extraction follow.

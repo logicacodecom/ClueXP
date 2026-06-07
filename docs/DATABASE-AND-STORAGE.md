@@ -18,7 +18,7 @@ storage. Migrations live in `packages/db`; the app reads/writes via the API
 - **Postgres stores pointers, not bytes.** Files live in Supabase Storage; the
   `media` table holds bucket + path + visibility.
 
-## 2. Schema (rev `0003_provider_organizations`)
+## 2. Schema (production head `0009`)
 
 ```
 customers ──< jobs >── technicians
@@ -45,7 +45,7 @@ technicians ───────────────────< media (ow
 | **organization_teams** | `id`, `organization_id`, `parent_team_id`, `name`, `description`, `team_type`, `status`, timestamps | recursive departments/groups/business units inside an organization |
 | **organization_team_technicians** | `team_id`, `technician_id`, `role`, `assigned_at` | many-to-many team membership for affiliated technicians |
 | **provider_documents** | `id`, `owner_type`, `owner_id`, `document_type`, `document_number`, `issuing_authority`, `jurisdiction`, `issued_at`, `expires_at`, `status`, `storage_bucket`, `storage_path`, `notes`, review timestamps | compliance/legal documents for organizations and technicians |
-| **jobs** | `id`, `customer_id`→customers, `technician_id`→technicians, `provider_organization_id`→organizations, `trust_state`, `status`, `access_type`, `situation`, `urgency`, `lat/lng`, `address`, `detail jsonb`, `price_quote jsonb`, `final_charge jsonb`, `created_at`, `updated_at` | dispatch spine; `detail` = Ticket payload |
+| **jobs** | `id`, `customer_id`→customers, `origin_org_id`, `customer_owner_org_id`, `fulfillment_technician_id`→technicians, `fulfillment_org_id`→organizations, `intake_channel_id`, `fulfillment_policy`, `trust_state`, `status`, dispatch attempts, geo, `detail jsonb`, timestamps | dispatch spine; `detail` = Ticket payload |
 | **dispatch_offers** | `id`, `job_id`→jobs, `technician_id`→technicians, `organization_id`→organizations, `status`, `rank`, `offered_at`, `responded_at`, `expires_at` | offer→accept→fallback cascade; can target solo or affiliated supply |
 | **media** | `id`, `owner_type`, `owner_id`, `kind`, `bucket`, `path`, `visibility`, `uploaded_by`, `uploaded_at` | pointers to Storage objects |
 | **events** | `id` bigserial, `ticket_id`, `job_id`, `event`, `trust_state`, `at` | append-only audit log |
@@ -61,13 +61,12 @@ timeline is the `events` rows for that job. Reliable linking depends on intake
 **capturing the phone** so the `customers` upsert fires (today the `Ticket` has
 no phone field — see EXECUTION-PLAN Sprint 1).
 
-**Auth direction (`adr/0002`): `users` link rows + Clerk external refs** —
-logged-in actors (technician/provider admin/dispatcher/staff) authenticate
-through Clerk in the planned production path. The local `users` table remains
-the ClueXP domain referent for `verified_by` / `uploaded_by`, app-specific
-status, audit, and relationships, with Clerk user/org IDs stored as external
-references. Customers stay anonymous (no forced account; phone remains the soft
-identity anchor). Authorization is enforced in the API layer, not RLS.
+**Auth direction (`adr/0002`, amended 2026-06-06): first-party
+FastAPI/Postgres** — logged-in actors (technician/provider
+admin/dispatcher/staff) authenticate through ClueXP-issued JWTs. The `users`
+table, roles and organization memberships are authoritative. Customers stay
+anonymous (no forced account; phone remains the soft identity anchor).
+Authorization is enforced in the API layer, not RLS.
 
 **Indexes:** `jobs(status)`, `jobs(trust_state)`, `jobs(customer_id)`,
 `jobs(provider_organization_id)`, `technicians(is_available)`,
@@ -104,7 +103,7 @@ sees a real verified technician. The applied `0003` columns (`jobs.technician_id
 `jobs.provider_organization_id`) are the *pre-`adr/0004`* shape; the future migration
 below renames/splits them into the neutral-network model.
 
-**Tenancy & dispatch model (future columns — not yet migrated; `adr/0004` + SPEC §2.10).**
+**Tenancy & dispatch model (implemented foundation; `adr/0004` + SPEC §2.10).**
 ClueXP is a **neutral network**, not a fulfillment provider. A job tracks **three
 independent axes** and the legacy single `dispatch_owner` is **retired**:
 - `jobs.origin_org_id` + `jobs.origin_channel` / `jobs.intake_channel_id` — who brought

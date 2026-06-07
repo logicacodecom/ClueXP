@@ -14,7 +14,8 @@ Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md
 - `packages/db/` - Alembic migrations for the dispatch relational core.
 - `apps/ops-web/`, `apps/provider-web/` - dispatch consoles (ClueXP ops + provider org) built on shared `packages/console-ui`; mock-data UI ahead of backend wiring (`docs/ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`, `adr/0003`).
 - `packages/api-client/`, `packages/console-ui/` - shared types + mock data and the shared console component system (seam for the future `cluexp-api`).
-- `docs/ROADMAP.md`, `docs/EXECUTION-PLAN.md` - delivery plan and current status snapshot (the live source of truth for project state).
+- `docs/ROADMAP.md` - outcome-based release order.
+- `docs/EXECUTION-PLAN.md` - canonical current status, prioritized sprints, and acceptance gates.
 
 > This is an npm-workspace monorepo (`apps/*` + `packages/*`). The instructions below cover the
 > **intake** app; the consoles run via `npm run dev:ops` / `npm run dev:provider` from the repo root.
@@ -77,14 +78,20 @@ uv run python -c "import asyncio, sys, uvicorn; sys.platform=='win32' and asynci
 This only affects local Windows + Postgres; Vercel's Linux runtime and the
 in-memory fallback are unaffected. Percent-encode any `@` in the password as `%40`.
 
-## Current Sprint Deployment
+## Current Product State
 
-The intake sprint deploys on:
+The platform deploys on:
 
 - **Vercel** for the Next.js frontend and FastAPI Python runtime.
 - **Supabase Postgres** for live ticket persistence.
 
-For this sprint, **OTP verification and payment-method capture are deferred** (§7.10, §7.12). The flow runs intake → price acceptance → `commit` → technician **dispatch**, transitioning `trust_state` INTAKE → MATCHED and showing the assigned technician (name, role, rating, ETA) on the MATCHED screen. Live tracking, arrival verification, and payment/review remain reachable for demo. Because payment-on-file is skipped, `commit` and `is_dispatchable()` temporarily drop the payment precondition — price acceptance is the commercial-consent gate. Technician data is still shown **only** at MATCHED or later, gated by the trust-state guards.
+Real intake, authentication, provider onboarding, dispatch offers, technician
+acceptance, and customer waiting/matched tracking are live. The next priority is
+the production fulfillment cutover described in `docs/EXECUTION-PLAN.md`: secure
+token tracking, technician lifecycle transitions, customer confirmation/review/
+dispute, dispatcher resolution, and automatic closure. Arrival verification,
+payments, notifications, and most live console job operations are not yet
+production-complete.
 
 Vercel production traffic should call the API through the same deployment at `/api/...`. Local development rewrites `/api/...` to `LOCAL_API_BASE_URL`, which defaults to `http://127.0.0.1:8000`.
 
@@ -113,8 +120,8 @@ for the authoritative current status. Snapshot:
 
 1. ✅ Photo upload wired to Supabase Storage (signed upload/download URLs, size/MIME validation).
 2. ✅ Storage buckets + RLS policies created (`public-tech-media`, `private-verification`).
-3. ⚠️ Google Maps: server-side geocoding endpoint built, but returns `{resolved:false}` until the
-   `GOOGLE_MAPS_API_KEY` referrer restriction is fixed; customer-app map rendering still pending (Sprint 3).
+3. ✅ Server-side geocoding works. Traffic-aware routing and durable live customer
+   tracking remain planned.
 4. ✅ Relational store: intake writes `customers` + `jobs` (legacy `tickets` kept as read-only fallback).
 
 ## Verification
@@ -139,4 +146,6 @@ Frontend rendering should use those guards instead of deciding visibility locall
 
 ## Notes
 
-This is a stub build. Payment, OTP, dispatch, tracking, arrival verification, and final charging are intentionally simulated behind the API surface described in `SPEC.md`.
+Some original demo fulfillment endpoints remain for rollback/demo use. They are
+not evidence of a production completion or payment cycle; see the canonical
+status in `docs/EXECUTION-PLAN.md`.

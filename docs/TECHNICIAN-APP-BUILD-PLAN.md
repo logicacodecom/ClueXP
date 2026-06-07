@@ -1,4 +1,8 @@
-# Technician App — Build Plan (for Codex to execute)
+# Technician App — Build Plan (historical)
+
+> **Status:** The PWA is built and deployed. This file remains an implementation
+> and design reference; use `EXECUTION-PLAN.md` for current production wiring
+> priorities.
 
 > **Author:** Claude · **Date:** 2026-06-03 · **Executor:** Codex
 > **Goal:** Build the **ClueXP Technician mobile app** as a new PWA — an *Uber-grade,

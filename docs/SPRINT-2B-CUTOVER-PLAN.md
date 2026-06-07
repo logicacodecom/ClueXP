@@ -1,10 +1,12 @@
 # Sprint 2B — Intake Cutover Plan (offer → accept → track → fulfill → confirm/review → close)
 
-> **Status: PLAN / DRAFT for review. Nothing in here is applied.** No migrations,
-> code, deploys, or flips have been made. This document is the agreed design for
+> **Status: APPROVED DETAILED DESIGN / queued as Sprint 3. Nothing in this
+> cutover is applied yet.** No migration `0010`, lifecycle code, deploy, or
+> channel flip has been made. This document is the agreed design for
 > the deliberate cutover from the legacy instant-match stub to the real dispatch +
 > fulfillment + review lifecycle. Implementation begins only after this doc is
-> reviewed, and each prod-touching step is confirmed before it is applied.
+> implementation. Canonical sequencing and current status live in
+> `docs/EXECUTION-PLAN.md`.
 >
 > **Decisions locked (human, 2026-06-06):** (1) two-field model — `trust_state` is the
 > privacy/trust gate, `job.status` is the operational lifecycle, never merged; (2)

@@ -45,6 +45,6 @@
   for both surfaces; it is forward design, not a near-term build order (Sprint 2
   ships **ClueXP-managed dispatch only**; org-managed flows are per SPEC §2.10,
   not scheduled).
-- Pairs with `adr/0002` (future Clerk-backed identity/session/org context,
-  mapped to local ClueXP domain records; role/workspace scopes drive which
-  surface a user can load).
+- Pairs with `adr/0002` as amended on 2026-06-06 (first-party
+  FastAPI/Postgres identity, session and organization context; role/workspace
+  scopes drive which surface a user can load).
