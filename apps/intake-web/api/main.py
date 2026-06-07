@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -162,6 +162,80 @@ class LocaleUpdateRequest(BaseModel):
     locale: str
 
 
+class OrganizationProfileUpdateRequest(BaseModel):
+    display_name: str | None = None
+    legal_name: str | None = None
+    description: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    service_area_center_lat: float | None = None
+    service_area_center_lng: float | None = None
+    service_area_radius_km: float | None = None
+    dispatch_mode: str | None = None
+    fulfillment_policy: str | None = None
+
+
+class TeamCreateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    parent_team_id: UUID | None = None
+    team_type: str = "team"
+
+
+class TeamUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: str | None = None
+
+
+class AffiliatedTechnicianRequest(BaseModel):
+    display_name: str
+    email: str | None = None
+    phone: str | None = None
+    password: str
+    skills: list[str] = []
+    team_ids: list[UUID] = []
+    service_area_center_lat: float | None = None
+    service_area_center_lng: float | None = None
+    service_area_radius_km: float | None = None
+    locale: str | None = None
+
+
+class ProviderDocumentRequest(BaseModel):
+    owner_type: str
+    owner_id: UUID | None = None
+    document_type: str
+    document_number: str | None = None
+    issuing_authority: str | None = None
+    jurisdiction: str | None = None
+    issued_at: str | None = None
+    expires_at: str | None = None
+    storage_bucket: str = storage.PRIVATE_BUCKET
+    storage_path: str | None = None
+    notes: str | None = None
+
+
+class DocumentReviewRequest(BaseModel):
+    status: str
+
+
+class TechnicianLocationRequest(BaseModel):
+    lat: float
+    lng: float
+
+
+class TechnicianAvailabilityRequest(BaseModel):
+    is_available: bool
+
+
+def _provider_organization_id(session: dict[str, Any]) -> UUID:
+    require_any_role(session, {"provider_admin", "dispatcher"})
+    organization_id = session.get("active_organization_id")
+    if not organization_id:
+        raise HTTPException(status_code=409, detail="Provider organization is required")
+    return UUID(str(organization_id))
+
+
 async def envelope(ticket: Ticket) -> TicketEnvelope:
     response_ticket = ticket.model_copy(deep=True)
     for photo in response_ticket.photos:
@@ -301,11 +375,23 @@ def _manual_origin(session: dict[str, Any], payload: ManualIntakeRequest) -> dic
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-async def login(payload: LoginRequest) -> AuthResponse:
+async def login(payload: LoginRequest, request: Request) -> AuthResponse:
     await latency()
+    if await store.login_rate_limited(payload.identifier):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
     session = await store.authenticate_user(payload.identifier, payload.password)
     if session is None:
+        await store.record_login_attempt(
+            payload.identifier,
+            success=False,
+            ip=request.client.host if request.client else None,
+        )
         raise HTTPException(status_code=401, detail="Invalid email, phone, or password")
+    await store.record_login_attempt(
+        payload.identifier,
+        success=True,
+        ip=request.client.host if request.client else None,
+    )
     token = create_access_token(
         {
             "sub": session["user"]["id"],
@@ -411,6 +497,223 @@ async def reject_organization(
     result = await store.reject_organization(organization_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
+@app.get("/admin/registrations")
+async def pending_registrations(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return {"registrations": await store.list_pending_registrations()}
+
+
+@app.patch("/admin/documents/{document_id}")
+async def review_document(
+    document_id: UUID,
+    payload: DocumentReviewRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    if payload.status not in {"verified", "rejected", "expired"}:
+        raise HTTPException(status_code=422, detail="Invalid document status")
+    result = await store.review_provider_document(
+        document_id,
+        status=payload.status,
+        reviewer_id=UUID(session["user"]["id"]),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return result
+
+
+@app.get("/admin/documents")
+async def pending_documents(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return {"documents": await store.list_pending_documents()}
+
+
+@app.get("/admin/documents/{document_id}/download")
+async def download_document(
+    document_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    document = await store.get_provider_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not document.get("storage_path"):
+        raise HTTPException(status_code=409, detail="Document file is not available")
+    try:
+        url = await storage.create_signed_download_url(
+            document["storage_bucket"], document["storage_path"]
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"download_url": url, "expires_in": storage.DOWNLOAD_TTL_SECONDS}
+
+
+@app.get("/provider/workspace")
+async def provider_workspace(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    workspace = await store.get_provider_workspace(organization_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return workspace
+
+
+@app.patch("/provider/organization")
+async def update_provider_organization(
+    payload: OrganizationProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    if payload.dispatch_mode and payload.dispatch_mode not in {
+        "organization_managed", "platform_managed"
+    }:
+        raise HTTPException(status_code=422, detail="Invalid dispatch mode")
+    if payload.fulfillment_policy and payload.fulfillment_policy not in {
+        "private_owner_only", "owner_first_then_network", "network_open"
+    }:
+        raise HTTPException(status_code=422, detail="Invalid fulfillment policy")
+    result = await store.update_organization_profile(
+        organization_id, payload.model_dump(exclude_none=True)
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
+@app.post("/provider/teams")
+async def create_provider_team(
+    payload: TeamCreateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    if not payload.name.strip():
+        raise HTTPException(status_code=422, detail="Team name is required")
+    try:
+        return await store.create_team(organization_id, payload.model_dump(mode="json"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.patch("/provider/teams/{team_id}")
+async def update_provider_team(
+    team_id: UUID,
+    payload: TeamUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    if payload.status and payload.status not in {"active", "inactive"}:
+        raise HTTPException(status_code=422, detail="Invalid team status")
+    result = await store.update_team(
+        organization_id, team_id, payload.model_dump(exclude_none=True)
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return result
+
+
+@app.post("/provider/technicians")
+async def create_provider_technician(
+    payload: AffiliatedTechnicianRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    if not payload.email and not payload.phone:
+        raise HTTPException(status_code=422, detail="Email or phone is required")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Temporary password must be at least 8 characters")
+    try:
+        return await store.create_affiliated_technician(
+            organization_id, payload.model_dump(mode="json")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/provider/documents/upload-intent", response_model=PhotoIntentResponse)
+async def provider_document_upload_intent(
+    payload: PhotoIntentRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> PhotoIntentResponse:
+    organization_id = _provider_organization_id(session)
+    try:
+        storage.validate_upload_claim(payload.content_type, payload.size, allow_pdf=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    safe_name = "".join(
+        char if char.isalnum() or char in "._-" else "-" for char in payload.filename
+    ).strip(".-") or "document"
+    path = f"providers/{organization_id}/{uuid4()}-{safe_name}"
+    try:
+        intent = await storage.create_signed_upload_url(storage.PRIVATE_BUCKET, path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return PhotoIntentResponse(
+        bucket=intent.bucket,
+        path=intent.path,
+        upload_url=intent.upload_url,
+        token=intent.token,
+        expires_in=intent.expires_in,
+        max_bytes=storage.MAX_UPLOAD_BYTES,
+    )
+
+
+@app.post("/provider/documents")
+async def create_provider_document(
+    payload: ProviderDocumentRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    if payload.owner_type not in {"organization", "technician"}:
+        raise HTTPException(status_code=422, detail="Invalid document owner")
+    try:
+        return await store.create_provider_document(
+            organization_id, payload.model_dump(mode="json")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.patch("/technicians/me/location")
+async def update_my_location(
+    payload: TechnicianLocationRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"technician"})
+    technician = session.get("technician")
+    if not technician:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    if not (-90 <= payload.lat <= 90 and -180 <= payload.lng <= 180):
+        raise HTTPException(status_code=422, detail="Invalid coordinates")
+    result = await store.update_technician_location(
+        UUID(technician["id"]), lat=payload.lat, lng=payload.lng
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
+@app.patch("/technicians/me/availability")
+async def update_my_availability(
+    payload: TechnicianAvailabilityRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"technician"})
+    technician = session.get("technician")
+    if not technician or not technician.get("approved"):
+        raise HTTPException(status_code=409, detail="Technician approval is required")
+    result = await store.update_technician_availability(
+        UUID(technician["id"]), is_available=payload.is_available
+    )
+    if result is None:
+        raise HTTPException(status_code=409, detail="Technician is not eligible for dispatch")
     return result
 
 

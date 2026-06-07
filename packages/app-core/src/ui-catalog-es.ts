@@ -464,7 +464,28 @@ const es: Record<string, string> = {
   "Use GPS if you can. A typed address is fine too.": "Usa el GPS si puedes. También puedes escribir una dirección.",
   "We are connecting you to a person who can help faster from here.": "Te estamos conectando con una persona que puede ayudarte más rápido.",
   "Your review is tied to this completed job. It helps future routing without changing customer ownership.": "Tu reseña está vinculada a este trabajo completado. Ayuda al enrutamiento futuro sin cambiar la responsabilidad del cliente.",
-  "Your technician registration is awaiting ClueXP approval. Job offers remain unavailable until verification is complete.": "Tu registro de técnico está esperando la aprobación de ClueXP. Las ofertas no estarán disponibles hasta completar la verificación."
+  "Your technician registration is awaiting ClueXP approval. Job offers remain unavailable until verification is complete.": "Tu registro de técnico está esperando la aprobación de ClueXP. Las ofertas no estarán disponibles hasta completar la verificación.",
+  "Technician details stay private until a verified provider accepts the job.": "Los datos del técnico permanecen privados hasta que un proveedor verificado acepte el trabajo.",
+  "Our dispatch team will reach out.": "Nuestro equipo de despacho se comunicará contigo.",
+  "Still finding your verified technician…": "Seguimos buscando un técnico verificado…",
+  "Dispatch follow-up": "Seguimiento de despacho",
+  "Connection interrupted": "Conexión interrumpida",
+  "Checking more availability": "Consultando más disponibilidad",
+  "Request sent": "Solicitud enviada",
+  "We will call you": "Te llamaremos",
+  "Reconnecting": "Reconectando",
+  "Searching nearby": "Buscando cerca",
+  "No action is needed. A dispatcher will review your request and contact you.": "No necesitas hacer nada. Un despachador revisará tu solicitud y se comunicará contigo.",
+  "Your request is safe. Keep this page open while we reconnect.": "Tu solicitud está segura. Mantén esta página abierta mientras restablecemos la conexión.",
+  "The first offers expired. Dispatch is checking the next eligible providers.": "Las primeras ofertas vencieron. Despacho está consultando a los siguientes proveedores elegibles.",
+  "We are checking verified technicians. You can keep this page open.": "Estamos consultando técnicos verificados. Puedes mantener esta página abierta.",
+  "Try status again": "Consultar estado nuevamente",
+  "Contact dispatch": "Contactar a despacho",
+  "Need help? Call dispatch": "¿Necesitas ayuda? Llama a despacho",
+  "The assignment below was confirmed by dispatch after the technician accepted.": "La asignación fue confirmada por despacho después de que el técnico aceptó.",
+  "Fulfilled by": "Atendido por",
+  "Estimated arrival": "Llegada estimada",
+  "This is a coarse estimate until live route tracking is available.": "Esta es una estimación aproximada hasta que esté disponible el seguimiento de ruta en vivo."
 };
 
 const patterns: Array<[RegExp, (...groups: string[]) => string]> = [
@@ -472,6 +493,8 @@ const patterns: Array<[RegExp, (...groups: string[]) => string]> = [
   [/^(\d+) done$/, (count) => `${count} completados`],
   [/^(\d+) min ETA$/, (count) => `${count} min de llegada`],
   [/^ETA (\d+)m$/, (count) => `Llegada ${count} min`],
+  [/^Estimated arrival (.+) minutes\.$/, (range) => `Llegada estimada: ${range} minutos.`],
+  [/^Fulfilled by (.+)$/, (provider) => `Atendido por ${provider}`],
   [/^Page (\d+) of (\d+)$/, (page, total) => `Página ${page} de ${total}`],
   [/^(\d+) minutes? without an assigned technician$/, (count) => `${count} minutos sin técnico asignado`],
   [/^(.+) urgency$/, (value) => `Urgencia ${translateUiText(value)}`],

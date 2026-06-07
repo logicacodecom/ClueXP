@@ -1,6 +1,6 @@
 "use client";
 
-import { Car, Home, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
+import { Car, Clock3, Home, LoaderCircle, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { useEffect, useMemo, useState } from "react";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
@@ -15,6 +15,7 @@ type Screen =
   | "identity"
   | "price"
   | "commit"
+  | "matching"
   | "assigned"
   | "tracking"
   | "arrival"
@@ -45,6 +46,32 @@ const SESSION_KEY = "cluexp_session";
 const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
 const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
+
+type DispatchState = "waiting" | "matched" | "no_eligible" | "expired_retry" | "error";
+
+interface DispatchAssignment {
+  customer_owner: string | null;
+  fulfillment_type: "company_technician" | "independent_technician" | "network_provider";
+  provider_company: string | null;
+  technician_display_name: string;
+  role: string;
+  rating: number | null;
+  eta_min: number;
+  eta_max: number;
+  eta_is_estimate: boolean;
+  assigned_at: string;
+  job_status: string;
+}
+
+interface DispatchStatus {
+  state: DispatchState;
+  terminal: boolean;
+  attempts: number;
+  max_attempts: number;
+  offers_pending: number;
+  offer_expires_at: string | null;
+  assignment: DispatchAssignment | null;
+}
 
 type GeocodeResponse =
   | {
@@ -191,6 +218,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [reviewTags, setReviewTags] = useState<string[]>([]);
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [dispatchStatus, setDispatchStatus] = useState<DispatchStatus | null>(null);
   const [form, setForm] = useState({
     address: "",
     make: "",
@@ -339,6 +367,15 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     });
   }
 
+  async function refreshDispatchStatus(ticketId: string) {
+    const status = await api<DispatchStatus>(`/tickets/${ticketId}/tracking`);
+    setDispatchStatus(status);
+    if (status.state === "matched" && status.assignment) {
+      setScreen("assigned");
+    }
+    return status;
+  }
+
   function toggleReviewTag(tag: string) {
     setReviewTags((current) =>
       current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
@@ -368,6 +405,41 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       }
     })();
   }, [sessionKey]);
+
+  useEffect(() => {
+    if (screen !== "matching" || !ticket?.ticket_id) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const status = await api<DispatchStatus>(`/tickets/${ticket.ticket_id}/tracking`);
+        if (!active) return;
+        setDispatchStatus(status);
+        if (status.state === "matched" && status.assignment) {
+          setScreen("assigned");
+          return;
+        }
+      } catch {
+        if (active) {
+          setDispatchStatus((current) => ({
+            state: "error",
+            terminal: false,
+            attempts: current?.attempts ?? 0,
+            max_attempts: current?.max_attempts ?? 3,
+            offers_pending: current?.offers_pending ?? 0,
+            offer_expires_at: current?.offer_expires_at ?? null,
+            assignment: null
+          }));
+        }
+      }
+      if (active) timer = setTimeout(poll, 4_000);
+    };
+    void poll();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [screen, ticket?.ticket_id]);
 
   // Persist the active ticket id + screen so the session survives a reload.
   useEffect(() => {
@@ -696,8 +768,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               run(async () => {
                 const current = await ensureTicket();
                 await api<TicketEnvelope>(`/tickets/${current.ticket_id}/commit`, { method: "POST" });
-                sync(await api<TicketEnvelope>(`/tickets/${current.ticket_id}/dispatch`, { method: "POST" }));
-                setScreen("assigned");
+                await api(`/tickets/${current.ticket_id}/offers`, { method: "POST" });
+                setDispatchStatus(null);
+                setScreen("matching");
               })
             }
           >
@@ -707,43 +780,97 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       );
     }
 
-    if (screen === "assigned") {
+    if (screen === "matching") {
+      const terminal = dispatchStatus?.terminal && dispatchStatus.state === "no_eligible";
+      const retrying = dispatchStatus?.state === "expired_retry";
+      const recoverableError = dispatchStatus?.state === "error";
       return (
         <>
-          <AgentMessage support="The assignment below is returned by dispatch.">
+          <AgentMessage support="Technician details stay private until a verified provider accepts the job.">
+            {terminal ? "Our dispatch team will reach out." : "Still finding your verified technician…"}
+          </AgentMessage>
+          <div className="dispatch-status" aria-live="polite" aria-busy={!terminal}>
+            <div className="status-orbit" aria-hidden="true">
+              {terminal ? <Phone size={26} /> : recoverableError ? <Clock3 size={26} /> : <LoaderCircle className="status-spinner" size={28} />}
+            </div>
+            <div>
+              <p className="panel-title">
+                {terminal ? "Dispatch follow-up" : recoverableError ? "Connection interrupted" : retrying ? "Checking more availability" : "Request sent"}
+              </p>
+              <div className="big-number">
+                {terminal ? "We will call you" : recoverableError ? "Reconnecting" : "Searching nearby"}
+              </div>
+              <p className="fine">
+                {terminal
+                  ? "No action is needed. A dispatcher will review your request and contact you."
+                  : recoverableError
+                    ? "Your request is safe. Keep this page open while we reconnect."
+                    : retrying
+                      ? "The first offers expired. Dispatch is checking the next eligible providers."
+                      : "We are checking verified technicians. You can keep this page open."}
+              </p>
+            </div>
+          </div>
+          <div className="stack">
+            {recoverableError ? (
+              <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); await refreshDispatchStatus(String(current.ticket_id)); })}>
+                Try status again
+              </button>
+            ) : null}
+            {terminal ? (
+              <button className="primary" type="button" onClick={() => void handoff("dispatch_exhausted")}>
+                Contact dispatch
+              </button>
+            ) : (
+              <a className="ghost" href={`tel:${DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+                Need help? Call dispatch
+              </a>
+            )}
+          </div>
+        </>
+      );
+    }
+
+    if (screen === "assigned") {
+      const assignment = dispatchStatus?.assignment;
+      return (
+        <>
+          <AgentMessage support="The assignment below was confirmed by dispatch after the technician accepted.">
             A verified specialist is assigned.
           </AgentMessage>
-          <TrustStateGate allow="may_show_technician" guards={guards}>
-            <div className="panel">
-              <p className="panel-title">Specialist</p>
-              <div className="big-number">{ticket?.technician_assignment?.display_name}</div>
-              <p className="fine">{ticket?.technician_assignment?.role} {ticket?.technician_assignment?.rating ? `- ${ticket.technician_assignment.rating} rating` : ""}</p>
-              <TrustStateGate allow="may_show_eta" guards={guards}>
-                <p className="fine">ETA {ticket?.technician_assignment?.eta_minutes_min}-{ticket?.technician_assignment?.eta_minutes_max} minutes.</p>
-              </TrustStateGate>
-            </div>
-          </TrustStateGate>
-          <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); sync(await api<TicketEnvelope>(`/tickets/${current.ticket_id}/tracking`)); setScreen("tracking"); })}>Open live tracking</button>
+          <div className="panel">
+            <p className="panel-title">Specialist</p>
+            <div className="big-number">{assignment?.technician_display_name ?? "Verified technician"}</div>
+            <p className="fine">
+              {assignment?.role ?? "Verified Technician"}
+              {assignment?.rating != null ? ` - ${assignment.rating} rating` : ""}
+            </p>
+            {assignment?.provider_company ? <p className="fine">Fulfilled by {assignment.provider_company}</p> : null}
+            <p className="fine">
+              Estimated arrival {assignment?.eta_min ?? "--"}-{assignment?.eta_max ?? "--"} minutes.
+            </p>
+          </div>
+          <button className="primary" type="button" onClick={() => setScreen("tracking")}>Open live tracking</button>
         </>
       );
     }
 
     if (screen === "tracking") {
+      const assignment = dispatchStatus?.assignment;
       return (
         <>
           <AgentMessage support="Keep this page open for live updates.">
             Specialist en route.
           </AgentMessage>
-          <TrustStateGate allow="may_show_live_tracking" guards={guards}>
-            <div className="stack">
-              <div className="map" aria-label="Static placeholder map with route lines" />
-              <div className="panel">
-                <p className="panel-title">ETA</p>
-                <div className="big-number">{ticket?.technician_assignment?.eta_minutes_min}-{ticket?.technician_assignment?.eta_minutes_max} min</div>
-              </div>
-              <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); const result = await api<{ customer_code: string }>(`/tickets/${current.ticket_id}/arrival-handshake`, { method: "POST", body: JSON.stringify({}) }); setArrivalCode(result.customer_code); setScreen("arrival"); })}>Arrival verification</button>
+          <div className="stack">
+            <div className="map" aria-label="Service area map preview" />
+            <div className="panel">
+              <p className="panel-title">Estimated arrival</p>
+              <div className="big-number">{assignment?.eta_min ?? "--"}-{assignment?.eta_max ?? "--"} min</div>
+              <p className="fine">This is a coarse estimate until live route tracking is available.</p>
             </div>
-          </TrustStateGate>
+            <button className="primary" type="button" onClick={() => run(async () => { const current = await ensureTicket(); const result = await api<{ customer_code: string }>(`/tickets/${current.ticket_id}/arrival-handshake`, { method: "POST", body: JSON.stringify({}) }); setArrivalCode(result.customer_code); setScreen("arrival"); })}>Arrival verification</button>
+          </div>
         </>
       );
     }

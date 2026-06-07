@@ -27,3 +27,8 @@ TOP_N_OFFERS = _int("DISPATCH_TOP_N", 3)
 # sends `Authorization: Bearer ${CRON_SECRET}`; Supabase pg_cron/pg_net or any
 # external caller sends the same header. If unset, the sweep endpoint is disabled.
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
+
+# --- auth hardening ---
+LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
+LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)
+DEMO_SEED = os.environ.get("DEMO_SEED", "true").strip().lower() != "false"
