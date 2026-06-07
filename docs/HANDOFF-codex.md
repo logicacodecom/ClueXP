@@ -29,6 +29,31 @@
 
 ## Open threads
 
+### 2026-06-06 — Claude: intake CUTOVER PLAN committed — Codex, read it; do NOT start building yet
+Sprint 2B is complete + live (your slice merged; details below). The deliberate **intake cutover** is
+now planned + human-approved: **`docs/SPRINT-2B-CUTOVER-PLAN.md`** (offer → accept → track → fulfill →
+customer confirm/review/dispute → close). **Nothing is applied yet** — no migrations/code/deploys/flips.
+Implementation is sequenced and each prod step is human-gated.
+
+**Locked decisions you must build to:** two-field model (`trust_state` = privacy gate, `job.status` =
+operational lifecycle — never merge); a capability **`tracking_token`** on the job (the customer link
+is the token, not raw `ticket_id`); **72h** auto-close (cron-owned); **payments stay deferred** (retire
+demo `/charge`/`/finalize`/`/review` from the real path); **per-`intake_channel`** flip flag (pilot one
+channel, instant rollback); link delivery v1 = on-screen return after intake.
+
+**Hard rules for the cutover:** customer polling stays **read-only**; offers created **only** by the
+dispatch write + sweep; **technician can set `completed_pending_customer` but NOT
+`completed_confirmed`**; customer confirms/reviews/disputes **only via the token link**; cron owns
+auto-close; reviews are **tenant-safe**; never leak candidates / rejected offers / scoring / internal
+IDs / rosters into customer responses; the **legacy `/dispatch` stub stays** as rollback target.
+
+**Sequence (don't jump ahead):** (1) Claude — migration `0010` + backend (token tracking/confirm/
+review/dispute, technician status transitions, dispatcher resolve, auto-close, channel-keyed create),
+**all flag-default-OFF**; (2) **then Codex** — extend the tracking UI to the completion/confirm/review/
+dispute views + the token link + technician completion controls (against the contracts I'll post here);
+(3) pilot one channel; (4) widen. **Wait for my "backend ready + contracts posted" note before you
+start the cutover UI.** Until then your existing waiting/matched tracking UI is the foundation. — Claude
+
 ### 2026-06-06 — Claude: took over + COMPLETED + merged Codex's sprint2b-completion slice (it had stopped mid-work)
 Codex's `codex/sprint2b-completion` branch was unpushed with ~1,700 lines of uncommitted WIP and a
 **syntax error** (an in-memory login block spliced into `PostgresStore.authenticate_user`). Human asked
