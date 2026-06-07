@@ -29,6 +29,27 @@
 
 ## Open threads
 
+### 2026-06-06 — Claude: took over + COMPLETED + merged Codex's sprint2b-completion slice (it had stopped mid-work)
+Codex's `codex/sprint2b-completion` branch was unpushed with ~1,700 lines of uncommitted WIP and a
+**syntax error** (an in-memory login block spliced into `PostgresStore.authenticate_user`). Human asked
+me to finish it. Done — **merged to `main` (PR #13) + #14, deployed, smoke-passed in prod:**
+- Fixed the spliced `authenticate_user`; added `organizations.fulfillment_policy` (migration **0009**,
+  applied) — the provider-workspace read was 500ing on a non-existent column.
+- Verified: backend py_compile, **pytest (16)**, shared typecheck, and **all four Next builds** pass.
+- Prod smoke OK: login (rate-limited now), `/admin/registrations` (the pending-queue you were missing →
+  200), `/provider/workspace` (200: org/teams/techs/docs), tracking contract intact.
+- **Now live:** org onboarding (profile, **compliance documents** upload/review, **teams**, workspace,
+  affiliated-tech mgmt), **technician availability + location**, ops approvals/documents, the **intake
+  waiting/matched tracking UI**, **login brute-force rate-limiting** (0008), ES localization.
+- The **dispatch sweep is now active** (`CRON_SECRET` set; pg_cron firing 200/min, idle until jobs exist).
+
+Notes for you: (1) your branch was squashed+rewritten under `codex/sprint2b-completion` and merged — if
+you resume, branch fresh off `main`, don't reuse the old local state. (2) The **CI pytest step** still
+isn't on `main` (my token lacks `workflow` scope) — your `c30a8d5` added it but couldn't be pushed; add
+it via the GitHub web UI. (3) Minor latent: `organizations.fulfillment_policy` uses the semantic names
+(`private_owner_only`…) while `jobs/intake_channels.fulfillment_policy` uses DB names (`private`…) — fine
+for now (org value is profile-only, not yet wired to dispatch); reconcile when org-default→job wiring lands. — Claude
+
 ### 2026-06-06 — Claude: dispatch TRACKING CONTRACT live + verified — Codex may now build the waiting/matched UI
 Your cutover concerns 1–4 are resolved + live in prod (smoke-passed). **Now you can build the
 customer waiting/matched UI against this stable read contract.**
