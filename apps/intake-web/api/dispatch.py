@@ -61,25 +61,48 @@ def rank_candidates(
     return candidates[:top_n]
 
 
-# --- dispatch policy (maps the stored fulfillment_policy column to semantics) ---
-POLICY_PRIVATE = "private_owner_only"        # column value: "private"
-POLICY_OWNER_FIRST = "owner_first_then_network"  # column value: "network_overflow"
-POLICY_NETWORK_OPEN = "network_open"         # column value: "network_open"
+# --- dispatch policy: ONE canonical mapping between the stored DB vocabulary and
+# dispatch semantics. The DB column `fulfillment_policy` keeps its existing values
+# (`private` / `network_overflow` / `network_open`); all dispatch logic works in the
+# semantic constants below via `normalize_policy`. Never compare policy strings
+# ad-hoc — go through these helpers.
+POLICY_PRIVATE = "private_owner_only"             # DB value: "private"
+POLICY_OWNER_FIRST = "owner_first_then_network"   # DB value: "network_overflow"
+POLICY_NETWORK_OPEN = "network_open"              # DB value: "network_open"
 
-_POLICY_BY_COLUMN = {
+_DB_TO_SEMANTIC = {
     "private": POLICY_PRIVATE,
     "network_overflow": POLICY_OWNER_FIRST,
     "network_open": POLICY_NETWORK_OPEN,
 }
+_SEMANTIC_TO_DB = {v: k for k, v in _DB_TO_SEMANTIC.items()}
 
 
-def normalize_policy(fulfillment_policy: str | None, owner_org_id: str | None) -> str:
-    """Resolve the effective dispatch policy. A job with no customer-owner org is
-    always network_open (nothing to keep private to). Unknown values default to
-    owner-first when an owner exists."""
+def normalize_policy(stored_policy: str | None, owner_org_id: str | None) -> str:
+    """Resolve the stored `fulfillment_policy` (DB value, or None) to the effective
+    dispatch policy.
+
+    - No customer-owner org → `network_open` (a ClueXP-public job has nothing to keep
+      private to).
+    - Recognized DB value → its semantic policy.
+    - **Unknown/invalid value WITH a customer-owner org → fail CLOSED to
+      `private_owner_only`** so a company-owned job never leaks to the network on a
+      misconfiguration.
+    """
     if not owner_org_id:
         return POLICY_NETWORK_OPEN
-    return _POLICY_BY_COLUMN.get(fulfillment_policy or "", POLICY_OWNER_FIRST)
+    return _DB_TO_SEMANTIC.get(stored_policy or "", POLICY_PRIVATE)
+
+
+def to_db_policy(value: str | None) -> str | None:
+    """Canonical storage form. Accepts either a DB value or a semantic name and
+    returns the **DB value**; returns None if the input is not a recognized policy
+    (callers reject or fall back to the safe default)."""
+    if value in _DB_TO_SEMANTIC:
+        return value
+    if value in _SEMANTIC_TO_DB:
+        return _SEMANTIC_TO_DB[value]
+    return None
 
 
 def _in_owner_pool(tech: dict[str, Any], owner_org_id: str | None) -> bool:

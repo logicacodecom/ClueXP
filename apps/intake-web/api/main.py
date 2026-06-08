@@ -18,7 +18,7 @@ from api.geocode import geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
-from api.dispatch import normalize_policy, select_candidates
+from api.dispatch import normalize_policy, select_candidates, to_db_policy
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -576,13 +576,13 @@ async def update_provider_organization(
         "organization_managed", "platform_managed"
     }:
         raise HTTPException(status_code=422, detail="Invalid dispatch mode")
-    if payload.fulfillment_policy and payload.fulfillment_policy not in {
-        "private_owner_only", "owner_first_then_network", "network_open"
-    }:
-        raise HTTPException(status_code=422, detail="Invalid fulfillment policy")
-    result = await store.update_organization_profile(
-        organization_id, payload.model_dump(exclude_none=True)
-    )
+    data = payload.model_dump(exclude_none=True)
+    if payload.fulfillment_policy:
+        db_policy = to_db_policy(payload.fulfillment_policy)
+        if db_policy is None:
+            raise HTTPException(status_code=422, detail="Invalid fulfillment policy")
+        data["fulfillment_policy"] = db_policy  # store the canonical DB vocabulary
+    result = await store.update_organization_profile(organization_id, data)
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
     return result

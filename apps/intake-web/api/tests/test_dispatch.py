@@ -19,6 +19,7 @@ from api.dispatch import (
     normalize_policy,
     resolve_dispatch_state,
     select_candidates,
+    to_db_policy,
 )
 from api.store import InMemoryStore
 
@@ -111,6 +112,64 @@ def test_no_owner_treated_as_network_open():
     techs = [_tech("a", ["org1"]), _tech("b", [])]
     out = select_candidates(_JOB, techs, policy=POLICY_PRIVATE, owner_org_id=None, round_index=0)
     assert len(out) == 2
+
+
+# --- canonical mapping + fail-safe (vocabulary reconciliation) --------------
+def test_to_db_policy_accepts_both_vocabularies_and_rejects_unknown():
+    assert to_db_policy("private") == "private"
+    assert to_db_policy("private_owner_only") == "private"
+    assert to_db_policy("network_overflow") == "network_overflow"
+    assert to_db_policy("owner_first_then_network") == "network_overflow"
+    assert to_db_policy("network_open") == "network_open"
+    assert to_db_policy("nonsense") is None
+    assert to_db_policy(None) is None
+
+
+def test_unknown_policy_fails_closed_for_company_owned():
+    # company-owned (owner org present) + unknown/None stored value → private (fail closed)
+    assert normalize_policy("garbage", "org1") == POLICY_PRIVATE
+    assert normalize_policy(None, "org1") == POLICY_PRIVATE
+    # public (no owner) → network_open regardless of stored value
+    assert normalize_policy("garbage", None) == POLICY_NETWORK_OPEN
+    assert normalize_policy(None, None) == POLICY_NETWORK_OPEN
+
+
+def test_private_does_not_leak_when_no_owner_pool_member_available():
+    # company-owned job, only network/solo techs exist → empty, NEVER the network
+    techs = [_tech("network", ["org2"]), _tech("solo", [])]
+    out = select_candidates(_JOB, techs, policy=POLICY_PRIVATE, owner_org_id="org1", round_index=3)
+    assert out == []
+
+
+def test_private_never_widens_on_any_round():
+    techs = [_tech("owner", ["org1"]), _tech("network", ["org2"])]
+    for rnd in (0, 1, 2, 5):
+        out = select_candidates(_JOB, techs, policy=POLICY_PRIVATE, owner_org_id="org1", round_index=rnd)
+        assert [t["id"] for t in out] == ["owner"], f"private leaked on round {rnd}"
+
+
+def test_overflow_widens_only_when_policy_and_state_allow():
+    techs = [_tech("owner", ["org1"]), _tech("network", ["org2"])]
+    # round 0: owner only; later rounds: widen to network
+    assert [t["id"] for t in select_candidates(
+        _JOB, techs, policy=POLICY_OWNER_FIRST, owner_org_id="org1", round_index=0)] == ["owner"]
+    assert {t["id"] for t in select_candidates(
+        _JOB, techs, policy=POLICY_OWNER_FIRST, owner_org_id="org1", round_index=1)} == {"owner", "network"}
+
+
+def test_unknown_company_policy_end_to_end_stays_owner_only():
+    # misconfigured company job: normalize fails closed → private → owner-only even late
+    techs = [_tech("owner", ["org1"]), _tech("network", ["org2"])]
+    policy = normalize_policy("garbage", "org1")
+    out = select_candidates(_JOB, techs, policy=policy, owner_org_id="org1", round_index=2)
+    assert [t["id"] for t in out] == ["owner"]
+
+
+def test_network_open_for_public_cluexp_job():
+    techs = [_tech("a", ["org1"]), _tech("b", ["org2"]), _tech("c", [])]
+    policy = normalize_policy("private", None)  # public job: stored value irrelevant
+    out = select_candidates(_JOB, techs, policy=policy, owner_org_id=None, round_index=0)
+    assert {t["id"] for t in out} == {"a", "b", "c"}
 
 
 # --- ETA -------------------------------------------------------------------

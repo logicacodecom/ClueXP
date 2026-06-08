@@ -23,6 +23,7 @@ from api.dispatch import (
     eta_range_from_km,
     haversine_km,
     is_terminal,
+    normalize_policy,
     resolve_dispatch_state,
 )
 from api import config
@@ -1773,7 +1774,9 @@ class PostgresStore(Store):
                 "service_area_center_lng": org[9],
                 "service_area_radius_km": org[10],
                 "dispatch_mode": org[11],
-                "fulfillment_policy": org[12],
+                # stored as the canonical DB vocabulary; surfaced in semantic form
+                # (an org is its own owner, so this is its effective default policy)
+                "fulfillment_policy": normalize_policy(org[12], str(org[0])),
             },
             "teams": [
                 {
