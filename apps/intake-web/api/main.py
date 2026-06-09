@@ -18,7 +18,15 @@ from api.geocode import geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
-from api.dispatch import normalize_policy, select_candidates, to_db_policy
+from api.dispatch import (
+    STATUS_COMPLETED_CONFIRMED,
+    STATUS_COMPLETED_PENDING,
+    STATUS_DISPUTED,
+    can_technician_transition,
+    normalize_policy,
+    select_candidates,
+    to_db_policy,
+)
 from api.store import make_store
 from api.schema import (
     AccessType,
@@ -81,6 +89,10 @@ arrival_codes: dict[UUID, str] = {}
 class TicketEnvelope(BaseModel):
     ticket: Ticket
     guards: dict[str, bool]
+    # Customer capability link (cutover). Populated only when intake runs on a
+    # cutover-enabled channel; the legacy path leaves these null.
+    tracking_token: str | None = None
+    tracking_path: str | None = None
 
 
 class PhotoIntentRequest(BaseModel):
@@ -226,6 +238,24 @@ class TechnicianLocationRequest(BaseModel):
 
 class TechnicianAvailabilityRequest(BaseModel):
     is_available: bool
+
+
+class JobStatusUpdateRequest(BaseModel):
+    status: str
+
+
+class CustomerReviewRequest(BaseModel):
+    rating: int
+    comment: str | None = None
+
+
+class DisputeRequest(BaseModel):
+    reason: str | None = None
+
+
+class ResolveJobRequest(BaseModel):
+    action: str
+    note: str | None = None
 
 
 def _provider_organization_id(session: dict[str, Any]) -> UUID:
@@ -743,7 +773,30 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
-    return await envelope(ticket)
+    env = await envelope(ticket)
+
+    # Channel-keyed cutover flip: only when the resolved channel has its per-channel
+    # flag on AND the global kill-switch is off. Otherwise the legacy stub path is
+    # unchanged (the customer flow keeps calling /dispatch). All channels ship OFF,
+    # so this branch is dormant until a pilot channel is enabled.
+    cutover = bool(
+        origin
+        and origin.get("dispatch_cutover_enabled")
+        and not config.DISPATCH_CUTOVER_GLOBAL_OFF
+    )
+    if cutover:
+        # Put the job on the operational ladder, then run the dispatch WRITE so the
+        # offer→accept loop drives fulfillment instead of the instant-match stub.
+        await store.set_job_status(ticket.ticket_id, "pending_dispatch")
+        job = await store.get_dispatch_job(ticket.ticket_id)
+        if job is not None:
+            await _dispatch_write(ticket.ticket_id, job)
+        await log_transition(ticket, "dispatch_cutover")
+        token = await store.get_tracking_token(ticket.ticket_id)
+        if token:
+            env.tracking_token = token
+            env.tracking_path = f"/t/{token}"
+    return env
 
 
 @app.post("/provider/requests", response_model=TicketEnvelope)
@@ -927,17 +980,12 @@ async def dispatch(ticket_id: UUID) -> TicketEnvelope:
     return await envelope(ticket)
 
 
-@app.post("/tickets/{ticket_id}/offers")
-async def create_offers(ticket_id: UUID) -> dict[str, Any]:
-    """Dispatch engine v1: rank available technicians by rule and create
-    ``dispatch_offers`` for the top candidates. **Additive** to the legacy stub
-    ``/dispatch`` — this does NOT flip the job to MATCHED (that happens only on
-    an accepted offer). Returns the ranked offers (identity masking is a frontend
-    concern; the customer is never shown a technician before assignment)."""
-    await latency()
-    job = await store.get_dispatch_job(ticket_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+async def _dispatch_write(ticket_id: UUID, job: dict[str, Any]) -> dict[str, Any]:
+    """Shared dispatch WRITE: rank eligible technicians per policy and create
+    ``dispatch_offers`` for the top candidates. Owns offer creation (the customer
+    poll never calls this). Does NOT flip the job to MATCHED — that happens only on
+    an accepted offer. Used by both the explicit ``/offers`` endpoint and the
+    cutover-enabled intake create."""
     if job.get("fulfillment_technician_id"):
         return {"state": "matched", "offers": [], "attempts": job.get("dispatch_attempts", 0)}
     attempts = job.get("dispatch_attempts", 0)
@@ -959,6 +1007,18 @@ async def create_offers(ticket_id: UUID) -> dict[str, Any]:
         "state": "waiting", "offers": offers, "attempts": new_attempts,
         "policy": policy, "expires_at": expires_at.isoformat(),
     }
+
+
+@app.post("/tickets/{ticket_id}/offers")
+async def create_offers(ticket_id: UUID) -> dict[str, Any]:
+    """Dispatch engine v1 (explicit write). **Additive** to the legacy stub
+    ``/dispatch`` — returns the ranked offers; the customer is never shown a
+    technician before assignment."""
+    await latency()
+    job = await store.get_dispatch_job(ticket_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return await _dispatch_write(ticket_id, job)
 
 
 @app.post("/cron/dispatch-sweep")
@@ -995,7 +1055,15 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
             expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
             await store.create_dispatch_offers(job["id"], ranked, expires_at)
             redispatched += 1
-    return {"expired_offers": expired, "dispatchable_jobs": len(jobs), "redispatched": redispatched}
+    # Cutover: auto-close jobs the customer never confirmed within the window
+    # (completed_pending_customer → completed_auto_closed). Cron-owned.
+    auto_closed = await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
+    return {
+        "expired_offers": expired,
+        "dispatchable_jobs": len(jobs),
+        "redispatched": redispatched,
+        "auto_closed": auto_closed,
+    }
 
 
 @app.post("/offers/{offer_id}/accept")
@@ -1050,6 +1118,156 @@ async def tracking(ticket_id: UUID) -> dict[str, Any]:
     if status is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return status
+
+
+# --- customer token-gated fulfillment (cutover, Sprint 3) -------------------
+# The customer link is the ~256-bit `tracking_token`, never the raw ticket id.
+# These routes grant only ticket-scoped, customer-safe reads/actions (no account
+# auth). They never expose candidates / rejected offers / scoring / internal IDs.
+
+@app.get("/t/{token}")
+async def tracking_by_token(token: str) -> dict[str, Any]:
+    """Token-resolved tracking read: the dispatch state + (once matched) the safe
+    assignment + the operational fulfillment status and the customer affordance
+    (confirm / review / dispute when completion is pending). Pure read — never
+    creates offers."""
+    await latency()
+    try:
+        status = await store.get_tracking_by_token(
+            token,
+            max_attempts=config.MAX_REDISPATCH_ROUNDS,
+            total_timeout_seconds=config.TOTAL_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return {"state": "error", "terminal": False, "assignment": None}
+    if status is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return status
+
+
+async def _require_token_job(token: str) -> UUID:
+    job_id = await store.resolve_tracking_token(token)
+    if job_id is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return UUID(job_id)
+
+
+@app.post("/t/{token}/confirm")
+async def confirm_by_token(token: str) -> dict[str, Any]:
+    """Customer confirms completion: completed_pending_customer → completed_confirmed."""
+    await latency()
+    job_id = await _require_token_job(token)
+    updated = await store.set_job_status(
+        job_id, STATUS_COMPLETED_CONFIRMED,
+        expected_current=STATUS_COMPLETED_PENDING, extra_timestamps=["closed_at"],
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Job is not awaiting customer confirmation")
+    return {"status": updated["status"]}
+
+
+@app.post("/t/{token}/review")
+async def review_by_token(token: str, payload: CustomerReviewRequest) -> dict[str, Any]:
+    """Customer rates the assigned technician for THIS ticket (tenant-safe,
+    ticket-scoped). Allowed while completion is pending or within the closed grace
+    window; a review submitted while pending implies confirm."""
+    await latency()
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(status_code=422, detail="Rating must be between 1 and 5")
+    job_id = await _require_token_job(token)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    from api.dispatch import customer_actions as _actions
+    if not _actions(lifecycle["status"]).get("can_review"):
+        raise HTTPException(status_code=409, detail="Review is not available for this job yet")
+    imply_confirm = lifecycle["status"] == STATUS_COMPLETED_PENDING
+    review = await store.record_customer_review(
+        job_id=job_id, rating=payload.rating, comment=payload.comment,
+        issue_reported=False, imply_confirm=imply_confirm,
+    )
+    if imply_confirm:
+        await store.set_job_status(
+            job_id, STATUS_COMPLETED_CONFIRMED,
+            expected_current=STATUS_COMPLETED_PENDING, extra_timestamps=["closed_at"],
+        )
+    return {"status": "recorded", "review": review}
+
+
+@app.post("/t/{token}/dispute")
+async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any]:
+    """Customer reports an issue: completed_pending_customer → disputed. A human
+    operator resolves it (POST /admin/jobs/{id}/resolve)."""
+    await latency()
+    job_id = await _require_token_job(token)
+    updated = await store.set_job_status(
+        job_id, STATUS_DISPUTED, expected_current=STATUS_COMPLETED_PENDING,
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Job is not awaiting customer confirmation")
+    if payload.reason:
+        await store.log_event_raw(job_id, f"customer_dispute:{payload.reason[:200]}")
+    return {"status": updated["status"]}
+
+
+@app.patch("/tickets/{ticket_id}/status")
+async def technician_update_status(
+    ticket_id: UUID,
+    payload: JobStatusUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Assigned-technician forward status transition (en_route | arrived |
+    in_progress | completed_pending_customer). Forward-only; the technician may
+    set completed_pending_customer but NEVER completed_confirmed (customer-only)."""
+    await latency()
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    if payload.status == STATUS_COMPLETED_CONFIRMED:
+        raise HTTPException(status_code=403, detail="Only the customer can confirm completion")
+    lifecycle = await store.get_job_lifecycle(ticket_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
+        raise HTTPException(status_code=403, detail="Not your job")
+    if not can_technician_transition(lifecycle["status"], payload.status):
+        raise HTTPException(status_code=409, detail="Illegal status transition")
+    updated = await store.set_job_status(
+        ticket_id, payload.status, expected_current=lifecycle["status"]
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Status changed concurrently")
+    return {"status": updated["status"]}
+
+
+@app.post("/admin/jobs/{job_id}/resolve")
+async def resolve_job(
+    job_id: UUID,
+    payload: ResolveJobRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Dispatcher/admin resolution: close, cancel, or redispatch. platform_admin
+    may resolve any job; a dispatcher may resolve only jobs their org owns or
+    fulfills (tenant-safe)."""
+    require_any_role(session, {"platform_admin", "dispatcher"})
+    if payload.action not in {"close", "cancel", "redispatch"}:
+        raise HTTPException(status_code=422, detail="Invalid resolve action")
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if "platform_admin" not in set(session.get("roles", [])):
+        org_id = session.get("active_organization_id")
+        owned = {lifecycle.get("customer_owner_org_id"), lifecycle.get("fulfillment_org_id")}
+        if not org_id or org_id not in owned:
+            raise HTTPException(status_code=403, detail="Not your job")
+    try:
+        result = await store.resolve_job(job_id, action=payload.action, note=payload.note)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid resolve action")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return result
 
 
 @app.post("/tickets/{ticket_id}/arrival-handshake")

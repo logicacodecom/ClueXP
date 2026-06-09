@@ -28,6 +28,16 @@ TOP_N_OFFERS = _int("DISPATCH_TOP_N", 3)
 # external caller sends the same header. If unset, the sweep endpoint is disabled.
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
+# --- fulfillment cutover (Sprint 3) ---
+# How long a `completed_pending_customer` job waits for the customer to confirm
+# before the sweep auto-closes it. Default 72h.
+AUTO_CLOSE_WINDOW_SECONDS = _int("AUTO_CLOSE_WINDOW_SECONDS", 259200)
+# Emergency kill-switch: force every channel back to the legacy stub regardless of
+# its per-channel `dispatch_cutover_enabled` flag, without per-row DB edits.
+DISPATCH_CUTOVER_GLOBAL_OFF = (
+    os.environ.get("DISPATCH_CUTOVER_GLOBAL_OFF", "false").strip().lower() == "true"
+)
+
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
 LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)
