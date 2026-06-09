@@ -13,3 +13,9 @@ __pycache__/
 .codex-review/
 
 .env*
+
+# agent tooling — never commit to the product repo
+.github/skills/
+.qwen/
+.impeccable.md
+*.orig
