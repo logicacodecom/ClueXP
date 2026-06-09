@@ -29,11 +29,19 @@ If `gh auth status` fails or the prod DB URL is not available in your env, STOP 
 — do not proceed without both.
 
 ## Step 1 — Apply migration 0010 to PROD
-Supabase **DIRECT** connection, **port 5432** (NOT the 6543 pooler).
+Project ref `gzgrkzvhotjolvcbqiku`. **The DIRECT host (`db.<ref>.supabase.co:5432`) is IPv6-only
+and is unreachable from an IPv4 network — verified failing.** Use the **Session Pooler** string
+(Supabase → Connect → Session pooler), which is IPv4-compatible:
+```
+postgresql://postgres.gzgrkzvhotjolvcbqiku:<PWD>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+This migration runs fine through the pooler — `alembic/env.py` sets `prepare_threshold=None`, so
+DDL works through Supabase pgbouncer. (Session pooler :5432 preferred; transaction pooler :6543
+also works as a last resort. Direct :5432 only if your runner has working IPv6.)
 ```bash
 cd packages/db
 python -m pip install -r requirements.txt
-export MIGRATION_DATABASE_URL="postgresql://postgres:<PWD>@db.<ref>.supabase.co:5432/postgres"
+export MIGRATION_DATABASE_URL="postgresql://postgres.gzgrkzvhotjolvcbqiku:<PWD>@aws-0-<region>.pooler.supabase.com:5432/postgres"
 alembic current        # EXPECT head = 0009_org_fulfillment_policy
 alembic upgrade head   # applies 0010
 alembic current        # EXPECT head = 0010_fulfillment_cutover
