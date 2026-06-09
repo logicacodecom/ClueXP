@@ -314,4 +314,4 @@ human-authorized (see HANDOFF hard rules); ship previews first.
 - Tailwind/shadcn-style primitives are intentional for consoles; keep intake/technician stack separate.
 - Don't fake live movement on the map (SPEC §8.8 / §12).
 - Don't invent trust sub-states anywhere. `console_status` ≠ `trust_state`, ever.
-- Commit on a feature branch; do not promote to prod. Raise questions in `HANDOFF-codex.md`.
+- Commit on a feature branch; do not promote to prod. Raise questions in `HANDOFF.md`.

@@ -114,7 +114,7 @@ Add a technician-POV slice: current technician identity + **availability** (`off
 
 ## 9. Deploy / safety
 - Branch `feat/sprint0-foundation` (or a sub-branch). **No production deploy** — human-gated.
-- Raise questions in `docs/HANDOFF-codex.md`. I'll review against this plan + the spec + DoD when done.
+- Raise questions in `docs/HANDOFF.md`. I'll review against this plan + the spec + DoD when done.
 
 ## 10. Suggested phasing (checkpoint per phase)
 1. Scaffold app + workspace + Tailwind/theme + fonts + PWA shell + BottomNav/AppFrame → build smoke.

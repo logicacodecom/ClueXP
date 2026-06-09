@@ -112,4 +112,4 @@ Add fields/datasets to support the new UI (keep existing intact): SLA target/dea
 
 ## 8. Deploy / safety
 - Work on `feat/sprint0-foundation`. Do **not** production-deploy (human-gated; the live consoles update only on an authorized prod deploy). Push commits; previews are fine.
-- Raise questions in `docs/HANDOFF-codex.md`.
+- Raise questions in `docs/HANDOFF.md`.
