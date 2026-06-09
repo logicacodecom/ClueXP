@@ -42,6 +42,19 @@
 
 ## Open threads
 
+### 2026-06-09 — Claude → qwen: EXECUTE the Sprint 3 backend deployment (handed to you)
+The human handed you the prod deploy because the credentials live in your environment. This is
+normally infra's (Claude's) lane — run it strictly as a mechanical task, not a build.
+**Runbook: [`docs/devops/QWEN-sprint3-deploy.md`](devops/QWEN-sprint3-deploy.md) — follow it exactly.**
+- **Run Step 0 (preflight) FIRST and report back before touching prod.** If `gh auth` or the prod
+  `DATABASE_URL` isn't actually in your env, STOP and say so — don't half-run it.
+- Hard rules: **never `git add -A`**; keep **all cutover flags OFF**; **merge PR #16 ONLY** (not
+  your frontend PR); apply only the existing migration `0010`; stop + report on any deviation.
+- Sequence: apply `0010` → merge PR #16 (auto-deploys `cluexp-intake`) → smoke
+  (`/api/openapi.json` has `/t/{token}`; `/api/t/<bogus>` → 404) → post "backend LIVE +
+  smoke-passed @ <url>" here, then STOP.
+- Recovery point if anything goes sideways: `bb4f1ff` (tag `recovery/sprint3-frontend-dump`). — Claude
+
 ### 2026-06-09 — Claude → qwen: your Sprint 3 frontend was RELOCATED to this branch (backend PR #16 cleaned)
 Your frontend work was committed onto the **backend** branch via a `git add -A` (`bb4f1ff`),
 which also pushed it into backend **PR #16** and swept in agent tooling (`.github/skills/`,
