@@ -77,28 +77,37 @@ this execution plan treats it as Sprint 3).
 
 ### 3.1 Backend and data contract
 
-- [ ] Add migration `0010`:
+> **Built + tested locally, NOT yet deployed** (branch
+> `feat/sprint3-fulfillment-cutover-backend@f51d03c`; 28 pytest pass, all flags
+> default-OFF). Prod apply of `0010` + deploy + smoke remain — blocked on push/DB
+> credentials from the current environment (see HANDOFF 2026-06-09). Exact
+> endpoint contracts are posted in `docs/HANDOFF.md` for qwen.
+
+- [~] Add migration `0010` (written, not applied to prod):
   - secure unique `jobs.tracking_token`;
   - full operational status domain and lifecycle timestamps;
   - `intake_channels.dispatch_cutover_enabled default false`;
   - ticket-scoped review/issue fields.
-- [ ] Generate secure tokens at job creation and avoid token values in logs.
-- [ ] Add token-gated customer read:
+- [x] Generate secure tokens at job creation and avoid token values in logs.
+- [x] Add token-gated customer read:
   `GET /api/t/{token}`.
-- [ ] Add customer actions:
+- [x] Add customer actions:
   `POST /api/t/{token}/confirm`,
   `/review`, and `/dispute`.
-- [ ] Add assigned-technician-only forward transitions for
+- [x] Add assigned-technician-only forward transitions for
   `en_route`, `arrived`, `in_progress`, and
   `completed_pending_customer`.
-- [ ] Explicitly reject technician attempts to set
+- [x] Explicitly reject technician attempts to set
   `completed_confirmed`.
-- [ ] Add role-gated dispatcher resolve/manual-close behavior.
-- [ ] Extend the scheduled sweep to auto-close
+- [x] Add role-gated dispatcher resolve/manual-close behavior.
+- [x] Extend the scheduled sweep to auto-close
   `completed_pending_customer` after 72 hours.
-- [ ] Add per-channel cutover and emergency global-off behavior.
-- [ ] Keep the legacy `/dispatch` route as rollback during the pilot.
-- [ ] Isolate demo `/charge`, `/finalize`, and `/review` from the real path.
+- [x] Add per-channel cutover and emergency global-off behavior
+  (`DISPATCH_CUTOVER_GLOBAL_OFF`).
+- [x] Keep the legacy `/dispatch` route as rollback during the pilot (untouched).
+- [!] Isolate demo `/charge`, `/finalize`, and `/review` from the real path —
+  deferred: the cutover create path never invokes them (the legacy stub does);
+  hard removal/gating tracked as cleanup before widening.
 
 ### 3.2 Customer and technician application integration
 
