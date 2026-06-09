@@ -12,4 +12,10 @@ __pycache__/
 .vercel-technician.json
 .codex-review/
 
+# agent tooling — never commit to the product repo
+.github/skills/
+.qwen/
+.impeccable.md
+*.orig
+
 .env*
