@@ -36,6 +36,17 @@ const intakeSteps: Partial<Record<Screen, number>> = {
   handoff: 6
 };
 
+const PREV_SCREEN: Partial<Record<Screen, Screen>> = {
+  situation: "opener",
+  location: "situation",
+  details: "location",
+  additional: "details",
+  photos: "additional",
+  identity: "photos",
+  price: "identity",
+  commit: "price",
+};
+
 const emptyGuards: TicketGuards = {
   may_show_technician: false,
   may_show_eta: false,
@@ -214,6 +225,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [arrivalCode, setArrivalCode] = useState("");
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([]);
   const [uploadedPhotoCount, setUploadedPhotoCount] = useState(0);
+  const [addressSuggestion, setAddressSuggestion] = useState<{ raw: string; lat?: number; lng?: number } | null>(null);
   const [reviewRating, setReviewRating] = useState<number | null>(null);
   const [reviewTags, setReviewTags] = useState<string[]>([]);
   const [reviewComment, setReviewComment] = useState("");
@@ -301,13 +313,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (!navigator.geolocation) {
       throw new Error("GPS is not available in this browser");
     }
-    const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        maximumAge: 30_000,
-        timeout: 10_000
+    let position: GeolocationPosition;
+    try {
+      position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          maximumAge: 30_000,
+          timeout: 10_000
+        });
       });
-    });
+    } catch (err) {
+      const code = (err as GeolocationPositionError).code;
+      if (code === 1) throw new Error("Location permission denied — allow it in your browser settings, or type your address below.");
+      if (code === 2) throw new Error("Location unavailable on this device — please type your address below.");
+      throw new Error("Location request timed out — please type your address below.");
+    }
     await patch({
       location: {
         raw_text: "Current GPS location",
@@ -441,6 +461,23 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     };
   }, [screen, ticket?.ticket_id]);
 
+  // Debounced address geocode — shows a canonical suggestion after typing pauses.
+  useEffect(() => {
+    const addr = form.address.trim();
+    if (!addr) { setAddressSuggestion(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const result = await api<GeocodeResponse>(`/geocode?q=${encodeURIComponent(addr)}`);
+        if (result.resolved) {
+          setAddressSuggestion({ raw: result.formatted_address || addr, lat: result.lat, lng: result.lng });
+        } else {
+          setAddressSuggestion(null);
+        }
+      } catch { setAddressSuggestion(null); }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [form.address]);
+
   // Persist the active ticket id + screen so the session survives a reload.
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -541,8 +578,20 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               className="field"
               placeholder="Address or nearby landmark"
               value={form.address}
-              onChange={(event) => setForm({ ...form, address: event.target.value })}
+              onChange={(event) => { setForm({ ...form, address: event.target.value }); setAddressSuggestion(null); }}
             />
+            {addressSuggestion ? (
+              <button
+                className="choice"
+                type="button"
+                onClick={() => {
+                  setForm({ ...form, address: addressSuggestion.raw });
+                  setAddressSuggestion(null);
+                }}
+              >
+                <MapPin size={14} /> {addressSuggestion.raw}
+              </button>
+            ) : null}
             <div className="panel">
               <p className="panel-title">Safety check</p>
               <ChipSelect
@@ -658,12 +707,26 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               type="file"
               accept="image/png,image/jpeg,image/webp"
               multiple
-              onChange={(event) => setSelectedPhotos(Array.from(event.target.files || []))}
+              onChange={(event) => setSelectedPhotos((prev) => [...prev, ...Array.from(event.target.files || [])])}
             />
             {selectedPhotos.length ? (
               <div className="panel">
-                <p className="panel-title">Selected photos</p>
-                <p className="fine">{selectedPhotos.length} image{selectedPhotos.length === 1 ? "" : "s"} ready to upload.</p>
+                <p className="panel-title">Selected ({selectedPhotos.length})</p>
+                {selectedPhotos.map((file, i) => (
+                  <div key={i} className="row" style={{ alignItems: "center", gap: 8, marginTop: 4 }}>
+                    <span className="fine" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {file.name}
+                    </span>
+                    <button
+                      className="ghost"
+                      type="button"
+                      style={{ padding: "2px 8px", flexShrink: 0 }}
+                      onClick={() => setSelectedPhotos((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
             ) : null}
             {uploadedPhotoCount || ticket?.photos?.length ? (
@@ -676,7 +739,13 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 type="button"
                 onClick={() =>
                   run(async () => {
-                    await uploadSelectedPhotos();
+                    if (selectedPhotos.length) {
+                      try {
+                        await uploadSelectedPhotos();
+                      } catch {
+                        setSelectedPhotos([]);
+                      }
+                    }
                     setScreen("identity");
                   })
                 }
@@ -1035,6 +1104,16 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           </div>
         ) : null}
         <StepPipes screen={screen} />
+        {PREV_SCREEN[screen] ? (
+          <button
+            className="ghost"
+            type="button"
+            style={{ alignSelf: "flex-start", padding: "4px 0", marginBottom: 4 }}
+            onClick={() => { setError(null); setScreen(PREV_SCREEN[screen]!); }}
+          >
+            ← Back
+          </button>
+        ) : null}
         {DEMO && DEMO_SCREENS.includes(screen) ? (
           <div className="demo-banner" role="status">
             Demo — simulated dispatch. Not a real technician, ETA, or charge.
