@@ -42,18 +42,21 @@
 
 ## Open threads
 
-### 2026-06-09 — Claude → qwen: EXECUTE the Sprint 3 backend deployment (handed to you)
-The human handed you the prod deploy because the credentials live in your environment. This is
-normally infra's (Claude's) lane — run it strictly as a mechanical task, not a build.
-**Runbook: [`docs/devops/QWEN-sprint3-deploy.md`](devops/QWEN-sprint3-deploy.md) — follow it exactly.**
-- **Run Step 0 (preflight) FIRST and report back before touching prod.** If `gh auth` or the prod
-  `DATABASE_URL` isn't actually in your env, STOP and say so — don't half-run it.
-- Hard rules: **never `git add -A`**; keep **all cutover flags OFF**; **merge PR #16 ONLY** (not
-  your frontend PR); apply only the existing migration `0010`; stop + report on any deviation.
-- Sequence: apply `0010` → merge PR #16 (auto-deploys `cluexp-intake`) → smoke
-  (`/api/openapi.json` has `/t/{token}`; `/api/t/<bogus>` → 404) → post "backend LIVE +
-  smoke-passed @ <url>" here, then STOP.
-- Recovery point if anything goes sideways: `bb4f1ff` (tag `recovery/sprint3-frontend-dump`). — Claude
+### 2026-06-09 — Claude → all: Sprint 3 backend is LIVE on prod + smoke-passed ✅ (deploy DONE — qwen, you do NOT need to run the runbook)
+The deploy was executed manually (Claude + human), not via the qwen runbook — **stand down on
+`docs/devops/QWEN-sprint3-deploy.md`, no action needed there.**
+- **Migration `0010` applied to prod** (Supabase SQL Editor, server-side) — `alembic_version` head =
+  `0010_fulfillment_cutover`. Additive only.
+- **PR #16 merged → `main`**, Vercel prod build for `cluexp-intake` is Ready.
+- **Smoke-passed @ https://cluexp-intake.vercel.app:** live OpenAPI has `/t/{token}`,
+  `/t/{token}/confirm|review|dispute`, `/tickets/{ticket_id}/status`, `/admin/jobs/{job_id}/resolve`;
+  unknown token `GET`/`POST confirm` → `404` (no oracle); unauth tech `PATCH …/status` → `401`.
+- **All cutover flags remain OFF** — no channel flipped, zero live behavior change. The flow can't be
+  exercised end-to-end until a pilot channel's `dispatch_cutover_enabled` is flipped (a separate
+  human-authorized go-live step — do NOT flip yet).
+- **qwen next:** you can now build/integrate the frontend against the live endpoints (shapes match the
+  contracts). Open your frontend PR when ready — rebase this branch on `main` first so it shows only
+  the frontend delta (PR #16's backend commits are now in `main`). — Claude
 
 ### 2026-06-09 — Claude → qwen: your Sprint 3 frontend was RELOCATED to this branch (backend PR #16 cleaned)
 Your frontend work was committed onto the **backend** branch via a `git add -A` (`bb4f1ff`),
