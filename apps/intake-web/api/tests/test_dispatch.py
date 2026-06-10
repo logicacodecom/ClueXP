@@ -14,6 +14,15 @@ from api.dispatch import (
     POLICY_NETWORK_OPEN,
     POLICY_OWNER_FIRST,
     POLICY_PRIVATE,
+    STATUS_ARRIVED,
+    STATUS_ASSIGNED,
+    STATUS_COMPLETED_CONFIRMED,
+    STATUS_COMPLETED_PENDING,
+    STATUS_EN_ROUTE,
+    STATUS_IN_PROGRESS,
+    STATUS_PENDING_DISPATCH,
+    can_technician_transition,
+    customer_actions,
     eta_range_from_km,
     is_terminal,
     normalize_policy,
@@ -196,3 +205,60 @@ def test_no_assignment_before_match():
     status = asyncio.run(store.get_dispatch_status(jid, max_attempts=MAX, total_timeout_seconds=480))
     assert status["state"] in {"waiting", "no_eligible"}
     assert status["assignment"] is None
+
+
+# --- fulfillment cutover: technician transitions (pure) --------------------
+def test_technician_forward_transitions_allowed():
+    assert can_technician_transition(STATUS_ASSIGNED, STATUS_EN_ROUTE)
+    assert can_technician_transition(STATUS_EN_ROUTE, STATUS_ARRIVED)
+    assert can_technician_transition(STATUS_ARRIVED, STATUS_IN_PROGRESS)
+    assert can_technician_transition(STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING)
+    # forward skip is permitted (tech forgot an intermediate state)
+    assert can_technician_transition(STATUS_ASSIGNED, STATUS_IN_PROGRESS)
+
+
+def test_technician_cannot_go_backward_or_confirm():
+    assert not can_technician_transition(STATUS_ARRIVED, STATUS_EN_ROUTE)
+    assert not can_technician_transition(STATUS_IN_PROGRESS, STATUS_IN_PROGRESS)
+    # hard rule: technician may NEVER set completed_confirmed
+    assert not can_technician_transition(STATUS_COMPLETED_PENDING, STATUS_COMPLETED_CONFIRMED)
+    # cannot act before assignment / on a non-ladder status
+    assert not can_technician_transition(STATUS_PENDING_DISPATCH, STATUS_EN_ROUTE)
+    assert not can_technician_transition("complete", STATUS_EN_ROUTE)
+
+
+def test_customer_actions_only_when_completion_pending():
+    pending = customer_actions(STATUS_COMPLETED_PENDING)
+    assert pending == {"can_confirm": True, "can_dispute": True, "can_review": True}
+    # in-progress: no completion affordance yet
+    assert customer_actions(STATUS_IN_PROGRESS) == {
+        "can_confirm": False, "can_dispute": False, "can_review": False
+    }
+    # confirmed: review still allowed (grace), but no re-confirm / dispute
+    confirmed = customer_actions(STATUS_COMPLETED_CONFIRMED)
+    assert confirmed["can_confirm"] is False and confirmed["can_dispute"] is False
+    assert confirmed["can_review"] is True
+
+
+# --- fulfillment cutover: store transition gating (InMemory) ---------------
+def test_set_job_status_guarded_by_expected_current():
+    store = InMemoryStore()
+    jid = "00000000-0000-0000-0000-000000000010"
+    asyncio.run(store.set_job_status(jid, STATUS_ASSIGNED))
+    # wrong expected_current → no-op (None)
+    assert asyncio.run(
+        store.set_job_status(jid, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE)
+    ) is None
+    # correct expected_current → advances
+    out = asyncio.run(
+        store.set_job_status(jid, STATUS_EN_ROUTE, expected_current=STATUS_ASSIGNED)
+    )
+    assert out["status"] == STATUS_EN_ROUTE
+
+
+def test_unknown_token_resolves_to_none():
+    store = InMemoryStore()
+    assert asyncio.run(store.resolve_tracking_token("nope")) is None
+    assert asyncio.run(
+        store.get_tracking_by_token("nope", max_attempts=MAX, total_timeout_seconds=480)
+    ) is None

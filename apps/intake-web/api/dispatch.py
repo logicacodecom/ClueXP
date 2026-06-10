@@ -175,6 +175,88 @@ def is_terminal(state: str, *, attempts: int, max_attempts: int, timed_out: bool
     return False
 
 
+# --- operational fulfillment lifecycle (cutover, Sprint 3) ---
+# `job.status` operational lifecycle. Orthogonal to `trust_state` (privacy gate).
+# The domain is app-enforced (no DB check) so legacy intake-status values keep
+# working; only cutover jobs walk this ladder. Compare via the helpers below —
+# never string-match status ad-hoc.
+STATUS_PENDING_DISPATCH = "pending_dispatch"
+STATUS_ASSIGNED = "assigned"
+STATUS_EN_ROUTE = "en_route"
+STATUS_ARRIVED = "arrived"
+STATUS_IN_PROGRESS = "in_progress"
+STATUS_COMPLETED_PENDING = "completed_pending_customer"
+STATUS_COMPLETED_CONFIRMED = "completed_confirmed"
+STATUS_COMPLETED_AUTO_CLOSED = "completed_auto_closed"
+STATUS_DISPUTED = "disputed"
+STATUS_CANCELLED = "cancelled"
+STATUS_NO_SHOW = "no_show"
+
+# Forward progression ladder (dispatch -> on-site -> completion-pending).
+_FULFILLMENT_ORDER = [
+    STATUS_PENDING_DISPATCH,
+    STATUS_ASSIGNED,
+    STATUS_EN_ROUTE,
+    STATUS_ARRIVED,
+    STATUS_IN_PROGRESS,
+    STATUS_COMPLETED_PENDING,
+]
+# Status values the assigned technician may set (hard rule: NOT completed_confirmed).
+TECHNICIAN_SETTABLE = frozenset(
+    {STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING}
+)
+# Terminal operational states (no further automatic progress / closed to the customer).
+TERMINAL_STATUSES = frozenset(
+    {
+        STATUS_COMPLETED_CONFIRMED,
+        STATUS_COMPLETED_AUTO_CLOSED,
+        STATUS_CANCELLED,
+        STATUS_NO_SHOW,
+    }
+)
+# nullable lifecycle timestamp column written when a status is reached.
+STATUS_TIMESTAMP_COLUMN = {
+    STATUS_ASSIGNED: "assigned_at",
+    STATUS_EN_ROUTE: "en_route_at",
+    STATUS_ARRIVED: "arrived_at",
+    STATUS_IN_PROGRESS: "in_progress_at",
+    STATUS_COMPLETED_PENDING: "completed_pending_at",
+    STATUS_COMPLETED_CONFIRMED: "confirmed_at",
+    STATUS_DISPUTED: "disputed_at",
+    STATUS_CANCELLED: "cancelled_at",
+    # completed_auto_closed sets closed_at (handled by the caller).
+}
+
+
+def can_technician_transition(current: str | None, target: str) -> bool:
+    """True if the assigned technician may move a job from ``current`` to
+    ``target``. Forward-only, within the technician-settable set, and only from a
+    state at/after ``assigned`` (so legacy jobs that never entered the cutover
+    ladder are untouched). ``completed_confirmed`` is never technician-settable."""
+    if target not in TECHNICIAN_SETTABLE:
+        return False
+    if current not in _FULFILLMENT_ORDER or target not in _FULFILLMENT_ORDER:
+        return False
+    cur_i, tgt_i = _FULFILLMENT_ORDER.index(current), _FULFILLMENT_ORDER.index(target)
+    return cur_i >= _FULFILLMENT_ORDER.index(STATUS_ASSIGNED) and tgt_i > cur_i
+
+
+def customer_actions(status: str | None) -> dict[str, bool]:
+    """Customer-safe affordances for the token link, derived from operational
+    status. Confirm/dispute only while completion is pending; review is allowed
+    through the closed grace window."""
+    return {
+        "can_confirm": status == STATUS_COMPLETED_PENDING,
+        "can_dispute": status == STATUS_COMPLETED_PENDING,
+        "can_review": status
+        in {
+            STATUS_COMPLETED_PENDING,
+            STATUS_COMPLETED_CONFIRMED,
+            STATUS_COMPLETED_AUTO_CLOSED,
+        },
+    }
+
+
 def eta_range_from_km(dist_km: float | None) -> tuple[int | None, int | None]:
     """Coarse, honest ETA estimate from straight-line distance (no live routing).
     ~8 min base + travel at ~30 km/h, widened to a range. None if distance unknown."""

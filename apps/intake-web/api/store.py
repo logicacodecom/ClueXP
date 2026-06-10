@@ -15,11 +15,19 @@ The Ticket Pydantic model stays the single source of truth: we persist
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from api.auth import hash_password, verify_password
 from api.dispatch import (
+    STATUS_ASSIGNED,
+    STATUS_COMPLETED_AUTO_CLOSED,
+    STATUS_COMPLETED_CONFIRMED,
+    STATUS_COMPLETED_PENDING,
+    STATUS_PENDING_DISPATCH,
+    STATUS_TIMESTAMP_COLUMN,
+    customer_actions,
     eta_range_from_km,
     haversine_km,
     is_terminal,
@@ -34,6 +42,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # Demo/seed login password. Intentionally simple for the demo environment; override
 # via env. The JWT signing secret (AUTH_SECRET) is separate and must still be strong.
 DEMO_PASSWORD = os.environ.get("DEMO_SEED_PASSWORD", "123456")
+
+
+def _new_tracking_token() -> str:
+    """Secure, URL-safe customer capability token (~256 bits). Powers the
+    /t/{token} tracking + confirm/review/dispute link; never logged."""
+    return secrets.token_urlsafe(32)
 
 
 def _trust_state_value(ticket: Ticket) -> str:
@@ -247,6 +261,53 @@ class Store:
     async def get_dispatch_status(
         self, ticket_id: UUID, *, max_attempts: int, total_timeout_seconds: int
     ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    # --- fulfillment cutover (Sprint 3) ---
+    async def get_tracking_token(self, job_id: UUID) -> str | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def resolve_tracking_token(self, token: str) -> str | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_tracking_by_token(
+        self, token: str, *, max_attempts: int, total_timeout_seconds: int
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_job_lifecycle(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def set_job_status(
+        self,
+        job_id: UUID,
+        new_status: str,
+        *,
+        expected_current: str | None = None,
+        extra_timestamps: list[str] | None = None,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def record_customer_review(
+        self,
+        *,
+        job_id: UUID,
+        rating: int,
+        comment: str | None,
+        issue_reported: bool = False,
+        imply_confirm: bool = False,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def auto_close_pending(self, window_seconds: int) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    async def resolve_job(
+        self, job_id: UUID, *, action: str, note: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def log_event_raw(self, job_id: UUID, event: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -490,6 +551,12 @@ class InMemoryStore(Store):
                 and other["status"] == "offered"
             ):
                 other["status"] = "superseded"
+        # Cutover gate: advance only jobs already on the operational ladder.
+        self._job_status = getattr(self, "_job_status", {})
+        self._job_tech = getattr(self, "_job_tech", {})
+        if self._job_status.get(rec["job_id"]) == STATUS_PENDING_DISPATCH:
+            self._job_status[rec["job_id"]] = STATUS_ASSIGNED
+        self._job_tech[rec["job_id"]] = rec["technician_id"]
         return {
             "accepted": True,
             "job_id": rec["job_id"],
@@ -523,6 +590,7 @@ class InMemoryStore(Store):
             matched=matched, active_offers=active, total_offers=total,
             attempts=attempts, max_attempts=max_attempts, timed_out=False,
         )
+        status = (self._job_status.get(jid) if hasattr(self, "_job_status") else None)
         return {
             "state": state,
             "terminal": is_terminal(state, attempts=attempts, max_attempts=max_attempts, timed_out=False),
@@ -531,7 +599,79 @@ class InMemoryStore(Store):
             "offers_pending": active,
             "offer_expires_at": None,
             "assignment": None,
+            "status": status,
+            "closed": False,
+            "customer_actions": customer_actions(status),
         }
+
+    # --- fulfillment cutover (Sprint 3) — minimal in-memory backing for tests ---
+    async def get_tracking_token(self, job_id: UUID) -> str | None:
+        return getattr(self, "_tokens", {}).get(str(job_id))
+
+    async def resolve_tracking_token(self, token: str) -> str | None:
+        for jid, tok in getattr(self, "_tokens", {}).items():
+            if tok == token:
+                return jid
+        return None
+
+    async def get_tracking_by_token(
+        self, token: str, *, max_attempts: int, total_timeout_seconds: int
+    ) -> dict | None:
+        job_id = await self.resolve_tracking_token(token)
+        if job_id is None:
+            return None
+        return await self.get_dispatch_status(
+            job_id, max_attempts=max_attempts, total_timeout_seconds=total_timeout_seconds
+        )
+
+    async def get_job_lifecycle(self, job_id: UUID) -> dict | None:
+        jid = str(job_id)
+        statuses = getattr(self, "_job_status", {})
+        if jid not in statuses:
+            return None
+        return {
+            "status": statuses.get(jid),
+            "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
+            "fulfillment_org_id": None,
+            "customer_owner_org_id": None,
+        }
+
+    async def set_job_status(
+        self,
+        job_id: UUID,
+        new_status: str,
+        *,
+        expected_current: str | None = None,
+        extra_timestamps: list[str] | None = None,
+    ) -> dict | None:
+        self._job_status = getattr(self, "_job_status", {})
+        jid = str(job_id)
+        if expected_current is not None and self._job_status.get(jid) != expected_current:
+            return None
+        self._job_status[jid] = new_status
+        return {"id": jid, "status": new_status}
+
+    async def record_customer_review(
+        self, *, job_id: UUID, rating: int, comment: str | None,
+        issue_reported: bool = False, imply_confirm: bool = False,
+    ) -> dict:
+        review = {
+            "id": str(uuid4()), "ticket_id": str(job_id), "rating": rating,
+            "comment": comment, "issue_reported": issue_reported,
+        }
+        self.reviews.append(review)
+        return review
+
+    async def auto_close_pending(self, window_seconds: int) -> int:
+        return 0
+
+    async def resolve_job(
+        self, job_id: UUID, *, action: str, note: str | None = None
+    ) -> dict | None:
+        return {"id": str(job_id), "action": action}
+
+    async def log_event_raw(self, job_id: UUID, event: str) -> None:
+        self.events.append(f"{datetime.now(timezone.utc).isoformat()} {job_id} {event}")
 
     async def register_technician(self, data: dict) -> dict:
         raise NotImplementedError("registration requires the Postgres store")
@@ -629,6 +769,25 @@ class PostgresStore(Store):
                 ")"
             )
             await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
+            # Fulfillment cutover (migration 0010) — additive columns. Repeated here
+            # as add-column-if-not-exists so the live API is resilient if it boots
+            # before the migration runs (matches the fulfillment_org_id pattern above).
+            for _col in (
+                "tracking_token text",
+                "assigned_at timestamptz",
+                "en_route_at timestamptz",
+                "arrived_at timestamptz",
+                "in_progress_at timestamptz",
+                "completed_pending_at timestamptz",
+                "confirmed_at timestamptz",
+                "closed_at timestamptz",
+                "disputed_at timestamptz",
+                "cancelled_at timestamptz",
+            ):
+                await conn.execute(f"alter table jobs add column if not exists {_col}")
+            await conn.execute(
+                "create unique index if not exists idx_jobs_tracking_token on jobs (tracking_token)"
+            )
             await conn.execute(
                 "create table if not exists users ("
                 "  id uuid primary key default gen_random_uuid(),"
@@ -670,6 +829,24 @@ class PostgresStore(Store):
                 "  fulfillment_org_id uuid,"
                 "  created_at timestamptz not null default now()"
                 ")"
+            )
+            # Fulfillment cutover (migration 0010) — ticket-scoped customer-safe
+            # review fields; additive add-column-if-not-exists for boot resilience.
+            for _col in (
+                "assigned_technician_id text",
+                "customer_owner_org_id uuid",
+                "confirmed_at timestamptz",
+                "issue_reported boolean not null default false",
+            ):
+                await conn.execute(f"alter table job_reviews add column if not exists {_col}")
+            # Per-channel cutover flip (default OFF) — only if the channel table exists.
+            await conn.execute(
+                "do $$ begin"
+                "  if to_regclass('public.intake_channels') is not null then"
+                "    alter table intake_channels"
+                "      add column if not exists dispatch_cutover_enabled boolean not null default false;"
+                "  end if;"
+                " end $$"
             )
             await conn.execute(
                 "create table if not exists rating_summaries ("
@@ -916,13 +1093,13 @@ class PostgresStore(Store):
                 "  origin_org_id, customer_owner_org_id, intake_channel_id,"
                 "  trust_state, status, access_type,"
                 "  situation, urgency, lat, lng, address, detail, price_quote,"
-                "  final_charge, created_at, updated_at"
+                "  final_charge, tracking_token, created_at, updated_at"
                 ") values ("
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s, %s, %s, %s, %s,"
-                "  %s, %s, now()"
+                "  %s, %s, %s, now()"
                 ")"
                 " on conflict (id) do update set"
                 "  customer_id = coalesce(excluded.customer_id, jobs.customer_id),"
@@ -941,6 +1118,8 @@ class PostgresStore(Store):
                 "  detail = excluded.detail,"
                 "  price_quote = excluded.price_quote,"
                 "  final_charge = excluded.final_charge,"
+                # token is minted once at create and never rotated by later saves.
+                "  tracking_token = coalesce(jobs.tracking_token, excluded.tracking_token),"
                 "  updated_at = now()",
                 (
                     str(ticket.ticket_id),
@@ -960,6 +1139,7 @@ class PostgresStore(Store):
                     Jsonb(payload),
                     Jsonb(payload.get("price_quote")) if payload.get("price_quote") else None,
                     Jsonb(payload.get("final_charge")) if payload.get("final_charge") else None,
+                    _new_tracking_token(),
                     ticket.created_at,
                 ),
             )
@@ -970,21 +1150,24 @@ class PostgresStore(Store):
         try:
             async with await self._connect() as conn:
                 cur = await conn.execute(
-                    "select id, organization_id from intake_channels"
+                    "select id, organization_id,"
+                    " coalesce(dispatch_cutover_enabled, false) from intake_channels"
                     " where slug = %s and active = true",
                     (slug,),
                 )
                 row = await cur.fetchone()
         except Exception:
-            # Table not present yet (pre-0004) or lookup failed → public intake.
+            # Table/column not present yet (pre-0004 / pre-0010) or lookup failed
+            # → public intake (legacy path).
             return None
         if not row:
             return None
-        channel_id, org_id = row[0], row[1]
+        channel_id, org_id, cutover = row[0], row[1], row[2]
         return {
             "intake_channel_id": channel_id,
             "origin_org_id": org_id,
             "customer_owner_org_id": org_id,  # origin owns the customer (adr/0004 §4)
+            "dispatch_cutover_enabled": bool(cutover),
         }
 
     async def log_event(self, ticket: Ticket, event: str) -> None:
@@ -1202,7 +1385,8 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, lat, lng, access_type, fulfillment_technician_id,"
-                " customer_owner_org_id, fulfillment_policy, dispatch_attempts, trust_state"
+                " customer_owner_org_id, fulfillment_policy, dispatch_attempts, trust_state,"
+                " status"
                 " from jobs where id = %s",
                 (str(job_id),),
             )
@@ -1219,6 +1403,7 @@ class PostgresStore(Store):
             "fulfillment_policy": row[6],
             "dispatch_attempts": row[7] or 0,
             "trust_state": row[8],
+            "status": row[9],
         }
 
     async def list_available_technicians(self) -> list[dict]:
@@ -1306,12 +1491,24 @@ class PostgresStore(Store):
             if status != "offered":
                 return {"accepted": False, "reason": status, "job_id": str(job_id)}
             # Atomic first-accept-wins: only one accept can flip the null job.
+            # Cutover gate: a job only advances onto the operational ladder
+            # (status -> assigned + assigned_at) if it's already on it
+            # (status='pending_dispatch', set by a cutover-enabled create). Legacy
+            # jobs keep their intake status untouched — no live behavior change.
             cur = await conn.execute(
                 "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
-                " trust_state = 'matched', updated_at = now()"
+                " trust_state = 'matched',"
+                " status = case when status = %s then %s else status end,"
+                " assigned_at = case when status = %s then coalesce(assigned_at, now())"
+                "   else assigned_at end,"
+                " updated_at = now()"
                 " where id = %s and fulfillment_technician_id is null"
                 " returning id",
-                (str(tech_id), str(org_id) if org_id else None, str(job_id)),
+                (
+                    str(tech_id), str(org_id) if org_id else None,
+                    STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_PENDING_DISPATCH,
+                    str(job_id),
+                ),
             )
             won = await cur.fetchone()
             if not won:
@@ -1438,6 +1635,7 @@ class PostgresStore(Store):
                 assignment = await self._safe_assignment(
                     conn, tech_id, org_id, owner_org_id, lat, lng, ticket_id, job_status
                 )
+        from api.dispatch import TERMINAL_STATUSES
         return {
             "state": state,
             "terminal": terminal,
@@ -1446,6 +1644,11 @@ class PostgresStore(Store):
             "offers_pending": active,
             "offer_expires_at": next_expiry.isoformat() if next_expiry else None,
             "assignment": assignment,
+            # Operational fulfillment fields (cutover). For legacy jobs these are
+            # benign: status is the intake status and no customer action is offered.
+            "status": job_status,
+            "closed": job_status in TERMINAL_STATUSES,
+            "customer_actions": customer_actions(job_status),
         }
 
     async def _safe_assignment(
@@ -1506,6 +1709,226 @@ class PostgresStore(Store):
             "assigned_at": assigned_at.isoformat() if assigned_at else None,
             "job_status": job_status or "assigned",
         }
+
+    # --- fulfillment cutover (Sprint 3) ---
+    async def get_tracking_token(self, job_id: UUID) -> str | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select tracking_token from jobs where id = %s", (str(job_id),)
+            )
+            row = await cur.fetchone()
+        return row[0] if row and row[0] else None
+
+    async def resolve_tracking_token(self, token: str) -> str | None:
+        """Resolve a customer capability token to its job id. The token is a
+        ~256-bit URL-safe secret looked up via a unique index; an unknown token
+        returns None (the route answers 404 — no oracle on token validity)."""
+        if not token:
+            return None
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id from jobs where tracking_token = %s", (token,)
+            )
+            row = await cur.fetchone()
+        return str(row[0]) if row else None
+
+    async def get_tracking_by_token(
+        self, token: str, *, max_attempts: int, total_timeout_seconds: int
+    ) -> dict | None:
+        job_id = await self.resolve_tracking_token(token)
+        if job_id is None:
+            return None
+        return await self.get_dispatch_status(
+            UUID(job_id), max_attempts=max_attempts, total_timeout_seconds=total_timeout_seconds
+        )
+
+    async def get_job_lifecycle(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select status, fulfillment_technician_id, fulfillment_org_id,"
+                " customer_owner_org_id from jobs where id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "status": row[0],
+            "fulfillment_technician_id": str(row[1]) if row[1] else None,
+            "fulfillment_org_id": str(row[2]) if row[2] else None,
+            "customer_owner_org_id": str(row[3]) if row[3] else None,
+        }
+
+    async def set_job_status(
+        self,
+        job_id: UUID,
+        new_status: str,
+        *,
+        expected_current: str | None = None,
+        extra_timestamps: list[str] | None = None,
+    ) -> dict | None:
+        """Optimistic forward status transition. Sets the lifecycle timestamp for
+        ``new_status`` (and any ``extra_timestamps``) once. When ``expected_current``
+        is given, the UPDATE is guarded on it so concurrent transitions can't race.
+        Returns the new row dict, or None if the guard didn't match (conflict)."""
+        cols = set(extra_timestamps or [])
+        ts = STATUS_TIMESTAMP_COLUMN.get(new_status)
+        if ts:
+            cols.add(ts)
+        # Column names come from a fixed whitelist (STATUS_TIMESTAMP_COLUMN /
+        # caller constants), never user input — safe to inline.
+        sets = ["status = %s", "updated_at = now()"]
+        for col in sorted(cols):
+            sets.append(f"{col} = coalesce({col}, now())")
+        params: list = [new_status]
+        where = "id = %s"
+        params.append(str(job_id))
+        if expected_current is not None:
+            where += " and status = %s"
+            params.append(expected_current)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"update jobs set {', '.join(sets)} where {where} returning id, status",
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "status": row[1]}
+
+    async def record_customer_review(
+        self,
+        *,
+        job_id: UUID,
+        rating: int,
+        comment: str | None,
+        issue_reported: bool = False,
+        imply_confirm: bool = False,
+    ) -> dict:
+        """Ticket-scoped, customer-safe review via the token link. Pulls the
+        assigned technician / fulfillment + customer-owner orgs from the job (the
+        customer may only review the tech assigned to *that* ticket) and refreshes
+        rating summaries. Optionally implies confirm (sets confirmed_at)."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select fulfillment_technician_id, fulfillment_org_id, customer_owner_org_id"
+                " from jobs where id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise KeyError(str(job_id))
+            tech_ref = str(row[0]) if row[0] else None
+            fulfillment_org_id = row[1]
+            customer_owner_org_id = row[2]
+            confirmed_at = datetime.now(timezone.utc) if imply_confirm else None
+            cur = await conn.execute(
+                "insert into job_reviews ("
+                " job_id, rating, tags, comment, fulfillment_technician_ref, fulfillment_org_id,"
+                " assigned_technician_id, customer_owner_org_id, confirmed_at, issue_reported"
+                ") values (%s, %s, '{}', %s, %s, %s, %s, %s, %s, %s)"
+                " returning id, created_at",
+                (
+                    str(job_id), rating, comment, tech_ref, fulfillment_org_id,
+                    tech_ref, customer_owner_org_id, confirmed_at, issue_reported,
+                ),
+            )
+            review_row = await cur.fetchone()
+            targets = []
+            if tech_ref:
+                targets.append(("technician", tech_ref))
+            if fulfillment_org_id:
+                targets.append(("organization", str(fulfillment_org_id)))
+            for target_type, target_id in targets:
+                await conn.execute(
+                    "insert into rating_summaries (target_type, target_id, average_rating, review_count)"
+                    " select %s, %s, avg(rating)::numeric(3,2), count(*)::integer"
+                    " from job_reviews"
+                    " where (%s = 'technician' and fulfillment_technician_ref = %s)"
+                    "    or (%s = 'organization' and fulfillment_org_id::text = %s)"
+                    " on conflict (target_type, target_id) do update set"
+                    "  average_rating = excluded.average_rating,"
+                    "  review_count = excluded.review_count,"
+                    "  updated_at = now()",
+                    (target_type, target_id, target_type, target_id, target_type, target_id),
+                )
+            if tech_ref:
+                await conn.execute(
+                    "update technicians t set rating = s.average_rating"
+                    " from rating_summaries s"
+                    " where s.target_type = 'technician' and s.target_id = %s"
+                    " and t.id::text = s.target_id",
+                    (tech_ref,),
+                )
+        return {
+            "id": str(review_row[0]) if review_row else None,
+            "ticket_id": str(job_id),
+            "rating": rating,
+            "comment": comment,
+            "issue_reported": issue_reported,
+            "technician_ref": tech_ref,
+            "organization_id": str(fulfillment_org_id) if fulfillment_org_id else None,
+        }
+
+    async def auto_close_pending(self, window_seconds: int) -> int:
+        """Cron-owned: close jobs stuck in completed_pending_customer past the
+        confirm window → completed_auto_closed. Returns how many were closed."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update jobs set status = %s, closed_at = now(), updated_at = now()"
+                " where status = %s and completed_pending_at is not null"
+                " and extract(epoch from (now() - completed_pending_at)) >= %s"
+                " returning 1",
+                (STATUS_COMPLETED_AUTO_CLOSED, STATUS_COMPLETED_PENDING, window_seconds),
+            )
+            rows = await cur.fetchall()
+        return len(rows)
+
+    async def resolve_job(
+        self, job_id: UUID, *, action: str, note: str | None = None
+    ) -> dict | None:
+        """Dispatcher/admin resolution of an in-flight or disputed job. Actions:
+        ``close`` (→ completed_auto_closed), ``cancel`` (→ cancelled),
+        ``redispatch`` (→ pending_dispatch, clear assignment so the sweep retries)."""
+        if action == "close":
+            updated = await self.set_job_status(
+                job_id, STATUS_COMPLETED_AUTO_CLOSED, extra_timestamps=["closed_at"]
+            )
+        elif action == "cancel":
+            updated = await self.set_job_status(job_id, "cancelled")
+        elif action == "redispatch":
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "update jobs set status = %s, trust_state = 'intake',"
+                    " fulfillment_technician_id = null, fulfillment_org_id = null,"
+                    " assigned_at = null, dispatch_attempts = 0, updated_at = now()"
+                    " where id = %s returning id, status",
+                    (STATUS_PENDING_DISPATCH, str(job_id)),
+                )
+                row = await cur.fetchone()
+                if row:
+                    await conn.execute(
+                        "update dispatch_offers set status = 'superseded', responded_at = now()"
+                        " where job_id = %s and status = 'offered'",
+                        (str(job_id),),
+                    )
+            updated = {"id": str(row[0]), "status": row[1]} if row else None
+        else:
+            raise ValueError("unknown_action")
+        if updated is None:
+            return None
+        if note:
+            await self.log_event_raw(job_id, f"resolve:{action}:{note[:200]}")
+        else:
+            await self.log_event_raw(job_id, f"resolve:{action}")
+        return updated
+
+    async def log_event_raw(self, job_id: UUID, event: str) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "insert into events (ticket_id, job_id, event) values (%s, %s, %s)",
+                (str(job_id), str(job_id), event),
+            )
 
     async def register_technician(self, data: dict) -> dict:
         email = (data.get("email") or "").strip() or None
