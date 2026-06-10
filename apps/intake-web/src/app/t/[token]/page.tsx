@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Ticket, TicketGuards } from "@/types/schema.generated";
+import type { TicketGuards } from "@/types/schema.generated";
 import { useRouter, useParams } from "next/navigation";
-import { Car, Clock3, LoaderCircle, MapPin, Phone, ShieldCheck, UserRound } from "lucide-react";
+import { LoaderCircle, ShieldCheck } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 
 type Screen =
@@ -100,57 +100,6 @@ function AgentMessage({ children, support }: { children: React.ReactNode; suppor
   );
 }
 
-function CallAPersonButton({ onClick }: { onClick: () => void }) {
-  const { locale } = useLocale();
-  return (
-    <button className="secondary" type="button" onClick={onClick}>
-      <Phone size={18} aria-hidden="true" />
-      {locale === "es" ? "Llamar a una persona" : "Call a person instead"}
-    </button>
-  );
-}
-
-function StatusPill({ status }: { status: Screen }) {
-  const labels = {
-    loading: "Loading",
-    waiting: "Waiting",
-    matched: "Assigned",
-    en_route: "En Route",
-    arrived: "Arrived",
-    in_progress: "In Progress",
-    completed_pending_customer: "Complete",
-    completed_confirmed: "Completed",
-    completed_auto_closed: "Closed",
-    disputed: "In Review",
-    cancelled: "Cancelled",
-    error: "Error",
-  };
-
-  const tones = {
-    loading: "default",
-    waiting: "default",
-    matched: "success",
-    en_route: "success",
-    arrived: "success",
-    in_progress: "success",
-    completed_pending_customer: "success",
-    completed_confirmed: "success",
-    completed_auto_closed: "default",
-    disputed: "warn",
-    cancelled: "default",
-    error: "error",
-  };
-
-  const label = labels[status] || status;
-  const tone = tones[status as keyof typeof tones] || "default";
-
-  return (
-    <span className={`pill pill--${tone}`}>
-      {label}
-    </span>
-  );
-}
-
 export default function TokenTrackingPage() {
   const router = useRouter();
   const params = useParams();
@@ -167,7 +116,6 @@ export default function TokenTrackingPage() {
     comment: ""
   });
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
-  const [arrivalCode, setArrivalCode] = useState("");
 
   const localeText = {
     waiting: {
@@ -197,12 +145,12 @@ export default function TokenTrackingPage() {
         : "You can track their live location."
     },
     arrived: {
-      title: locale === "es" 
-        ? "El técnico ha llegado." 
+      title: locale === "es"
+        ? "El técnico ha llegado."
         : "Technician has arrived.",
       support: locale === "es"
-        ? "Verifica el código de llegada antes de que comience el trabajo."
-        : "Verify the arrival code before work begins."
+        ? "Por favor, déjelos entrar."
+        : "Please let them in."
     },
     in_progress: {
       title: locale === "es" 
@@ -260,23 +208,23 @@ export default function TokenTrackingPage() {
     try {
       const data = await api<TrackingResponse>(`/t/${token}`);
       setAssignment(data.assignment);
-      
-      if (data.guards.may_show_technician && data.guards.may_show_live_tracking) {
-        if (data.status === "completed_pending_customer") {
-          setScreen("completed_pending_customer");
-        } else if (data.status === "completed_confirmed") {
-          setScreen("completed_confirmed");
-        } else if (data.status === "completed_auto_closed") {
-          setScreen("completed_auto_closed");
-        } else if (data.status === "disputed") {
-          setScreen("disputed");
-        } else if (data.status === "cancelled" || data.status === "no_show") {
-          setScreen("cancelled");
-        } else if (data.assignment) {
-          setScreen("matched");
-        } else {
-          setScreen("waiting");
-        }
+
+      const TERMINAL: Record<string, Screen> = {
+        completed_pending_customer: "completed_pending_customer",
+        completed_confirmed: "completed_confirmed",
+        completed_auto_closed: "completed_auto_closed",
+        disputed: "disputed",
+        cancelled: "cancelled",
+        no_show: "cancelled",
+      };
+      const ACTIVE_LIVE = new Set(["en_route", "arrived", "in_progress"]);
+
+      if (TERMINAL[data.status]) {
+        setScreen(TERMINAL[data.status]);
+      } else if (ACTIVE_LIVE.has(data.status) && data.guards.may_show_live_tracking) {
+        setScreen(data.status as Screen);
+      } else if (data.assignment && data.guards.may_show_technician) {
+        setScreen("matched");
       } else {
         setScreen("waiting");
       }
@@ -464,33 +412,24 @@ export default function TokenTrackingPage() {
               </div>
               <p className="fine">
                 {assignment.role}
-                {assignment.rating != null 
-                  ? ` - ${locale === "es" ? "Calificación" : "rating"} ${assignment.rating}` 
+                {assignment.rating != null
+                  ? ` - ${locale === "es" ? "Calificación" : "rating"} ${assignment.rating}`
                   : ""}
               </p>
               {assignment.provider_company && (
                 <p className="fine">
-                  {locale === "es" 
-                    ? "Cumplido por" 
+                  {locale === "es"
+                    ? "Cumplido por"
                     : "Fulfilled by"} {assignment.provider_company}
                 </p>
               )}
               <p className="fine">
-                {locale === "es" 
-                  ? "Llegada estimada" 
+                {locale === "es"
+                  ? "Llegada estimada"
                   : "Estimated arrival"} {assignment.eta_min}-{assignment.eta_max} {locale === "es" ? "minutos" : "minutes"}.
               </p>
             </div>
           )}
-          <button 
-            className="primary" 
-            type="button" 
-            onClick={() => setScreen("en_route")}
-          >
-            {locale === "es" 
-              ? localeText.en_route.title 
-              : localeText.en_route.title}
-          </button>
         </main>
       </div>
     );
@@ -508,8 +447,8 @@ export default function TokenTrackingPage() {
             <div className="map" aria-label="Service area map preview" />
             <div className="panel">
               <p className="panel-title">
-                {locale === "es" 
-                  ? "Llegada estimada" 
+                {locale === "es"
+                  ? "Llegada estimada"
                   : "Estimated arrival"}
               </p>
               <div className="big-number">
@@ -521,15 +460,6 @@ export default function TokenTrackingPage() {
                   : "This is a coarse estimate until live route tracking is available."}
               </p>
             </div>
-            <button 
-              className="primary" 
-              type="button" 
-              onClick={() => setScreen("arrived")}
-            >
-              {locale === "es" 
-                ? localeText.arrived.title 
-                : localeText.arrived.title}
-            </button>
           </div>
         </main>
       </div>
@@ -541,31 +471,18 @@ export default function TokenTrackingPage() {
       <div className="shell">
         <TopBar />
         <main className="main">
-          <AgentMessage support={localeText.arrived.support}>
+          <AgentMessage support={locale === "es" ? "Por favor, déjelos entrar." : "Please let them in."}>
             {localeText.arrived.title}
           </AgentMessage>
-          <div className="panel">
-            <p className="panel-title">
-              {locale === "es" 
-                ? "Código de cliente" 
-                : "Customer code"}
-            </p>
-            <div className="big-number">{arrivalCode || "####"}</div>
-            <p className="fine">
-              {locale === "es"
-                ? "Pídale al especialista que muestre el mismo código."
-                : "Ask the specialist to show the same code."}
-            </p>
-          </div>
-          <button 
-            className="primary" 
-            type="button" 
-            onClick={() => setScreen("in_progress")}
-          >
-            {locale === "es" 
-              ? localeText.in_progress.title 
-              : localeText.in_progress.title}
-          </button>
+          {assignment && (
+            <div className="panel">
+              <p className="panel-title">
+                {locale === "es" ? "Especialista" : "Specialist"}
+              </p>
+              <div className="big-number">{assignment.technician_display_name}</div>
+              <p className="fine">{assignment.role}</p>
+            </div>
+          )}
         </main>
       </div>
     );
@@ -581,8 +498,8 @@ export default function TokenTrackingPage() {
           </AgentMessage>
           <div className="panel">
             <p className="panel-title">
-              {locale === "es" 
-                ? "Estado del trabajo" 
+              {locale === "es"
+                ? "Estado del trabajo"
                 : "Job status"}
             </p>
             <div className="big-number">
@@ -594,15 +511,6 @@ export default function TokenTrackingPage() {
                 : "The specialist is working on your issue."}
             </p>
           </div>
-          <button 
-            className="primary" 
-            type="button" 
-            onClick={() => setScreen("completed_pending_customer")}
-          >
-            {locale === "es" 
-              ? localeText.completed_pending_customer.title 
-              : localeText.completed_pending_customer.title}
-          </button>
         </main>
       </div>
     );
@@ -692,14 +600,12 @@ export default function TokenTrackingPage() {
             </div>
           )}
           <div className="stack">
-            <button 
-              className="ghost" 
-              type="button" 
+            <button
+              className="ghost"
+              type="button"
               onClick={handleDispute}
             >
-              {locale === "es" 
-                ? localeText.disputed.title 
-                : localeText.disputed.title}
+              {locale === "es" ? "Hay un problema" : "Something went wrong"}
             </button>
           </div>
         </main>
