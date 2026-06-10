@@ -18,7 +18,9 @@ export default async function CompletePage({ params }: { params: Promise<{ id: s
           </div>
           <p className="mt-3 text-sm leading-5 text-muted">Mock summary. Final amount is backend/provider-settlement controlled.</p>
         </Section>
-        <PrimaryButton href="/jobs"><icons.CheckCircle2 className="size-5" />Return to jobs</PrimaryButton>
+        <div className="space-y-3">
+          <PrimaryButton href="/jobs"><icons.CheckCircle2 className="size-5" />Return to jobs</PrimaryButton>
+        </div>
       </Screen>
     </AppFrame>
   );

@@ -301,3 +301,59 @@ export interface TechnicianHistoryEntry {
   completed_at: string;
   amount?: string;
 }
+
+// Fulfillment cutover (Sprint 3) - customer tracking API types
+
+/** Operational job status for the fulfillment lifecycle */
+export type JobStatus =
+  | "pending_dispatch"
+  | "assigned"
+  | "en_route"
+  | "arrived"
+  | "in_progress"
+  | "completed_pending_customer"
+  | "completed_confirmed"
+  | "completed_auto_closed"
+  | "disputed"
+  | "cancelled"
+  | "no_show";
+
+/** Customer affordances for the token tracking link */
+export interface CustomerActions {
+  can_confirm: boolean;
+  can_dispute: boolean;
+  can_review: boolean;
+}
+
+/** Tracking response with cutover extensions */
+export interface TrackingWithStatus {
+  ticket_id: string;
+  token: string;
+  trust_state: TrustState;
+  status: JobStatus;
+  access_type: string;
+  situation: string;
+  location: { raw_text: string };
+  assignment: {
+    customer_owner: string | null;
+    fulfillment_type: "company_technician" | "independent_technician" | "network_provider";
+    provider_company: string | null;
+    technician_display_name: string;
+    role: string;
+    rating: number | null;
+    eta_min: number;
+    eta_max: number;
+    eta_is_estimate: boolean;
+    assigned_at: string;
+    job_status: string;
+  } | null;
+  guards: {
+    may_show_technician: boolean;
+    may_show_eta: boolean;
+    may_show_live_tracking: boolean;
+  };
+  can_confirm: boolean;
+  can_review: boolean;
+  can_dispute: boolean;
+  terminal: boolean;
+}
