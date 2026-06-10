@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import math
 import os
 import random
@@ -45,6 +46,7 @@ from api.schema import (
 
 
 store = make_store()
+logger = logging.getLogger(__name__)
 
 # Env-driven CORS. Set ALLOWED_ORIGINS to a comma-separated list in production;
 # unset falls back to "*" for local dev. (In prod the Next.js rewrite proxies
@@ -790,7 +792,10 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
         await store.set_job_status(ticket.ticket_id, "pending_dispatch")
         job = await store.get_dispatch_job(ticket.ticket_id)
         if job is not None:
-            await _dispatch_write(ticket.ticket_id, job)
+            try:
+                await _dispatch_write(ticket.ticket_id, job)
+            except Exception:
+                logger.exception("dispatch_write failed at create for job %s", ticket.ticket_id)
         await log_transition(ticket, "dispatch_cutover")
         token = await store.get_tracking_token(ticket.ticket_id)
         if token:
@@ -825,7 +830,12 @@ async def create_provider_request(
 @app.get("/tickets/{ticket_id}", response_model=TicketEnvelope)
 async def get_ticket(ticket_id: UUID) -> TicketEnvelope:
     await latency()
-    return await envelope(await require_ticket(ticket_id))
+    env = await envelope(await require_ticket(ticket_id))
+    token = await store.get_tracking_token(ticket_id)
+    if token:
+        env.tracking_token = token
+        env.tracking_path = f"/t/{token}"
+    return env
 
 
 @app.patch("/tickets/{ticket_id}", response_model=TicketEnvelope)
@@ -1021,7 +1031,7 @@ async def create_offers(ticket_id: UUID) -> dict[str, Any]:
     return await _dispatch_write(ticket_id, job)
 
 
-@app.post("/cron/dispatch-sweep")
+@app.api_route("/cron/dispatch-sweep", methods=["GET", "POST"])
 async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     """Scheduler-driven sweep — callable by Vercel Cron OR Supabase pg_cron/pg_net
     OR any external scheduler. Secret-protected via ``Authorization: Bearer
