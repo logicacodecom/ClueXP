@@ -8,11 +8,5 @@
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/main" }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/dispatch-sweep",
-      "schedule": "*/2 * * * *"
-    }
   ]
 }
