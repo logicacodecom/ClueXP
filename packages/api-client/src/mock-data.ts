@@ -7,17 +7,20 @@ import type {
   AuthSession,
   AuthUser,
   ComplianceEntry,
+  CustomerActions,
   DashboardAggregates,
   DispatchEvent,
   DispatchOffer,
   Job,
+  JobStatus,
   Organization,
   Team,
   Technician,
   TechnicianActivitySummary,
   TechnicianAppOffer,
   TechnicianAppProfile,
-  TechnicianHistoryEntry
+  TechnicianHistoryEntry,
+  TrackingWithStatus
 } from "./types";
 
 export const organizations: Organization[] = [
@@ -671,4 +674,51 @@ export function technicianOfferById(id?: string): TechnicianAppOffer | undefined
 
 export function technicianJobs(): Job[] {
   return jobs.filter((job) => assignedTechnicianJobIds.includes(job.id));
+}
+
+// Fulfillment cutover (Sprint 3) - mock tracking data
+
+export function mockTrackingWithStatus(token: string, status: JobStatus): TrackingWithStatus {
+  const job = jobs.find((j) => j.id === "JOB-A");
+  return {
+    ticket_id: token,
+    token,
+    trust_state: status === "pending_dispatch" || status === "assigned" ? "MATCHED" : "FULFILLMENT",
+    status,
+    access_type: "car",
+    situation: "locked_out",
+    location: { raw_text: "1234 Main St, Downtown" },
+    assignment: job && ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status)
+      ? {
+          customer_owner: "Metro Key Partners",
+          fulfillment_type: "company_technician",
+          provider_company: "Metro Key Partners",
+          technician_display_name: "Marcus Reyes",
+          role: "Verified Technician",
+          rating: 4.9,
+          eta_min: 10,
+          eta_max: 17,
+          eta_is_estimate: true,
+          assigned_at: "2026-06-09T14:30:00Z",
+          job_status: status
+        }
+      : null,
+    guards: {
+      may_show_technician: status !== "pending_dispatch",
+      may_show_eta: status === "assigned",
+      may_show_live_tracking: status === "en_route" || status === "arrived" || status === "in_progress"
+    },
+    can_confirm: status === "completed_pending_customer",
+    can_review: ["completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status),
+    can_dispute: status === "completed_pending_customer",
+    terminal: ["completed_confirmed", "completed_auto_closed", "cancelled", "no_show"].includes(status)
+  };
+}
+
+export function mockCustomerActions(status: JobStatus): CustomerActions {
+  return {
+    can_confirm: status === "completed_pending_customer",
+    can_dispute: status === "completed_pending_customer",
+    can_review: ["completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status)
+  };
 }

@@ -20,7 +20,11 @@ export default async function ServicePage({ params }: { params: Promise<{ id: st
             ))}
           </div>
         </Section>
-        <PrimaryButton href={`/jobs/${job.id}/approval`}><icons.CheckCircle2 className="size-5" />Request customer approval</PrimaryButton>
+        <div className="space-y-3">
+          <PrimaryButton href={`/jobs/${job.id}/arrival`}><icons.Navigation className="size-5" />Arrived</PrimaryButton>
+          <PrimaryButton href={`/jobs/${job.id}/service`}><icons.CheckCircle2 className="size-5" />In progress</PrimaryButton>
+          <PrimaryButton href={`/jobs/${job.id}/approval`}><icons.CheckCircle2 className="size-5" />Request customer approval</PrimaryButton>
+        </div>
       </Screen>
     </AppFrame>
   );
