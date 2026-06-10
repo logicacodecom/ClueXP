@@ -14,20 +14,6 @@ export type TicketStatus = "draft" | "complete" | "partial" | "fallback_to_human
 export type TrustState = "intake" | "matched" | "fulfillment";
 export type Urgency = "emergency" | "urgent" | "standard" | "scheduled";
 
-// Fulfillment cutover (Sprint 3) - operational job status
-export type JobStatus =
-  | "pending_dispatch"
-  | "assigned"
-  | "en_route"
-  | "arrived"
-  | "in_progress"
-  | "completed_pending_customer"
-  | "completed_confirmed"
-  | "completed_auto_closed"
-  | "disputed"
-  | "cancelled"
-  | "no_show";
-
 export interface Automotive {
   make?: string | null;
   model?: string | null;
@@ -150,20 +136,4 @@ export interface TicketGuards {
 export interface TicketEnvelope {
   ticket: Ticket;
   guards: TicketGuards;
-}
-
-// Fulfillment cutover (Sprint 3) - tracking response extensions
-export interface CustomerActions {
-  can_confirm: boolean;
-  can_dispute: boolean;
-  can_review: boolean;
-}
-
-export interface TrackingResponse extends TicketEnvelope {
-  token: string;
-  tracking_token?: string | null;
-  tracking_path?: string | null;
-  status: JobStatus;
-  customer_actions: CustomerActions;
-  closed: boolean;
 }
