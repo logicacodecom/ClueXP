@@ -5,7 +5,6 @@ import type { TicketGuards } from "@/types/schema.generated";
 import { useRouter, useParams } from "next/navigation";
 import { LoaderCircle, ShieldCheck } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
-import { cancelRequest } from "@cluexp/api-client";
 
 type Screen =
   | "loading"
