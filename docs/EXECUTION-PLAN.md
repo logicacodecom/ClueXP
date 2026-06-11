@@ -22,11 +22,11 @@
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
 | Dispatch engine | `[x]` | Deterministic ranking, policy-aware offers, expiry/re-dispatch, atomic first-accept-wins |
 | Customer dispatch tracking | `[x]` read contract | Waiting/matched/no-eligible/retry/error; safe assignment only after acceptance |
-| Live customer cutover | `[~]` | All frontend blockers resolved (`2f3f334`): token handoff, full lifecycle tracking UI, cancel+reason UI, Places autocomplete; flags still OFF; pilot flip pending |
-| Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); full customer lifecycle + technician wiring complete (`2f3f334`); active-job hydration uses real API; mock controls removal still pending |
+| Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` channel live (`dispatch_cutover_enabled=true`); pilot smoke test pending |
+| Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Payments | `[ ]` | Deferred; current charge/finalize/review behavior is demo-only |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[~]` | Latest push `2f3f334` (qwen pre-pilot blockers, 2026-06-11); awaiting GitHub Actions green — confirm then mark `[x]` |
+| CI | `[x]` | Green on `2f3f334`; latest push `8ba6b62` (fix /api prefix on token actions) |
 
 Current production migration head: **`0010`** (applied 2026-06-09).
 
@@ -113,17 +113,18 @@ this execution plan treats it as Sprint 3).
   _(`router.push(committed.tracking_path)` if backend returns tracking_path; legacy path retained as fallback. `2f3f334`.)_
 - [x] Extend customer tracking from waiting/matched through:
   active status, completion confirmation, review, dispute and closed states.
-  _(Token page handles full lifecycle: en_route/arrived/in_progress live states, completed_pending_customer confirm/review/dispute, closed/cancelled/no_show terminals. `2f3f334`.)_
+  _(All statuses implemented incl. `no_show` as own screen; each with EN/ES. `87f6c4e`. `/api` prefix bug fixed `8ba6b62`.)_
 - [x] Connect technician active-job state restoration to the assigned real job.
   _(Discriminated union `ActiveJobRead`, server-side cookie forwarding, empty/unauthorized/error states all handled. `2f3f334`.)_
 - [x] Connect primary technician actions to real forward status mutations.
   _(arrival → `arrived`, service → `in_progress`/`completed_pending_customer`, approval → `completed_pending_customer` all wired `54d324d`.)_
-- [~] Implement production loading, stale-session, unauthorized, conflict,
+- [x] Implement production loading, stale-session, unauthorized, conflict,
   offline/retry and terminal states.
-  _(Unauthorized/error states handled in tech active-job (`2f3f334`); customer tracking and intake error states still basic.)_
-- [~] Keep customer and technician localization complete for every new state.
-  _(Cancel reason UI EN/ES done `2f3f334`; verify all lifecycle screens on both locales before widening.)_
-- [ ] Remove mock completion controls from the cutover-enabled real path.
+  _(401/403/409/network errors handled on all five customer actions with EN/ES; 409 auto-refreshes. `87f6c4e`.)_
+- [x] Keep customer and technician localization complete for every new state.
+  _(All lifecycle screens EN/ES; cancel reason, no_show, error messages all localized. `87f6c4e`.)_
+- [x] Remove mock completion controls from the cutover-enabled real path.
+  _(Verified by qwen: all technician job status pages use real `updateTechnicianJobStatus`; complete page is summary-only. `87f6c4e`.)_
 
 **PO decisions (2026-06-10):** dispatch stays fully automatic (no human-in-loop
 ops step); the customer search window stays backend-owned at
