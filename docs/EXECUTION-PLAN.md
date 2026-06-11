@@ -1,6 +1,6 @@
 # ClueXP Execution Plan
 
-> **Verified/reconciled:** 2026-06-07
+> **Verified/reconciled:** 2026-06-10
 > **Primary objective:** complete and prove the production business cycle:
 > request -> dispatch -> accept -> fulfill -> customer confirm/review or dispute
 > -> resolve/close.
@@ -22,14 +22,13 @@
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
 | Dispatch engine | `[x]` | Deterministic ranking, policy-aware offers, expiry/re-dispatch, atomic first-accept-wins |
 | Customer dispatch tracking | `[x]` read contract | Waiting/matched/no-eligible/retry/error; safe assignment only after acceptance |
-| Live customer cutover | `[ ]` | Existing customer flow still retains the legacy instant-match rollback path |
-| Fulfillment lifecycle | `[ ]` production | En route, arrived, in progress, complete, confirm, dispute and close contracts not yet live |
+| Live customer cutover | `[~]` | Backend + customer token-tracking UI deployed flags-OFF; intake → token-link handoff not wired; pilot flip pending; legacy instant-match path retained as rollback |
+| Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); customer tracking UI merged (#18/#19); technician status wiring still mock-driven |
 | Payments | `[ ]` | Deferred; current charge/finalize/review behavior is demo-only |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[~]` | Existing workflow runs web/API checks; Python pytest gate still needs to be confirmed/added on `main` |
+| CI | `[~]` | `ci.yml` runs web/API checks + `api/tests` pytest on push to `main` (2ec1e97); confirm a green run on GitHub, then mark `[x]` |
 
-Current production migration head: **`0009`**. The approved fulfillment cutover
-expects additive migration **`0010`**.
+Current production migration head: **`0010`** (applied 2026-06-09).
 
 ## 2. Completed Foundation
 
@@ -77,13 +76,12 @@ this execution plan treats it as Sprint 3).
 
 ### 3.1 Backend and data contract
 
-> **Built + tested locally, NOT yet deployed** (branch
-> `feat/sprint3-fulfillment-cutover-backend@f51d03c`; 28 pytest pass, all flags
-> default-OFF). Prod apply of `0010` + deploy + smoke remain — blocked on push/DB
-> credentials from the current environment (see HANDOFF 2026-06-09). Exact
-> endpoint contracts are posted in `docs/HANDOFF.md` for qwen.
+> **Deployed to production 2026-06-09** (PR #16 merged; migration `0010` applied;
+> all flags default-OFF). Customer tracking + technician status UI followed in
+> PRs #17–#19; tracking-token fixes in #17 were verified against prod. Exact
+> endpoint contracts are posted in `docs/HANDOFF.md`.
 
-- [~] Add migration `0010` (written, not applied to prod):
+- [x] Add migration `0010` (applied to prod 2026-06-09):
   - secure unique `jobs.tracking_token`;
   - full operational status domain and lifecycle timestamps;
   - `intake_channels.dispatch_cutover_enabled default false`;
@@ -120,6 +118,42 @@ this execution plan treats it as Sprint 3).
   offline/retry and terminal states.
 - [ ] Keep customer and technician localization complete for every new state.
 - [ ] Remove mock completion controls from the cutover-enabled real path.
+
+**PO decisions (2026-06-10):** dispatch stays fully automatic (no human-in-loop
+ops step); the customer search window stays backend-owned at
+`DISPATCH_TOTAL_TIMEOUT_SECONDS` (480s) with no customer-facing countdown.
+
+**PO scope additions (2026-06-10) — pre-pilot:**
+
+- [ ] Backend: customer cancel `POST /api/t/{token}/cancel` — allowed from
+  `pending_dispatch` through `en_route`, rejected (409) from `arrived` onward;
+  optional reason persisted; atomically revokes outstanding offers (no
+  accept-after-cancel race); the assigned technician sees the job as cancelled.
+  Exposed to the UI via `customer_actions.can_cancel` on the token read.
+- [ ] Backend: blind customer tracking — remove `attempts`, `max_attempts`,
+  `offers_pending`, and `offer_expires_at` from the token read; the customer
+  sees only searching / matched / failed (Uber-style, no dispatch internals).
+- [ ] Frontend: cancel UI — available during search and after assignment
+  (optional reason textarea once assigned), localized EN/ES.
+- [ ] Frontend: searching screen shows no dispatch process internals.
+- [ ] Frontend + infra: Google Places Autocomplete on the address field as a
+  second option beside the existing GPS locate.
+
+**PO-reported intake issues (reported pre-#17; status as of 2026-06-11):**
+
+- [~] No Back control — fixed in #17 (`PREV_SCREEN` map); **PO re-test on prod pending**.
+- [~] GPS "Something went wrong" — #17 maps geolocation errors to clear messages
+  (denied/unavailable/timeout); **PO re-test pending**. If "unavailable" appears
+  with device location ON, reopen as a new bug.
+- [ ] Address autocomplete — NOT fixed; covered by the Places Autocomplete item above.
+- [ ] Photo upload "Supabase Storage is not configured" — frontend no longer blocks
+  (#17, photos optional), but uploads still fail server-side: the deployment is
+  missing `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` env vars
+  (`api/storage.py:84`). **Infra: verify/set both vars in Production on every
+  Vercel project serving intake (`intake.cluexp.com` AND `www.cluexp.com`),
+  then redeploy + re-test upload.**
+- [~] Cannot delete a selected file — fixed in #17 (per-file ×); **PO re-test pending**.
+- [~] Cannot upload multiple files — fixed in #17 (`multiple` + append); **PO re-test pending**.
 
 ### 3.3 Pilot and acceptance
 

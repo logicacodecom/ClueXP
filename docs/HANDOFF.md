@@ -54,7 +54,51 @@
 
 ## Open threads
 
+### 2026-06-11 — Claude → Human: ACTION — Vercel storage env vars missing on an intake deployment
+The PO-reported "Supabase Storage is not configured" upload error is server-side: the deployment
+that served it lacks `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (raised at `api/storage.py:84`).
+This environment has no Vercel access, so a human (or Copilot) needs to: check **both** intake-serving
+Vercel projects (`intake.cluexp.com` and `www.cluexp.com` may be separate projects) → Settings →
+Environment Variables → confirm both vars exist in **Production** → add the missing ones → redeploy →
+re-test photo upload. Full PO-issue status checklist lives in `EXECUTION-PLAN.md` §3.2
+("PO-reported intake issues"). — Claude
+
+### 2026-06-10 — Claude → qwen: backend LIVE in prod + PO scope additions (cancel, blind tracking, autocomplete)
+
+**The cutover backend is LIVE.** Deployed 2026-06-09: migration `0010` applied, PR #16 merged,
+**all channel flags still OFF**. The "do not integrate live yet" gate from my 2026-06-09 thread
+below is lifted — build and test against the prod shapes (the #17 tracking-token fixes were
+verified live). Your merged work so far (`/t/[token]` page in #18/#19) looks right.
+
+**PO decisions today (2026-06-10), now in `EXECUTION-PLAN.md` §3.2:** dispatch stays fully
+automatic (no human-in-loop); no customer-facing countdown (the 480s backend window is the truth);
+plus three scope additions:
+
+1. **⚠️ Field REMOVAL heads-up — blind Uber-style tracking.** I will remove `attempts`,
+   `max_attempts`, `offers_pending`, and `offer_expires_at` from `GET /api/t/{token}`. Do not
+   depend on them. The searching screen shows only searching / matched / failed — no dispatch
+   process internals.
+2. **Customer cancel (new contract, backend in progress — final shape posted here when live):**
+   `POST /api/t/{token}/cancel` body `{ "reason"?: str }` → `{ "status": "cancelled" }`.
+   Allowed from `pending_dispatch` through `en_route`; **409** from `arrived` onward. I'll add
+   `can_cancel` to `customer_actions` on the token read — drive the affordance from that flag,
+   same pattern as confirm/review/dispute. UI: cancel available during search (no reason) and
+   after assignment (optional reason textarea). Localize EN/ES.
+3. **Address autocomplete (yours):** Google Places Autocomplete on the intake address field as a
+   second option beside the existing GPS locate. The current geocode-confirm chip is not
+   autocomplete. Coordinate with me here if you need a new browser-key scope or a server proxy
+   route.
+
+**Reminder — your open Sprint 3 slice (EXECUTION-PLAN §3.2):** intake → `tracking_path` handoff
+after create (page.tsx still polls legacy `/tickets/{id}/tracking`); wire
+`updateTechnicianJobStatus` to the technician buttons (it's exported but never called — the
+buttons are plain links); real active-job hydration in the tech app; production error states
+(401/403/409/offline); remove mock completion controls. — Claude
+
 ### 2026-06-09 — Claude → qwen: Sprint 3 cutover backend BUILT + tests green — CONTRACTS below (deploy PENDING; do not integrate live yet)
+
+> **[RESOLVED 2026-06-10 — deployed; see the LIVE thread above. Contracts below remain the
+> authoritative shapes, minus the field removals announced above.]**
 I built the full Sprint 3 fulfillment-cutover backend (migration `0010` + endpoints), **all flags
 default-OFF**. Local gate is green: **28 pytest pass**, `py_compile` clean, alembic head linear at
 `0010`, FastAPI app loads all routes, TestClient wiring verified (legacy create unchanged; unknown
