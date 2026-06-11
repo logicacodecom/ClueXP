@@ -1,6 +1,6 @@
 <state_snapshot>
     <overall_goal>
-        Implement Sprint 3 Production Fulfillment Cutover - customer cancel endpoint, blind tracking, and technician job status wiring
+        Complete Sprint 3 Production Fulfillment Cutover - all pre-pilot blockers resolved
     </overall_goal>
 
     <key_knowledge>
@@ -11,8 +11,10 @@
         - Operational status values: pending_dispatch, assigned, en_route, arrived, in_progress, completed_pending_customer, completed_confirmed, completed_auto_closed, disputed, cancelled, no_show
         - Technician can only set forward transitions; completed_confirmed is customer-only
         - All dispatch internals (attempts, max_attempts, offers_pending, offer_expires_at) removed from customer tracking (blind/Uber-style)
-        - Technician app uses real API endpoints for job status updates, availability toggle, and active job restoration
-        - Error handling for 401/403/409/offline states added to technician app
+        - Customer tracking page handles all statuses: en_route, arrived, in_progress, completed_pending_customer, completed_confirmed, completed_auto_closed, disputed, cancelled, no_show
+        - Production error states: 401→session expired, 403→not authorized, 409→status changed+reload
+        - All user-visible strings have EN/ES localization
+        - No mock completion controls on cutover path - all use real updateTechnicianJobStatus API
     </key_knowledge>
 
     <file_system_state>
@@ -20,7 +22,7 @@
         - MODIFIED: `apps/intake-web/api/main.py` - Added CancelRequest model, POST /t/{token}/cancel endpoint, STATUS_CANCELLED import, can_customer_cancel import
         - MODIFIED: `apps/intake-web/api/store.py` - Updated get_dispatch_status() in both InMemoryStore and PostgresStore to remove dispatch internals from response
         - MODIFIED: `packages/api-client/src/types.ts` - Added can_cancel field to CustomerActions and TrackingWithStatus interfaces; TrackingWithStatus uses nested customer_actions: CustomerActions structure
-        - MODIFIED: `apps/intake-web/src/app/t/[token]/page.tsx` - Updated TrackingResponse interface to use nested customer_actions object; can_cancel now correctly reads data.customer_actions?.can_cancel (was always undefined before); handleCancel() function using cancelRequest API, canCancel state, and cancel button UI in waiting/matched/en_route screens
+        - MODIFIED: `apps/intake-web/src/app/t/[token]/page.tsx` - Updated TrackingResponse interface to use nested customer_actions object; can_cancel now correctly reads data.customer_actions?.can_cancel; all statuses implemented with EN/ES localization; 401/403/409 error handling with proper messages; polling reloads on 409; no_show status added to Screen type and TERMINAL mapping
         - MODIFIED: `packages/api-client/src/index.ts` - Added cancelRequest() and getActiveJob() functions
         - MODIFIED: `apps/technician-web/src/app/jobs/[id]/arrival/page.tsx` - Wired to real updateTechnicianJobStatus API with loading states
         - MODIFIED: `apps/technician-web/src/app/jobs/[id]/service/page.tsx` - Wired status changes to real API endpoint with loading states
@@ -52,6 +54,8 @@
         - Removed mock fallback from tech active-job hydration (jobs/page.tsx)
         - Verified Places Autocomplete UI is fully wired (frontend + backend proxy)
         - Verified cancel reason textarea shows for matched/en_route screens
+        - Added all customer tracking statuses (en_route, arrived, in_progress, completed_pending_customer, completed_confirmed, completed_auto_closed, disputed, cancelled, no_show) with EN/ES localization
+        - Added 401/403/409 error handling to loadTracking, handleConfirm, handleDispute, handleCancel, handleSubmitReview with proper messages and polling reload
     </recent_actions>
 
     <current_plan>
@@ -64,5 +68,7 @@
         7. [COMPLETED] Remove mock fallback for active-job hydration in tech app
         8. [COMPLETED] Wire Places Autocomplete UI (frontend + backend proxy ready)
         9. [COMPLETED] Verify cancel reason textarea for post-assignment cancels
+        10. [COMPLETED] Complete customer tracking lifecycle - all statuses with EN/ES localization
+        11. [COMPLETED] Production error states - 401/403/409 handling with proper messages and polling reload
     </current_plan>
 </state_snapshot>
