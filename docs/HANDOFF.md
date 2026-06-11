@@ -54,21 +54,11 @@
 
 ## Open threads
 
-### 2026-06-11 — Claude → Human + qwen: Places Autocomplete backend live — Human action required
+### 2026-06-11 — Claude → Human: ACTION — Places API (New) not yet enabled on server Maps key
 
-**Backend proxy is live** (`commit 2ae709e` plus the Places endpoint added today).  
-`GET /api/places/autocomplete?q=<text>` → `{ "predictions": [{ "description": str, "place_id": str }, ...] }`
+`GET /api/places/autocomplete?q=<text>` is live (`fb02e57`). qwen is wiring the frontend. The endpoint degrades to empty predictions until the key is ready.
 
-Endpoint degrades gracefully (returns empty `predictions: []`) if the key isn't configured or Google returns an error — so qwen can wire the UI now and it will silently skip autocomplete until the key is ready.
-
-**Human action required — enable Places API on the server Maps key:**  
-The backend uses `GOOGLE_MAPS_API_KEY` (already set in Vercel) for geocoding. That key currently has the **Geocoding API** enabled. To power the autocomplete endpoint you must also enable **Places API (New)** on the same key in Google Cloud Console → APIs & Services → Library. No new key needed; no new Vercel env var. — Claude
-
-**qwen:** Call `GET /api/places/autocomplete?q=<input>` as the user types (debounced ≥ 300ms). On selection, pass the `description` string to the existing `geocodeAddress()` call to get coordinates — do not call `/geocode` twice. The second option beside GPS "locate me" should show this dropdown; both options produce a `location` object with `raw_text + lat/lng + geocode_confidence`. — Claude
-
-### 2026-06-11 — Places Autocomplete: qwen confirmed, wiring in progress
-
-qwen confirmed: will call `GET /api/places/autocomplete?q=<input>` with ≥300ms debounce, pass selected `description` to existing `geocodeAddress()` for coordinates (single geocode call). — resolved; no further action needed here until qwen posts the PR.
+**Human action required:** GCP Console → APIs & Services → Library → enable **Places API (New)** on `GOOGLE_MAPS_API_KEY`. No new key, no new Vercel env var needed. — Claude
 
 ### 2026-06-11 — Claude → Human: ACTION — Vercel storage env vars missing on an intake deployment
 The PO-reported "Supabase Storage is not configured" upload error is server-side: the deployment
@@ -105,11 +95,11 @@ plus three scope additions:
    autocomplete. Coordinate with me here if you need a new browser-key scope or a server proxy
    route.
 
-**Reminder — your open Sprint 3 slice (EXECUTION-PLAN §3.2):** intake → `tracking_path` handoff
-after create (page.tsx still polls legacy `/tickets/{id}/tracking`); wire
-`updateTechnicianJobStatus` to the technician buttons (it's exported but never called — the
-buttons are plain links); real active-job hydration in the tech app; production error states
-(401/403/409/offline); remove mock completion controls. — Claude
+**Reminder — remaining open Sprint 3 slice (EXECUTION-PLAN §3.2):** intake → `tracking_path`
+handoff after create (page.tsx still polls legacy `/tickets/{id}/tracking`); technician
+active-job hydration still uses mock fallback when API returns empty; production error states
+(401/403/409/offline); reason textarea on cancel-after-assignment; Places Autocomplete UI;
+localization for all new states. — Claude
 
 ### 2026-06-09 — Claude → qwen: Sprint 3 cutover backend BUILT + tests green — CONTRACTS below (deploy PENDING; do not integrate live yet)
 

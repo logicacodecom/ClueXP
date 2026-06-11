@@ -1,6 +1,6 @@
 # ClueXP Execution Plan
 
-> **Verified/reconciled:** 2026-06-10
+> **Verified/reconciled:** 2026-06-11
 > **Primary objective:** complete and prove the production business cycle:
 > request -> dispatch -> accept -> fulfill -> customer confirm/review or dispute
 > -> resolve/close.
@@ -23,10 +23,10 @@
 | Dispatch engine | `[x]` | Deterministic ranking, policy-aware offers, expiry/re-dispatch, atomic first-accept-wins |
 | Customer dispatch tracking | `[x]` read contract | Waiting/matched/no-eligible/retry/error; safe assignment only after acceptance |
 | Live customer cutover | `[~]` | Backend + customer token-tracking UI deployed flags-OFF; intake → token-link handoff not wired; pilot flip pending; legacy instant-match path retained as rollback |
-| Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); customer tracking UI merged (#18/#19); technician status wiring still mock-driven |
+| Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); customer tracking UI merged (#18/#19); technician arrival/service/approval buttons now call real endpoints (`54d324d`); active-job hydration partial; intake → token-link handoff not wired |
 | Payments | `[ ]` | Deferred; current charge/finalize/review behavior is demo-only |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[~]` | `ci.yml` runs web/API checks + `api/tests` pytest on push to `main` (2ec1e97); `httpx2` added to requirements so all 34 tests pass (`2ae709e`); confirm a green run on GitHub after push, then mark `[x]` |
+| CI | `[~]` | Pushed to `origin/main` 2026-06-11 (`15f77c1`); confirm green run on GitHub Actions, then mark `[x]` |
 
 Current production migration head: **`0010`** (applied 2026-06-09).
 
@@ -112,8 +112,10 @@ this execution plan treats it as Sprint 3).
 - [ ] Return and persist the token tracking link after cutover-enabled intake.
 - [ ] Extend customer tracking from waiting/matched through:
   active status, completion confirmation, review, dispute and closed states.
-- [ ] Connect technician active-job state restoration to the assigned real job.
-- [ ] Connect primary technician actions to real forward status mutations.
+- [~] Connect technician active-job state restoration to the assigned real job.
+  _(Active-job BFF route + backend endpoint live `54d324d`; jobs page hydrates from API with mock fallback.)_
+- [x] Connect primary technician actions to real forward status mutations.
+  _(arrival → `arrived`, service → `in_progress`/`completed_pending_customer`, approval → `completed_pending_customer` all wired `54d324d`.)_
 - [ ] Implement production loading, stale-session, unauthorized, conflict,
   offline/retry and terminal states.
 - [ ] Keep customer and technician localization complete for every new state.
@@ -135,9 +137,9 @@ ops step); the customer search window stays backend-owned at
   `offers_pending`, and `offer_expires_at` from the token read; the customer
   sees only searching / matched / failed (Uber-style, no dispatch internals).
   _(Committed `032cf98`.)_
-- [ ] Frontend: cancel UI — available during search and after assignment
-  (optional reason textarea once assigned), localized EN/ES.
-  ⚠️ qwen: fix `customer_actions` nesting bug first (see HANDOFF.md open thread).
+- [~] Frontend: cancel UI — cancel button wired and shows during search/assignment
+  (`54d324d`); reason textarea for post-assignment cancel still pending (qwen).
+  `customer_actions` nesting bug resolved.
 - [ ] Frontend: searching screen shows no dispatch process internals.
 - [~] Backend: Google Places Autocomplete proxy — `GET /api/places/autocomplete?q=<text>`
   live (`fb02e57`). ⚠️ Human: enable **Places API (New)** on `GOOGLE_MAPS_API_KEY` in
