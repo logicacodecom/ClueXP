@@ -3,6 +3,7 @@
 import { Car, Clock3, Home, LoaderCircle, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
 
 type Screen =
@@ -84,6 +85,11 @@ interface DispatchStatus {
   assignment: DispatchAssignment | null;
 }
 
+type CutoverTicketEnvelope = TicketEnvelope & {
+  tracking_token?: string | null;
+  tracking_path?: string | null;
+};
+
 type GeocodeResponse =
   | {
       resolved: true;
@@ -93,6 +99,15 @@ type GeocodeResponse =
       geocode_confidence: string;
     }
   | { resolved: false };
+
+interface PlacePrediction {
+  description: string;
+  place_id: string;
+}
+
+interface PlacesAutocompleteResponse {
+  predictions: PlacePrediction[];
+}
 
 interface PhotoIntentResponse {
   bucket: string;
@@ -217,6 +232,7 @@ function ChipSelect({
 }
 
 export function IntakeFlow({ organizationName, organizationSlug }: IntakeBranding) {
+  const router = useRouter();
   const [screen, setScreen] = useState<Screen>("opener");
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [guards, setGuards] = useState<TicketGuards>(emptyGuards);
@@ -225,7 +241,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [arrivalCode, setArrivalCode] = useState("");
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([]);
   const [uploadedPhotoCount, setUploadedPhotoCount] = useState(0);
-  const [addressSuggestion, setAddressSuggestion] = useState<{ raw: string; lat?: number; lng?: number } | null>(null);
+  const [placePredictions, setPlacePredictions] = useState<PlacePrediction[]>([]);
+  const [placesLoading, setPlacesLoading] = useState(false);
   const [reviewRating, setReviewRating] = useState<number | null>(null);
   const [reviewTags, setReviewTags] = useState<string[]>([]);
   const [reviewComment, setReviewComment] = useState("");
@@ -307,6 +324,15 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       lng: result.lng,
       geocode_confidence: result.geocode_confidence
     };
+  }
+
+  async function selectPlace(description: string) {
+    await run(async () => {
+      const location = await geocodeAddress(description);
+      setForm((current) => ({ ...current, address: location.raw_text }));
+      setPlacePredictions([]);
+      await patch({ location });
+    });
   }
 
   async function shareGpsLocation() {
@@ -461,20 +487,25 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     };
   }, [screen, ticket?.ticket_id]);
 
-  // Debounced address geocode — shows a canonical suggestion after typing pauses.
+  // Debounced Places autocomplete. Selection performs the single geocode call.
   useEffect(() => {
     const addr = form.address.trim();
-    if (!addr) { setAddressSuggestion(null); return; }
+    if (!addr) {
+      setPlacePredictions([]);
+      setPlacesLoading(false);
+      return;
+    }
     const t = setTimeout(async () => {
+      setPlacesLoading(true);
       try {
-        const result = await api<GeocodeResponse>(`/geocode?q=${encodeURIComponent(addr)}`);
-        if (result.resolved) {
-          setAddressSuggestion({ raw: result.formatted_address || addr, lat: result.lat, lng: result.lng });
-        } else {
-          setAddressSuggestion(null);
-        }
-      } catch { setAddressSuggestion(null); }
-    }, 500);
+        const result = await api<PlacesAutocompleteResponse>(`/places/autocomplete?q=${encodeURIComponent(addr)}`);
+        setPlacePredictions(result.predictions.slice(0, 5));
+      } catch {
+        setPlacePredictions([]);
+      } finally {
+        setPlacesLoading(false);
+      }
+    }, 350);
     return () => clearTimeout(t);
   }, [form.address]);
 
@@ -578,19 +609,23 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               className="field"
               placeholder="Address or nearby landmark"
               value={form.address}
-              onChange={(event) => { setForm({ ...form, address: event.target.value }); setAddressSuggestion(null); }}
+              onChange={(event) => setForm({ ...form, address: event.target.value })}
             />
-            {addressSuggestion ? (
-              <button
-                className="choice"
-                type="button"
-                onClick={() => {
-                  setForm({ ...form, address: addressSuggestion.raw });
-                  setAddressSuggestion(null);
-                }}
-              >
-                <MapPin size={14} /> {addressSuggestion.raw}
-              </button>
+            {placesLoading ? <p className="fine">Checking address matches...</p> : null}
+            {placePredictions.length ? (
+              <div className="panel" role="listbox" aria-label="Address suggestions">
+                <p className="panel-title">Address matches</p>
+                {placePredictions.map((prediction) => (
+                  <button
+                    className="choice"
+                    key={prediction.place_id}
+                    type="button"
+                    onClick={() => void selectPlace(prediction.description)}
+                  >
+                    <MapPin size={14} /> {prediction.description}
+                  </button>
+                ))}
+              </div>
             ) : null}
             <div className="panel">
               <p className="panel-title">Safety check</p>
@@ -605,7 +640,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 ]}
                 onSelect={(value) =>
                   run(async () => {
-                    const location = await geocodeAddress(form.address || ticket?.location?.raw_text || "");
+                    const location = ticket?.location?.lat != null && ticket.location.lng != null
+                      ? ticket.location
+                      : await geocodeAddress(form.address || ticket?.location?.raw_text || "");
                     await patch({
                       location,
                       safety_flag: { present: value !== "none", type: value, advised_emergency_services: value !== "none" }
@@ -836,7 +873,12 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
             onClick={() =>
               run(async () => {
                 const current = await ensureTicket();
-                await api<TicketEnvelope>(`/tickets/${current.ticket_id}/commit`, { method: "POST" });
+                const committed = await api<CutoverTicketEnvelope>(`/tickets/${current.ticket_id}/commit`, { method: "POST" });
+                sync(committed);
+                if (committed.tracking_path) {
+                  router.push(committed.tracking_path);
+                  return;
+                }
                 await api(`/tickets/${current.ticket_id}/offers`, { method: "POST" });
                 setDispatchStatus(null);
                 setScreen("matching");

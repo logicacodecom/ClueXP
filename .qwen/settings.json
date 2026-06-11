@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh *)",
+      "Bash(git fetch *)",
+      "Bash(python *)",
+      "Bash(set *)",
+      "Bash(alembic *)",
+      "Bash(claude *)",
+      "Bash(setx *)",
+      "Bash(powershell *)",
+      "Bash(type *)",
+      "Bash(git add *)"
+    ]
+  },
+  "$version": 4
+}

@@ -60,6 +60,8 @@ interface ReviewData {
   comment: string;
 }
 
+type CustomerActions = TrackingResponse["customer_actions"];
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -76,6 +78,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
+const emptyCustomerActions: CustomerActions = {
+  can_cancel: false,
+  can_confirm: false,
+  can_review: false,
+  can_dispute: false
+};
 
 function TopBar() {
   const { locale } = useLocale();
@@ -114,7 +122,9 @@ export default function TokenTrackingPage() {
   const [assignment, setAssignment] = useState<DispatchAssignment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [canCancel, setCanCancel] = useState(false);
+  const [customerActions, setCustomerActions] = useState<CustomerActions>(emptyCustomerActions);
+  const [cancelReasonOpen, setCancelReasonOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
   const [reviewData, setReviewData] = useState<ReviewData>({
     rating: null,
     tags: [],
@@ -213,6 +223,7 @@ export default function TokenTrackingPage() {
     try {
       const data = await api<TrackingResponse>(`/t/${token}`);
       setAssignment(data.assignment);
+      setCustomerActions(data.customer_actions ?? emptyCustomerActions);
 
       const TERMINAL: Record<string, Screen> = {
         completed_pending_customer: "completed_pending_customer",
@@ -233,7 +244,6 @@ export default function TokenTrackingPage() {
       } else {
         setScreen("waiting");
       }
-      setCanCancel(data.customer_actions?.can_cancel ?? false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tracking");
       setScreen("error");
@@ -288,6 +298,8 @@ export default function TokenTrackingPage() {
     try {
       await cancelRequest(token, reason || null);
       setScreen("cancelled");
+      setCancelReasonOpen(false);
+      setCancelReason("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to cancel request");
     } finally {
@@ -309,7 +321,7 @@ export default function TokenTrackingPage() {
         })
       });
       setReviewSubmitted(true);
-      await handleConfirm();
+      setScreen("completed_confirmed");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit review");
     } finally {
@@ -324,6 +336,57 @@ export default function TokenTrackingPage() {
         ? prev.tags.filter(t => t !== tag) 
         : [...prev.tags, tag]
     }));
+  };
+
+  const renderCancelControl = (withReason: boolean) => {
+    if (!customerActions.can_cancel) return null;
+    if (!withReason) {
+      return (
+        <button
+          className="ghost"
+          type="button"
+          onClick={() => void handleCancel()}
+        >
+          {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
+        </button>
+      );
+    }
+    return (
+      <div className="panel">
+        <p className="panel-title">
+          {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
+        </p>
+        {cancelReasonOpen ? (
+          <>
+            <textarea
+              className="field"
+              placeholder={locale === "es" ? "Motivo opcional" : "Optional reason"}
+              value={cancelReason}
+              onChange={(event) => setCancelReason(event.target.value)}
+            />
+            <div className="row">
+              <button className="ghost" type="button" onClick={() => setCancelReasonOpen(false)}>
+                {locale === "es" ? "Mantener solicitud" : "Keep request"}
+              </button>
+              <button className="primary" type="button" onClick={() => void handleCancel(cancelReason)}>
+                {locale === "es" ? "Confirmar cancelación" : "Confirm cancel"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="fine">
+              {locale === "es"
+                ? "Puede cancelar antes de que el técnico llegue. Puede agregar un motivo si ayuda al despacho."
+                : "You can cancel before the technician arrives. Add a reason if it helps dispatch."}
+            </p>
+            <button className="ghost" type="button" onClick={() => setCancelReasonOpen(true)}>
+              {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
+            </button>
+          </>
+        )}
+      </div>
+    );
   };
 
   if (screen === "loading") {
@@ -397,15 +460,7 @@ export default function TokenTrackingPage() {
             >
               {localeText.waiting.action}
             </button>
-            {canCancel && (
-              <button
-                className="ghost"
-                type="button"
-                onClick={() => void handleCancel()}
-              >
-                {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
-              </button>
-            )}
+            {renderCancelControl(false)}
             <a
               className="ghost"
               href={`tel:${DISPATCH_PHONE}`}
@@ -457,15 +512,9 @@ export default function TokenTrackingPage() {
               </p>
             </div>
           )}
-          {canCancel && (
+          {customerActions.can_cancel && (
             <div className="stack" style={{ marginTop: "2rem" }}>
-              <button
-                className="ghost"
-                type="button"
-                onClick={() => void handleCancel()}
-              >
-                {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
-              </button>
+              {renderCancelControl(true)}
             </div>
           )}
         </main>
@@ -499,15 +548,9 @@ export default function TokenTrackingPage() {
               </p>
             </div>
           </div>
-          {canCancel && (
+          {customerActions.can_cancel && (
             <div className="stack" style={{ marginTop: "2rem" }}>
-              <button
-                className="ghost"
-                type="button"
-                onClick={() => void handleCancel()}
-              >
-                {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
-              </button>
+              {renderCancelControl(true)}
             </div>
           )}
         </main>
@@ -594,7 +637,7 @@ export default function TokenTrackingPage() {
                   {locale === "es" ? "Calificación" : "Rating"}
                 </p>
                 <div className="row" role="radiogroup" aria-label="Service rating">
-                  {[1, 2, 3, 4, 5].map((rating) => (
+                {[1, 2, 3, 4, 5].map((rating) => (
                     <button
                       className={reviewData.rating === rating ? "primary" : "ghost"}
                       key={rating}
@@ -638,17 +681,29 @@ export default function TokenTrackingPage() {
                 value={reviewData.comment}
                 onChange={(e) => setReviewData(prev => ({ ...prev, comment: e.target.value }))}
               />
-              <button
-                className="primary"
-                type="button"
-                disabled={!reviewData.rating}
-                onClick={handleSubmitReview}
-              >
-                {locale === "es" ? "Enviar reseña" : "Submit review"}
-              </button>
+              {customerActions.can_review ? (
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={!reviewData.rating}
+                  onClick={handleSubmitReview}
+                >
+                  {locale === "es" ? "Enviar reseña" : "Submit review"}
+                </button>
+              ) : null}
             </div>
           )}
           <div className="stack">
+            {customerActions.can_confirm ? (
+              <button
+                className="primary"
+                type="button"
+                onClick={handleConfirm}
+              >
+                {locale === "es" ? "Confirmar completado" : "Confirm complete"}
+              </button>
+            ) : null}
+            {customerActions.can_dispute ? (
             <button
               className="ghost"
               type="button"
@@ -656,6 +711,7 @@ export default function TokenTrackingPage() {
             >
               {locale === "es" ? "Hay un problema" : "Something went wrong"}
             </button>
+            ) : null}
           </div>
         </main>
       </div>
