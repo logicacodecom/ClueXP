@@ -26,7 +26,7 @@
 | Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); customer tracking UI merged (#18/#19); technician status wiring still mock-driven |
 | Payments | `[ ]` | Deferred; current charge/finalize/review behavior is demo-only |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[~]` | `ci.yml` runs web/API checks + `api/tests` pytest on push to `main` (2ec1e97); confirm a green run on GitHub, then mark `[x]` |
+| CI | `[~]` | `ci.yml` runs web/API checks + `api/tests` pytest on push to `main` (2ec1e97); `httpx2` added to requirements so all 34 tests pass (`2ae709e`); confirm a green run on GitHub after push, then mark `[x]` |
 
 Current production migration head: **`0010`** (applied 2026-06-09).
 
@@ -125,19 +125,23 @@ ops step); the customer search window stays backend-owned at
 
 **PO scope additions (2026-06-10) — pre-pilot:**
 
-- [ ] Backend: customer cancel `POST /api/t/{token}/cancel` — allowed from
+- [x] Backend: customer cancel `POST /api/t/{token}/cancel` — allowed from
   `pending_dispatch` through `en_route`, rejected (409) from `arrived` onward;
   optional reason persisted; atomically revokes outstanding offers (no
   accept-after-cancel race); the assigned technician sees the job as cancelled.
   Exposed to the UI via `customer_actions.can_cancel` on the token read.
-- [ ] Backend: blind customer tracking — remove `attempts`, `max_attempts`,
+  _(Committed `032cf98`; 34 tests pass.)_
+- [x] Backend: blind customer tracking — removes `attempts`, `max_attempts`,
   `offers_pending`, and `offer_expires_at` from the token read; the customer
   sees only searching / matched / failed (Uber-style, no dispatch internals).
+  _(Committed `032cf98`.)_
 - [ ] Frontend: cancel UI — available during search and after assignment
   (optional reason textarea once assigned), localized EN/ES.
+  ⚠️ qwen: fix `customer_actions` nesting bug first (see HANDOFF.md open thread).
 - [ ] Frontend: searching screen shows no dispatch process internals.
-- [ ] Frontend + infra: Google Places Autocomplete on the address field as a
-  second option beside the existing GPS locate.
+- [~] Backend: Google Places Autocomplete proxy — `GET /api/places/autocomplete?q=<text>`
+  live (`fb02e57`). ⚠️ Human: enable **Places API (New)** on `GOOGLE_MAPS_API_KEY` in
+  GCP Console (Geocoding API alone is not sufficient). Frontend wiring still pending (qwen).
 
 **PO-reported intake issues (reported pre-#17; status as of 2026-06-11):**
 
