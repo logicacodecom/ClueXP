@@ -19,6 +19,7 @@ type Screen =
   | "completed_auto_closed"
   | "disputed"
   | "cancelled"
+  | "no_show"
   | "error";
 
 interface DispatchAssignment {
@@ -208,12 +209,20 @@ export default function TokenTrackingPage() {
         : "A representative will contact you shortly to resolve your issue."
     },
     cancelled: {
-      title: locale === "es" 
-        ? "Solicitud cancelada." 
+      title: locale === "es"
+        ? "Solicitud cancelada."
         : "Request cancelled.",
       support: locale === "es"
         ? "Esta solicitud ha sido cancelada. Si necesita más ayuda, comuníquese con nosotros."
         : "This request has been cancelled. Contact us if you need further help."
+    },
+    no_show: {
+      title: locale === "es"
+        ? "El técnico no se presentó."
+        : "Technician did not show.",
+      support: locale === "es"
+        ? "Nos disculpamos por la falta de comunicación. Si necesita más ayuda, comuníquese con nosotros."
+        : "We apologize for the lack of communication. Contact us if you need further help."
     }
   };
 
@@ -221,7 +230,50 @@ export default function TokenTrackingPage() {
     setBusy(true);
     setError(null);
     try {
-      const data = await api<TrackingResponse>(`/t/${token}`);
+      const response = await fetch(`/t/${token}`);
+      
+      // Handle 401 - Session expired
+      if (response.status === 401) {
+        setError(locale === "es" 
+          ? "Sesión expirada, por favor actualice la página"
+          : "Session expired, please refresh the page");
+        setScreen("error");
+        setBusy(false);
+        return;
+      }
+      
+      // Handle 403 - Not authorized (job mismatch or user mismatch)
+      if (response.status === 403) {
+        setError(locale === "es"
+          ? "No está autorizado para ver este seguimiento"
+          : "Not authorized to view this tracking");
+        setScreen("error");
+        setBusy(false);
+        return;
+      }
+      
+      // Handle 409 - Status changed, refresh
+      if (response.status === 409) {
+        setError(locale === "es"
+          ? "El estado ha cambiado, actualizando..."
+          : "Status changed, refreshing...");
+        // Show a momentary message then refresh
+        setTimeout(() => void loadTracking(), 1000);
+        setBusy(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es" 
+          ? "Error al cargar el seguimiento" 
+          : "Error loading tracking"));
+        setScreen("error");
+        setBusy(false);
+        return;
+      }
+      
+      const data = await response.json();
       setAssignment(data.assignment);
       setCustomerActions(data.customer_actions ?? emptyCustomerActions);
 
@@ -231,7 +283,7 @@ export default function TokenTrackingPage() {
         completed_auto_closed: "completed_auto_closed",
         disputed: "disputed",
         cancelled: "cancelled",
-        no_show: "cancelled",
+        no_show: "no_show",
       };
       const ACTIVE_LIVE = new Set(["en_route", "arrived", "in_progress"]);
 
@@ -272,10 +324,47 @@ export default function TokenTrackingPage() {
   const handleConfirm = async () => {
     setBusy(true);
     try {
-      await api(`/t/${token}/confirm`, { method: "POST" });
+      const response = await fetch(`/t/${token}/confirm`, { method: "POST" });
+      
+      if (response.status === 401) {
+        setError(locale === "es" 
+          ? "Sesión expirada, por favor actualice la página"
+          : "Session expired, please refresh the page");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 403) {
+        setError(locale === "es"
+          ? "No está autorizado para confirmar este trabajo"
+          : "Not authorized to confirm this job");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 409) {
+        setError(locale === "es"
+          ? "El estado ha cambiado, actualizando..."
+          : "Status changed, refreshing...");
+        setTimeout(() => void loadTracking(), 1000);
+        setBusy(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es"
+          ? "Error al confirmar el trabajo"
+          : "Error confirming job"));
+        setBusy(false);
+        return;
+      }
+      
       setScreen("completed_confirmed");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to confirm completion");
+      setError(locale === "es"
+        ? "Error de red, intente de nuevo"
+        : "Network error, please try again");
     } finally {
       setBusy(false);
     }
@@ -284,10 +373,47 @@ export default function TokenTrackingPage() {
   const handleDispute = async () => {
     setBusy(true);
     try {
-      await api(`/t/${token}/dispute`, { method: "POST" });
+      const response = await fetch(`/t/${token}/dispute`, { method: "POST" });
+      
+      if (response.status === 401) {
+        setError(locale === "es" 
+          ? "Sesión expirada, por favor actualice la página"
+          : "Session expired, please refresh the page");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 403) {
+        setError(locale === "es"
+          ? "No está autorizado para reportar este problema"
+          : "Not authorized to report this issue");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 409) {
+        setError(locale === "es"
+          ? "El estado ha cambiado, actualizando..."
+          : "Status changed, refreshing...");
+        setTimeout(() => void loadTracking(), 1000);
+        setBusy(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es"
+          ? "Error al reportar el problema"
+          : "Error reporting issue"));
+        setBusy(false);
+        return;
+      }
+      
       setScreen("disputed");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to report issue");
+      setError(locale === "es"
+        ? "Error de red, intente de nuevo"
+        : "Network error, please try again");
     } finally {
       setBusy(false);
     }
@@ -296,12 +422,53 @@ export default function TokenTrackingPage() {
   const handleCancel = async (reason?: string) => {
     setBusy(true);
     try {
-      await cancelRequest(token, reason || null);
+      const response = await fetch(`/t/${token}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
+      
+      if (response.status === 401) {
+        setError(locale === "es" 
+          ? "Sesión expirada, por favor actualice la página"
+          : "Session expired, please refresh the page");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 403) {
+        setError(locale === "es"
+          ? "No está autorizado para cancelar esta solicitud"
+          : "Not authorized to cancel this request");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 409) {
+        setError(locale === "es"
+          ? "El estado ha cambiado, actualizando..."
+          : "Status changed, refreshing...");
+        setTimeout(() => void loadTracking(), 1000);
+        setBusy(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es"
+          ? "Error al cancelar la solicitud"
+          : "Error cancelling request"));
+        setBusy(false);
+        return;
+      }
+      
       setScreen("cancelled");
       setCancelReasonOpen(false);
       setCancelReason("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel request");
+      setError(locale === "es"
+        ? "Error de red, intente de nuevo"
+        : "Network error, please try again");
     } finally {
       setBusy(false);
     }
@@ -312,18 +479,56 @@ export default function TokenTrackingPage() {
     
     setBusy(true);
     try {
-      await api(`/t/${token}/review`, {
+      const response = await fetch(`/t/${token}/review`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rating: reviewData.rating,
           tags: reviewData.tags,
           comment: reviewData.comment || null
         })
       });
+      
+      if (response.status === 401) {
+        setError(locale === "es" 
+          ? "Sesión expirada, por favor actualice la página"
+          : "Session expired, please refresh the page");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 403) {
+        setError(locale === "es"
+          ? "No está autorizado para calificar este trabajo"
+          : "Not authorized to review this job");
+        setBusy(false);
+        return;
+      }
+      
+      if (response.status === 409) {
+        setError(locale === "es"
+          ? "El estado ha cambiado, actualizando..."
+          : "Status changed, refreshing...");
+        setTimeout(() => void loadTracking(), 1000);
+        setBusy(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es"
+          ? "Error al enviar la reseña"
+          : "Error submitting review"));
+        setBusy(false);
+        return;
+      }
+      
       setReviewSubmitted(true);
       setScreen("completed_confirmed");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to submit review");
+      setError(locale === "es"
+        ? "Error de red, intente de nuevo"
+        : "Network error, please try again");
     } finally {
       setBusy(false);
     }
@@ -726,13 +931,13 @@ export default function TokenTrackingPage() {
           <AgentMessage support={localeText.completed_confirmed.support}>
             {localeText.completed_confirmed.title}
           </AgentMessage>
-          <button 
-            className="primary" 
-            type="button" 
+          <button
+            className="primary"
+            type="button"
             onClick={() => router.push("/")}
           >
-            {locale === "es" 
-              ? "Volver al inicio" 
+            {locale === "es"
+              ? "Volver al inicio"
               : "Return to home"}
           </button>
         </main>
@@ -740,21 +945,87 @@ export default function TokenTrackingPage() {
     );
   }
 
-  if (screen === "completed_auto_closed" || screen === "cancelled" || screen === "disputed") {
+  if (screen === "completed_auto_closed") {
     return (
       <div className="shell">
         <TopBar />
         <main className="main">
-          <AgentMessage support={localeText[screen as keyof typeof localeText]?.support}>
-            {localeText[screen as keyof typeof localeText]?.title}
+          <AgentMessage support={localeText.completed_auto_closed.support}>
+            {localeText.completed_auto_closed.title}
           </AgentMessage>
-          <button 
-            className="primary" 
-            type="button" 
+          <button
+            className="primary"
+            type="button"
             onClick={() => router.push("/")}
           >
-            {locale === "es" 
-              ? "Volver al inicio" 
+            {locale === "es"
+              ? "Volver al inicio"
+              : "Return to home"}
+          </button>
+        </main>
+      </div>
+    );
+  }
+
+  if (screen === "cancelled") {
+    return (
+      <div className="shell">
+        <TopBar />
+        <main className="main">
+          <AgentMessage support={localeText.cancelled.support}>
+            {localeText.cancelled.title}
+          </AgentMessage>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => router.push("/")}
+          >
+            {locale === "es"
+              ? "Volver al inicio"
+              : "Return to home"}
+          </button>
+        </main>
+      </div>
+    );
+  }
+
+  if (screen === "no_show") {
+    return (
+      <div className="shell">
+        <TopBar />
+        <main className="main">
+          <AgentMessage support={localeText.no_show?.support || localeText.cancelled.support}>
+            {localeText.no_show?.title || (locale === "es" ? "No se presentó" : "Technician did not show")}
+          </AgentMessage>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => router.push("/")}
+          >
+            {locale === "es"
+              ? "Volver al inicio"
+              : "Return to home"}
+          </button>
+        </main>
+      </div>
+    );
+  }
+
+  if (screen === "disputed") {
+    return (
+      <div className="shell">
+        <TopBar />
+        <main className="main">
+          <AgentMessage support={localeText.disputed.support}>
+            {localeText.disputed.title}
+          </AgentMessage>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => router.push("/")}
+          >
+            {locale === "es"
+              ? "Volver al inicio"
               : "Return to home"}
           </button>
         </main>
