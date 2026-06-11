@@ -241,11 +241,24 @@ def can_technician_transition(current: str | None, target: str) -> bool:
     return cur_i >= _FULFILLMENT_ORDER.index(STATUS_ASSIGNED) and tgt_i > cur_i
 
 
+def can_customer_cancel(status: str | None) -> bool:
+    """True if the customer may cancel the job.
+    Allowed from pending_dispatch through en_route; blocked from arrived onward."""
+    if status is None:
+        return False
+    return status in {
+        STATUS_PENDING_DISPATCH,
+        STATUS_ASSIGNED,
+        STATUS_EN_ROUTE,
+    }
+
+
 def customer_actions(status: str | None) -> dict[str, bool]:
     """Customer-safe affordances for the token link, derived from operational
     status. Confirm/dispute only while completion is pending; review is allowed
-    through the closed grace window."""
+    through the closed grace window; cancel allowed during search (pending_dispatch through en_route)."""
     return {
+        "can_cancel": can_customer_cancel(status),
         "can_confirm": status == STATUS_COMPLETED_PENDING,
         "can_dispute": status == STATUS_COMPLETED_PENDING,
         "can_review": status
