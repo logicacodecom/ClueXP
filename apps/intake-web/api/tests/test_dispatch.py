@@ -9,6 +9,7 @@ before acceptance, polling never creates offers). Run from apps/intake-web:
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 from api.dispatch import (
     POLICY_NETWORK_OPEN,
@@ -229,15 +230,22 @@ def test_technician_cannot_go_backward_or_confirm():
 
 def test_customer_actions_only_when_completion_pending():
     pending = customer_actions(STATUS_COMPLETED_PENDING)
-    assert pending == {"can_confirm": True, "can_dispute": True, "can_review": True}
+    assert pending["can_confirm"] is True
+    assert pending["can_dispute"] is True
+    assert pending["can_review"] is True
+    assert pending["can_cancel"] is False  # arrived+ → cancel blocked
     # in-progress: no completion affordance yet
-    assert customer_actions(STATUS_IN_PROGRESS) == {
-        "can_confirm": False, "can_dispute": False, "can_review": False
-    }
-    # confirmed: review still allowed (grace), but no re-confirm / dispute
+    ip = customer_actions(STATUS_IN_PROGRESS)
+    assert ip["can_confirm"] is False
+    assert ip["can_dispute"] is False
+    assert ip["can_review"] is False
+    assert ip["can_cancel"] is False
+    # confirmed: review still allowed (grace), but no re-confirm / dispute / cancel
     confirmed = customer_actions(STATUS_COMPLETED_CONFIRMED)
-    assert confirmed["can_confirm"] is False and confirmed["can_dispute"] is False
+    assert confirmed["can_confirm"] is False
+    assert confirmed["can_dispute"] is False
     assert confirmed["can_review"] is True
+    assert confirmed["can_cancel"] is False
 
 
 # --- fulfillment cutover: store transition gating (InMemory) ---------------
@@ -262,3 +270,65 @@ def test_unknown_token_resolves_to_none():
     assert asyncio.run(
         store.get_tracking_by_token("nope", max_attempts=MAX, total_timeout_seconds=480)
     ) is None
+
+
+# --- customer cancel ---------------------------------------------------------
+def test_can_customer_cancel_allowed_statuses():
+    from api.dispatch import can_customer_cancel, STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_EN_ROUTE
+    assert can_customer_cancel(STATUS_PENDING_DISPATCH) is True
+    assert can_customer_cancel(STATUS_ASSIGNED) is True
+    assert can_customer_cancel(STATUS_EN_ROUTE) is True
+
+
+def test_can_customer_cancel_blocked_statuses():
+    from api.dispatch import can_customer_cancel
+    for s in (STATUS_ARRIVED, STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING,
+              STATUS_COMPLETED_CONFIRMED, None, "old_intake_status"):
+        assert can_customer_cancel(s) is False, f"expected False for {s!r}"
+
+
+def test_cancel_job_succeeds_and_returns_cancelled():
+    store = InMemoryStore()
+    jid = "00000000-0000-0000-0000-000000000020"
+    asyncio.run(store.set_job_status(jid, STATUS_PENDING_DISPATCH))
+    result = asyncio.run(store.cancel_job(UUID(jid), current_status=STATUS_PENDING_DISPATCH))
+    assert result is not None
+    assert result["status"] == "cancelled"
+    status = asyncio.run(store.get_dispatch_status(jid, max_attempts=MAX, total_timeout_seconds=480))
+    assert status["status"] == "cancelled"
+
+
+def test_cancel_job_blocked_by_wrong_current_status():
+    store = InMemoryStore()
+    jid = "00000000-0000-0000-0000-000000000021"
+    asyncio.run(store.set_job_status(jid, STATUS_ARRIVED))
+    result = asyncio.run(store.cancel_job(UUID(jid), current_status=STATUS_EN_ROUTE))
+    assert result is None  # guard mismatched → concurrent change detected
+
+
+def test_cancel_job_atomically_revokes_outstanding_offers():
+    store = InMemoryStore()
+    jid = "00000000-0000-0000-0000-000000000022"
+    asyncio.run(store.set_job_status(jid, STATUS_PENDING_DISPATCH))
+    store._offers = {"offer-1": {"job_id": jid, "status": "offered", "technician_id": "t1"}}
+    asyncio.run(store.cancel_job(UUID(jid), current_status=STATUS_PENDING_DISPATCH))
+    assert store._offers["offer-1"]["status"] == "superseded"
+
+
+# --- blind tracking (token endpoint strips dispatch internals) ---------------
+def test_token_endpoint_omits_dispatch_internals():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    client = TestClient(app)
+
+    # seed a job with a known token
+    jid = UUID("00000000-0000-0000-0000-000000000030")
+    token = "test-blind-tracking-token"
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[str(jid)] = token
+
+    resp = client.get(f"/t/{token}")
+    assert resp.status_code == 200
+    body = resp.json()
+    for field in ("attempts", "max_attempts", "offers_pending", "offer_expires_at"):
+        assert field not in body, f"dispatch internal field {field!r} leaked into token response"

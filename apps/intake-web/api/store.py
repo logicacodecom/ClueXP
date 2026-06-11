@@ -22,11 +22,13 @@ from uuid import UUID, uuid4
 from api.auth import hash_password, verify_password
 from api.dispatch import (
     STATUS_ASSIGNED,
+    STATUS_CANCELLED,
     STATUS_COMPLETED_AUTO_CLOSED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
     STATUS_PENDING_DISPATCH,
     STATUS_TIMESTAMP_COLUMN,
+    can_customer_cancel,
     customer_actions,
     eta_range_from_km,
     haversine_km,
@@ -300,6 +302,11 @@ class Store:
         raise NotImplementedError
 
     async def auto_close_pending(self, window_seconds: int) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    async def cancel_job(
+        self, job_id: UUID, *, current_status: str, reason: str | None = None
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def resolve_job(
@@ -591,17 +598,14 @@ class InMemoryStore(Store):
             attempts=attempts, max_attempts=max_attempts, timed_out=False,
         )
         status = (self._job_status.get(jid) if hasattr(self, "_job_status") else None)
+        # Blind tracking: remove dispatch internals
         return {
             "state": state,
             "terminal": is_terminal(state, attempts=attempts, max_attempts=max_attempts, timed_out=False),
-            "attempts": attempts,
-            "max_attempts": max_attempts,
-            "offers_pending": active,
-            "offer_expires_at": None,
-            "assignment": None,
             "status": status,
             "closed": False,
             "customer_actions": customer_actions(status),
+            "assignment": None,
         }
 
     # --- fulfillment cutover (Sprint 3) — minimal in-memory backing for tests ---
@@ -650,6 +654,19 @@ class InMemoryStore(Store):
             return None
         self._job_status[jid] = new_status
         return {"id": jid, "status": new_status}
+
+    async def cancel_job(
+        self, job_id: UUID, *, current_status: str, reason: str | None = None
+    ) -> dict | None:
+        self._job_status = getattr(self, "_job_status", {})
+        jid = str(job_id)
+        if self._job_status.get(jid) != current_status:
+            return None
+        self._job_status[jid] = STATUS_CANCELLED
+        for o in getattr(self, "_offers", {}).values():
+            if o.get("job_id") == jid and o.get("status") == "offered":
+                o["status"] = "superseded"
+        return {"id": jid, "status": STATUS_CANCELLED}
 
     async def record_customer_review(
         self, *, job_id: UUID, rating: int, comment: str | None,
@@ -1636,19 +1653,17 @@ class PostgresStore(Store):
                     conn, tech_id, org_id, owner_org_id, lat, lng, ticket_id, job_status
                 )
         from api.dispatch import TERMINAL_STATUSES
+        # Blind tracking: remove dispatch internals (attempts, offers, expiry)
+        # Customer sees only: searching / matched / failed (Uber-style)
         return {
             "state": state,
             "terminal": terminal,
-            "attempts": attempts,
-            "max_attempts": max_attempts,
-            "offers_pending": active,
-            "offer_expires_at": next_expiry.isoformat() if next_expiry else None,
-            "assignment": assignment,
             # Operational fulfillment fields (cutover). For legacy jobs these are
             # benign: status is the intake status and no customer action is offered.
             "status": job_status,
             "closed": job_status in TERMINAL_STATUSES,
             "customer_actions": customer_actions(job_status),
+            "assignment": assignment,
         }
 
     async def _safe_assignment(
@@ -1794,6 +1809,36 @@ class PostgresStore(Store):
             row = await cur.fetchone()
         if not row:
             return None
+        return {"id": str(row[0]), "status": row[1]}
+
+    async def cancel_job(
+        self, job_id: UUID, *, current_status: str, reason: str | None = None
+    ) -> dict | None:
+        """Atomically cancel a job and revoke its outstanding offers in a single
+        connection. Guards on ``current_status`` so a concurrent status change
+        (e.g. technician transition) is detected and returns None → 409."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update jobs set status = %s,"
+                " cancelled_at = coalesce(cancelled_at, now()),"
+                " closed_at = coalesce(closed_at, now()),"
+                " updated_at = now()"
+                " where id = %s and status = %s"
+                " returning id, status",
+                (STATUS_CANCELLED, str(job_id), current_status),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            await conn.execute(
+                "update dispatch_offers set status = 'superseded', responded_at = now()"
+                " where job_id = %s and status = 'offered'",
+                (str(job_id),),
+            )
+        await self.log_event_raw(
+            job_id,
+            f"customer_cancel:{reason[:200]}" if reason else "customer_cancel",
+        )
         return {"id": str(row[0]), "status": row[1]}
 
     async def record_customer_review(

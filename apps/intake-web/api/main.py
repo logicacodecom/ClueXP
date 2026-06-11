@@ -20,9 +20,11 @@ from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
 from api.dispatch import (
+    STATUS_CANCELLED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
     STATUS_DISPUTED,
+    can_customer_cancel,
     can_technician_transition,
     normalize_policy,
     select_candidates,
@@ -249,6 +251,9 @@ class JobStatusUpdateRequest(BaseModel):
 class CustomerReviewRequest(BaseModel):
     rating: int
     comment: str | None = None
+
+class CancelRequest(BaseModel):
+    reason: str | None = None
 
 
 class DisputeRequest(BaseModel):
@@ -1139,8 +1144,9 @@ async def tracking(ticket_id: UUID) -> dict[str, Any]:
 async def tracking_by_token(token: str) -> dict[str, Any]:
     """Token-resolved tracking read: the dispatch state + (once matched) the safe
     assignment + the operational fulfillment status and the customer affordance
-    (confirm / review / dispute when completion is pending). Pure read — never
-    creates offers."""
+    (confirm / review / dispute / cancel). Pure read — never creates offers.
+    Dispatch-internal fields (attempts, offers_pending, etc.) are stripped so
+    the customer sees only searching / matched / failed — no process internals."""
     await latency()
     try:
         status = await store.get_tracking_by_token(
@@ -1152,6 +1158,8 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
         return {"state": "error", "terminal": False, "assignment": None}
     if status is None:
         raise HTTPException(status_code=404, detail="Not found")
+    for _f in ("attempts", "max_attempts", "offers_pending", "offer_expires_at"):
+        status.pop(_f, None)
     return status
 
 
@@ -1203,7 +1211,6 @@ async def review_by_token(token: str, payload: CustomerReviewRequest) -> dict[st
         )
     return {"status": "recorded", "review": review}
 
-
 @app.post("/t/{token}/dispute")
 async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any]:
     """Customer reports an issue: completed_pending_customer → disputed. A human
@@ -1217,6 +1224,27 @@ async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any
         raise HTTPException(status_code=409, detail="Job is not awaiting customer confirmation")
     if payload.reason:
         await store.log_event_raw(job_id, f"customer_dispute:{payload.reason[:200]}")
+    return {"status": updated["status"]}
+
+
+@app.post("/t/{token}/cancel")
+async def cancel_by_token(token: str, payload: CancelRequest) -> dict[str, Any]:
+    """Customer cancels the job. Allowed from pending_dispatch through en_route;
+    blocked (409) from arrived onward. Atomically revokes outstanding offers so
+    no technician can accept after cancellation."""
+    await latency()
+    job_id = await _require_token_job(token)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    current_status = lifecycle.get("status")
+    if not can_customer_cancel(current_status):
+        raise HTTPException(status_code=409, detail="Job cannot be cancelled at this stage")
+    updated = await store.cancel_job(
+        job_id, current_status=current_status, reason=payload.reason
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Status changed concurrently")
     return {"status": updated["status"]}
 
 
