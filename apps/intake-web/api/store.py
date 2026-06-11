@@ -280,6 +280,9 @@ class Store:
     async def get_job_lifecycle(self, job_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_technician_active_job(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -639,6 +642,16 @@ class InMemoryStore(Store):
             "fulfillment_org_id": None,
             "customer_owner_org_id": None,
         }
+
+    async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
+        _ACTIVE = {"assigned", "en_route", "arrived", "in_progress"}
+        tid = str(technician_id)
+        job_techs = getattr(self, "_job_tech", {})
+        statuses = getattr(self, "_job_status", {})
+        for jid, tech_id in job_techs.items():
+            if tech_id == tid and statuses.get(jid) in _ACTIVE:
+                return {"id": jid, "status": statuses[jid]}
+        return None
 
     async def set_job_status(
         self,
@@ -1773,6 +1786,20 @@ class PostgresStore(Store):
             "fulfillment_org_id": str(row[2]) if row[2] else None,
             "customer_owner_org_id": str(row[3]) if row[3] else None,
         }
+
+    async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, status from jobs"
+                " where fulfillment_technician_id = %s"
+                " and status = any(%s)"
+                " order by updated_at desc limit 1",
+                (str(technician_id), ["assigned", "en_route", "arrived", "in_progress"]),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "status": row[1]}
 
     async def set_job_status(
         self,

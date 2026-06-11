@@ -1,10 +1,30 @@
-import { jobById } from "@cluexp/api-client";
+"use client";
+
+import { useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+import { jobById, updateTechnicianJobStatus } from "@cluexp/api-client";
 import { ActiveJobHeader, AppFrame, Pill, PrimaryButton, Screen, Section, Stepper, icons } from "@/components/mobile";
 
-export default async function ServicePage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export default function ServicePage() {
+  const router = useRouter();
+  const [loading, setLoading] = useState<string | null>(null);
+  const { id } = useParams<{ id: string }>();
   const job = jobById(id) ?? jobById("JOB-D-2301");
   if (!job) return null;
+
+  const handleStatusChange = async (status: "in_progress" | "completed_pending_customer") => {
+    setLoading(status);
+    try {
+      await updateTechnicianJobStatus(job.id, status);
+      router.push(`/jobs/${job.id}/${status === "in_progress" ? "approval" : "complete"}`);
+    } catch (err) {
+      console.error(`Failed to set status to ${status}:`, err);
+      alert("Failed to update status. Please try again.");
+    } finally {
+      setLoading(null);
+    }
+  };
+
   return (
     <AppFrame title="In Service">
       <Screen>
@@ -22,8 +42,12 @@ export default async function ServicePage({ params }: { params: Promise<{ id: st
         </Section>
         <div className="space-y-3">
           <PrimaryButton href={`/jobs/${job.id}/arrival`}><icons.Navigation className="size-5" />Arrived</PrimaryButton>
-          <PrimaryButton href={`/jobs/${job.id}/service`}><icons.CheckCircle2 className="size-5" />In progress</PrimaryButton>
-          <PrimaryButton href={`/jobs/${job.id}/approval`}><icons.CheckCircle2 className="size-5" />Request customer approval</PrimaryButton>
+          <PrimaryButton onClick={() => handleStatusChange("in_progress")} disabled={loading === "in_progress"}>
+            {loading === "in_progress" ? "Updating..." : <><icons.CheckCircle2 className="size-5" />In progress</>}
+          </PrimaryButton>
+          <PrimaryButton onClick={() => handleStatusChange("completed_pending_customer")} disabled={loading === "completed_pending_customer"}>
+            {loading === "completed_pending_customer" ? "Updating..." : <><icons.CheckCircle2 className="size-5" />Request customer approval</>}
+          </PrimaryButton>
         </div>
       </Screen>
     </AppFrame>

@@ -2,7 +2,7 @@ import { activeTechnicianJobIds, jobById } from "@cluexp/api-client";
 import { AppFrame, ChatPreview, Pill, Screen, Section, icons } from "@/components/mobile";
 
 export default function MessagesPage() {
-  const job = jobById(activeTechnicianJobIds[0]);
+  const job = jobById(activeTechnicianJobIds()[0]);
   return (
     <AppFrame title="Messages">
       <Screen>

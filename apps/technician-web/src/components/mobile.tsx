@@ -38,7 +38,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Countdown, TechnicianBottomNav } from "./client-widgets";
+import { AvailabilityToggle, Countdown, TechnicianBottomNav } from "./client-widgets";
 import { GoogleMapView } from "./google-map";
 import type { MapPoint } from "./google-map";
 
@@ -175,23 +175,6 @@ export function PhoneStatus({ title }: { title: string }) {
   return <TechnicianTopBar title={title} />;
 }
 
-export function AvailabilityToggle({ profile = technicianAppProfile }: { profile?: TechnicianAppProfile }) {
-  const online = profile.availability === "online";
-  return (
-    <Link
-      className={cx(
-        "touch-target inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-black transition active:scale-[.98]",
-        online ? "border-success/35 bg-success/10 text-success" : "border-border bg-card text-muted"
-      )}
-      href="/settings"
-      aria-label={`Technician is ${online ? "online" : "offline"}`}
-    >
-      <span className={cx("size-2.5 rounded-full", online ? "bg-success" : "bg-muted")} />
-      {online ? "Online" : "Offline"}
-    </Link>
-  );
-}
-
 export function Section({
   action,
   children,
@@ -234,27 +217,29 @@ export function Pill({
   );
 }
 
-export function PrimaryButton({
-  children,
-  href,
-  tone = "primary"
-}: {
+type PrimaryButtonProps = {
   children: ReactNode;
-  href: string;
   tone?: "primary" | "secondary" | "danger";
-}) {
+} & (
+  | { href: string; onClick?: never; disabled?: never }
+  | { href?: never; onClick: () => void | Promise<void>; disabled?: boolean }
+);
+
+export function PrimaryButton({ children, tone = "primary", href, onClick, disabled }: PrimaryButtonProps) {
+  const className = cx(
+    "touch-target inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-[15px] font-black transition active:scale-[.99]",
+    tone === "primary" && "bg-primary text-primary-foreground hover:bg-[#ffd15f]",
+    tone === "secondary" && "border border-border bg-card-strong text-foreground hover:border-primary/45",
+    tone === "danger" && "bg-danger text-[#250606] hover:bg-[#ff8c8c]",
+    disabled && "opacity-60 pointer-events-none"
+  );
+  if (href) {
+    return <Link className={className} href={href}>{children}</Link>;
+  }
   return (
-    <Link
-      className={cx(
-        "touch-target inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-[15px] font-black transition active:scale-[.99]",
-        tone === "primary" && "bg-primary text-primary-foreground hover:bg-[#ffd15f]",
-        tone === "secondary" && "border border-border bg-card-strong text-foreground hover:border-primary/45",
-        tone === "danger" && "bg-danger text-[#250606] hover:bg-[#ff8c8c]"
-      )}
-      href={href}
-    >
+    <button type="button" className={className} onClick={onClick} disabled={disabled}>
       {children}
-    </Link>
+    </button>
   );
 }
 
@@ -738,7 +723,7 @@ export function EmptyState({ icon: Icon = AlertTriangle, text, title }: { icon?:
 }
 
 export function ActiveJobShortcut() {
-  const job = jobById(activeTechnicianJobIds[0]);
+  const job = jobById(activeTechnicianJobIds()[0]);
   if (!job) return null;
   return <ActiveJobCard job={job} />;
 }

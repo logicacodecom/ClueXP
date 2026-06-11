@@ -2,7 +2,7 @@ import { activeTechnicianJobIds, jobById, technicianJobs } from "@cluexp/api-cli
 import { AppFrame, MockMap, Pill, Screen, Section, ActiveJobCard, icons } from "@/components/mobile";
 
 export default function MapPage() {
-  const activeJob = jobById(activeTechnicianJobIds[0]);
+  const activeJob = jobById(activeTechnicianJobIds()[0]);
   return (
     <AppFrame title="Field Map">
       <Screen>

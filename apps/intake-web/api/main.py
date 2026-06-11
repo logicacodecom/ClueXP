@@ -1110,6 +1110,27 @@ async def accept_offer(offer_id: UUID) -> dict[str, Any]:
     return result
 
 
+@app.get("/technicians/{technician_id}/active-job")
+async def technician_active_job(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Return the technician's currently-active job (assigned/en_route/arrived/in_progress).
+
+    A technician may only read their own; platform_admin/dispatcher may read any.
+    Returns {} when there is no active job (HTTP 200, not 404).
+    """
+    roles = set(session.get("roles", []))
+    if not ({"platform_admin", "dispatcher"} & roles):
+        tech = session.get("technician")
+        if not tech or tech.get("id") != str(technician_id):
+            raise HTTPException(status_code=403, detail="Not your active job")
+    result = await store.get_technician_active_job(technician_id)
+    if result is None:
+        return {}
+    lifecycle = await store.get_job_lifecycle(UUID(result["id"]))
+    return {**result, **(lifecycle or {})}
+
+
 @app.get("/technicians/{technician_id}/offers")
 async def technician_offers(
     technician_id: UUID, session: dict[str, Any] = Depends(require_session)

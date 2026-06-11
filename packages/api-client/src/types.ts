@@ -320,6 +320,7 @@ export type JobStatus =
 
 /** Customer affordances for the token tracking link */
 export interface CustomerActions {
+  can_cancel: boolean;
   can_confirm: boolean;
   can_dispute: boolean;
   can_review: boolean;
@@ -352,8 +353,6 @@ export interface TrackingWithStatus {
     may_show_eta: boolean;
     may_show_live_tracking: boolean;
   };
-  can_confirm: boolean;
-  can_review: boolean;
-  can_dispute: boolean;
+  customer_actions: CustomerActions;
   terminal: boolean;
 }

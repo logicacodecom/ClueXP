@@ -14,6 +14,20 @@ export async function getTrackingByToken(token: string): Promise<import("./types
   return res.json();
 }
 
+/** Cancel request (customer endpoint) */
+export async function cancelRequest(token: string, reason?: string | null): Promise<{ status: string }> {
+  const res = await fetch(`/api/t/${token}/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason: reason ?? null })
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 /** Confirm completion (customer endpoint) */
 export async function confirmCompletion(token: string): Promise<{ status: string }> {
   const res = await fetch(`/api/t/${token}/confirm`, {
@@ -83,4 +97,18 @@ export async function updateTechnicianJobStatus(
   }
   return res.json();
 }
+
+/** Get technician's active job */
+export async function getActiveJob(): Promise<import("./types").Job | null> {
+  const res = await fetch(`/api/active-job`, {
+    headers: { "content-type": "application/json" }
+  });
+  if (!res.ok) {
+    if (res.status === 401) return null;
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export * from "./mock-data";

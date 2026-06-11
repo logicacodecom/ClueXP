@@ -1,10 +1,30 @@
-import { jobById } from "@cluexp/api-client";
+"use client";
+
+import { useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+import { jobById, updateTechnicianJobStatus } from "@cluexp/api-client";
 import { ActiveJobHeader, AppFrame, Pill, PrimaryButton, Screen, Section, Stepper, icons } from "@/components/mobile";
 
-export default async function ArrivalPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export default function ArrivalPage() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const { id } = useParams<{ id: string }>();
   const job = jobById(id) ?? jobById("JOB-D-2301");
   if (!job) return null;
+
+  const handleConfirmArrival = async () => {
+    setLoading(true);
+    try {
+      await updateTechnicianJobStatus(job.id, "arrived");
+      router.push(`/jobs/${job.id}/service`);
+    } catch (err) {
+      console.error("Failed to confirm arrival:", err);
+      alert("Failed to confirm arrival. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <AppFrame title="Arrival">
       <Screen>
@@ -16,7 +36,9 @@ export default async function ArrivalPage({ params }: { params: Promise<{ id: st
           </div>
           <p className="mt-3 text-sm leading-5 text-muted">Mock PIN entry. Production should support PIN, QR, and dispatcher override with audit reason.</p>
         </Section>
-        <PrimaryButton href={`/jobs/${job.id}/service`}><icons.CheckCircle2 className="size-5" />Confirm arrival</PrimaryButton>
+        <PrimaryButton onClick={handleConfirmArrival} disabled={loading}>
+          {loading ? "Confirming..." : <><icons.CheckCircle2 className="size-5" />Confirm arrival</>}
+        </PrimaryButton>
       </Screen>
     </AppFrame>
   );

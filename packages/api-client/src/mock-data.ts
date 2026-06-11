@@ -622,8 +622,13 @@ export const technicianAppOffers: TechnicianAppOffer[] = [
   }
 ];
 
-export const activeTechnicianJobIds = ["JOB-D-2301"];
-export const assignedTechnicianJobIds = ["JOB-D-2301", "JOB-E-2312"];
+export function activeTechnicianJobIds(): string[] {
+  return ["JOB-D-2301"];
+}
+
+export function assignedTechnicianJobIds(): string[] {
+  return ["JOB-D-2301", "JOB-E-2312"];
+}
 
 export const technicianActivitySummary: TechnicianActivitySummary = {
   today_completed: 3,
@@ -673,7 +678,7 @@ export function technicianOfferById(id?: string): TechnicianAppOffer | undefined
 }
 
 export function technicianJobs(): Job[] {
-  return jobs.filter((job) => assignedTechnicianJobIds.includes(job.id));
+  return jobs.filter((job) => assignedTechnicianJobIds().includes(job.id));
 }
 
 // Fulfillment cutover (Sprint 3) - mock tracking data
@@ -708,17 +713,21 @@ export function mockTrackingWithStatus(token: string, status: JobStatus): Tracki
       may_show_eta: status === "assigned",
       may_show_live_tracking: status === "en_route" || status === "arrived" || status === "in_progress"
     },
-    can_confirm: status === "completed_pending_customer",
-    can_review: ["completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status),
-    can_dispute: status === "completed_pending_customer",
+    customer_actions: {
+      can_cancel: ["pending_dispatch", "assigned", "en_route"].includes(status),
+      can_confirm: status === "completed_pending_customer",
+      can_review: ["completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status),
+      can_dispute: status === "completed_pending_customer",
+    },
     terminal: ["completed_confirmed", "completed_auto_closed", "cancelled", "no_show"].includes(status)
   };
 }
 
 export function mockCustomerActions(status: JobStatus): CustomerActions {
   return {
+    can_cancel: ["pending_dispatch", "assigned", "en_route"].includes(status),
     can_confirm: status === "completed_pending_customer",
     can_dispute: status === "completed_pending_customer",
-    can_review: ["completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status)
+    can_review: ["completed_pending_customer", "completed_confirmed", "completed_auto_closed", "disputed"].includes(status),
   };
 }

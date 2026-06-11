@@ -1,10 +1,30 @@
-import { jobById } from "@cluexp/api-client";
+"use client";
+
+import { useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+import { jobById, updateTechnicianJobStatus } from "@cluexp/api-client";
 import { ActiveJobHeader, AppFrame, Pill, PrimaryButton, Screen, Section, Stepper, icons } from "@/components/mobile";
 
-export default async function ApprovalPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export default function ApprovalPage() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const { id } = useParams<{ id: string }>();
   const job = jobById(id) ?? jobById("JOB-D-2301");
   if (!job) return null;
+
+  const handleApprovalReceived = async () => {
+    setLoading(true);
+    try {
+      await updateTechnicianJobStatus(job.id, "completed_pending_customer");
+      router.push(`/jobs/${job.id}/complete`);
+    } catch (err) {
+      console.error("Failed to mark approval received:", err);
+      alert("Failed to update status. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <AppFrame title="Approval">
       <Screen>
@@ -17,7 +37,9 @@ export default async function ApprovalPage({ params }: { params: Promise<{ id: s
             <p className="mt-3 text-sm leading-6 text-muted">Completion cannot close until customer approval or authorized dispatcher override is recorded.</p>
           </div>
         </Section>
-        <PrimaryButton href={`/jobs/${job.id}/complete`}><icons.CheckCircle2 className="size-5" />Approval received</PrimaryButton>
+        <PrimaryButton onClick={handleApprovalReceived} disabled={loading}>
+          {loading ? "Updating..." : <><icons.CheckCircle2 className="size-5" />Approval received</>}
+        </PrimaryButton>
       </Screen>
     </AppFrame>
   );

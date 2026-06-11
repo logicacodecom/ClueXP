@@ -5,6 +5,7 @@ import type { TicketGuards } from "@/types/schema.generated";
 import { useRouter, useParams } from "next/navigation";
 import { LoaderCircle, ShieldCheck } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
+import { cancelRequest } from "@cluexp/api-client";
 
 type Screen =
   | "loading"
@@ -44,9 +45,12 @@ interface TrackingResponse {
   location: { raw_text: string };
   assignment: DispatchAssignment | null;
   guards: TicketGuards;
-  can_confirm: boolean;
-  can_review: boolean;
-  can_dispute: boolean;
+  customer_actions: {
+    can_cancel: boolean;
+    can_confirm: boolean;
+    can_review: boolean;
+    can_dispute: boolean;
+  };
   terminal: boolean;
 }
 
@@ -110,6 +114,7 @@ export default function TokenTrackingPage() {
   const [assignment, setAssignment] = useState<DispatchAssignment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [canCancel, setCanCancel] = useState(false);
   const [reviewData, setReviewData] = useState<ReviewData>({
     rating: null,
     tags: [],
@@ -228,6 +233,7 @@ export default function TokenTrackingPage() {
       } else {
         setScreen("waiting");
       }
+      setCanCancel(data.customer_actions?.can_cancel ?? false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tracking");
       setScreen("error");
@@ -272,6 +278,18 @@ export default function TokenTrackingPage() {
       setScreen("disputed");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to report issue");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCancel = async (reason?: string) => {
+    setBusy(true);
+    try {
+      await cancelRequest(token, reason || null);
+      setScreen("cancelled");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel request");
     } finally {
       setBusy(false);
     }
@@ -372,20 +390,29 @@ export default function TokenTrackingPage() {
             </div>
           </div>
           <div className="stack">
-            <button 
-              className="primary" 
-              type="button" 
+            <button
+              className="primary"
+              type="button"
               onClick={() => void loadTracking()}
             >
               {localeText.waiting.action}
             </button>
-            <a 
-              className="ghost" 
-              href={`tel:${DISPATCH_PHONE}`} 
+            {canCancel && (
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => void handleCancel()}
+              >
+                {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
+              </button>
+            )}
+            <a
+              className="ghost"
+              href={`tel:${DISPATCH_PHONE}`}
               style={{ display: "block", textAlign: "center", textDecoration: "none" }}
             >
-              {locale === "es" 
-                ? "¿Necesita ayuda? Llamar al despacho" 
+              {locale === "es"
+                ? "¿Necesita ayuda? Llamar al despacho"
                 : "Need help? Call dispatch"}
             </a>
           </div>
@@ -430,6 +457,17 @@ export default function TokenTrackingPage() {
               </p>
             </div>
           )}
+          {canCancel && (
+            <div className="stack" style={{ marginTop: "2rem" }}>
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => void handleCancel()}
+              >
+                {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
+              </button>
+            </div>
+          )}
         </main>
       </div>
     );
@@ -461,6 +499,17 @@ export default function TokenTrackingPage() {
               </p>
             </div>
           </div>
+          {canCancel && (
+            <div className="stack" style={{ marginTop: "2rem" }}>
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => void handleCancel()}
+              >
+                {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
+              </button>
+            </div>
+          )}
         </main>
       </div>
     );

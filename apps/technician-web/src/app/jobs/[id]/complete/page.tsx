@@ -5,6 +5,7 @@ export default async function CompletePage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const job = jobById(id) ?? jobById("JOB-D-2301");
   if (!job) return null;
+
   return (
     <AppFrame title="Complete">
       <Screen>
@@ -18,9 +19,7 @@ export default async function CompletePage({ params }: { params: Promise<{ id: s
           </div>
           <p className="mt-3 text-sm leading-5 text-muted">Mock summary. Final amount is backend/provider-settlement controlled.</p>
         </Section>
-        <div className="space-y-3">
-          <PrimaryButton href="/jobs"><icons.CheckCircle2 className="size-5" />Return to jobs</PrimaryButton>
-        </div>
+        <PrimaryButton href="/jobs"><icons.CheckCircle2 className="size-5" />Return to jobs</PrimaryButton>
       </Screen>
     </AppFrame>
   );

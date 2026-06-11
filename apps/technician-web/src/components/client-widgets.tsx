@@ -1,5 +1,7 @@
 "use client";
 
+import { technicianAppProfile } from "@cluexp/api-client";
+import type { TechnicianAppProfile } from "@cluexp/api-client";
 import { BriefcaseBusiness, CircleDollarSign, MapPinned, MessageCircle, Timer, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
@@ -46,6 +48,55 @@ export function TechnicianBottomNav() {
 }
 
 export const BottomNav = TechnicianBottomNav;
+
+export function AvailabilityToggle({ profile = technicianAppProfile }: { profile?: TechnicianAppProfile }) {
+  const online = profile.availability === "online";
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggleAvailability = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/availability", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ available: !online }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { detail?: string };
+        if (response.status === 401) {
+          setError("Please sign in to change availability");
+        } else if (response.status === 403) {
+          setError("Not authorized to change availability");
+        } else {
+          setError(body.detail ?? "Failed to update availability");
+        }
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to connect");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={cx(
+        "touch-target inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-black transition active:scale-[.98]",
+        online ? "border-success/35 bg-success/10 text-success" : "border-border bg-card text-muted"
+      )}
+      onClick={toggleAvailability}
+      disabled={loading}
+      aria-label={`Technician is ${online ? "online" : "offline"}`}
+    >
+      <span className={cx("size-2.5 rounded-full", online ? "bg-success" : "bg-muted")} />
+      {loading ? "Updating..." : online ? "Online" : "Offline"}
+      {error && <span className="text-xs text-danger">{error}</span>}
+    </button>
+  );
+}
 
 export function Countdown({ expiresAt }: { expiresAt: string }) {
   const target = useMemo(() => new Date(expiresAt).getTime(), [expiresAt]);

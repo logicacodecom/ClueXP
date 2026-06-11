@@ -1,5 +1,6 @@
 import {
   activeTechnicianJobIds,
+  assignedTechnicianJobIds,
   jobById,
   technicianJobs
 } from "@cluexp/api-client";
@@ -12,9 +13,25 @@ import {
 } from "@/components/mobile";
 import { LiveOffersFeed } from "@/components/live-offers";
 
-export default function JobsPage() {
-  const activeJob = jobById(activeTechnicianJobIds[0]);
-  const assignedJobs = technicianJobs().filter((job) => job.id !== activeJob?.id);
+async function getActiveJobFromAPI(): Promise<string | null> {
+  try {
+    const response = await fetch("/api/active-job");
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export default async function JobsPage() {
+  const activeJobIdFromAPI = await getActiveJobFromAPI();
+  const activeJobId = activeJobIdFromAPI ?? activeTechnicianJobIds()[0];
+  const activeJob = jobById(activeJobId);
+  const assignedJobIds = assignedTechnicianJobIds();
+  const assignedJobs = assignedJobIds
+    .map((id) => jobById(id))
+    .filter((job): job is NonNullable<typeof job> => job != null && job.id !== activeJob?.id);
   return (
     <TechnicianShell>
       <Screen flush>
