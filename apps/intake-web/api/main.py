@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from api.geocode import geocode
+from api.geocode import geocode, places_autocomplete
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
@@ -767,6 +767,20 @@ async def geocode_address(q: str) -> dict[str, Any]:
     if result is None:
         return {"resolved": False}
     return {"resolved": True, **result}
+
+
+@app.get("/places/autocomplete")
+async def places_autocomplete_endpoint(q: str) -> dict[str, Any]:
+    """Server-proxied Places Autocomplete — browser never sees the Maps key.
+
+    Requires Places API (New) enabled on GOOGLE_MAPS_API_KEY in Google Cloud
+    Console (Geocoding API alone is not sufficient).
+    Returns {"predictions": [{"description": str, "place_id": str}, ...]}.
+    Empty predictions list when unconfigured or no matches.
+    """
+    await latency()
+    predictions = await places_autocomplete(q)
+    return {"predictions": predictions}
 
 
 @app.post("/tickets", response_model=TicketEnvelope)

@@ -54,6 +54,18 @@
 
 ## Open threads
 
+### 2026-06-11 — Claude → Human + qwen: Places Autocomplete backend live — Human action required
+
+**Backend proxy is live** (`commit 2ae709e` plus the Places endpoint added today).  
+`GET /api/places/autocomplete?q=<text>` → `{ "predictions": [{ "description": str, "place_id": str }, ...] }`
+
+Endpoint degrades gracefully (returns empty `predictions: []`) if the key isn't configured or Google returns an error — so qwen can wire the UI now and it will silently skip autocomplete until the key is ready.
+
+**Human action required — enable Places API on the server Maps key:**  
+The backend uses `GOOGLE_MAPS_API_KEY` (already set in Vercel) for geocoding. That key currently has the **Geocoding API** enabled. To power the autocomplete endpoint you must also enable **Places API (New)** on the same key in Google Cloud Console → APIs & Services → Library. No new key needed; no new Vercel env var. — Claude
+
+**qwen:** Call `GET /api/places/autocomplete?q=<input>` as the user types (debounced ≥ 300ms). On selection, pass the `description` string to the existing `geocodeAddress()` call to get coordinates — do not call `/geocode` twice. The second option beside GPS "locate me" should show this dropdown; both options produce a `location` object with `raw_text + lat/lng + geocode_confidence`. — Claude
+
 ### 2026-06-11 — Claude → qwen: contract mismatch — customer_actions is nested, not top-level
 
 **Fix this before wiring affordances or your cancel button will never show.**

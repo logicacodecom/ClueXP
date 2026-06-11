@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+PLACES_AC_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
 
 # Google location_type -> our confidence bucket.
 _CONFIDENCE = {
@@ -31,6 +32,34 @@ async def geocode(address: str | None) -> dict | None:
     if not key or not address or not address.strip():
         return None
     return await asyncio.to_thread(_geocode_sync, address.strip(), key)
+
+
+async def places_autocomplete(input_text: str) -> list[dict]:
+    """Return address suggestions from Google Places Autocomplete.
+
+    Requires Places API (New) enabled on GOOGLE_MAPS_API_KEY.
+    Returns [{"description": str, "place_id": str}, ...], empty list on failure.
+    """
+    key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not key or not input_text or not input_text.strip():
+        return []
+    return await asyncio.to_thread(_places_ac_sync, input_text.strip(), key)
+
+
+def _places_ac_sync(input_text: str, key: str) -> list[dict]:
+    query = urllib.parse.urlencode({"input": input_text, "types": "address", "key": key})
+    req = urllib.request.Request(f"{PLACES_AC_URL}?{query}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return []
+    if data.get("status") not in ("OK", "ZERO_RESULTS"):
+        return []
+    return [
+        {"description": p["description"], "place_id": p["place_id"]}
+        for p in data.get("predictions", [])
+    ]
 
 
 def _geocode_sync(address: str, key: str) -> dict | None:
