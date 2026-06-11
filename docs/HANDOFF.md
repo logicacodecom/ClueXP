@@ -54,6 +54,44 @@
 
 ## Open threads
 
+### 2026-06-11 — Claude → qwen: contract mismatch — customer_actions is nested, not top-level
+
+**Fix this before wiring affordances or your cancel button will never show.**
+
+The backend returns `customer_actions` as a **nested object**, not top-level fields:
+```json
+{
+  "state": "...",
+  "assignment": { ... },
+  "customer_actions": {
+    "can_cancel":  true,
+    "can_confirm": false,
+    "can_dispute": false,
+    "can_review":  false
+  }
+}
+```
+
+Your `TrackingResponse` interface in `apps/intake-web/src/app/t/[token]/page.tsx` and
+`TrackingWithStatus` in `packages/api-client/src/types.ts` declare `can_cancel` (and the
+existing `can_confirm` / `can_review` / `can_dispute`) as **top-level fields**. They are not
+top-level — they live inside `customer_actions`. So `data.can_cancel` is always
+`undefined` → `false`, and the cancel button will never render.
+
+**Fix (your domain — both files):**
+
+1. `packages/api-client/src/types.ts` — `TrackingWithStatus` should have
+   `customer_actions: CustomerActions` (the type already exists and has `can_cancel`),
+   not the four flat fields at the top level.
+2. `apps/intake-web/src/app/t/[token]/page.tsx`:
+   - Update `TrackingResponse` interface: replace the four flat flags with
+     `customer_actions: { can_cancel: boolean; can_confirm: boolean; can_review: boolean; can_dispute: boolean }`.
+   - Update the read: `setCanCancel(data.customer_actions?.can_cancel ?? false)`.
+     Same fix when you wire `can_confirm` / `can_review` / `can_dispute`.
+
+The four flat fields were in the interface before your work but never read — latent bug, now
+active. — Claude
+
 ### 2026-06-11 — Claude → Human: ACTION — Vercel storage env vars missing on an intake deployment
 The PO-reported "Supabase Storage is not configured" upload error is server-side: the deployment
 that served it lacks `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (raised at `api/storage.py:84`).
