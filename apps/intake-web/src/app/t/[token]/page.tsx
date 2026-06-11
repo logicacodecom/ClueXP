@@ -230,7 +230,7 @@ export default function TokenTrackingPage() {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/t/${token}`);
+      const response = await fetch(`/api/t/${token}`);
       
       // Handle 401 - Session expired
       if (response.status === 401) {
@@ -324,7 +324,7 @@ export default function TokenTrackingPage() {
   const handleConfirm = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`/t/${token}/confirm`, { method: "POST" });
+      const response = await fetch(`/api/t/${token}/confirm`, { method: "POST" });
       
       if (response.status === 401) {
         setError(locale === "es" 
@@ -373,7 +373,7 @@ export default function TokenTrackingPage() {
   const handleDispute = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`/t/${token}/dispute`, { method: "POST" });
+      const response = await fetch(`/api/t/${token}/dispute`, { method: "POST" });
       
       if (response.status === 401) {
         setError(locale === "es" 
@@ -422,7 +422,7 @@ export default function TokenTrackingPage() {
   const handleCancel = async (reason?: string) => {
     setBusy(true);
     try {
-      const response = await fetch(`/t/${token}/cancel`, {
+      const response = await fetch(`/api/t/${token}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason })
@@ -479,7 +479,7 @@ export default function TokenTrackingPage() {
     
     setBusy(true);
     try {
-      const response = await fetch(`/t/${token}/review`, {
+      const response = await fetch(`/api/t/${token}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
