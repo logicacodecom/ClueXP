@@ -22,11 +22,11 @@
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
 | Dispatch engine | `[x]` | Deterministic ranking, policy-aware offers, expiry/re-dispatch, atomic first-accept-wins |
 | Customer dispatch tracking | `[x]` read contract | Waiting/matched/no-eligible/retry/error; safe assignment only after acceptance |
-| Live customer cutover | `[~]` | Backend + customer token-tracking UI deployed flags-OFF; intake → token-link handoff not wired; pilot flip pending; legacy instant-match path retained as rollback |
-| Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); customer tracking UI merged (#18/#19); technician arrival/service/approval buttons now call real endpoints (`54d324d`); active-job hydration partial; intake → token-link handoff not wired |
+| Live customer cutover | `[~]` | All frontend blockers resolved (`2f3f334`): token handoff, full lifecycle tracking UI, cancel+reason UI, Places autocomplete; flags still OFF; pilot flip pending |
+| Fulfillment lifecycle | `[~]` | Backend contracts live in prod since 2026-06-09 (flags OFF); full customer lifecycle + technician wiring complete (`2f3f334`); active-job hydration uses real API; mock controls removal still pending |
 | Payments | `[ ]` | Deferred; current charge/finalize/review behavior is demo-only |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[~]` | Pushed to `origin/main` 2026-06-11 (`15f77c1`); confirm green run on GitHub Actions, then mark `[x]` |
+| CI | `[~]` | Latest push `2f3f334` (qwen pre-pilot blockers, 2026-06-11); awaiting GitHub Actions green — confirm then mark `[x]` |
 
 Current production migration head: **`0010`** (applied 2026-06-09).
 
@@ -109,16 +109,20 @@ this execution plan treats it as Sprint 3).
 
 ### 3.2 Customer and technician application integration
 
-- [ ] Return and persist the token tracking link after cutover-enabled intake.
-- [ ] Extend customer tracking from waiting/matched through:
+- [x] Return and persist the token tracking link after cutover-enabled intake.
+  _(`router.push(committed.tracking_path)` if backend returns tracking_path; legacy path retained as fallback. `2f3f334`.)_
+- [x] Extend customer tracking from waiting/matched through:
   active status, completion confirmation, review, dispute and closed states.
-- [~] Connect technician active-job state restoration to the assigned real job.
-  _(Active-job BFF route + backend endpoint live `54d324d`; jobs page hydrates from API with mock fallback.)_
+  _(Token page handles full lifecycle: en_route/arrived/in_progress live states, completed_pending_customer confirm/review/dispute, closed/cancelled/no_show terminals. `2f3f334`.)_
+- [x] Connect technician active-job state restoration to the assigned real job.
+  _(Discriminated union `ActiveJobRead`, server-side cookie forwarding, empty/unauthorized/error states all handled. `2f3f334`.)_
 - [x] Connect primary technician actions to real forward status mutations.
   _(arrival → `arrived`, service → `in_progress`/`completed_pending_customer`, approval → `completed_pending_customer` all wired `54d324d`.)_
-- [ ] Implement production loading, stale-session, unauthorized, conflict,
+- [~] Implement production loading, stale-session, unauthorized, conflict,
   offline/retry and terminal states.
-- [ ] Keep customer and technician localization complete for every new state.
+  _(Unauthorized/error states handled in tech active-job (`2f3f334`); customer tracking and intake error states still basic.)_
+- [~] Keep customer and technician localization complete for every new state.
+  _(Cancel reason UI EN/ES done `2f3f334`; verify all lifecycle screens on both locales before widening.)_
 - [ ] Remove mock completion controls from the cutover-enabled real path.
 
 **PO decisions (2026-06-10):** dispatch stays fully automatic (no human-in-loop
@@ -137,13 +141,15 @@ ops step); the customer search window stays backend-owned at
   `offers_pending`, and `offer_expires_at` from the token read; the customer
   sees only searching / matched / failed (Uber-style, no dispatch internals).
   _(Committed `032cf98`.)_
-- [~] Frontend: cancel UI — cancel button wired and shows during search/assignment
-  (`54d324d`); reason textarea for post-assignment cancel still pending (qwen).
-  `customer_actions` nesting bug resolved.
-- [ ] Frontend: searching screen shows no dispatch process internals.
-- [~] Backend: Google Places Autocomplete proxy — `GET /api/places/autocomplete?q=<text>`
-  live (`fb02e57`). ⚠️ Human: enable **Places API (New)** on `GOOGLE_MAPS_API_KEY` in
-  GCP Console (Geocoding API alone is not sufficient). Frontend wiring still pending (qwen).
+- [x] Frontend: cancel UI — cancel button shows during search (no reason); reason textarea
+  + keep/confirm flow shows after assignment; EN/ES. `customer_actions` nesting resolved.
+  _(Committed `2f3f334`.)_
+- [x] Frontend: searching screen shows no dispatch process internals.
+  _(Backend strips `attempts`/`max_attempts`/`offers_pending`/`offer_expires_at` at source `032cf98`; frontend never receives them.)_
+- [x] Google Places Autocomplete — backend proxy live (`fb02e57`); frontend wired with 350ms
+  debounce, up to 5 predictions, `selectPlace()` geocodes selection (`2f3f334`).
+  ✅ Places API (New) enabled in GCP (confirmed 2026-06-11).
+  ✅ `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` confirmed in Vercel (confirmed 2026-06-11).
 
 **PO-reported intake issues (reported pre-#17; status as of 2026-06-11):**
 
@@ -151,13 +157,9 @@ ops step); the customer search window stays backend-owned at
 - [~] GPS "Something went wrong" — #17 maps geolocation errors to clear messages
   (denied/unavailable/timeout); **PO re-test pending**. If "unavailable" appears
   with device location ON, reopen as a new bug.
-- [ ] Address autocomplete — NOT fixed; covered by the Places Autocomplete item above.
-- [ ] Photo upload "Supabase Storage is not configured" — frontend no longer blocks
-  (#17, photos optional), but uploads still fail server-side: the deployment is
-  missing `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` env vars
-  (`api/storage.py:84`). **Infra: verify/set both vars in Production on every
-  Vercel project serving intake (`intake.cluexp.com` AND `www.cluexp.com`),
-  then redeploy + re-test upload.**
+- [x] Address autocomplete — Places Autocomplete wired (`2f3f334`); GCP key confirmed.
+- [~] Photo upload "Supabase Storage is not configured" — ✅ `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`
+  confirmed in Vercel (2026-06-11); **PO re-test upload after next deploy to confirm end-to-end.**
 - [~] Cannot delete a selected file — fixed in #17 (per-file ×); **PO re-test pending**.
 - [~] Cannot upload multiple files — fixed in #17 (`multiple` + append); **PO re-test pending**.
 
