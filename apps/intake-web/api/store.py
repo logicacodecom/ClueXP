@@ -1138,7 +1138,15 @@ class PostgresStore(Store):
                 "  customer_owner_org_id = coalesce(jobs.customer_owner_org_id, excluded.customer_owner_org_id),"
                 "  intake_channel_id = coalesce(jobs.intake_channel_id, excluded.intake_channel_id),"
                 "  trust_state = excluded.trust_state,"
-                "  status = excluded.status,"
+                # Never overwrite an operational status (pending_dispatch and beyond)
+                # with a legacy intake status (draft/partial/complete). Once the job
+                # enters the fulfillment ladder only set_job_status may advance it.
+                "  status = CASE"
+                "    WHEN jobs.status = ANY(ARRAY["
+                "      'pending_dispatch','assigned','en_route','arrived','in_progress',"
+                "      'completed_pending_customer','completed_confirmed',"
+                "      'completed_auto_closed','disputed','cancelled','no_show'])"
+                "    THEN jobs.status ELSE excluded.status END,"
                 "  access_type = excluded.access_type,"
                 "  situation = excluded.situation,"
                 "  urgency = excluded.urgency,"
