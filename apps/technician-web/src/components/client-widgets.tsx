@@ -2,10 +2,10 @@
 
 import { technicianAppProfile } from "@cluexp/api-client";
 import type { TechnicianAppProfile } from "@cluexp/api-client";
-import { BriefcaseBusiness, CircleDollarSign, MapPinned, MessageCircle, Timer, UserRound } from "lucide-react";
+import { BriefcaseBusiness, CircleDollarSign, LogOut, MapPinned, MessageCircle, Timer, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 const navItems: Array<{ href: string; label: string; icon: LucideIcon }> = [
@@ -123,5 +123,26 @@ export function Countdown({ expiresAt }: { expiresAt: string }) {
         <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
       </div>
     </div>
+  );
+}
+
+
+export function SignOutButton() {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  async function handleSignOut() {
+    setBusy(true);
+    await fetch("/api/session", { method: "DELETE" }).catch(() => null);
+    router.replace("/signin");
+  }
+  return (
+    <button
+      className="touch-target mt-2 min-h-12 w-full rounded-xl border border-border bg-card-strong font-black text-danger flex items-center justify-center gap-2 disabled:opacity-50"
+      disabled={busy}
+      onClick={() => void handleSignOut()}
+    >
+      <LogOut className="size-4" />
+      {busy ? "Signing out..." : "Sign out"}
+    </button>
   );
 }

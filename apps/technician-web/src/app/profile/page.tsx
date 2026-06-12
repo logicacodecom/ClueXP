@@ -1,5 +1,6 @@
 import { currentTechnician, technicianAppProfile, technicianSession } from "@cluexp/api-client";
 import { ActionList, AppFrame, MiniStat, ProfileStrip, Screen, Section, icons } from "@/components/mobile";
+import { SignOutButton } from "@/components/client-widgets";
 
 export default function ProfilePage() {
   return (
@@ -25,6 +26,7 @@ export default function ProfilePage() {
             ]}
           />
         </Section>
+        <SignOutButton />
       </Screen>
     </AppFrame>
   );
