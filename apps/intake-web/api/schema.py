@@ -252,6 +252,10 @@ class Ticket(BaseModel):
     property: Property = Field(default_factory=Property)
     identity: Identity = Field(default_factory=Identity)
 
+    # ─── Customer contact (collected at identity step) ───────────────────────
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+
     # ─── Addendum sections 11–15 ─────────────────────────────────────────────
     additional_details: Optional[str] = None     # free-text, optional
     photos: list[Photo] = Field(default_factory=list)

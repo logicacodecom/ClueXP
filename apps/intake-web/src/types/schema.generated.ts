@@ -113,6 +113,8 @@ export interface Ticket {
   automotive?: Automotive;
   property?: Property;
   identity?: Identity;
+  customer_name?: string | null;
+  customer_phone?: string | null;
   additional_details?: string | null;
   photos?: Photo[];
   payment_method?: PaymentMethod | null;

@@ -41,12 +41,16 @@ def rank_candidates(
     technician dict plus ``dist_km``.
     """
     access = job.get("access_type")
+    # "car" is the job vocabulary; technicians store "vehicle" as the matching skill.
+    # null / "other" access_type → no skill gate (any available tech is eligible).
+    _SKILL_ALIAS: dict[str, str] = {"car": "vehicle"}
+    skill_needed = _SKILL_ALIAS.get(access, access) if access and access != "other" else None
     j_lat, j_lng = job.get("lat"), job.get("lng")
     candidates: list[dict[str, Any]] = []
     for tech in technicians:
         if not tech.get("is_available"):
             continue
-        if access not in (tech.get("skills") or []):
+        if skill_needed is not None and skill_needed not in (tech.get("skills") or []):
             continue
         dist = haversine_km(
             j_lat, j_lng,

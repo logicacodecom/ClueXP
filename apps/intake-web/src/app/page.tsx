@@ -254,8 +254,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     model: "",
     year: "",
     lockType: "",
-    notes: ""
+    notes: "",
+    name: "",
+    phone: "",
   });
+  const [authorityRole, setAuthorityRole] = useState<string | null>(null);
 
   const iconFor = useMemo(
     () => ({
@@ -798,20 +801,53 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (screen === "identity") {
       return (
         <>
-          <AgentMessage support="The specialist will verify ID or authority at arrival.">
-            Can you confirm this is yours or you are authorized?
+          <AgentMessage support="The specialist will verify your ID or authority at arrival.">
+            Who should the specialist meet?
           </AgentMessage>
-          <ChipSelect
-            value={ticket?.identity?.authority_role}
-            options={[
-              { value: "owner", label: "Owner" },
-              { value: "tenant", label: "Tenant" },
-              { value: "manager", label: "Manager" },
-              { value: "employee", label: "Employee" },
-              { value: "other", label: "Other authorized person" }
-            ]}
-            onSelect={(value) => run(async () => { await patch({ identity: { claims_ownership: true, authority_role: value } }); setScreen("price"); })}
-          />
+          <div className="stack">
+            <input
+              className="field"
+              placeholder="Your full name"
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+            />
+            <input
+              className="field"
+              type="tel"
+              placeholder="Phone number"
+              value={form.phone}
+              onChange={(event) => setForm({ ...form, phone: event.target.value })}
+            />
+            <p className="fine">Your authorization role:</p>
+            <ChipSelect
+              value={authorityRole ?? ticket?.identity?.authority_role}
+              options={[
+                { value: "owner", label: "Owner" },
+                { value: "tenant", label: "Tenant" },
+                { value: "manager", label: "Manager" },
+                { value: "employee", label: "Employee" },
+                { value: "other", label: "Other authorized person" }
+              ]}
+              onSelect={(value) => setAuthorityRole(value)}
+            />
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || !form.name.trim() || !authorityRole}
+              onClick={() =>
+                run(async () => {
+                  await patch({
+                    customer_name: form.name.trim(),
+                    customer_phone: form.phone.trim() || null,
+                    identity: { claims_ownership: true, authority_role: authorityRole },
+                  });
+                  setScreen("price");
+                })
+              }
+            >
+              Continue
+            </button>
+          </div>
         </>
       );
     }
