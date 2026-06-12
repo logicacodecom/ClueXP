@@ -962,11 +962,14 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
     # commercial-consent gate. Restore the payment-method check before launch.
     if ticket.price_quote is None or not ticket.price_quote.accepted_by_customer:
         raise HTTPException(status_code=409, detail="Price acceptance required")
-    ticket.status = TicketStatus.PARTIAL if ticket.unresolved_fields else TicketStatus.COMPLETE
-    await save(ticket)
+    token = await store.get_tracking_token(ticket_id)
+    if not token:
+        # Legacy path only: status column tracks ticket lifecycle. On the cutover
+        # path the operational status owns this column — don't overwrite it.
+        ticket.status = TicketStatus.PARTIAL if ticket.unresolved_fields else TicketStatus.COMPLETE
+        await save(ticket)
     await log_transition(ticket, "committed")
     env = await envelope(ticket)
-    token = await store.get_tracking_token(ticket_id)
     if token:
         env.tracking_token = token
         env.tracking_path = f"/t/{token}"
