@@ -88,11 +88,11 @@ function stageLabel(phase: JobPhase) {
 
 function nextAction(job: Job) {
   const phase = phaseFromStatus(job.console_status);
-  if (phase === "accepted") return { href: `/jobs/${job.id}/navigate`, label: "Start navigation", icon: Navigation };
+  if (phase === "accepted") return { href: `/jobs/${job.id}/arrival`, label: "Go to arrival", icon: Navigation };
   if (phase === "en_route") return { href: `/jobs/${job.id}/arrival`, label: "Mark arrived", icon: CheckCircle2 };
   if (phase === "arrived") return { href: `/jobs/${job.id}/service`, label: "Start service", icon: KeyRound };
-  if (phase === "in_progress") return { href: `/jobs/${job.id}/complete`, label: "Complete job", icon: Check };
-  return { href: `/jobs/${job.id}/approval`, label: "Confirm payment", icon: ShieldCheck };
+  if (phase === "in_progress") return { href: `/jobs/${job.id}/service`, label: "Service in progress", icon: KeyRound };
+  return { href: `/jobs/${job.id}/approval`, label: "Awaiting approval", icon: ShieldCheck };
 }
 
 export function TechnicianShell({

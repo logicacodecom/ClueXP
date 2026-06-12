@@ -1,5 +1,5 @@
-import { assignedTechnicianJobIds, jobById } from "@cluexp/api-client";
 import { headers } from "next/headers";
+import type { Job } from "@cluexp/api-client";
 import {
   ActiveJobCard,
   EmptyJobState,
@@ -11,10 +11,37 @@ import {
 import { LiveOffersFeed } from "@/components/live-offers";
 
 type ActiveJobRead =
-  | { state: "ready"; id: string; status: string | null }
+  | { state: "ready"; job: Job }
   | { state: "empty" }
   | { state: "unauthorized"; detail: string }
   | { state: "error"; detail: string };
+
+function opStatusToConsoleStatus(status: string): Job["console_status"] {
+  if (status === "en_route") return "en_route";
+  if (status === "arrived") return "arrived";
+  if (status === "in_progress") return "in_service";
+  if (status === "completed_pending_customer") return "customer_approval_needed";
+  return "accepted"; // assigned or unknown
+}
+
+function buildJob(data: Record<string, unknown>): Job {
+  return {
+    id: String(data.id),
+    customer_display: "Customer",
+    trust_state: "MATCHED",
+    console_status: opStatusToConsoleStatus(String(data.status ?? "")),
+    access_type: (data.access_type as Job["access_type"]) ?? "home",
+    situation: String(data.situation ?? "Service request"),
+    urgency: "medium",
+    area: "",
+    address: String(data.address ?? "Address on file"),
+    routing_source: "ClueXP",
+    safety_flags: [],
+    age_min: 0,
+    lat: typeof data.lat === "number" ? data.lat : undefined,
+    lng: typeof data.lng === "number" ? data.lng : undefined,
+  };
+}
 
 async function getActiveJobFromAPI(): Promise<ActiveJobRead> {
   try {
@@ -37,7 +64,7 @@ async function getActiveJobFromAPI(): Promise<ActiveJobRead> {
       return { state: "error", detail: data.detail ?? `Active job sync failed (${response.status})` };
     }
     if (!data.id) return { state: "empty" };
-    return { state: "ready", id: data.id, status: data.status ?? null };
+    return { state: "ready", job: buildJob(data as Record<string, unknown>) };
   } catch {
     return { state: "error", detail: "Active job sync is offline. Retry when the network is available." };
   }
@@ -45,12 +72,7 @@ async function getActiveJobFromAPI(): Promise<ActiveJobRead> {
 
 export default async function JobsPage() {
   const activeJobRead = await getActiveJobFromAPI();
-  const activeJobId = activeJobRead.state === "ready" ? activeJobRead.id : null;
-  const activeJob = activeJobId ? jobById(activeJobId) : undefined;
-  const assignedJobIds = assignedTechnicianJobIds();
-  const assignedJobs = assignedJobIds
-    .map((id) => jobById(id))
-    .filter((job): job is NonNullable<typeof job> => job != null && job.id !== activeJob?.id);
+  const activeJob = activeJobRead.state === "ready" ? activeJobRead.job : undefined;
   return (
     <TechnicianShell>
       <Screen flush>
@@ -68,15 +90,6 @@ export default async function JobsPage() {
           <div className="space-y-3">
             <LiveOffersFeed />
             {activeJob ? <ActiveJobCard job={activeJob} /> : null}
-            {!activeJob && activeJobRead.state === "ready" ? (
-              <div className="rounded-[22px] border border-primary/30 bg-primary/10 p-4">
-                <div className="text-[11px] font-black uppercase text-primary">Active job restored</div>
-                <h2 className="mt-2 text-xl font-black leading-tight">Real job {activeJobRead.id.slice(0, 8)}</h2>
-                <p className="mt-1 text-sm leading-5 text-muted">
-                  Status: {activeJobRead.status ?? "active"}. Full job details will appear when the production job read model is available.
-                </p>
-              </div>
-            ) : null}
             {!activeJob && activeJobRead.state === "empty" ? <EmptyJobState /> : null}
             {!activeJob && (activeJobRead.state === "unauthorized" || activeJobRead.state === "error") ? (
               <div className="rounded-[22px] border border-danger/30 bg-danger/10 p-4">
@@ -86,7 +99,6 @@ export default async function JobsPage() {
                 <p className="mt-2 text-sm leading-5 text-muted">{activeJobRead.detail}</p>
               </div>
             ) : null}
-            {assignedJobs.map((job) => <ActiveJobCard key={job.id} job={job} />)}
           </div>
         </div>
         <JobActionSheet job={activeJob} />

@@ -50,20 +50,37 @@ export function TechnicianBottomNav() {
 export const BottomNav = TechnicianBottomNav;
 
 export function AvailabilityToggle({ profile = technicianAppProfile }: { profile?: TechnicianAppProfile }) {
-  const online = profile.availability === "online";
+  const fallback = profile.availability === "online";
+  const [online, setOnline] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    fetch("/api/session", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const isAvailable = data?.session?.technician?.is_available;
+        setOnline(typeof isAvailable === "boolean" ? isAvailable : fallback);
+      })
+      .catch(() => setOnline(fallback));
+  }, [fallback]);
+
+  const isOnline = online ?? fallback;
+
   const toggleAvailability = async () => {
+    if (loading) return;
     setLoading(true);
     setError(null);
+    const next = !isOnline;
     try {
       const response = await fetch("/api/availability", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ available: !online }),
+        body: JSON.stringify({ is_available: next }),
       });
-      if (!response.ok) {
+      if (response.ok) {
+        setOnline(next);
+      } else {
         const body = await response.json().catch(() => ({})) as { detail?: string };
         if (response.status === 401) {
           setError("Please sign in to change availability");
@@ -85,14 +102,14 @@ export function AvailabilityToggle({ profile = technicianAppProfile }: { profile
       type="button"
       className={cx(
         "touch-target inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-black transition active:scale-[.98]",
-        online ? "border-success/35 bg-success/10 text-success" : "border-border bg-card text-muted"
+        isOnline ? "border-success/35 bg-success/10 text-success" : "border-border bg-card text-muted"
       )}
       onClick={toggleAvailability}
-      disabled={loading}
-      aria-label={`Technician is ${online ? "online" : "offline"}`}
+      disabled={loading || online === null}
+      aria-label={`Technician is ${isOnline ? "online" : "offline"}`}
     >
-      <span className={cx("size-2.5 rounded-full", online ? "bg-success" : "bg-muted")} />
-      {loading ? "Updating..." : online ? "Online" : "Offline"}
+      <span className={cx("size-2.5 rounded-full", isOnline ? "bg-success" : "bg-muted")} />
+      {online === null ? "..." : loading ? "Updating..." : isOnline ? "Online" : "Offline"}
       {error && <span className="text-xs text-danger">{error}</span>}
     </button>
   );

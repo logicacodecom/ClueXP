@@ -283,6 +283,9 @@ class Store:
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:  # pragma: no cover
+        raise NotImplementedError
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -644,14 +647,22 @@ class InMemoryStore(Store):
         }
 
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
-        _ACTIVE = {"assigned", "en_route", "arrived", "in_progress"}
+        _ACTIVE = {"assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"}
         tid = str(technician_id)
         job_techs = getattr(self, "_job_tech", {})
         statuses = getattr(self, "_job_status", {})
         for jid, tech_id in job_techs.items():
             if tech_id == tid and statuses.get(jid) in _ACTIVE:
-                return {"id": jid, "status": statuses[jid]}
+                return {"id": jid, "status": statuses[jid], "access_type": None, "situation": None, "address": None, "lat": None, "lng": None}
         return None
+
+    async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:
+        offers = getattr(self, "_offers", {})
+        offer = offers.get(str(offer_id))
+        if offer and offer.get("technician_id") == str(technician_id) and offer.get("status") == "offered":
+            offer["status"] = "declined"
+            return True
+        return False
 
     async def set_job_status(
         self,
@@ -1798,16 +1809,35 @@ class PostgresStore(Store):
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, status from jobs"
+                "select id, status, access_type, situation, address, lat, lng from jobs"
                 " where fulfillment_technician_id = %s"
                 " and status = any(%s)"
                 " order by updated_at desc limit 1",
-                (str(technician_id), ["assigned", "en_route", "arrived", "in_progress"]),
+                (str(technician_id), ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]),
             )
             row = await cur.fetchone()
         if not row:
             return None
-        return {"id": str(row[0]), "status": row[1]}
+        return {
+            "id": str(row[0]),
+            "status": row[1],
+            "access_type": row[2],
+            "situation": row[3],
+            "address": row[4],
+            "lat": row[5],
+            "lng": row[6],
+        }
+
+    async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update dispatch_offers set status = 'declined', responded_at = now()"
+                " where id = %s and technician_id = %s and status = 'offered'"
+                " returning id",
+                (str(offer_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        return row is not None
 
     async def set_job_status(
         self,

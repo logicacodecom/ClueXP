@@ -1118,6 +1118,20 @@ async def accept_offer(offer_id: UUID) -> dict[str, Any]:
     return result
 
 
+@app.post("/offers/{offer_id}/decline")
+async def decline_offer(
+    offer_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Technician declines an offer — marks it declined so it stops appearing in the feed."""
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=403, detail="Technician session required")
+    declined = await store.decline_dispatch_offer(offer_id, UUID(tech["id"]))
+    if not declined:
+        raise HTTPException(status_code=404, detail="Offer not found or not eligible to decline")
+    return {"declined": True}
+
+
 @app.get("/technicians/{technician_id}/active-job")
 async def technician_active_job(
     technician_id: UUID, session: dict[str, Any] = Depends(require_session)

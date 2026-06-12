@@ -51,6 +51,7 @@ export function LiveOffersFeed() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState<string | null>(null);
+  const [declining, setDeclining] = useState<string | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -86,6 +87,26 @@ export function LiveOffersFeed() {
     () => offers.filter((offer) => offer.status === "offered" || offer.status === "seen"),
     [offers]
   );
+
+  async function decline(offer: LiveOffer) {
+    const id = offer.id || offer.offer_id;
+    if (!id) return;
+    setDeclining(id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/offers/${encodeURIComponent(id)}/decline`, { method: "POST" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setError((body as { detail?: string }).detail ?? "Could not decline offer");
+        return;
+      }
+      setOffers((current) => current.filter((item) => (item.id || item.offer_id) !== id));
+    } catch {
+      setError("Unable to decline offer");
+    } finally {
+      setDeclining(null);
+    }
+  }
 
   async function accept(offer: LiveOffer) {
     setAccepting(offer.id || offer.offer_id || null);
@@ -154,9 +175,9 @@ export function LiveOffersFeed() {
             <OfferMetric label="Rank" value={offer.rank ? `#${offer.rank}` : "--"} />
           </div>
           <div className="mt-4 grid grid-cols-[.72fr_1.28fr] gap-3">
-            <button className="touch-target min-h-[52px] rounded-2xl border border-border bg-card-strong px-4 font-black"><X className="mr-2 inline size-5" />{t("decline")}</button>
+            <button className="touch-target min-h-[52px] rounded-2xl border border-border bg-card-strong px-4 font-black disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => void decline(offer)}><X className="mr-2 inline size-5" />{declining === (offer.id || offer.offer_id) ? t("loading") : t("decline")}</button>
             <button className="touch-target min-h-[52px] rounded-2xl bg-primary px-4 font-black text-primary-foreground disabled:opacity-50" disabled={accepting === (offer.id || offer.offer_id)} onClick={() => void accept(offer)}>
-              <Check className="mr-2 inline size-5" />{accepting ? t("loading") : t("accept")}
+              <Check className="mr-2 inline size-5" />{accepting === (offer.id || offer.offer_id) ? t("loading") : t("accept")}
             </button>
           </div>
         </article>

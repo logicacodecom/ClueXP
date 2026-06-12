@@ -2,21 +2,19 @@
 
 import { useState } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { jobById, updateTechnicianJobStatus } from "@cluexp/api-client";
-import { ActiveJobHeader, AppFrame, Pill, PrimaryButton, Screen, Section, Stepper, icons } from "@/components/mobile";
+import { updateTechnicianJobStatus } from "@cluexp/api-client";
+import { AppFrame, PrimaryButton, Screen, Section, Stepper, icons } from "@/components/mobile";
 
 export default function ArrivalPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const { id } = useParams<{ id: string }>();
-  const job = jobById(id) ?? jobById("JOB-D-2301");
-  if (!job) return null;
 
   const handleConfirmArrival = async () => {
     setLoading(true);
     try {
-      await updateTechnicianJobStatus(job.id, "arrived");
-      router.push(`/jobs/${job.id}/service`);
+      await updateTechnicianJobStatus(id, "arrived");
+      router.push(`/jobs/${id}/service`);
     } catch (err) {
       console.error("Failed to confirm arrival:", err);
       alert("Failed to confirm arrival. Please try again.");
@@ -28,13 +26,13 @@ export default function ArrivalPage() {
   return (
     <AppFrame title="Arrival">
       <Screen>
-        <ActiveJobHeader job={job} stage="Arrival check" />
         <Stepper active={2} />
-        <Section action={<Pill tone="warn" icon={icons.AlertTriangle}>Verification required</Pill>} title="Customer arrival PIN">
-          <div className="grid grid-cols-4 gap-2">
-            {["4", "8", "2", "1"].map((digit) => <div className="rounded-xl border border-border bg-card-strong p-5 text-center text-3xl font-bold" key={digit}>{digit}</div>)}
+        <Section title="Confirm arrival">
+          <div className="rounded-2xl border border-border bg-card-strong p-5 text-center">
+            <p className="text-sm font-bold uppercase text-muted">At the location</p>
+            <h2 className="mt-2 font-condensed text-4xl font-bold uppercase leading-none">Mark arrived</h2>
+            <p className="mt-3 text-sm leading-6 text-muted">Tap below once you are physically at the job site and ready to begin.</p>
           </div>
-          <p className="mt-3 text-sm leading-5 text-muted">Mock PIN entry. Production should support PIN, QR, and dispatcher override with audit reason.</p>
         </Section>
         <PrimaryButton onClick={handleConfirmArrival} disabled={loading}>
           {loading ? "Confirming..." : <><icons.CheckCircle2 className="size-5" />Confirm arrival</>}
