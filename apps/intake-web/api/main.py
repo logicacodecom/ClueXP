@@ -796,15 +796,12 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     await log_transition(ticket, "created")
     env = await envelope(ticket)
 
-    # Channel-keyed cutover flip: only when the resolved channel has its per-channel
-    # flag on AND the global kill-switch is off. Otherwise the legacy stub path is
-    # unchanged (the customer flow keeps calling /dispatch). All channels ship OFF,
-    # so this branch is dormant until a pilot channel is enabled.
-    cutover = bool(
-        origin
-        and origin.get("dispatch_cutover_enabled")
-        and not config.DISPATCH_CUTOVER_GLOBAL_OFF
-    )
+    # Cutover fires when (a) the resolved channel has its per-channel flag on, OR
+    # (b) no channel was resolved (public intake) and DISPATCH_CUTOVER_PUBLIC is set —
+    # AND the global kill-switch is off.
+    channel_on = bool(origin and origin.get("dispatch_cutover_enabled"))
+    public_on = bool(not origin and config.DISPATCH_CUTOVER_PUBLIC)
+    cutover = (channel_on or public_on) and not config.DISPATCH_CUTOVER_GLOBAL_OFF
     if cutover:
         # Put the job on the operational ladder, then run the dispatch WRITE so the
         # offer→accept loop drives fulfillment instead of the instant-match stub.

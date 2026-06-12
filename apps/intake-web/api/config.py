@@ -37,6 +37,11 @@ AUTO_CLOSE_WINDOW_SECONDS = _int("AUTO_CLOSE_WINDOW_SECONDS", 259200)
 DISPATCH_CUTOVER_GLOBAL_OFF = (
     os.environ.get("DISPATCH_CUTOVER_GLOBAL_OFF", "false").strip().lower() == "true"
 )
+# Enable the cutover for public/channelless intake (no intake_channel slug in payload).
+# Set DISPATCH_CUTOVER_PUBLIC=true in the environment to activate for the pilot.
+DISPATCH_CUTOVER_PUBLIC = (
+    os.environ.get("DISPATCH_CUTOVER_PUBLIC", "false").strip().lower() == "true"
+)
 
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
