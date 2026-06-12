@@ -41,10 +41,8 @@ def rank_candidates(
     technician dict plus ``dist_km``.
     """
     access = job.get("access_type")
-    # "car" is the job vocabulary; technicians store "vehicle" as the matching skill.
     # null / "other" access_type → no skill gate (any available tech is eligible).
-    _SKILL_ALIAS: dict[str, str] = {"car": "vehicle"}
-    skill_needed = _SKILL_ALIAS.get(access, access) if access and access != "other" else None
+    skill_needed = access if access and access != "other" else None
     j_lat, j_lng = job.get("lat"), job.get("lng")
     candidates: list[dict[str, Any]] = []
     for tech in technicians:

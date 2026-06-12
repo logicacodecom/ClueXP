@@ -54,7 +54,7 @@ class Channel(str, Enum):
 
 
 class AccessType(str, Enum):
-    CAR = "car"
+    CAR = "vehicle"
     HOME = "home"
     BUSINESS = "business"
     OTHER = "other"

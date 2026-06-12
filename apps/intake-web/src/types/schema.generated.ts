@@ -2,7 +2,7 @@
 // Generated from api/schema.py by scripts/generate_types.py.
 // Do not edit by hand.
 
-export type AccessType = "car" | "home" | "business" | "other";
+export type AccessType = "vehicle" | "home" | "business" | "other";
 export type AuthorityRole = "owner" | "tenant" | "manager" | "employee" | "other";
 export type Channel = "mobile_web" | "voice";
 export type KeyType = "mechanical" | "transponder" | "smart_key" | "unknown";

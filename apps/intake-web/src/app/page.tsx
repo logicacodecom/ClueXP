@@ -529,7 +529,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           </AgentMessage>
           <div className="stack">
             {[
-              ["car", "Car", "Keys, fob, or vehicle entry"],
+              ["vehicle", "Car", "Keys, fob, or vehicle entry"],
               ["home", "Home", "House, apartment, or rental"],
               ["business", "Business", "Storefront, office, or facility"],
               ["other", "Something else", "Talk with a person"]
