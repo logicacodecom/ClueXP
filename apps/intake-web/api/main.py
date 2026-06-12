@@ -1032,7 +1032,13 @@ async def _dispatch_write(ticket_id: UUID, job: dict[str, Any]) -> dict[str, Any
         job, technicians, policy=policy, owner_org_id=owner_org_id,
         round_index=attempts, top_n=config.TOP_N_OFFERS,
     )
-    new_attempts = await store.bump_dispatch_attempt(ticket_id)
+    # Only consume a dispatch round when there were technicians to evaluate.
+    # If zero techs are online the job is not "tried" — preserve rounds for
+    # when someone goes available, rather than exhausting the job in minutes.
+    if technicians:
+        new_attempts = await store.bump_dispatch_attempt(ticket_id)
+    else:
+        new_attempts = attempts
     if not ranked:
         return {"state": "no_eligible", "offers": [], "attempts": new_attempts, "policy": policy}
     expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
@@ -1084,7 +1090,8 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
             job, technicians, policy=policy, owner_org_id=owner_org_id,
             round_index=job.get("dispatch_attempts", 0), top_n=config.TOP_N_OFFERS,
         )
-        await store.bump_dispatch_attempt(job["id"])
+        if technicians:
+            await store.bump_dispatch_attempt(job["id"])
         if ranked:
             expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
             await store.create_dispatch_offers(job["id"], ranked, expires_at)

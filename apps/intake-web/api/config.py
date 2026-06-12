@@ -17,9 +17,9 @@ OFFER_TTL_SECONDS = _int("DISPATCH_OFFER_TTL_SECONDS", 90)
 # Target cadence for the sweep (informational; actual cadence is set by the scheduler).
 SWEEP_INTERVAL_SECONDS = _int("DISPATCH_SWEEP_INTERVAL_SECONDS", 60)
 # Max re-dispatch rounds before a job is considered un-fillable (terminal no_eligible).
-MAX_REDISPATCH_ROUNDS = _int("DISPATCH_MAX_ROUNDS", 3)
+MAX_REDISPATCH_ROUNDS = _int("DISPATCH_MAX_ROUNDS", 10)
 # Total customer-facing dispatch window; after this we stop and hand off to humans.
-TOTAL_TIMEOUT_SECONDS = _int("DISPATCH_TOTAL_TIMEOUT_SECONDS", 480)  # ~8 min
+TOTAL_TIMEOUT_SECONDS = _int("DISPATCH_TOTAL_TIMEOUT_SECONDS", 3600)  # 1 hour
 # How many offers to create per round.
 TOP_N_OFFERS = _int("DISPATCH_TOP_N", 3)
 
