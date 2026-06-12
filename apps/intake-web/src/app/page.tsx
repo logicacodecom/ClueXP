@@ -662,7 +662,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     }
 
     if (screen === "details") {
-      const isCar = ticket?.access_type === "car";
+      const isCar = ticket?.access_type === "vehicle";
       return (
         <>
           <AgentMessage>{isCar ? "Tell us about the vehicle." : "Tell us about the lock."}</AgentMessage>
