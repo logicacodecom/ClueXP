@@ -965,7 +965,12 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
     ticket.status = TicketStatus.PARTIAL if ticket.unresolved_fields else TicketStatus.COMPLETE
     await save(ticket)
     await log_transition(ticket, "committed")
-    return await envelope(ticket)
+    env = await envelope(ticket)
+    token = await store.get_tracking_token(ticket_id)
+    if token:
+        env.tracking_token = token
+        env.tracking_path = f"/t/{token}"
+    return env
 
 
 @app.post("/tickets/{ticket_id}/otp/send")
