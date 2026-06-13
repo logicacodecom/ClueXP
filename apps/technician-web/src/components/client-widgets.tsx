@@ -2,18 +2,15 @@
 
 import { technicianAppProfile } from "@cluexp/api-client";
 import type { TechnicianAppProfile } from "@cluexp/api-client";
-import { BriefcaseBusiness, CircleDollarSign, LogOut, MapPinned, MessageCircle, Timer, UserRound } from "lucide-react";
+import { BriefcaseBusiness, LogOut, Timer, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 const navItems: Array<{ href: string; label: string; icon: LucideIcon }> = [
-  { href: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
-  { href: "/map", label: "Active", icon: MapPinned },
-  { href: "/activity", label: "Earnings", icon: CircleDollarSign },
-  { href: "/messages", label: "Messages", icon: MessageCircle },
-  { href: "/profile", label: "Profile", icon: UserRound }
+  { href: "/jobs", label: "Home", icon: BriefcaseBusiness },
+  { href: "/profile", label: "Account", icon: UserRound }
 ];
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -24,14 +21,14 @@ export function TechnicianBottomNav() {
   const pathname = usePathname();
   return (
     <nav className="safe-bottom fixed bottom-0 left-1/2 z-40 w-full max-w-[480px] -translate-x-1/2 border-t border-border/80 bg-background/96 px-2 pt-2 backdrop-blur-xl md:bottom-6 md:rounded-b-[28px]">
-      <div className="grid grid-cols-5 gap-1">
+      <div className="grid grid-cols-2 gap-2">
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
           return (
             <Link
               className={cx(
-                "touch-target flex min-h-[58px] flex-col items-center justify-center rounded-2xl px-1 py-2 text-[10px] font-black transition active:scale-[.98]",
+                "touch-target flex min-h-[58px] flex-col items-center justify-center px-1 py-2 text-[11px] font-black transition active:scale-[.98]",
                 active ? "bg-primary text-primary-foreground" : "text-muted hover:bg-card-strong hover:text-foreground"
               )}
               href={item.href}

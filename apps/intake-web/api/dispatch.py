@@ -232,15 +232,15 @@ STATUS_TIMESTAMP_COLUMN = {
 
 def can_technician_transition(current: str | None, target: str) -> bool:
     """True if the assigned technician may move a job from ``current`` to
-    ``target``. Forward-only, within the technician-settable set, and only from a
-    state at/after ``assigned`` (so legacy jobs that never entered the cutover
-    ladder are untouched). ``completed_confirmed`` is never technician-settable."""
+    ``target``. Transitions must advance exactly one step so a technician cannot
+    skip arrival or service milestones. ``completed_confirmed`` is never
+    technician-settable."""
     if target not in TECHNICIAN_SETTABLE:
         return False
     if current not in _FULFILLMENT_ORDER or target not in _FULFILLMENT_ORDER:
         return False
     cur_i, tgt_i = _FULFILLMENT_ORDER.index(current), _FULFILLMENT_ORDER.index(target)
-    return cur_i >= _FULFILLMENT_ORDER.index(STATUS_ASSIGNED) and tgt_i > cur_i
+    return cur_i >= _FULFILLMENT_ORDER.index(STATUS_ASSIGNED) and tgt_i == cur_i + 1
 
 
 def can_customer_cancel(status: str | None) -> bool:

@@ -24,6 +24,21 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Expire all but the newest 'offered' row per job so the unique index can
+    # be created even if prior auto-dispatch left duplicate active offers.
+    op.execute(
+        """
+        UPDATE dispatch_offers
+        SET status = 'expired', responded_at = now()
+        WHERE status = 'offered'
+          AND id NOT IN (
+              SELECT DISTINCT ON (job_id) id
+              FROM dispatch_offers
+              WHERE status = 'offered'
+              ORDER BY job_id, offered_at DESC NULLS LAST
+          )
+        """
+    )
     op.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_offers_job_active

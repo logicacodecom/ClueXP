@@ -246,6 +246,13 @@ class TechnicianAvailabilityRequest(BaseModel):
     is_available: bool
 
 
+class TechnicianProfileUpdateRequest(BaseModel):
+    display_name: str | None = None
+    phone: str | None = None
+    skills: list[str] | None = None
+    service_area_radius_km: float | None = None
+
+
 class JobStatusUpdateRequest(BaseModel):
     status: str
 
@@ -756,6 +763,38 @@ async def update_my_availability(
     return result
 
 
+@app.patch("/technicians/me/profile")
+async def update_my_profile(
+    payload: TechnicianProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"technician"})
+    technician = session.get("technician")
+    if not technician:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    data = payload.model_dump(exclude_none=True)
+    if "display_name" in data:
+        data["display_name"] = data["display_name"].strip()
+        if len(data["display_name"]) < 2:
+            raise HTTPException(status_code=422, detail="Display name is too short")
+    if "phone" in data:
+        data["phone"] = data["phone"].strip()
+        if len(data["phone"]) < 7:
+            raise HTTPException(status_code=422, detail="Enter a valid phone number")
+    if "skills" in data:
+        data["skills"] = sorted({skill.strip().lower() for skill in data["skills"] if skill.strip()})
+    radius = data.get("service_area_radius_km")
+    if radius is not None and not 1 <= radius <= 250:
+        raise HTTPException(status_code=422, detail="Service radius must be between 1 and 250 km")
+    try:
+        result = await store.update_technician_profile(UUID(technician["id"]), data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
 @app.get("/geocode")
 async def geocode_address(q: str) -> dict[str, Any]:
     """Resolve an address to coordinates using the server Maps key.
@@ -1059,6 +1098,7 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
 
 class OpsAssignPayload(BaseModel):
     technician_id: UUID
+    override_reason: str | None = None
 
 
 @app.get("/ops/queue")
@@ -1067,7 +1107,7 @@ async def ops_get_queue(
 ) -> list[dict[str, Any]]:
     """Return all pending_dispatch jobs ordered by arrival. Runs cleanup inline
     (expire stale offers + auto-close) so the queue is always fresh."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     await store.expire_stale_offers()
     await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
     return await store.get_ops_queue()
@@ -1079,7 +1119,7 @@ async def ops_get_candidates(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Return the job plus all active+verified technicians with advisory signals."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     jobs = await store.get_ops_queue()
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
@@ -1089,11 +1129,12 @@ async def ops_get_candidates(
     threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
     enriched = []
     for tech in techs:
-        dist = haversine_km(
+        _raw_dist = haversine_km(
             job.get("lat"), job.get("lng"),
             tech.get("current_lat") or tech.get("service_area_center_lat"),
             tech.get("current_lng") or tech.get("service_area_center_lng"),
         )
+        dist = _raw_dist if math.isfinite(_raw_dist) else None
         eta_min, eta_max = eta_range_from_km(dist)
         loc_updated = tech.get("location_updated_at")
         if loc_updated and not isinstance(loc_updated, datetime):
@@ -1108,12 +1149,13 @@ async def ops_get_candidates(
             "id": tech["id"],
             "display_name": tech.get("display_name"),
             "skills": skills,
-            "skills_match": access_type in skills if access_type else False,
+            "skills_match": access_type in skills if access_type else True,
             "dist_km": round(dist, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
             "is_online": is_online,
             "is_busy": active_job is not None,
+            "rating": tech.get("rating"),
             "active_job": {
                 "id": active_job["id"],
                 "status": active_job.get("status"),
@@ -1126,6 +1168,12 @@ async def ops_get_candidates(
             "service_area_center_lat": tech.get("service_area_center_lat"),
             "service_area_center_lng": tech.get("service_area_center_lng"),
         })
+    # Sort: nearest-first (known distance before unknown), then rating descending.
+    enriched.sort(key=lambda c: (
+        c["dist_km"] is None,
+        c["dist_km"] if c["dist_km"] is not None else 0.0,
+        -(c.get("rating") or 0.0),
+    ))
     return {"job": job, "candidates": enriched}
 
 
@@ -1135,9 +1183,11 @@ async def ops_assign(
     payload: OpsAssignPayload,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Dispatcher sends a single targeted offer to one technician. Returns 409
-    if the job already has an active offer or is not pending_dispatch."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    """Platform admin sends a targeted offer to one technician.
+    Advisory flags (offline, busy, skill mismatch) block assignment unless the
+    caller supplies override_reason. Returns 409 when the job is no longer
+    pending_dispatch or a concurrent offer already exists."""
+    require_any_role(session, {"platform_admin"})
     jobs = await store.get_ops_queue()
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
@@ -1147,16 +1197,56 @@ async def ops_assign(
             status_code=409,
             detail="An active offer already exists for this job. Wait for it to expire or be declined.",
         )
+    tech = await store.get_ops_technician(payload.technician_id)
+    if tech is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Technician not found or not eligible (must be active and verified).",
+        )
+    # Compute advisory signals: offline, busy, skill mismatch.
+    now_dt = datetime.now(tz=timezone.utc)
+    threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
+    loc_updated = tech.get("location_updated_at")
+    if loc_updated and not isinstance(loc_updated, datetime):
+        loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
+    is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
+    is_busy = (await store.get_technician_active_job(tech["id"])) is not None
+    skills = tech.get("skills") or []
+    access_type = job.get("access_type")
+    skills_match = (access_type in skills) if access_type else True
+    override_flags: list[str] = []
+    if not is_online:
+        override_flags.append("offline or location stale")
+    if is_busy:
+        override_flags.append("has an active job")
+    if not skills_match:
+        override_flags.append(f"skill mismatch (job needs '{access_type}')")
+    if override_flags and not payload.override_reason:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Override required: technician {', '.join(override_flags)}. "
+                   f"Supply override_reason to proceed.",
+        )
+    org_id_str = tech.get("primary_organization_id")
+    org_id = UUID(org_id_str) if org_id_str else None
     expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
-    tech_row = {"id": str(payload.technician_id)}
-    offers = await store.create_dispatch_offers(job_id, [tech_row], expires_at)
-    if not offers:
-        raise HTTPException(status_code=500, detail="Failed to create offer")
-    offer = offers[0]
-    await store.log_event_raw(
-        job_id,
-        f"ops:assign:tech={payload.technician_id}:by={session.get('id', 'unknown')}",
-    )
+    offer = await store.ops_create_single_offer(job_id, payload.technician_id, org_id, expires_at)
+    if offer is None or "error_code" in offer:
+        error_code = (offer or {}).get("error_code", "concurrent_offer")
+        if error_code == "job_not_pending":
+            raise HTTPException(
+                status_code=409,
+                detail="Job is no longer pending dispatch (cancelled or already assigned).",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail="Concurrent assignment — another offer was just created for this job.",
+        )
+    actor_id = session.get("user", {}).get("id", "unknown")
+    audit = f"ops:assign:tech={payload.technician_id}:by={actor_id}"
+    if payload.override_reason:
+        audit += f":override={payload.override_reason[:100]}"
+    await store.log_event_raw(job_id, audit)
     return {
         "offer_id": offer.get("id"),
         "technician_id": str(payload.technician_id),
@@ -1169,7 +1259,7 @@ async def ops_fleet(
     session: dict[str, Any] = Depends(require_session),
 ) -> list[dict[str, Any]]:
     """Return all active+verified technicians with location and active job data."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     return await store.get_fleet_state()
 
 

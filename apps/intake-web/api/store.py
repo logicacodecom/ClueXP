@@ -172,6 +172,11 @@ class Store:
     async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def update_technician_profile(
+        self, technician_id: UUID, data: dict
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def list_pending_registrations(self) -> list[dict]:  # pragma: no cover
         return []
 
@@ -284,6 +289,14 @@ class Store:
         raise NotImplementedError
 
     async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_ops_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def ops_create_single_offer(
+        self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def set_job_status(
@@ -556,23 +569,28 @@ class InMemoryStore(Store):
             return None
         if rec["status"] != "offered":
             return {"accepted": False, "reason": rec["status"], "job_id": rec["job_id"]}
+        jid = rec["job_id"]
+        self._job_status = getattr(self, "_job_status", {})
+        self._job_tech = getattr(self, "_job_tech", {})
+        # Guard: only accept if the job is still pending_dispatch. A concurrent
+        # cancellation would have changed the status, and we must not flip
+        # trust_state or assign the technician on a cancelled/changed job.
+        if self._job_status.get(jid) != STATUS_PENDING_DISPATCH:
+            rec["status"] = "superseded"
+            return {"accepted": False, "reason": "job_not_pending", "job_id": jid}
         rec["status"] = "accepted"
         for other in offers.values():
             if (
-                other["job_id"] == rec["job_id"]
+                other["job_id"] == jid
                 and other["id"] != rec["id"]
                 and other["status"] == "offered"
             ):
                 other["status"] = "superseded"
-        # Cutover gate: advance only jobs already on the operational ladder.
-        self._job_status = getattr(self, "_job_status", {})
-        self._job_tech = getattr(self, "_job_tech", {})
-        if self._job_status.get(rec["job_id"]) == STATUS_PENDING_DISPATCH:
-            self._job_status[rec["job_id"]] = STATUS_ASSIGNED
-        self._job_tech[rec["job_id"]] = rec["technician_id"]
+        self._job_status[jid] = STATUS_ASSIGNED
+        self._job_tech[jid] = rec["technician_id"]
         return {
             "accepted": True,
-            "job_id": rec["job_id"],
+            "job_id": jid,
             "technician_id": rec["technician_id"],
             "organization_id": rec.get("organization_id"),
         }
@@ -584,6 +602,35 @@ class InMemoryStore(Store):
 
     async def expire_stale_offers(self) -> int:
         return 0
+
+    async def get_ops_queue(self) -> list[dict]:
+        statuses = getattr(self, "_job_status", {})
+        offers = getattr(self, "_offers", {})
+        result = []
+        for jid, status in statuses.items():
+            if status != STATUS_PENDING_DISPATCH:
+                continue
+            active_offer = next(
+                (o for o in offers.values() if o.get("job_id") == jid and o.get("status") == "offered"),
+                None,
+            )
+            result.append({
+                "id": jid, "address": None, "lat": None, "lng": None,
+                "access_type": None, "situation": None, "urgency": None,
+                "created_at": None, "customer_owner_org_id": None,
+                "fulfillment_policy": None, "dispatch_attempts": 0,
+                "offer_active": active_offer is not None,
+                "offer_id": active_offer["id"] if active_offer else None,
+                "offered_technician_id": active_offer["technician_id"] if active_offer else None,
+                "offer_expires_at": None,
+            })
+        return result
+
+    async def list_all_technicians_for_ops(self) -> list[dict]:
+        return list(getattr(self, "_technicians", []))
+
+    async def get_fleet_state(self) -> list[dict]:
+        return []
 
     async def list_dispatchable_jobs(
         self, *, max_attempts: int, total_timeout_seconds: int, limit: int = 100
@@ -664,6 +711,37 @@ class InMemoryStore(Store):
             return True
         return False
 
+    async def get_ops_technician(self, technician_id: UUID) -> dict | None:
+        tid = str(technician_id)
+        for t in getattr(self, "_technicians", []):
+            if str(t.get("id")) == tid and t.get("status") == "active" and t.get("vetting_status") == "verified":
+                return t
+        return None
+
+    async def ops_create_single_offer(
+        self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
+    ) -> dict | None:
+        offers = getattr(self, "_offers", None)
+        if offers is None:
+            offers = self._offers = {}
+        jid = str(job_id)
+        # Atomic guard: job must still be pending_dispatch (not cancelled/assigned)
+        statuses = getattr(self, "_job_status", {})
+        if statuses.get(jid) != STATUS_PENDING_DISPATCH:
+            return {"error_code": "job_not_pending"}
+        if any(o.get("status") == "offered" and o.get("job_id") == jid for o in offers.values()):
+            return {"error_code": "concurrent_offer"}
+        rec = {
+            "id": str(uuid4()),
+            "job_id": jid,
+            "technician_id": str(technician_id),
+            "organization_id": str(org_id) if org_id else None,
+            "rank": 0,
+            "status": "offered",
+        }
+        offers[rec["id"]] = rec
+        return rec
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -734,6 +812,20 @@ class InMemoryStore(Store):
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:
         return None
+
+    async def update_technician_profile(self, technician_id: UUID, data: dict) -> dict | None:
+        tid = str(technician_id)
+        technician = next((item for item in getattr(self, "_technicians", []) if item.get("id") == tid), None)
+        if technician is None:
+            return None
+        technician.update(data)
+        user = self.users.get(tid)
+        if user:
+            if data.get("display_name"):
+                user["display_name"] = data["display_name"]
+            if data.get("phone"):
+                user["phone"] = data["phone"]
+        return {"id": tid, **data}
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         return []
@@ -1326,7 +1418,8 @@ class PostgresStore(Store):
         org_row = await cur.fetchone()
         # Technician profile is 1:1 with the user (same id) when self-registered.
         cur = await conn.execute(
-            "select id, status, vetting_status, is_available from technicians where id = %s",
+            "select id, status, vetting_status, is_available, display_name, phone,"
+            " skills, service_area_radius_km from technicians where id = %s",
             (user_id,),
         )
         tech_row = await cur.fetchone()
@@ -1346,6 +1439,10 @@ class PostgresStore(Store):
                 "status": tech_row[1],
                 "vetting_status": tech_row[2],
                 "is_available": tech_row[3],
+                "display_name": tech_row[4],
+                "phone": tech_row[5],
+                "skills": list(tech_row[6] or []),
+                "service_area_radius_km": tech_row[7],
                 "approved": tech_row[1] == "active" and tech_row[2] == "verified",
             }
             if tech_row
@@ -1539,34 +1636,36 @@ class PostgresStore(Store):
             job_id, tech_id, org_id, status = offer[0], offer[1], offer[2], offer[3]
             if status != "offered":
                 return {"accepted": False, "reason": status, "job_id": str(job_id)}
-            # Atomic first-accept-wins: only one accept can flip the null job.
-            # Cutover gate: a job only advances onto the operational ladder
-            # (status -> assigned + assigned_at) if it's already on it
-            # (status='pending_dispatch', set by a cutover-enabled create). Legacy
-            # jobs keep their intake status untouched — no live behavior change.
+            # Atomic first-accept-wins: only one accept can win. Guard on
+            # status='pending_dispatch' so that a cancellation or concurrent accept
+            # that changed the job status before this UPDATE causes this path to fail
+            # cleanly — no technician or trust_state is set on a cancelled job.
             cur = await conn.execute(
                 "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
                 " trust_state = 'matched',"
-                " status = case when status = %s then %s else status end,"
-                " assigned_at = case when status = %s then coalesce(assigned_at, now())"
-                "   else assigned_at end,"
+                " status = %s,"
+                " assigned_at = coalesce(assigned_at, now()),"
                 " updated_at = now()"
-                " where id = %s and fulfillment_technician_id is null"
+                " where id = %s"
+                "   and status = %s"
+                "   and fulfillment_technician_id is null"
                 " returning id",
                 (
                     str(tech_id), str(org_id) if org_id else None,
-                    STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_PENDING_DISPATCH,
+                    STATUS_ASSIGNED,
                     str(job_id),
+                    STATUS_PENDING_DISPATCH,
                 ),
             )
             won = await cur.fetchone()
             if not won:
+                # Revoke the offer without touching trust_state or assignment.
                 await conn.execute(
                     "update dispatch_offers set status = 'superseded', responded_at = now()"
                     " where id = %s and status = 'offered'",
                     (str(offer_id),),
                 )
-                return {"accepted": False, "reason": "already_matched", "job_id": str(job_id)}
+                return {"accepted": False, "reason": "job_not_pending", "job_id": str(job_id)}
             await conn.execute(
                 "update dispatch_offers set status = 'accepted', responded_at = now() where id = %s",
                 (str(offer_id),),
@@ -1976,6 +2075,77 @@ class PostgresStore(Store):
                 )
         return row is not None
 
+    async def get_ops_technician(self, technician_id: UUID) -> dict | None:
+        """Fetch one technician only if currently active and verified."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, skills, current_lat, current_lng,"
+                " service_area_center_lat, service_area_center_lng,"
+                " rating, is_available, location_updated_at, primary_organization_id"
+                " from technicians"
+                " where id = %s and status = 'active' and vetting_status = 'verified'",
+                (str(technician_id),),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "display_name": row[1],
+            "skills": list(row[2] or []),
+            "current_lat": row[3],
+            "current_lng": row[4],
+            "service_area_center_lat": row[5],
+            "service_area_center_lng": row[6],
+            "rating": float(row[7]) if row[7] is not None else 0.0,
+            "is_available": row[8],
+            "location_updated_at": row[9].isoformat() if row[9] else None,
+            "primary_organization_id": str(row[10]) if row[10] else None,
+        }
+
+    async def ops_create_single_offer(
+        self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
+    ) -> dict | None:
+        """Atomically insert one targeted offer, guarded on the job still being
+        pending_dispatch with no technician and no active offer. The INSERT ... SELECT
+        is a single round-trip; the partial unique index provides final DB protection.
+        Returns {"id": ...} on success, {"error_code": "job_not_pending"} when the job
+        is not in the expected state (cancelled / already assigned), or
+        {"error_code": "concurrent_offer"} when the unique constraint fires."""
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "insert into dispatch_offers"
+                    " (id, job_id, technician_id, status, rank, offered_at, expires_at, organization_id)"
+                    " select gen_random_uuid(), j.id, %s, 'offered', 0, now(), %s, %s"
+                    " from jobs j"
+                    " where j.id = %s"
+                    "   and j.status = 'pending_dispatch'"
+                    "   and j.fulfillment_technician_id is null"
+                    "   and not exists ("
+                    "     select 1 from dispatch_offers"
+                    "     where job_id = j.id and status = 'offered')"
+                    " returning id",
+                    (str(technician_id), expires_at, str(org_id) if org_id else None, str(job_id)),
+                )
+                row = await cur.fetchone()
+            if row:
+                return {"id": str(row[0])}
+            # Distinguish job-not-pending from concurrent-offer by re-reading job status.
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "select status from jobs where id = %s", (str(job_id),)
+                )
+                jrow = await cur.fetchone()
+            if jrow is None or jrow[0] != "pending_dispatch":
+                return {"error_code": "job_not_pending"}
+            return {"error_code": "concurrent_offer"}
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "unique" in msg or "duplicate" in msg or "23505" in msg:
+                return {"error_code": "concurrent_offer"}
+            raise
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -2316,6 +2486,47 @@ class PostgresStore(Store):
                 "update users set locale = %s, updated_at = now() where id = %s",
                 (locale, str(user_id)),
             )
+
+    async def update_technician_profile(self, technician_id: UUID, data: dict) -> dict | None:
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "update technicians set"
+                    " display_name = coalesce(%s, display_name),"
+                    " phone = coalesce(%s, phone),"
+                    " skills = coalesce(%s, skills),"
+                    " service_area_radius_km = coalesce(%s, service_area_radius_km)"
+                    " where id = %s"
+                    " returning id, display_name, phone, skills, service_area_radius_km",
+                    (
+                        data.get("display_name"),
+                        data.get("phone"),
+                        data.get("skills"),
+                        data.get("service_area_radius_km"),
+                        str(technician_id),
+                    ),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return None
+                await conn.execute(
+                    "update users set"
+                    " display_name = coalesce(%s, display_name),"
+                    " phone = coalesce(%s, phone), updated_at = now()"
+                    " where id = %s",
+                    (data.get("display_name"), data.get("phone"), str(technician_id)),
+                )
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise ValueError("Phone number is already in use")
+            raise
+        return {
+            "id": str(row[0]),
+            "display_name": row[1],
+            "phone": row[2],
+            "skills": list(row[3] or []),
+            "service_area_radius_km": row[4],
+        }
 
     async def list_pending_registrations(self) -> list[dict]:
         async with await self._connect() as conn:

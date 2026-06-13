@@ -3,7 +3,7 @@
 import { LocaleProvider, useSession } from "@cluexp/app-core";
 import { ShieldCheck } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 export function Providers({ children }: { children: ReactNode }) {
   return <LocaleProvider persistAuthenticated><TechnicianAccessGate>{children}</TechnicianAccessGate></LocaleProvider>;
@@ -14,6 +14,9 @@ function TechnicianAccessGate({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { loading, session, signOut } = useSession();
   const publicRoute = pathname === "/signin" || pathname === "/signup" || pathname === "/onboarding";
+  useEffect(() => {
+    if (!loading && !session && !publicRoute) router.replace("/signin");
+  }, [loading, pathname, publicRoute, router, session]);
   if (publicRoute) return <>{children}</>;
   if (loading) return <main className="min-h-[100svh] bg-background" aria-busy="true" />;
   if (!session) return null;

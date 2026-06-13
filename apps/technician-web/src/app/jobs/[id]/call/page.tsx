@@ -1,11 +1,6 @@
-import { AppFrame, CallPanel, Screen } from "@/components/mobile";
+import { redirect } from "next/navigation";
 
-export default function CallPage() {
-  return (
-    <AppFrame title="Masked Call">
-      <Screen>
-        <CallPanel />
-      </Screen>
-    </AppFrame>
-  );
+export default async function CallPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  redirect(`/jobs/${id}`);
 }

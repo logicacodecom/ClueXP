@@ -3,13 +3,11 @@ import {
   activeTechnicianJobIds,
   currentTechnician,
   jobById,
-  technicianActivitySummary,
   technicianAppProfile,
   technicianSession
 } from "@cluexp/api-client";
 import {
   AlertTriangle,
-  Bell,
   BellRing,
   BriefcaseBusiness,
   Car,
@@ -147,24 +145,16 @@ export function TechnicianTopBar({
           <div className="text-[11px] font-black uppercase tracking-[.08em] text-muted">ClueXP</div>
           <div className="truncate text-base font-black leading-tight">{title}</div>
         </div>
-        <span className="shrink-0 rounded-full border border-border bg-card-strong px-2.5 py-1 text-[11px] font-black uppercase text-muted">
-          {technicianAppProfile.workspace_label}
-        </span>
+        <span className="shrink-0 border border-border bg-card-strong px-2.5 py-1 text-[11px] font-black uppercase text-muted">Field app</span>
       </div>
       <div className="flex items-center gap-2.5">
         <AvailabilityToggle profile={profile} />
         <div className="min-w-0 flex-1 text-right">
-          <div className="text-[10px] font-black uppercase tracking-[.08em] text-muted">Today</div>
-          <div className="text-lg font-black leading-none tabular-nums">
-            {technicianActivitySummary.today_completed} done
-          </div>
+          <div className="text-[10px] font-black uppercase tracking-[.08em] text-muted">Dispatch</div>
+          <div className="text-sm font-black leading-none">Manual assignment</div>
         </div>
-        <Link className="touch-target relative flex items-center justify-center rounded-full border border-border bg-card" href="/messages" aria-label="Notifications">
-          <Bell className="size-5" />
-          <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
-        </Link>
-        <Link className="touch-target flex items-center justify-center rounded-full border border-border bg-card text-sm font-black" href="/profile" aria-label="Profile">
-          {currentTechnician.initials}
+        <Link className="touch-target flex items-center justify-center rounded-full border border-border bg-card text-sm font-black" href="/profile" aria-label="Open account">
+          <Users className="size-5" />
         </Link>
       </div>
     </header>
