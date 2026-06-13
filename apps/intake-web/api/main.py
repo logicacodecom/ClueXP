@@ -1067,7 +1067,7 @@ async def ops_get_queue(
 ) -> list[dict[str, Any]]:
     """Return all pending_dispatch jobs ordered by arrival. Runs cleanup inline
     (expire stale offers + auto-close) so the queue is always fresh."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     await store.expire_stale_offers()
     await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
     return await store.get_ops_queue()
@@ -1079,7 +1079,7 @@ async def ops_get_candidates(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Return the job plus all active+verified technicians with advisory signals."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     jobs = await store.get_ops_queue()
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
@@ -1089,11 +1089,12 @@ async def ops_get_candidates(
     threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
     enriched = []
     for tech in techs:
-        dist = haversine_km(
+        _raw_dist = haversine_km(
             job.get("lat"), job.get("lng"),
             tech.get("current_lat") or tech.get("service_area_center_lat"),
             tech.get("current_lng") or tech.get("service_area_center_lng"),
         )
+        dist = _raw_dist if math.isfinite(_raw_dist) else None
         eta_min, eta_max = eta_range_from_km(dist)
         loc_updated = tech.get("location_updated_at")
         if loc_updated and not isinstance(loc_updated, datetime):
@@ -1137,7 +1138,7 @@ async def ops_assign(
 ) -> dict[str, Any]:
     """Dispatcher sends a single targeted offer to one technician. Returns 409
     if the job already has an active offer or is not pending_dispatch."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     jobs = await store.get_ops_queue()
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
@@ -1147,15 +1148,25 @@ async def ops_assign(
             status_code=409,
             detail="An active offer already exists for this job. Wait for it to expire or be declined.",
         )
+    tech = await store.get_ops_technician(payload.technician_id)
+    if tech is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Technician not found or not eligible (must be active and verified).",
+        )
+    org_id_str = tech.get("primary_organization_id")
+    org_id = UUID(org_id_str) if org_id_str else None
     expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
-    tech_row = {"id": str(payload.technician_id)}
-    offers = await store.create_dispatch_offers(job_id, [tech_row], expires_at)
-    if not offers:
-        raise HTTPException(status_code=500, detail="Failed to create offer")
-    offer = offers[0]
+    offer = await store.ops_create_single_offer(job_id, payload.technician_id, org_id, expires_at)
+    if offer is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Concurrent assignment — another offer was just created for this job.",
+        )
+    actor_id = session.get("user", {}).get("id", "unknown")
     await store.log_event_raw(
         job_id,
-        f"ops:assign:tech={payload.technician_id}:by={session.get('id', 'unknown')}",
+        f"ops:assign:tech={payload.technician_id}:by={actor_id}",
     )
     return {
         "offer_id": offer.get("id"),
@@ -1169,7 +1180,7 @@ async def ops_fleet(
     session: dict[str, Any] = Depends(require_session),
 ) -> list[dict[str, Any]]:
     """Return all active+verified technicians with location and active job data."""
-    require_any_role(session, {"dispatcher", "platform_admin"})
+    require_any_role(session, {"platform_admin"})
     return await store.get_fleet_state()
 
 

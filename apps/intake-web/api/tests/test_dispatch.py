@@ -441,3 +441,177 @@ def test_inmemory_decline_returns_false_for_nonexistent():
     store = InMemoryStore()
     result = asyncio.run(store.decline_dispatch_offer(UUID(str(uuid4())), UUID(str(uuid4()))))
     assert result is False
+
+
+# --- ops endpoints require platform_admin, not just any dispatcher ----------
+def test_ops_queue_requires_platform_admin_not_provider_dispatcher():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    uid = "user-provider-dispatcher-99"
+    app_store.users[uid] = {
+        "id": uid, "email": "provdisp@cluexp.test", "phone": None,
+        "display_name": "Provider Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid})
+    client = TestClient(app)
+    resp = client.get("/ops/queue", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+
+
+def test_ops_assign_requires_platform_admin_not_provider_dispatcher():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from uuid import uuid4
+    uid = "user-provider-dispatcher-98"
+    app_store.users[uid] = {
+        "id": uid, "email": "provdisp2@cluexp.test", "phone": None,
+        "display_name": "Provider Dispatcher 2", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid})
+    client = TestClient(app)
+    resp = client.post(
+        f"/ops/queue/{uuid4()}/assign",
+        json={"technician_id": str(uuid4())},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+# --- InMemoryStore: ops_create_single_offer blocks duplicate ----------------
+def test_inmemory_ops_create_single_offer_success():
+    from uuid import uuid4
+    from datetime import datetime, timezone, timedelta
+    store = InMemoryStore()
+    jid = uuid4()
+    tid = uuid4()
+    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    offer = asyncio.run(store.ops_create_single_offer(jid, tid, None, expires))
+    assert offer is not None
+    assert offer["status"] == "offered"
+    assert offer["technician_id"] == str(tid)
+
+
+def test_inmemory_ops_create_single_offer_blocks_duplicate():
+    from uuid import uuid4
+    from datetime import datetime, timezone, timedelta
+    store = InMemoryStore()
+    jid = uuid4()
+    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    first = asyncio.run(store.ops_create_single_offer(jid, uuid4(), None, expires))
+    second = asyncio.run(store.ops_create_single_offer(jid, uuid4(), None, expires))
+    assert first is not None
+    assert second is None
+
+
+# --- InMemoryStore: get_ops_technician ----------------------------------------
+def test_inmemory_get_ops_technician_returns_active_verified():
+    from uuid import uuid4
+    store = InMemoryStore()
+    tid = str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+    result = asyncio.run(store.get_ops_technician(UUID(tid)))
+    assert result is not None
+    assert result["id"] == tid
+
+
+def test_inmemory_get_ops_technician_returns_none_for_inactive():
+    from uuid import uuid4
+    store = InMemoryStore()
+    tid = str(uuid4())
+    store._technicians = [{"id": tid, "status": "inactive", "vetting_status": "verified", "display_name": "T"}]
+    result = asyncio.run(store.get_ops_technician(UUID(tid)))
+    assert result is None
+
+
+def test_inmemory_get_ops_technician_returns_none_for_unknown():
+    from uuid import uuid4
+    store = InMemoryStore()
+    store._technicians = []
+    result = asyncio.run(store.get_ops_technician(uuid4()))
+    assert result is None
+
+
+# --- HTTP: platform_admin can query ops queue (empty) -----------------------
+def test_ops_queue_ok_for_platform_admin():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    uid = "user-platform-admin-ops-1"
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_ops@cluexp.test", "phone": None,
+        "display_name": "Platform Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.get("/ops/queue", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+# --- HTTP: assign unknown technician returns 422 ----------------------------
+def test_ops_assign_unknown_tech_returns_422():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from uuid import uuid4
+    uid = "user-platform-admin-ops-2"
+    jid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_ops2@cluexp.test", "phone": None,
+        "display_name": "Platform Admin 2", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    # Seed job in pending_dispatch
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/ops/queue/{jid}/assign",
+        json={"technician_id": str(uuid4())},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
+
+
+# --- HTTP: concurrent assign returns 409 ------------------------------------
+def test_ops_assign_concurrent_409():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from uuid import uuid4
+    uid = "user-platform-admin-ops-3"
+    jid = str(uuid4())
+    tid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_ops3@cluexp.test", "phone": None,
+        "display_name": "Platform Admin 3", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    # Seed job in pending_dispatch and a verified tech
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({"id": tid, "status": "active", "vetting_status": "verified",
+                                   "display_name": "T", "primary_organization_id": None})
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    # First assign succeeds
+    r1 = client.post(
+        f"/ops/queue/{jid}/assign",
+        json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r1.status_code == 200
+    # Second assign on same job → 409 (offer_active)
+    r2 = client.post(
+        f"/ops/queue/{jid}/assign",
+        json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r2.status_code == 409

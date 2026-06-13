@@ -205,7 +205,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
 
   const fetchQueue = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/ops/queue`, { headers: authHeaders() });
+      const res = await fetch(`/api/ops/queue`);
       if (!res.ok) throw new Error(`${res.status}`);
       setQueue(await res.json());
       setError(null);
@@ -540,7 +540,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   const fetchCandidates = useCallback(async () => {
     if (!jobId) return;
     try {
-      const res = await fetch(`${API_BASE}/api/ops/queue/${jobId}/candidates`, { headers: authHeaders() });
+      const res = await fetch(`/api/ops/queue/${jobId}/candidates`);
       if (!res.ok) throw new Error(`${res.status}`);
       setData(await res.json());
       setError(null);
@@ -556,9 +556,9 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
     setAssigning(technicianId);
     setAssignError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/ops/queue/${jobId}/assign`, {
+      const res = await fetch(`/api/ops/queue/${jobId}/assign`, {
         method: "POST",
-        headers: { ...authHeaders(), "content-type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ technician_id: technicianId }),
       });
       const body = await res.json().catch(() => ({}));
@@ -923,7 +923,7 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
 
   const fetchFleet = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/ops/fleet`, { headers: authHeaders() });
+      const res = await fetch(`/api/ops/fleet`);
       if (!res.ok) throw new Error(`${res.status}`);
       setFleet(await res.json());
       setError(null);

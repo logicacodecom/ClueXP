@@ -286,6 +286,14 @@ class Store:
     async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_ops_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def ops_create_single_offer(
+        self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -585,6 +593,35 @@ class InMemoryStore(Store):
     async def expire_stale_offers(self) -> int:
         return 0
 
+    async def get_ops_queue(self) -> list[dict]:
+        statuses = getattr(self, "_job_status", {})
+        offers = getattr(self, "_offers", {})
+        result = []
+        for jid, status in statuses.items():
+            if status != STATUS_PENDING_DISPATCH:
+                continue
+            active_offer = next(
+                (o for o in offers.values() if o.get("job_id") == jid and o.get("status") == "offered"),
+                None,
+            )
+            result.append({
+                "id": jid, "address": None, "lat": None, "lng": None,
+                "access_type": None, "situation": None, "urgency": None,
+                "created_at": None, "customer_owner_org_id": None,
+                "fulfillment_policy": None, "dispatch_attempts": 0,
+                "offer_active": active_offer is not None,
+                "offer_id": active_offer["id"] if active_offer else None,
+                "offered_technician_id": active_offer["technician_id"] if active_offer else None,
+                "offer_expires_at": None,
+            })
+        return result
+
+    async def list_all_technicians_for_ops(self) -> list[dict]:
+        return list(getattr(self, "_technicians", []))
+
+    async def get_fleet_state(self) -> list[dict]:
+        return []
+
     async def list_dispatchable_jobs(
         self, *, max_attempts: int, total_timeout_seconds: int, limit: int = 100
     ) -> list[dict]:
@@ -663,6 +700,33 @@ class InMemoryStore(Store):
             offer["status"] = "declined"
             return True
         return False
+
+    async def get_ops_technician(self, technician_id: UUID) -> dict | None:
+        tid = str(technician_id)
+        for t in getattr(self, "_technicians", []):
+            if str(t.get("id")) == tid and t.get("status") == "active" and t.get("vetting_status") == "verified":
+                return t
+        return None
+
+    async def ops_create_single_offer(
+        self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
+    ) -> dict | None:
+        offers = getattr(self, "_offers", None)
+        if offers is None:
+            offers = self._offers = {}
+        jid = str(job_id)
+        if any(o.get("status") == "offered" and o.get("job_id") == jid for o in offers.values()):
+            return None
+        rec = {
+            "id": str(uuid4()),
+            "job_id": jid,
+            "technician_id": str(technician_id),
+            "organization_id": str(org_id) if org_id else None,
+            "rank": 0,
+            "status": "offered",
+        }
+        offers[rec["id"]] = rec
+        return rec
 
     async def set_job_status(
         self,
@@ -1975,6 +2039,56 @@ class PostgresStore(Store):
                     (jid, jid),
                 )
         return row is not None
+
+    async def get_ops_technician(self, technician_id: UUID) -> dict | None:
+        """Fetch one technician only if currently active and verified."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, skills, current_lat, current_lng,"
+                " service_area_center_lat, service_area_center_lng,"
+                " rating, is_available, location_updated_at, primary_organization_id"
+                " from technicians"
+                " where id = %s and status = 'active' and vetting_status = 'verified'",
+                (str(technician_id),),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "display_name": row[1],
+            "skills": list(row[2] or []),
+            "current_lat": row[3],
+            "current_lng": row[4],
+            "service_area_center_lat": row[5],
+            "service_area_center_lng": row[6],
+            "rating": float(row[7]) if row[7] is not None else 0.0,
+            "is_available": row[8],
+            "location_updated_at": row[9].isoformat() if row[9] else None,
+            "primary_organization_id": str(row[10]) if row[10] else None,
+        }
+
+    async def ops_create_single_offer(
+        self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
+    ) -> dict | None:
+        """Insert one targeted offer without superseding existing offers.
+        Returns None if the partial unique index blocks the insert (concurrent assign)."""
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "insert into dispatch_offers"
+                    " (id, job_id, technician_id, status, rank, offered_at, expires_at, organization_id)"
+                    " values (gen_random_uuid(), %s, %s, 'offered', 0, now(), %s, %s)"
+                    " returning id",
+                    (str(job_id), str(technician_id), expires_at, str(org_id) if org_id else None),
+                )
+                row = await cur.fetchone()
+            return {"id": str(row[0])} if row else None
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "unique" in msg or "duplicate" in msg or "23505" in msg:
+                return None
+            raise
 
     async def set_job_status(
         self,
