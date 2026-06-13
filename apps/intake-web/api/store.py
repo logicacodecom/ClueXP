@@ -564,23 +564,28 @@ class InMemoryStore(Store):
             return None
         if rec["status"] != "offered":
             return {"accepted": False, "reason": rec["status"], "job_id": rec["job_id"]}
+        jid = rec["job_id"]
+        self._job_status = getattr(self, "_job_status", {})
+        self._job_tech = getattr(self, "_job_tech", {})
+        # Guard: only accept if the job is still pending_dispatch. A concurrent
+        # cancellation would have changed the status, and we must not flip
+        # trust_state or assign the technician on a cancelled/changed job.
+        if self._job_status.get(jid) != STATUS_PENDING_DISPATCH:
+            rec["status"] = "superseded"
+            return {"accepted": False, "reason": "job_not_pending", "job_id": jid}
         rec["status"] = "accepted"
         for other in offers.values():
             if (
-                other["job_id"] == rec["job_id"]
+                other["job_id"] == jid
                 and other["id"] != rec["id"]
                 and other["status"] == "offered"
             ):
                 other["status"] = "superseded"
-        # Cutover gate: advance only jobs already on the operational ladder.
-        self._job_status = getattr(self, "_job_status", {})
-        self._job_tech = getattr(self, "_job_tech", {})
-        if self._job_status.get(rec["job_id"]) == STATUS_PENDING_DISPATCH:
-            self._job_status[rec["job_id"]] = STATUS_ASSIGNED
-        self._job_tech[rec["job_id"]] = rec["technician_id"]
+        self._job_status[jid] = STATUS_ASSIGNED
+        self._job_tech[jid] = rec["technician_id"]
         return {
             "accepted": True,
-            "job_id": rec["job_id"],
+            "job_id": jid,
             "technician_id": rec["technician_id"],
             "organization_id": rec.get("organization_id"),
         }
@@ -715,8 +720,12 @@ class InMemoryStore(Store):
         if offers is None:
             offers = self._offers = {}
         jid = str(job_id)
+        # Atomic guard: job must still be pending_dispatch (not cancelled/assigned)
+        statuses = getattr(self, "_job_status", {})
+        if statuses.get(jid) != STATUS_PENDING_DISPATCH:
+            return {"error_code": "job_not_pending"}
         if any(o.get("status") == "offered" and o.get("job_id") == jid for o in offers.values()):
-            return None
+            return {"error_code": "concurrent_offer"}
         rec = {
             "id": str(uuid4()),
             "job_id": jid,
@@ -1603,34 +1612,36 @@ class PostgresStore(Store):
             job_id, tech_id, org_id, status = offer[0], offer[1], offer[2], offer[3]
             if status != "offered":
                 return {"accepted": False, "reason": status, "job_id": str(job_id)}
-            # Atomic first-accept-wins: only one accept can flip the null job.
-            # Cutover gate: a job only advances onto the operational ladder
-            # (status -> assigned + assigned_at) if it's already on it
-            # (status='pending_dispatch', set by a cutover-enabled create). Legacy
-            # jobs keep their intake status untouched — no live behavior change.
+            # Atomic first-accept-wins: only one accept can win. Guard on
+            # status='pending_dispatch' so that a cancellation or concurrent accept
+            # that changed the job status before this UPDATE causes this path to fail
+            # cleanly — no technician or trust_state is set on a cancelled job.
             cur = await conn.execute(
                 "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
                 " trust_state = 'matched',"
-                " status = case when status = %s then %s else status end,"
-                " assigned_at = case when status = %s then coalesce(assigned_at, now())"
-                "   else assigned_at end,"
+                " status = %s,"
+                " assigned_at = coalesce(assigned_at, now()),"
                 " updated_at = now()"
-                " where id = %s and fulfillment_technician_id is null"
+                " where id = %s"
+                "   and status = %s"
+                "   and fulfillment_technician_id is null"
                 " returning id",
                 (
                     str(tech_id), str(org_id) if org_id else None,
-                    STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_PENDING_DISPATCH,
+                    STATUS_ASSIGNED,
                     str(job_id),
+                    STATUS_PENDING_DISPATCH,
                 ),
             )
             won = await cur.fetchone()
             if not won:
+                # Revoke the offer without touching trust_state or assignment.
                 await conn.execute(
                     "update dispatch_offers set status = 'superseded', responded_at = now()"
                     " where id = %s and status = 'offered'",
                     (str(offer_id),),
                 )
-                return {"accepted": False, "reason": "already_matched", "job_id": str(job_id)}
+                return {"accepted": False, "reason": "job_not_pending", "job_id": str(job_id)}
             await conn.execute(
                 "update dispatch_offers set status = 'accepted', responded_at = now() where id = %s",
                 (str(offer_id),),
@@ -2071,23 +2082,44 @@ class PostgresStore(Store):
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
     ) -> dict | None:
-        """Insert one targeted offer without superseding existing offers.
-        Returns None if the partial unique index blocks the insert (concurrent assign)."""
+        """Atomically insert one targeted offer, guarded on the job still being
+        pending_dispatch with no technician and no active offer. The INSERT ... SELECT
+        is a single round-trip; the partial unique index provides final DB protection.
+        Returns {"id": ...} on success, {"error_code": "job_not_pending"} when the job
+        is not in the expected state (cancelled / already assigned), or
+        {"error_code": "concurrent_offer"} when the unique constraint fires."""
         try:
             async with await self._connect() as conn:
                 cur = await conn.execute(
                     "insert into dispatch_offers"
                     " (id, job_id, technician_id, status, rank, offered_at, expires_at, organization_id)"
-                    " values (gen_random_uuid(), %s, %s, 'offered', 0, now(), %s, %s)"
+                    " select gen_random_uuid(), j.id, %s, 'offered', 0, now(), %s, %s"
+                    " from jobs j"
+                    " where j.id = %s"
+                    "   and j.status = 'pending_dispatch'"
+                    "   and j.fulfillment_technician_id is null"
+                    "   and not exists ("
+                    "     select 1 from dispatch_offers"
+                    "     where job_id = j.id and status = 'offered')"
                     " returning id",
-                    (str(job_id), str(technician_id), expires_at, str(org_id) if org_id else None),
+                    (str(technician_id), expires_at, str(org_id) if org_id else None, str(job_id)),
                 )
                 row = await cur.fetchone()
-            return {"id": str(row[0])} if row else None
+            if row:
+                return {"id": str(row[0])}
+            # Distinguish job-not-pending from concurrent-offer by re-reading job status.
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "select status from jobs where id = %s", (str(job_id),)
+                )
+                jrow = await cur.fetchone()
+            if jrow is None or jrow[0] != "pending_dispatch":
+                return {"error_code": "job_not_pending"}
+            return {"error_code": "concurrent_offer"}
         except Exception as exc:
             msg = str(exc).lower()
             if "unique" in msg or "duplicate" in msg or "23505" in msg:
-                return None
+                return {"error_code": "concurrent_offer"}
             raise
 
     async def set_job_status(

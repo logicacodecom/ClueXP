@@ -1059,6 +1059,7 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
 
 class OpsAssignPayload(BaseModel):
     technician_id: UUID
+    override_reason: str | None = None
 
 
 @app.get("/ops/queue")
@@ -1109,12 +1110,13 @@ async def ops_get_candidates(
             "id": tech["id"],
             "display_name": tech.get("display_name"),
             "skills": skills,
-            "skills_match": access_type in skills if access_type else False,
+            "skills_match": access_type in skills if access_type else True,
             "dist_km": round(dist, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
             "is_online": is_online,
             "is_busy": active_job is not None,
+            "rating": tech.get("rating"),
             "active_job": {
                 "id": active_job["id"],
                 "status": active_job.get("status"),
@@ -1127,6 +1129,12 @@ async def ops_get_candidates(
             "service_area_center_lat": tech.get("service_area_center_lat"),
             "service_area_center_lng": tech.get("service_area_center_lng"),
         })
+    # Sort: nearest-first (known distance before unknown), then rating descending.
+    enriched.sort(key=lambda c: (
+        c["dist_km"] is None,
+        c["dist_km"] if c["dist_km"] is not None else 0.0,
+        -(c.get("rating") or 0.0),
+    ))
     return {"job": job, "candidates": enriched}
 
 
@@ -1136,8 +1144,10 @@ async def ops_assign(
     payload: OpsAssignPayload,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Dispatcher sends a single targeted offer to one technician. Returns 409
-    if the job already has an active offer or is not pending_dispatch."""
+    """Platform admin sends a targeted offer to one technician.
+    Advisory flags (offline, busy, skill mismatch) block assignment unless the
+    caller supplies override_reason. Returns 409 when the job is no longer
+    pending_dispatch or a concurrent offer already exists."""
     require_any_role(session, {"platform_admin"})
     jobs = await store.get_ops_queue()
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
@@ -1154,20 +1164,50 @@ async def ops_assign(
             status_code=422,
             detail="Technician not found or not eligible (must be active and verified).",
         )
+    # Compute advisory signals: offline, busy, skill mismatch.
+    now_dt = datetime.now(tz=timezone.utc)
+    threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
+    loc_updated = tech.get("location_updated_at")
+    if loc_updated and not isinstance(loc_updated, datetime):
+        loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
+    is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
+    is_busy = (await store.get_technician_active_job(tech["id"])) is not None
+    skills = tech.get("skills") or []
+    access_type = job.get("access_type")
+    skills_match = (access_type in skills) if access_type else True
+    override_flags: list[str] = []
+    if not is_online:
+        override_flags.append("offline or location stale")
+    if is_busy:
+        override_flags.append("has an active job")
+    if not skills_match:
+        override_flags.append(f"skill mismatch (job needs '{access_type}')")
+    if override_flags and not payload.override_reason:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Override required: technician {', '.join(override_flags)}. "
+                   f"Supply override_reason to proceed.",
+        )
     org_id_str = tech.get("primary_organization_id")
     org_id = UUID(org_id_str) if org_id_str else None
     expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
     offer = await store.ops_create_single_offer(job_id, payload.technician_id, org_id, expires_at)
-    if offer is None:
+    if offer is None or "error_code" in offer:
+        error_code = (offer or {}).get("error_code", "concurrent_offer")
+        if error_code == "job_not_pending":
+            raise HTTPException(
+                status_code=409,
+                detail="Job is no longer pending dispatch (cancelled or already assigned).",
+            )
         raise HTTPException(
             status_code=409,
             detail="Concurrent assignment — another offer was just created for this job.",
         )
     actor_id = session.get("user", {}).get("id", "unknown")
-    await store.log_event_raw(
-        job_id,
-        f"ops:assign:tech={payload.technician_id}:by={actor_id}",
-    )
+    audit = f"ops:assign:tech={payload.technician_id}:by={actor_id}"
+    if payload.override_reason:
+        audit += f":override={payload.override_reason[:100]}"
+    await store.log_event_raw(job_id, audit)
     return {
         "offer_id": offer.get("id"),
         "technician_id": str(payload.technician_id),

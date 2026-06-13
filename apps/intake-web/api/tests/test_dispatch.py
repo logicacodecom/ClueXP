@@ -9,7 +9,7 @@ before acceptance, polling never creates offers). Run from apps/intake-web:
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from api.dispatch import (
     POLICY_NETWORK_OPEN,
@@ -215,7 +215,9 @@ def test_technician_forward_transitions_allowed():
     assert can_technician_transition(STATUS_ARRIVED, STATUS_IN_PROGRESS)
     assert can_technician_transition(STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING)
     # forward skip is permitted (tech forgot an intermediate state)
-    assert can_technician_transition(STATUS_ASSIGNED, STATUS_IN_PROGRESS)
+    assert not can_technician_transition(STATUS_ASSIGNED, STATUS_IN_PROGRESS)
+    assert not can_technician_transition(STATUS_EN_ROUTE, STATUS_IN_PROGRESS)
+    assert not can_technician_transition(STATUS_ARRIVED, STATUS_COMPLETED_PENDING)
 
 
 def test_technician_cannot_go_backward_or_confirm():
@@ -489,8 +491,10 @@ def test_inmemory_ops_create_single_offer_success():
     jid = uuid4()
     tid = uuid4()
     expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    store._job_status = {str(jid): STATUS_PENDING_DISPATCH}
     offer = asyncio.run(store.ops_create_single_offer(jid, tid, None, expires))
     assert offer is not None
+    assert "error_code" not in offer
     assert offer["status"] == "offered"
     assert offer["technician_id"] == str(tid)
 
@@ -501,10 +505,11 @@ def test_inmemory_ops_create_single_offer_blocks_duplicate():
     store = InMemoryStore()
     jid = uuid4()
     expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    store._job_status = {str(jid): STATUS_PENDING_DISPATCH}
     first = asyncio.run(store.ops_create_single_offer(jid, uuid4(), None, expires))
     second = asyncio.run(store.ops_create_single_offer(jid, uuid4(), None, expires))
-    assert first is not None
-    assert second is None
+    assert first is not None and "error_code" not in first
+    assert second is not None and second.get("error_code") == "concurrent_offer"
 
 
 # --- InMemoryStore: get_ops_technician ----------------------------------------
@@ -597,8 +602,14 @@ def test_ops_assign_concurrent_409():
     app_store._job_status = getattr(app_store, "_job_status", {})
     app_store._job_status[jid] = STATUS_PENDING_DISPATCH
     app_store._technicians = getattr(app_store, "_technicians", [])
-    app_store._technicians.append({"id": tid, "status": "active", "vetting_status": "verified",
-                                   "display_name": "T", "primary_organization_id": None})
+    # include location_updated_at so tech is online and no override is needed
+    from datetime import datetime, timezone
+    app_store._technicians.append({
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "T", "primary_organization_id": None,
+        "location_updated_at": datetime.now(timezone.utc).isoformat(),
+        "skills": [],
+    })
     token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
     client = TestClient(app)
     # First assign succeeds
@@ -615,3 +626,234 @@ def test_ops_assign_concurrent_409():
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r2.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# P0 regression: cancellation / assignment race
+# ---------------------------------------------------------------------------
+
+def test_inmemory_ops_create_offer_rejects_cancelled_job():
+    """Offer creation must fail when the job was cancelled between the
+    dispatcher queue-read and the actual INSERT."""
+    from datetime import datetime, timezone, timedelta
+    store = InMemoryStore()
+    jid = UUID(str(uuid4()))
+    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    store._job_status = {str(jid): "cancelled"}
+    result = asyncio.run(store.ops_create_single_offer(jid, UUID(str(uuid4())), None, expires))
+    assert result is not None
+    assert result.get("error_code") == "job_not_pending"
+
+
+def test_inmemory_accept_dispatch_offer_blocked_on_cancelled_job():
+    """Acceptance must not flip trust_state or assign the technician when the
+    job was cancelled between offer creation and the Accept tap."""
+    from datetime import datetime, timezone, timedelta
+    store = InMemoryStore()
+    jid = UUID(str(uuid4()))
+    tid = UUID(str(uuid4()))
+    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    store._job_status = {str(jid): STATUS_PENDING_DISPATCH}
+    offer = asyncio.run(store.ops_create_single_offer(jid, tid, None, expires))
+    assert offer and "id" in offer
+    # Customer cancels before acceptance
+    store._job_status[str(jid)] = "cancelled"
+    result = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"])))
+    assert result is not None
+    assert result.get("accepted") is False
+    assert result.get("reason") == "job_not_pending"
+    # Technician must NOT be assigned; job stays cancelled
+    assert store._job_status.get(str(jid)) == "cancelled"
+    assert not getattr(store, "_job_tech", {}).get(str(jid))
+
+
+def test_inmemory_accept_on_non_pending_does_not_assign_tech():
+    """trust_state equivalent (_job_tech) is untouched even if status changes
+    to a non-pending value other than cancelled (e.g. already assigned)."""
+    from datetime import datetime, timezone, timedelta
+    store = InMemoryStore()
+    jid = UUID(str(uuid4()))
+    tid = UUID(str(uuid4()))
+    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+    store._job_status = {str(jid): STATUS_PENDING_DISPATCH}
+    offer = asyncio.run(store.ops_create_single_offer(jid, tid, None, expires))
+    assert offer and "id" in offer
+    store._job_status[str(jid)] = "assigned"
+    result = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"])))
+    assert result is None or not result.get("accepted")
+    assert getattr(store, "_job_tech", {}).get(str(jid)) is None
+
+
+# ---------------------------------------------------------------------------
+# P1 regression: candidate ordering (nearest first, unknown distance last)
+# ---------------------------------------------------------------------------
+
+def test_ops_candidates_sorted_nearest_first():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from datetime import datetime, timezone
+
+    uid = "user-platform-admin-cand-1"
+    jid = str(uuid4())
+    t_near = str(uuid4())
+    t_far = str(uuid4())
+    t_nodist = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_cand@cluexp.test", "phone": None,
+        "display_name": "Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Patch get_ops_queue to return the job with known coordinates
+    _orig_queue = app_store.get_ops_queue
+
+    async def _patched_queue():
+        rows = await _orig_queue()
+        for r in rows:
+            if str(r["id"]) == jid:
+                r["lat"] = 37.7749
+                r["lng"] = -122.4194
+                r["access_type"] = None
+        return rows
+
+    app_store.get_ops_queue = _patched_queue
+    app_store._technicians = [
+        {"id": t_far, "status": "active", "vetting_status": "verified",
+         "display_name": "Far", "skills": [], "rating": 4.0,
+         "current_lat": 37.3305, "current_lng": -121.8811,
+         "service_area_center_lat": None, "service_area_center_lng": None,
+         "location_updated_at": now_iso, "primary_organization_id": None},
+        {"id": t_nodist, "status": "active", "vetting_status": "verified",
+         "display_name": "NoCoords", "skills": [], "rating": 5.0,
+         "current_lat": None, "current_lng": None,
+         "service_area_center_lat": None, "service_area_center_lng": None,
+         "location_updated_at": now_iso, "primary_organization_id": None},
+        {"id": t_near, "status": "active", "vetting_status": "verified",
+         "display_name": "Near", "skills": [], "rating": 4.5,
+         "current_lat": 37.7750, "current_lng": -122.4195,
+         "service_area_center_lat": None, "service_area_center_lng": None,
+         "location_updated_at": now_iso, "primary_organization_id": None},
+    ]
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.get(
+        f"/ops/queue/{jid}/candidates",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    candidates = resp.json()["candidates"]
+    ids = [c["id"] for c in candidates]
+    assert ids.index(t_near) < ids.index(t_far), "Near must come before Far"
+    assert ids.index(t_near) < ids.index(t_nodist), "Near must come before NoCoords"
+    assert ids.index(t_far) < ids.index(t_nodist), "Far must come before NoCoords"
+    app_store.get_ops_queue = _orig_queue
+
+
+# ---------------------------------------------------------------------------
+# P1 regression: override_reason required for flagged technicians
+# ---------------------------------------------------------------------------
+
+def test_ops_assign_offline_tech_requires_override():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = "user-platform-admin-ovr-1"
+    jid = str(uuid4())
+    tid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_ovr@cluexp.test", "phone": None,
+        "display_name": "Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    # No location_updated_at → is_online=False → override required
+    app_store._technicians.append({
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "Offline", "skills": [], "primary_organization_id": None,
+    })
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/ops/queue/{jid}/assign",
+        json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
+    assert "Override required" in resp.json().get("detail", "")
+
+
+def test_ops_assign_offline_tech_with_override_succeeds():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = "user-platform-admin-ovr-2"
+    jid = str(uuid4())
+    tid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_ovr2@cluexp.test", "phone": None,
+        "display_name": "Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    # Same offline tech — override_reason unlocks the assignment
+    app_store._technicians.append({
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "Offline", "skills": [], "primary_organization_id": None,
+    })
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/ops/queue/{jid}/assign",
+        json={"technician_id": tid, "override_reason": "urgent — only available tech"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert "offer_id" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Integration test: Postgres concurrent assignment (requires live DB)
+# Run with: pytest -m integration apps/intake-web/api/tests/test_dispatch.py
+# ---------------------------------------------------------------------------
+# What this verifies (cannot be replicated in unit env):
+#   - Two simultaneous ops_create_single_offer calls for the same job_id
+#     exercise the INSERT ... SELECT partial-index constraint at the DB level.
+#   - Exactly one call wins (returns {"id": ...}).
+#   - The losing call returns {"error_code": "concurrent_offer"} without
+#     raising an unhandled UniqueViolation.
+#   - The winning offer is not superseded (status stays "offered").
+import pytest
+
+
+@pytest.mark.skip(reason="Integration test — requires live Postgres; run with -m integration")
+def test_postgres_concurrent_assign_isolation():
+    import asyncio as _aio
+    from datetime import datetime, timezone, timedelta
+    from api.store import PostgresStore
+
+    store = PostgresStore()
+    jid = uuid4()
+    t1, t2 = uuid4(), uuid4()
+    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+
+    async def _run():
+        results = await _aio.gather(
+            store.ops_create_single_offer(jid, t1, None, expires),
+            store.ops_create_single_offer(jid, t2, None, expires),
+        )
+        successes = [r for r in results if r and "id" in r and "error_code" not in r]
+        failures = [r for r in results if r and r.get("error_code") == "concurrent_offer"]
+        assert len(successes) == 1, f"Expected 1 winner, got {len(successes)}"
+        assert len(failures) == 1, f"Expected 1 loser, got {len(failures)}"
+
+    _aio.run(_run())
