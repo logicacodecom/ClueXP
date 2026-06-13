@@ -1594,13 +1594,27 @@ class PostgresStore(Store):
         return row[0] if row else 0
 
     async def expire_stale_offers(self) -> int:
+        """Mark past-deadline offers expired and return affected jobs to
+        pending_dispatch when no active offer remains."""
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "update dispatch_offers set status = 'expired', responded_at = now()"
                 " where status = 'offered' and expires_at is not null and expires_at < now()"
-                " returning 1"
+                " returning job_id"
             )
             rows = await cur.fetchall()
+            if rows:
+                job_ids = list({str(r[0]) for r in rows})
+                # Return jobs to the queue only when no sibling offer is still active.
+                for jid in job_ids:
+                    await conn.execute(
+                        "update jobs set status = 'pending_dispatch', updated_at = now()"
+                        " where id = %s and status = 'pending_dispatch'"
+                        "   and not exists ("
+                        "     select 1 from dispatch_offers"
+                        "     where job_id = %s and status = 'offered')",
+                        (jid, jid),
+                    )
         return len(rows)
 
     async def list_dispatchable_jobs(
@@ -1828,15 +1842,138 @@ class PostgresStore(Store):
             "lng": row[6],
         }
 
+    # --- ops-controlled dispatch (Sprint 3.4) ----------------------------------
+
+    async def get_ops_queue(self) -> list[dict]:
+        """All pending_dispatch jobs in arrival order, each annotated with any
+        active offer so the dispatcher can see 'Offer sent' state inline."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select j.id, j.address, j.lat, j.lng, j.access_type, j.situation,"
+                " j.urgency, j.created_at, j.customer_owner_org_id,"
+                " j.fulfillment_policy, j.dispatch_attempts,"
+                " o.id as offer_id, o.technician_id as offered_tech_id, o.expires_at"
+                " from jobs j"
+                " left join dispatch_offers o"
+                "   on o.job_id = j.id and o.status = 'offered'"
+                " where j.status = 'pending_dispatch'"
+                " order by j.created_at asc"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "address": r[1],
+                "lat": r[2],
+                "lng": r[3],
+                "access_type": r[4],
+                "situation": r[5],
+                "urgency": r[6],
+                "created_at": r[7].isoformat() if r[7] else None,
+                "customer_owner_org_id": str(r[8]) if r[8] else None,
+                "fulfillment_policy": r[9],
+                "dispatch_attempts": r[10] or 0,
+                "offer_active": r[11] is not None,
+                "offer_id": str(r[11]) if r[11] else None,
+                "offered_technician_id": str(r[12]) if r[12] else None,
+                "offer_expires_at": r[13].isoformat() if r[13] else None,
+            }
+            for r in rows
+        ]
+
+    async def list_all_technicians_for_ops(self) -> list[dict]:
+        """All active+verified technicians with location data — no availability
+        filter. Provides the full pool for the dispatcher's candidates view."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, skills, current_lat, current_lng,"
+                " service_area_center_lat, service_area_center_lng,"
+                " service_area_radius_km, rating, is_available,"
+                " location_updated_at, provider_type, primary_organization_id"
+                " from technicians"
+                " where status = 'active' and vetting_status = 'verified'"
+                " order by display_name"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "display_name": r[1],
+                "skills": list(r[2] or []),
+                "current_lat": r[3],
+                "current_lng": r[4],
+                "service_area_center_lat": r[5],
+                "service_area_center_lng": r[6],
+                "service_area_radius_km": r[7],
+                "rating": float(r[8]) if r[8] is not None else 0.0,
+                "is_available": r[9],
+                "location_updated_at": r[10].isoformat() if r[10] else None,
+                "provider_type": r[11],
+                "primary_organization_id": str(r[12]) if r[12] else None,
+            }
+            for r in rows
+        ]
+
+    async def get_fleet_state(self) -> list[dict]:
+        """All active+verified technicians with their current location and active
+        job (if any). Single LEFT JOIN — one round trip for the fleet map."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select t.id, t.display_name, t.skills, t.is_available,"
+                " t.current_lat, t.current_lng, t.location_updated_at,"
+                " j.id as job_id, j.status as job_status, j.address as job_address,"
+                " j.lat as job_lat, j.lng as job_lng, j.access_type, j.situation"
+                " from technicians t"
+                " left join jobs j"
+                "   on j.fulfillment_technician_id = t.id"
+                "   and j.status = any(%s)"
+                " where t.status = 'active' and t.vetting_status = 'verified'"
+                " order by t.display_name",
+                (["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"],),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "display_name": r[1],
+                "skills": list(r[2] or []),
+                "is_available": r[3],
+                "current_lat": r[4],
+                "current_lng": r[5],
+                "location_updated_at": r[6].isoformat() if r[6] else None,
+                "active_job": {
+                    "id": str(r[7]),
+                    "status": r[8],
+                    "address": r[9],
+                    "lat": r[10],
+                    "lng": r[11],
+                    "access_type": r[12],
+                    "situation": r[13],
+                } if r[7] else None,
+            }
+            for r in rows
+        ]
+
     async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:
+        """Mark offer declined; return job to pending_dispatch when no active offer remains."""
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "update dispatch_offers set status = 'declined', responded_at = now()"
                 " where id = %s and technician_id = %s and status = 'offered'"
-                " returning id",
+                " returning job_id",
                 (str(offer_id), str(technician_id)),
             )
             row = await cur.fetchone()
+            if row:
+                jid = str(row[0])
+                await conn.execute(
+                    "update jobs set status = 'pending_dispatch', updated_at = now()"
+                    " where id = %s and status = 'pending_dispatch'"
+                    "   and not exists ("
+                    "     select 1 from dispatch_offers"
+                    "     where job_id = %s and status = 'offered')",
+                    (jid, jid),
+                )
         return row is not None
 
     async def set_job_status(

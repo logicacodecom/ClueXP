@@ -332,3 +332,112 @@ def test_token_endpoint_omits_dispatch_internals():
     body = resp.json()
     for field in ("attempts", "max_attempts", "offers_pending", "offer_expires_at"):
         assert field not in body, f"dispatch internal field {field!r} leaked into token response"
+
+
+# --- ops-controlled model: legacy endpoints gated --------------------------
+def test_legacy_dispatch_endpoint_is_gone():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.post("/tickets/00000000-0000-0000-0000-000000000099/dispatch")
+    assert resp.status_code == 410
+
+
+def test_legacy_offers_endpoint_is_gone():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.post("/tickets/00000000-0000-0000-0000-000000000099/offers")
+    assert resp.status_code == 410
+
+
+# --- cron sweep is cleanup-only (no re-dispatch) ---------------------------
+def test_cron_sweep_response_has_no_redispatch_field():
+    from unittest.mock import patch
+    from starlette.testclient import TestClient
+    from api.main import app
+    import api.main as _main_mod
+    secret = "test-cron-secret-sprint34"
+    client = TestClient(app)
+    with patch.object(_main_mod.config, "CRON_SECRET", secret):
+        resp = client.post("/cron/dispatch-sweep", headers={"Authorization": f"Bearer {secret}"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "expired_offers" in body
+    assert "auto_closed" in body
+    # no re-dispatch fields — this is cleanup-only
+    assert "dispatchable_jobs" not in body
+    assert "redispatched" not in body
+
+
+# --- ops endpoints require authentication ----------------------------------
+def test_ops_queue_requires_auth():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.get("/ops/queue")
+    assert resp.status_code == 401
+
+
+def test_ops_candidates_requires_auth():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.get("/ops/queue/00000000-0000-0000-0000-000000000001/candidates")
+    assert resp.status_code == 401
+
+
+def test_ops_assign_requires_auth():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.post(
+        "/ops/queue/00000000-0000-0000-0000-000000000001/assign",
+        json={"technician_id": "00000000-0000-0000-0000-000000000002"},
+    )
+    assert resp.status_code == 401
+
+
+def test_ops_fleet_requires_auth():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.get("/ops/fleet")
+    assert resp.status_code == 401
+
+
+# --- ops dispatcher role gate (invalid role → 403) -------------------------
+def test_ops_queue_requires_dispatcher_role():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    # seed a user with only the technician role
+    uid = "user-role-test-99"
+    app_store.users[uid] = {
+        "id": uid, "email": "roletest@cluexp.test", "phone": None,
+        "display_name": "Role Test", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid})
+    client = TestClient(app)
+    resp = client.get("/ops/queue", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+
+
+# --- InMemoryStore: decline marks offer as declined ------------------------
+def test_inmemory_decline_marks_offered():
+    from uuid import uuid4
+    store = InMemoryStore()
+    tid = str(uuid4())
+    oid = str(uuid4())
+    store._offers = {oid: {"id": oid, "job_id": "jid-1", "status": "offered", "technician_id": tid}}
+    result = asyncio.run(store.decline_dispatch_offer(UUID(oid), UUID(tid)))
+    assert result is True
+    assert store._offers[oid]["status"] == "declined"
+
+
+def test_inmemory_decline_returns_false_for_nonexistent():
+    from uuid import uuid4
+    store = InMemoryStore()
+    result = asyncio.run(store.decline_dispatch_offer(UUID(str(uuid4())), UUID(str(uuid4()))))
+    assert result is False

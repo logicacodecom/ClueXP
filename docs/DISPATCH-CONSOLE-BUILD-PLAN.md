@@ -4,6 +4,14 @@
 > **Goal:** Build the dispatch console web surfaces from the design contract, as a
 > real React/Next app — fixing the mock issues in code, not in PNGs.
 > **Status:** Foundation scaffolded by Claude (see §9 "Already done"); the rest is for Codex.
+>
+> **⚠️ Model change (2026-06-13):** The dispatch model changed from automatic to **ops-controlled**.
+> This build plan covers the initial mock-data shell. For the real backend wiring (ops queue, live
+> candidates, assign endpoint, fleet map), see `docs/EXECUTION-PLAN.md §3.4 "Ops-Controlled Dispatch"`
+> and the approved implementation plan. Two screens are directly affected:
+> - **`LiveQueue`** → becomes the ops dispatch queue (wired to `GET /ops/queue`)
+> - **`TechnicianAssignment`** → wired to `GET /ops/queue/{id}/candidates` + `POST /ops/queue/{id}/assign`
+> The mock shell built here remains the visual scaffold; data contracts are in `SYSTEM-DESIGN.md §4`.
 
 ## 0. Source of truth & precedence
 

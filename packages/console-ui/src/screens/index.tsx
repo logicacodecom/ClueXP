@@ -14,6 +14,8 @@ import {
   technicians
 } from "@cluexp/api-client";
 import type { ConsoleMode, ConsoleStatus, Job } from "@cluexp/api-client";
+import { GoogleMapView } from "../components/google-map";
+import type { MapPoint } from "../components/google-map";
 import {
   Building2,
   CheckCircle2,
@@ -24,8 +26,9 @@ import {
   SlidersHorizontal,
   UserCheck
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Badge,
@@ -42,6 +45,7 @@ import {
   FileText,
   FilterBar,
   Input,
+  LoadingSkeleton,
   MapCard,
   MessageSquare,
   Navigation,
@@ -58,7 +62,8 @@ import {
   Timeline,
   TrustSafety,
   TrustStateChip,
-  UrgencyTag
+  UrgencyTag,
+  UserRound
 } from "../components";
 import { cn } from "../lib/cn";
 
@@ -160,24 +165,138 @@ export function Dashboard({ mode }: { mode: ConsoleMode }) {
   );
 }
 
+type OpsJob = {
+  id: string;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  access_type: string | null;
+  situation: string | null;
+  urgency: string | null;
+  created_at: string | null;
+  customer_owner_org_id: string | null;
+  fulfillment_policy: string | null;
+  dispatch_attempts: number;
+  offer_active: boolean;
+  offer_id: string | null;
+  offered_technician_id: string | null;
+  offer_expires_at: string | null;
+};
+
+const API_BASE = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL ?? "";
+
+function authHeaders(): Record<string, string> {
+  const token = typeof window !== "undefined" ? window.localStorage.getItem("cluexp_access_token") : null;
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+function ageLabel(created_at: string | null): string {
+  if (!created_at) return "--";
+  const diffMs = Date.now() - new Date(created_at).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
 export function LiveQueue({ mode }: { mode: ConsoleMode }) {
-  const queue = [...scopedJobs(mode)].sort((a, b) => byPriority(a) - byPriority(b));
+  const router = useRouter();
+  const [queue, setQueue] = useState<OpsJob[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchQueue = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/ops/queue`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`${res.status}`);
+      setQueue(await res.json());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load queue");
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchQueue();
+    const id = window.setInterval(fetchQueue, 30_000);
+    return () => window.clearInterval(id);
+  }, [fetchQueue]);
+
+  if (mode === "org") {
+    const fallbackQueue = [...scopedJobs(mode)].sort((a, b) => byPriority(a) - byPriority(b));
+    return (
+      <div>
+        <PageHeader kicker="Organization queue" title="Live Dispatch Queue" description="Organization-scoped dispatch queue." actions={<Button asChild><Link href="/intake/new">Create Request</Link></Button>} />
+        <RequestTable jobs={fallbackQueue} />
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader
-        kicker={mode === "org" ? "Organization queue" : "Network live queue"}
+        kicker="Ops dispatch queue"
         title="Live Dispatch Queue"
-        description="Sorted by stalled service requests, safety flags, age, and service pressure. Customer trust-state stays separate from console status."
-        actions={<><Button asChild><Link href={mode === "org" ? "/intake/new" : "/queue"}>Create Request</Link></Button><Button variant="secondary"><Phone className="size-4" />Call Customer</Button><Button variant="outline"><Phone className="size-4" />Call Technician</Button></>}
+        description="All pending jobs in arrival order. Click a job to view candidates and send an assignment offer."
+        actions={<Button variant="outline" onClick={fetchQueue}>Refresh</Button>}
       />
-      <div className="mb-4"><FilterBar filters={["Source", "Access type", "Situation", "Urgency", "Area", "Team", "Age", "Trust-state", "Escalation reason"]} /></div>
-      <RequestTable jobs={queue} />
-      <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Queue depth" value={String(queue.length)} />
-        <StatCard label="Average response" value="8m" />
-        <StatCard label="Active technicians" value={String(technicians.filter((tech) => tech.is_available).length)} />
-        <StatCard label="Critical alerts" value={String(queue.filter((job) => job.urgency === "critical").length)} intent="warn" />
-      </div>
+      {error ? <div className="mb-4 rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+      {queue === null && !error ? (
+        <LoadingSkeleton />
+      ) : queue && queue.length === 0 ? (
+        <EmptyState icon={CheckCircle2} title="Queue empty" description="No jobs are waiting for dispatch." />
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 z-10 bg-card text-left text-xs font-semibold uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3">Address</th>
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Situation</th>
+                    <th className="px-4 py-3">Urgency</th>
+                    <th className="px-4 py-3">Age</th>
+                    <th className="px-4 py-3">Attempts</th>
+                    <th className="px-4 py-3">Offer</th>
+                    <th className="px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {(queue ?? []).map((job) => (
+                    <tr
+                      key={job.id}
+                      className="border-t border-border transition-colors hover:bg-secondary/40 cursor-pointer"
+                      onClick={() => router.push(`/queue/${job.id}`)}
+                    >
+                      <td className="px-4 py-3 font-medium">{job.address ?? "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{job.access_type ?? "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{job.situation ?? "—"}</td>
+                      <td className="px-4 py-3">
+                        <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
+                      </td>
+                      <td className="px-4 py-3 tabular-nums text-muted-foreground">{ageLabel(job.created_at)}</td>
+                      <td className="px-4 py-3 tabular-nums text-muted-foreground">{job.dispatch_attempts}</td>
+                      <td className="px-4 py-3">
+                        {job.offer_active
+                          ? <Badge variant="warn">Offer sent · <SlaCountdown deadline={job.offer_expires_at ?? undefined} /></Badge>
+                          : <Badge variant="outline">Awaiting</Badge>}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); router.push(`/queue/${job.id}`); }}>
+                          Assign
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-muted-foreground">
+              <span>{queue?.length ?? 0} jobs waiting</span>
+              <span>Refreshes every 30s</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -387,75 +506,205 @@ export function JobDetail({ mode }: { mode: ConsoleMode }) {
   );
 }
 
-export function TechnicianAssignment({ mode }: { mode: ConsoleMode }) {
-  const job = primaryJob(mode);
-  const offer = offers.find((item) => item.job_id === job.id) ?? firstOffer();
-  const candidates = mode === "org" ? technicians.filter((tech) => tech.primary_organization_id === orgId) : technicians;
-  const rankedCandidates = [...candidates].sort((a, b) => rankedScore(b.id).score - rankedScore(a.id).score);
+type OpsCandidate = {
+  id: string;
+  display_name: string | null;
+  skills: string[];
+  skills_match: boolean;
+  dist_km: number | null;
+  eta_min: number | null;
+  eta_max: number | null;
+  is_online: boolean;
+  is_busy: boolean;
+  active_job: { id: string; status: string; address: string | null } | null;
+  current_lat: number | null;
+  current_lng: number | null;
+  service_area_center_lat: number | null;
+  service_area_center_lng: number | null;
+};
+
+type CandidatesResponse = {
+  job: OpsJob;
+  candidates: OpsCandidate[];
+};
+
+export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: ConsoleMode }) {
+  const router = useRouter();
+  const [data, setData] = useState<CandidatesResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [assigning, setAssigning] = useState<string | null>(null);
+  const [assigned, setAssigned] = useState<string | null>(null);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [selectedPoint, setSelectedPoint] = useState<MapPoint | null>(null);
+
+  const fetchCandidates = useCallback(async () => {
+    if (!jobId) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/ops/queue/${jobId}/candidates`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`${res.status}`);
+      setData(await res.json());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load candidates");
+    }
+  }, [jobId]);
+
+  useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
+
+  async function assign(technicianId: string) {
+    if (!jobId) return;
+    setAssigning(technicianId);
+    setAssignError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/ops/queue/${jobId}/assign`, {
+        method: "POST",
+        headers: { ...authHeaders(), "content-type": "application/json" },
+        body: JSON.stringify({ technician_id: technicianId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `${res.status}`);
+      setAssigned(technicianId);
+      await fetchCandidates();
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "Assignment failed");
+    } finally {
+      setAssigning(null);
+    }
+  }
+
+  if (!jobId || mode === "org") {
+    const job = primaryJob(mode);
+    const offer = offers.find((item) => item.job_id === job.id) ?? firstOffer();
+    const candidates = mode === "org" ? technicians.filter((tech) => tech.primary_organization_id === orgId) : technicians;
+    return (
+      <div>
+        <PageHeader kicker="Assignment" title="Choose technician" description="Select a technician to send a targeted assignment offer." actions={<><StatusBadge status={job.console_status} /><TrustStateChip trustState={job.trust_state} /><SlaCountdown deadline={offer.expires_at} /></>} />
+        <div className="space-y-3">{candidates.map((tech) => <TechnicianCard key={tech.id} mode={mode} technician={tech} />)}</div>
+      </div>
+    );
+  }
+
+  const job = data?.job;
+  const candidates = data?.candidates ?? [];
+
+  const jobPoint: MapPoint | null = (job?.lat && job?.lng) ? { lat: job.lat, lng: job.lng, kind: "job", label: job.address ?? "Job", id: job.id } : null;
+  const mapPoints: MapPoint[] = [
+    ...(jobPoint ? [jobPoint] : []),
+    ...candidates
+      .filter((t) => t.current_lat && t.current_lng)
+      .map((t): MapPoint => ({
+        lat: t.current_lat!,
+        lng: t.current_lng!,
+        kind: "tech",
+        label: t.display_name ?? t.id,
+        id: t.id,
+      })),
+  ];
+
+  const activeOffer = job?.offer_active ? job : null;
+
   return (
     <div>
       <PageHeader
-        kicker="Ranked match preview"
-        title="Choose verified access technician"
-        description="Mock ranking explains distance, skill, availability, verification, and workload. It does not dispatch or override backend eligibility."
-        actions={<><StatusBadge status={job.console_status} /><TrustStateChip trustState={job.trust_state} /><SlaCountdown deadline={offer.expires_at} /></>}
+        kicker="Ops assignment"
+        title="Choose technician"
+        description="Dispatcher selects one technician to send a targeted offer. No automatic ranking — you decide."
+        actions={
+          <Button variant="outline" asChild><Link href="/queue">Back to queue</Link></Button>
+        }
       />
-      <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
-        <div className="space-y-3">
-          {rankedCandidates.map((tech, index) => {
-            const match = rankedScore(tech.id);
-            return (
-              <div className="relative" key={tech.id}>
-                <div className="absolute left-4 top-4 z-10 flex items-center gap-2">
-                  <Badge variant={index === 0 ? "success" : "outline"}>Rank {index + 1}</Badge>
-                  <Badge variant={match.score >= 85 ? "success" : match.score >= 70 ? "info" : "warn"}>{match.score}% match</Badge>
-                </div>
-                <div className="pt-11">
-                  <TechnicianCard mode={mode} technician={tech} />
-                </div>
-                <div className="mx-4 -mt-3 mb-4 rounded-md border border-border bg-background p-3">
-                  <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Why this rank</div>
-                  <div className="flex flex-wrap gap-2">
-                    {match.reasons.map((reason) => <Badge key={reason} variant="outline">{reason}</Badge>)}
+      {error ? <div className="mb-4 rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+      {assignError ? <div className="mb-4 rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{assignError}</div> : null}
+      {assigned ? <div className="mb-4 rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success">Offer sent. Technician has {job?.offer_expires_at ? "until " + new Date(job.offer_expires_at).toLocaleTimeString() : "90 seconds"} to accept.</div> : null}
+      {activeOffer && !assigned ? (
+        <div className="mb-4 rounded-md border border-warn/35 bg-warn/10 p-3 text-sm text-warn">
+          Active offer already sent · expires <SlaCountdown deadline={job?.offer_expires_at ?? undefined} /> · wait for it to expire or be declined before reassigning.
+        </div>
+      ) : null}
+
+      {data === null && !error ? (
+        <LoadingSkeleton />
+      ) : (
+        <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+          <div className="space-y-3">
+            {candidates.length === 0 ? (
+              <EmptyState icon={UserRound} title="No technicians available" description="No active, verified technicians found." />
+            ) : candidates.map((tech) => (
+              <Card key={tech.id} className={cn("transition-colors hover:border-primary/35", tech.skills_match && "border-success/30")}>
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{tech.display_name ?? tech.id}</span>
+                        <Badge variant={tech.is_online ? "success" : "neutral"}>{tech.is_online ? "Online" : "Offline"}</Badge>
+                        <Badge variant={tech.is_busy ? "warn" : "outline"}>{tech.is_busy ? "Busy" : "Free"}</Badge>
+                        {tech.skills_match ? <Badge variant="success">Skill match</Badge> : null}
+                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        {tech.dist_km != null ? `${tech.dist_km} km` : "Distance unknown"} · ETA {tech.eta_min != null ? `${tech.eta_min}–${tech.eta_max}m` : "unknown"}
+                      </div>
+                      {tech.is_busy && tech.active_job ? (
+                        <div className="mt-1 text-xs text-muted-foreground">Active job: {tech.active_job.status} — {tech.active_job.address ?? tech.active_job.id}</div>
+                      ) : null}
+                      <div className="mt-2 flex flex-wrap gap-1">{tech.skills.map((s) => <Badge key={s} variant={s === job?.access_type ? "success" : "outline"}>{s}</Badge>)}</div>
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={assigning === tech.id || Boolean(activeOffer)}
+                      onClick={() => assign(tech.id)}
+                    >
+                      {assigning === tech.id ? "Sending..." : "Assign"}
+                    </Button>
                   </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          <div className="space-y-6">
+            {job ? (
+              <Card>
+                <CardHeader><CardTitle>Job context</CardTitle><CardDescription>{job.address}</CardDescription></CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant="outline">{job.access_type ?? "—"}</Badge>
+                    <Badge variant="warn">{job.situation ?? "—"}</Badge>
+                    <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
+                  </div>
+                  <div className="text-sm text-muted-foreground">Age: {ageLabel(job.created_at)} · {job.dispatch_attempts} attempt{job.dispatch_attempts === 1 ? "" : "s"}</div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {selectedPoint ? (
+              <Card className="border-primary/30">
+                <CardHeader><CardTitle>{selectedPoint.kind === "tech" ? "Technician" : "Job"}</CardTitle></CardHeader>
+                <CardContent className="text-sm text-muted-foreground">
+                  {selectedPoint.label} · {selectedPoint.lat?.toFixed(4)}, {selectedPoint.lng?.toFixed(4)}
+                  <Button size="sm" variant="ghost" className="ml-2" onClick={() => setSelectedPoint(null)}>Close</Button>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            <Card className="overflow-hidden">
+              <CardHeader><CardTitle>Location map</CardTitle><CardDescription>Job (blue) and technicians (amber). Click a marker for details.</CardDescription></CardHeader>
+              <CardContent className="p-0">
+                <div className="relative h-[420px] bg-[#101720]">
+                  {mapPoints.length > 0 ? (
+                    <GoogleMapView
+                      points={mapPoints}
+                      onMarkerClick={setSelectedPoint}
+                      fallback={<div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">Map key not configured</div>}
+                    />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">No location data</div>
+                  )}
                 </div>
-              </div>
-            );
-          })}
+              </CardContent>
+            </Card>
+          </div>
         </div>
-        <div className="space-y-6">
-          <Card>
-            <CardHeader><CardTitle>Job context</CardTitle><CardDescription>{job.address}</CardDescription></CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-2"><Badge variant="outline">{job.access_type}</Badge><Badge variant="warn">{job.situation}</Badge><Badge variant="outline">{job.area}</Badge><StatusBadge status={offer.status} /></div>
-              <div className="rounded-md border border-primary/30 bg-primary/10 p-3 text-sm text-primary">Backend enforces first-accept-wins. If another technician accepts first, this screen must show the superseded offer state from the API.</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Ranking inputs</CardTitle>
-                <CardDescription>Transparent mock weights for operator review. No auction or bidding.</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {[
-                ["Distance and ETA", "35%"],
-                ["Skill fit", "30%"],
-                ["Availability and workload", "20%"],
-                ["Verification and reliability", "15%"]
-              ].map(([label, weight]) => (
-                <div className="flex items-center justify-between rounded-md border border-border p-3" key={label}>
-                  <span className="text-sm font-medium">{label}</span>
-                  <Badge variant="outline">{weight}</Badge>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-          <TrustSafety flags={job.safety_flags} status={job.trust_state} />
-          <MapCard jobs={[job]} technicians={candidates} />
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -643,6 +892,164 @@ export function MapOperations({ mode }: { mode: ConsoleMode }) {
             </div>
           </CardContent>
         </Card>
+      </div>
+    </div>
+  );
+}
+
+type FleetTech = {
+  id: string;
+  display_name: string | null;
+  skills: string[];
+  is_available: boolean;
+  current_lat: number | null;
+  current_lng: number | null;
+  location_updated_at: string | null;
+  active_job: {
+    id: string;
+    status: string;
+    address: string | null;
+    lat: number | null;
+    lng: number | null;
+    access_type: string | null;
+    situation: string | null;
+  } | null;
+};
+
+export function FleetMap({ mode }: { mode: ConsoleMode }) {
+  const [fleet, setFleet] = useState<FleetTech[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<MapPoint | null>(null);
+
+  const fetchFleet = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/ops/fleet`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`${res.status}`);
+      setFleet(await res.json());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load fleet");
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchFleet();
+    const id = window.setInterval(fetchFleet, 45_000);
+    return () => window.clearInterval(id);
+  }, [fetchFleet]);
+
+  const techPoints: MapPoint[] = (fleet ?? [])
+    .filter((t) => t.current_lat != null && t.current_lng != null)
+    .map((t): MapPoint => ({ lat: t.current_lat!, lng: t.current_lng!, kind: "tech", label: t.display_name ?? t.id, id: t.id }));
+
+  const jobPoints: MapPoint[] = (fleet ?? [])
+    .filter((t) => t.active_job?.lat != null && t.active_job?.lng != null)
+    .map((t): MapPoint => ({ lat: t.active_job!.lat!, lng: t.active_job!.lng!, kind: "job", label: t.active_job?.address ?? t.active_job?.id, id: t.active_job?.id }));
+
+  const pairs: [MapPoint, MapPoint][] = (fleet ?? [])
+    .filter((t) => t.current_lat != null && t.current_lng != null && t.active_job?.lat != null && t.active_job?.lng != null)
+    .map((t): [MapPoint, MapPoint] => [
+      { lat: t.current_lat!, lng: t.current_lng!, kind: "tech", id: t.id },
+      { lat: t.active_job!.lat!, lng: t.active_job!.lng!, kind: "job", id: t.active_job!.id },
+    ]);
+
+  const allPoints = [...techPoints, ...jobPoints];
+
+  const selectedTech = selected?.kind === "tech" && fleet ? fleet.find((t) => t.id === selected.id) ?? null : null;
+  const selectedJob = selected?.kind === "job" && fleet ? fleet.find((t) => t.active_job?.id === selected.id)?.active_job ?? null : null;
+
+  const online = (fleet ?? []).filter((t) => t.is_available).length;
+  const busy = (fleet ?? []).filter((t) => t.active_job != null).length;
+
+  if (mode === "org") {
+    return <EmptyState title="Fleet map" description="Fleet map is available in ClueXP ops mode only." />;
+  }
+
+  return (
+    <div>
+      <PageHeader kicker="Live fleet" title="Fleet Map" description="All active technicians and their current jobs. Click a marker for details. Refreshes every 45s." actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
+      <div className="mb-6 grid gap-4 md:grid-cols-3">
+        <StatCard label="Active technicians" value={fleet ? String(fleet.length) : "—"} />
+        <StatCard label="Online / available" value={fleet ? String(online) : "—"} intent="success" />
+        <StatCard label="On active job" value={fleet ? String(busy) : "—"} intent="warn" />
+      </div>
+      {error ? <div className="mb-4 rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+      <div className="grid gap-6 xl:grid-cols-[1.3fr_.7fr]">
+        <Card className="overflow-hidden">
+          <CardContent className="p-0">
+            <div className="relative h-[560px] bg-[#101720]">
+              {fleet === null && !error ? (
+                <div className="absolute inset-0 animate-pulse bg-card-strong/50" />
+              ) : allPoints.length > 0 ? (
+                <GoogleMapView
+                  points={allPoints}
+                  pairs={pairs}
+                  onMarkerClick={setSelected}
+                  fallback={<div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">Map key not configured</div>}
+                />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">No location data</div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="space-y-4">
+          {selected ? (
+            <Card className="border-primary/30">
+              <CardHeader>
+                <CardTitle>{selected.kind === "tech" ? "Technician" : "Job"} · {selected.label}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                {selectedTech ? (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant={selectedTech.is_available ? "success" : "neutral"}>{selectedTech.is_available ? "Available" : "Unavailable"}</Badge>
+                      <Badge variant={selectedTech.active_job ? "warn" : "outline"}>{selectedTech.active_job ? "On job" : "Free"}</Badge>
+                    </div>
+                    <div className="text-muted-foreground">Skills: {selectedTech.skills.join(", ") || "—"}</div>
+                    {selectedTech.active_job ? <div className="text-muted-foreground">Job: {selectedTech.active_job.status} · {selectedTech.active_job.address ?? selectedTech.active_job.id}</div> : null}
+                  </>
+                ) : null}
+                {selectedJob ? (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="outline">{selectedJob.status}</Badge>
+                      <Badge variant="outline">{selectedJob.access_type ?? "—"}</Badge>
+                    </div>
+                    <div className="text-muted-foreground">{selectedJob.address ?? "—"}</div>
+                    <div className="text-muted-foreground">{selectedJob.situation ?? "—"}</div>
+                  </>
+                ) : null}
+                <Button size="sm" variant="ghost" onClick={() => setSelected(null)}>Dismiss</Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardContent className="p-4 text-sm text-muted-foreground">Click a marker on the map to see details.</CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader><CardTitle>Technician list</CardTitle></CardHeader>
+            <CardContent className="space-y-2 max-h-[420px] overflow-y-auto">
+              {fleet === null ? <LoadingSkeleton /> : fleet.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No active technicians.</p>
+              ) : fleet.map((t) => (
+                <div key={t.id} className="rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{t.display_name ?? t.id}</span>
+                    <div className="flex gap-1">
+                      <Badge variant={t.is_available ? "success" : "neutral"}>{t.is_available ? "Available" : "Away"}</Badge>
+                      {t.active_job ? <Badge variant="warn">On job</Badge> : null}
+                    </div>
+                  </div>
+                  {t.active_job ? <div className="mt-1 text-xs text-muted-foreground">{t.active_job.status} · {t.active_job.address ?? "—"}</div> : null}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

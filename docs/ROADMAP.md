@@ -38,8 +38,10 @@ job lifecycle. These fields must never be merged.
   workspace management, compliance document upload/review, technician
   availability, and location updates.
 - English and Spanish localization foundation across all four apps.
-- Deterministic dispatch ranking, privacy-safe offers, offer expiry/re-dispatch,
-  and atomic first-accept-wins.
+- Ops-controlled dispatch: dispatcher views the job queue and all available
+  technicians with real-time signals (distance, ETA, online/busy status, skill
+  match), selects one, and sends a single targeted offer. Atomic first-accept-wins
+  on acceptance; decline or expiry returns the job to the queue.
 - Authenticated technician offer delivery and acceptance.
 - Read-only customer waiting/matched tracking with safe assignment data.
 - Separate production deployments for intake, technician, provider, and ops.
@@ -71,7 +73,7 @@ job lifecycle. These fields must never be merged.
 
 1. Finish one real end-to-end cycle before broadening the feature surface.
 2. Ship backend capabilities behind per-channel flags and pilot before widening.
-3. Keep customer polling read-only; only dispatch services create offers.
+3. Keep customer polling read-only; only authorized ops dispatchers may create and send offers — no automatic offer creation.
 4. A technician may report work complete, but only the customer, dispatcher, or
    timeout policy closes the customer-confirmation boundary.
 5. Do not expose candidate identities, customer PII, internal scoring, or
@@ -93,7 +95,7 @@ without the legacy instant-match, demo finalize, or demo review path.
 - Add token-gated customer tracking, confirm, review, and dispute endpoints.
 - Add assigned-technician-only forward status transitions.
 - Add dispatcher resolution/manual-close endpoint.
-- Add 72-hour automatic close to the scheduled sweep.
+- Add 72-hour automatic close (runs lazy-on-read when ops queue is fetched, and as a safety-net cron).
 - Connect intake tracking and technician completion UI to those contracts.
 - Pilot one channel, run the full acceptance matrix, then widen by channel.
 
@@ -167,7 +169,7 @@ models without weakening the first production cycle.
 
 | Gate | Required evidence |
 |---|---|
-| Dispatch-ready | Real request creates offers; eligible technician accepts; no privacy leak; first-accept-wins proven |
+| Dispatch-ready | Real request enters ops queue; dispatcher assigns a technician; technician accepts; no privacy leak; first-accept-wins enforced at DB |
 | Fulfillment-ready | Assigned technician progresses through audited statuses; customer sees truthful state |
 | Closure-ready | Customer confirms, reviews, or disputes through a secure token; timeout and dispatcher resolution work |
 | Revenue-ready | Payment authorization/capture/refund and settlement are idempotent and reconciled |

@@ -8,7 +8,7 @@
 
 ## 1. What ClueXP Is
 
-ClueXP is an **emergency access marketplace**. A customer (car locked out, home lockout, broken key) submits a job via a web form. The backend finds the nearest available, verified locksmith technician, routes an offer to them, and if they accept, drives the full service lifecycle — from the technician arriving on-site through the customer confirming the work is done.
+ClueXP is an **emergency access marketplace**. A customer (car locked out, home lockout, broken key) submits a job via a web form. The job enters the **ops dispatch queue**. A ClueXP dispatcher reviews the job, selects a technician, and sends a targeted assignment offer. Once the technician accepts, the system drives the full service lifecycle — from the technician arriving on-site through the customer confirming the work is done.
 
 There are four apps and one FastAPI backend in this monorepo:
 
@@ -99,9 +99,9 @@ TERMINAL_STATUSES   = {completed_confirmed, completed_auto_closed, cancelled, no
    - No channel + `DISPATCH_CUTOVER_PUBLIC=true` (env var)
    - AND `DISPATCH_CUTOVER_GLOBAL_OFF` is not set
 5. If cutover fires:
-   - `set_job_status(id, "pending_dispatch")`
-   - `_dispatch_write(id, job)` — creates offers immediately
+   - `set_job_status(id, "pending_dispatch")` — job enters the ops dispatch queue
    - `get_tracking_token(id)` — returns the token; `tracking_path = /t/{token}` included in response
+   - **No offers are created automatically.** A dispatcher must assign a technician via `POST /ops/queue/{job_id}/assign`.
 
 ### 3.4 What Happens at Commit (`POST /api/tickets/{id}/commit`)
 
@@ -112,89 +112,87 @@ TERMINAL_STATUSES   = {completed_confirmed, completed_auto_closed, cancelled, no
 
 ---
 
-## 4. Dispatch Engine
+## 4. Dispatch Engine (Ops-Controlled)
+
+**Model:** Dispatching is exclusively a human decision. The system never automatically assigns a technician. When a job is committed it enters `pending_dispatch` and waits in the ops queue. A ClueXP dispatcher reviews the job, selects a technician, and sends a single targeted offer. The technician accepts or declines. Decline or expiry returns the job to `pending_dispatch` — the dispatcher tries again.
 
 ### 4.1 Where the Code Is
 
 | File | What it contains |
 |------|-----------------|
-| `apps/intake-web/api/dispatch.py` | Pure functions — ranking, distance, policy, state machine |
-| `apps/intake-web/api/config.py` | All tunable constants and feature flags |
-| `apps/intake-web/api/main.py` (lines ~1018–1100) | `_dispatch_write()`, `POST /tickets/{id}/offers`, `POST /cron/dispatch-sweep` |
-| `apps/intake-web/api/store.py` (PostgresStore) | `list_available_technicians`, `create_dispatch_offers`, `list_dispatchable_jobs`, `bump_dispatch_attempt` |
+| `apps/intake-web/api/dispatch.py` | Pure functions — distance (`haversine_km`), ETA (`eta_range_from_km`), state machine helpers, status constants. No I/O. |
+| `apps/intake-web/api/config.py` | Tunable constants and feature flags |
+| `apps/intake-web/api/main.py` | `/ops/*` dispatch endpoints; `/cron/dispatch-sweep` (cleanup only) |
+| `apps/intake-web/api/store.py` (PostgresStore) | `get_ops_queue`, `list_all_technicians_for_ops`, `get_fleet_state`, `create_dispatch_offers`, `accept_dispatch_offer`, `decline_dispatch_offer`, `expire_stale_offers`, `auto_close_pending` |
 
 ### 4.2 How a Job Gets Dispatched
 
-#### Step 1 — `_dispatch_write(ticket_id, job)` (internal, called at creation + manual trigger)
+#### Step 1 — Job enters the ops queue (`pending_dispatch`)
+At ticket commit, `set_job_status(id, "pending_dispatch")` is called. No offers are created. The job sits in the queue until a dispatcher acts.
 
-```
-1. If job already has fulfillment_technician_id → return "matched" (already done)
-2. If dispatch_attempts >= MAX_REDISPATCH_ROUNDS → return "no_eligible / max_rounds_reached"
-3. list_available_technicians() → all techs where status=active, vetting_status=verified, is_available=true
-4. select_candidates(job, technicians, policy, owner_org_id, round_index) → top-N ranked list
-5. If technicians list is non-empty → bump_dispatch_attempt(job_id)  ← key rule: no burn on empty
-6. If ranked is empty → return "no_eligible"
-7. create_dispatch_offers(job_id, ranked, expires_at=now+OFFER_TTL_SECONDS)
-8. Return "waiting" with offer list
-```
+#### Step 2 — Dispatcher views the queue (`GET /ops/queue`)
+Returns all `pending_dispatch` jobs ordered oldest-first. The queue read also runs lazy cleanup:
+- `expire_stale_offers()` — marks any stale `offered` rows as `expired`, returns the job to `pending_dispatch` if no active offer remains
+- `auto_close_pending()` — closes `completed_pending_customer` jobs past the auto-close window
 
-#### Step 2 — Technician Sees the Offer
-- Tech app polls `GET /api/technicians/{id}/offers` every 15 seconds
-- Returns active (status=offered, not expired) offers for that technician
-- Offer includes: job_id, coarse area (lat/lng rounded to 1km), access_type, ETA, distance, rank, expires_at
+#### Step 3 — Dispatcher views candidates (`GET /ops/queue/{job_id}/candidates`)
+Returns **all** `status=active` + `vetting_status=verified` technicians — no area filter, no availability filter. Dispatcher sees everyone. Per-tech signals computed on the fly:
 
-#### Step 3 — Technician Accepts (`POST /offers/{id}/accept`)
-1. DB check: offer must be status=offered (not already taken)
-2. Accept the offer, mark all other offers for the same job as "superseded"
-3. Set `jobs.fulfillment_technician_id`, `jobs.status = assigned`, `jobs.trust_state = matched`
-4. Returns `{ accepted: true, job_id, technician_id }`
-5. Frontend redirects to `/jobs/{job_id}`
+| Signal | Source |
+|--------|--------|
+| `dist_km` | `haversine_km(job.lat, job.lng, tech.current_lat or service_area_center_lat, ...)` |
+| `eta_min`, `eta_max` | `eta_range_from_km(dist_km)` |
+| `is_online` | `location_updated_at > now() − LOCATION_ONLINE_THRESHOLD_MINUTES` |
+| `is_busy` | `get_technician_active_job(tech.id) is not None` |
+| `active_job` | `{id, status, address}` if busy, else null |
+| `skills_match` | `job.access_type in tech.skills` (bool — highlighted in UI, not a filter) |
 
-#### Step 4 — Cron Sweep (`POST /cron/dispatch-sweep`)
-Runs every minute. Secret-protected (`Authorization: Bearer {CRON_SECRET}`).
+#### Step 4 — Dispatcher assigns (`POST /ops/queue/{job_id}/assign`)
+Body: `{ "technician_id": UUID }`. Steps:
+1. Fetch job — 404 if not found, 409 if not `pending_dispatch`
+2. Reject if an active `offered` offer already exists (partial unique index prevents duplicates at DB level)
+3. Create single targeted offer: `expires_at = now() + OFFER_TTL_SECONDS`
+4. Write audit event: `"ops:assign:tech={technician_id}:by={dispatcher_id}"`
+5. Return `{ offer_id, technician_id, expires_at }`
+
+#### Step 5 — Technician accepts (`POST /offers/{id}/accept`)
+1. DB check: offer must be `status=offered`
+2. **Atomic first-accept-wins:** `UPDATE jobs WHERE fulfillment_technician_id IS NULL SET ...` — prevents race conditions
+3. Sets `jobs.fulfillment_technician_id`, `jobs.status = assigned`, `jobs.trust_state = matched`
+4. Supersedes all other open offers for this job
+
+#### Step 6 — Decline or expiry → return to queue
+- **Decline** (`POST /offers/{id}/decline`): marks offer declined; if zero `offered` offers remain for the job → `jobs.status = 'pending_dispatch'`
+- **Expiry** (`expire_stale_offers()`): marks offers expired; same return-to-queue logic
+
+### 4.3 Candidate Signals (Display Only — No Automatic Filtering)
+
+`dispatch.py` provides two reusable pure functions. The dispatcher has full discretion.
+
+| Function | Purpose |
+|----------|---------|
+| `haversine_km(lat1, lng1, lat2, lng2)` | Great-circle distance in km; `inf` if any coord missing |
+| `eta_range_from_km(dist_km)` | Returns `(min, max)` estimate; ~8 min base + travel at 30 km/h |
+
+Skills matching is shown as a highlight but is **not** a hard filter. The dispatcher may assign any verified technician regardless of area, availability toggle, or skill.
+
+### 4.4 Cleanup-Only Cron (`POST /cron/dispatch-sweep`)
+
+The cron endpoint no longer re-dispatches. It performs only maintenance:
 ```
 1. expire_stale_offers() — marks all offers past expires_at as "expired"
-2. list_dispatchable_jobs() — jobs where:
-     - fulfillment_technician_id IS NULL (not yet matched)
-     - dispatch_attempts > 0 (already in the pipeline)
-     - dispatch_attempts < MAX_REDISPATCH_ROUNDS
-     - created_at within TOTAL_TIMEOUT_SECONDS of now
-     - no active (non-expired, status=offered) offers exist
-3. For each dispatchable job: select_candidates → if technicians non-empty, bump_dispatch_attempt → if ranked, create offers
-4. auto_close_pending() — completed_pending_customer jobs older than AUTO_CLOSE_WINDOW_SECONDS → completed_auto_closed
+2. auto_close_pending() — completed_pending_customer jobs older than AUTO_CLOSE_WINDOW_SECONDS → completed_auto_closed
 ```
+The cron is also no longer strictly necessary — both operations run inline on `GET /ops/queue`. It may be retained as a safety net or removed entirely.
 
-### 4.3 Candidate Selection Rules
+### 4.5 Partial Unique Index (Race Protection)
 
-`dispatch.py:select_candidates` and `rank_candidates`:
-
-**Eligibility gates (all three must pass):**
-1. `technician.is_available = true`
-2. Skill match: `job.access_type` must be in `technician.skills` (unless access_type is `null` or `other` — no skill gate)
-3. Distance: `haversine_km(job, tech_service_area_center) ≤ tech.service_area_radius_km`
-
-**Ranking (deterministic, no randomness):**
-- Primary: distance ascending (nearest first)
-- Secondary: rating descending (higher rating wins ties)
-- Top N = `TOP_N_OFFERS` (default 3)
-
-**Fulfillment Policy** (per job, resolved from channel/org):
-| DB value | Semantic | Who gets offers |
-|----------|---------|-----------------|
-| `private` | `private_owner_only` | Only the customer-owner org's own/affiliated techs |
-| `network_overflow` | `owner_first_then_network` | Owner pool on round 0, full network from round 1+ |
-| `network_open` | `network_open` | All verified available techs |
-| (no owner org) | `network_open` | All verified available techs (public intake) |
-
-**Fail-safe:** Unknown policy WITH an owner org → defaults to `private_owner_only`. Prevents accidental cross-tenant exposure.
-
-### 4.4 Key Invariant: Rounds Are Not Burned Against Empty Capacity
-
-If `list_available_technicians()` returns 0, `dispatch_attempts` is NOT incremented. The job stays eligible for dispatch until either:
-- A tech comes online and gets picked up by the sweep (up to `TOTAL_TIMEOUT_SECONDS` = 1h)
-- The max rounds are reached against real candidates
-
-This prevents jobs from going dead in the first minutes just because all techs are offline.
+Migration 0011 adds:
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_offers_job_active
+  ON dispatch_offers (job_id) WHERE status = 'offered';
+```
+This prevents two concurrent targeted offers for the same job at the DB level — enforces the single-offer model even under concurrent dispatcher sessions.
 
 ---
 
@@ -256,10 +254,10 @@ All pages are Next.js App Router server/client components in `apps/technician-we
 
 | `state` | Meaning | Customer sees |
 |---------|---------|--------------|
-| `waiting` | Offers sent, waiting for a tech to accept | "Looking for a technician..." |
+| `waiting` | Job in `pending_dispatch` — dispatcher has not yet assigned a technician, or offer expired and queue returned | "Looking for a technician..." |
 | `matched` | Tech accepted; trust_state = matched | Technician details card |
-| `expired_retry` | All offers expired; sweep will retry | "Still searching..." |
-| `no_eligible` | Exhausted rounds or timeout | "No tech available; we'll follow up" |
+| `expired_retry` | Offer expired, job returned to `pending_dispatch`; dispatcher will re-assign | "Still searching..." |
+| `no_eligible` | Terminal — no technician assigned after ops review | "No tech available; we'll follow up" |
 | `matched` + status=`en_route`/`arrived`/`in_progress` | Live tracking | Progress stepper |
 | `completed_pending_customer` | Tech done, customer action needed | Confirm / Dispute buttons |
 | `completed_confirmed` / `completed_auto_closed` | Closed | Review prompt |
@@ -316,7 +314,7 @@ cancelled_at timestamptz
 created_at, updated_at timestamptz
 ```
 
-**`dispatch_offers`** — One row per offer sent to a technician.
+**`dispatch_offers`** — One row per offer sent to a technician. In the ops-controlled model, at most one `status='offered'` row exists per `job_id` at any time (enforced by partial unique index from migration 0011).
 ```
 id uuid PK
 job_id uuid → jobs
@@ -326,6 +324,8 @@ rank integer (0 = top candidate)
 status text -- "offered" | "seen" | "accepted" | "declined" | "expired" | "superseded" | "failed_delivery"
 dist_km double precision
 offered_at, expires_at, responded_at timestamptz
+
+UNIQUE INDEX (job_id) WHERE status = 'offered'  -- prevents duplicate active offers (0011)
 ```
 
 **`technicians`** — One row per field technician.
@@ -380,8 +380,9 @@ created_at, updated_at timestamptz
 ### 7.3 Important Indexing Notes
 
 - `jobs.tracking_token` has a UNIQUE index (`idx_jobs_tracking_token`)
-- Dispatch queries filter heavily on `technicians.is_available`, `technicians.status`, `technicians.vetting_status`
+- Dispatch queries filter heavily on `technicians.status`, `technicians.vetting_status`
 - `dispatch_offers` queries filter on `technician_id + status + expires_at`
+- **Partial unique index** (migration 0011): `CREATE UNIQUE INDEX idx_dispatch_offers_job_active ON dispatch_offers (job_id) WHERE status = 'offered'` — prevents duplicate active offers per job at DB level, enforcing the single-targeted-offer model
 
 ### 7.4 The JSONB `detail` Column
 
@@ -411,13 +412,19 @@ All `/api/*` requests are rewritten to `api/main.py` (FastAPI app). FastAPI hand
 
 **Middleware in FastAPI strips the `/api` prefix** so local dev (`uvicorn api.main:app`) and Vercel production see the same route paths.
 
-### 8.2 Cron Jobs (Vercel Cron or Supabase pg_cron)
+### 8.2 Cron / Scheduled Cleanup
 
-The dispatch sweep endpoint: `POST https://intake.cluexp.com/api/cron/dispatch-sweep`
+The dispatch sweep endpoint has been reduced to **cleanup only** — it no longer creates offers or re-dispatches:
+
+`POST https://intake.cluexp.com/api/cron/dispatch-sweep`
 
 **Authentication:** `Authorization: Bearer {CRON_SECRET}` — set as Vercel env var `CRON_SECRET`. If unset, the endpoint returns 503.
 
-**Vercel Cron config** is NOT in `vercel.json` — it must be set in the Vercel project dashboard (or via `vercel.json` `crons` key if added). Currently firing once per minute from Supabase pg_cron (based on production logs showing `POST /api/cron/dispatch-sweep 200` every 60 seconds).
+**What it does (cleanup only):**
+1. `expire_stale_offers()` — marks past-`expires_at` offers as `expired`; returns jobs with no remaining active offer to `pending_dispatch`
+2. `auto_close_pending()` — closes `completed_pending_customer` jobs past `AUTO_CLOSE_WINDOW_SECONDS`
+
+**Note:** Both operations also run inline on `GET /ops/queue` (lazy cleanup on read), so the cron is a safety net rather than a hard requirement. It can be disabled without breaking dispatch — the ops queue read keeps itself clean.
 
 ### 8.3 Supabase
 
@@ -460,12 +467,11 @@ All environment variables for `intake-web`. Set in Vercel project dashboard unde
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DISPATCH_OFFER_TTL_SECONDS` | `90` | How long an offer lives before it expires |
-| `DISPATCH_SWEEP_INTERVAL_SECONDS` | `60` | Informational — actual sweep cadence is set in scheduler |
-| `DISPATCH_MAX_ROUNDS` | `10` | Max redispatch attempts before a job is declared un-fillable |
-| `DISPATCH_TOTAL_TIMEOUT_SECONDS` | `3600` | Total window (seconds from job creation) a job is eligible for sweep redispatch |
-| `DISPATCH_TOP_N` | `3` | How many offers to create per round |
+| `DISPATCH_OFFER_TTL_SECONDS` | `90` | How long a targeted offer lives before it expires and the job returns to `pending_dispatch` |
 | `AUTO_CLOSE_WINDOW_SECONDS` | `259200` | 72h — time before `completed_pending_customer` auto-closes |
+| `LOCATION_ONLINE_THRESHOLD_MINUTES` | `15` | Techs whose `location_updated_at` is within this window are shown as "online" in the ops candidates view |
+
+**Obsolete (ops-controlled model):** `DISPATCH_SWEEP_INTERVAL_SECONDS`, `DISPATCH_MAX_ROUNDS`, `DISPATCH_TOTAL_TIMEOUT_SECONDS`, `DISPATCH_TOP_N` — no longer used; the sweep is cleanup-only and dispatch is human-driven. Safe to remove from Vercel env vars.
 
 ### Cutover Flags
 
@@ -554,7 +560,7 @@ All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/ap
 | `PATCH` | `/tickets/{id}` | public | Update ticket fields during intake form steps |
 | `POST` | `/tickets/{id}/price-quote` | public | Generate price estimate |
 | `POST` | `/tickets/{id}/commit` | public | Finalize intake and submit to dispatch |
-| `POST` | `/tickets/{id}/dispatch` | public | Legacy stub — instant fake match (deprecated) |
+| `POST` | `/tickets/{id}/dispatch` | — | **Gated (410)** — legacy auto-match stub, removed |
 
 ### Customer Tracking (Cutover Path)
 | Method | Path | Auth | Purpose |
@@ -565,15 +571,23 @@ All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/ap
 | `POST` | `/t/{token}/cancel` | public | Customer cancels (allowed pre-arrival) |
 | `POST` | `/t/{token}/review` | public | Customer submits a review |
 
-### Dispatch
+### Ops Dispatch (Requires `dispatcher` or `platform_admin` role)
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `POST` | `/tickets/{id}/offers` | public | Manually trigger dispatch for a job |
-| `GET` | `/tickets/{id}/dispatch-status` | public | Check dispatch state (legacy) |
+| `GET` | `/ops/queue` | session (dispatcher) | List `pending_dispatch` jobs oldest-first; runs lazy cleanup inline |
+| `GET` | `/ops/queue/{job_id}/candidates` | session (dispatcher) | All active+verified techs with computed distance, ETA, online, busy signals |
+| `POST` | `/ops/queue/{job_id}/assign` | session (dispatcher) | Create single targeted offer for one technician |
+| `GET` | `/ops/fleet` | session (dispatcher) | All active+verified techs with current location and active job data for fleet map |
+
+### Dispatch (Technician-Facing)
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
 | `GET` | `/technicians/{id}/offers` | session | List active offers for a technician |
-| `POST` | `/offers/{id}/accept` | session | Technician accepts an offer |
-| `POST` | `/offers/{id}/decline` | session | Technician declines an offer |
-| `GET/POST` | `/cron/dispatch-sweep` | CRON_SECRET | Scheduled: expire + redispatch + auto-close |
+| `POST` | `/offers/{id}/accept` | session | Technician accepts an offer (atomic first-accept-wins) |
+| `POST` | `/offers/{id}/decline` | session | Technician declines an offer; job returns to `pending_dispatch` |
+| `GET` | `/tickets/{id}/dispatch-status` | public | Check dispatch state (legacy polling) |
+| `POST` | `/tickets/{id}/offers` | — | **Gated (410)** — use `/ops/queue/{id}/assign` instead |
+| `GET/POST` | `/cron/dispatch-sweep` | CRON_SECRET | Scheduled: expire stale offers + auto-close (no re-dispatch) |
 
 ### Job Lifecycle (Cutover Path)
 | Method | Path | Auth | Purpose |
@@ -635,7 +649,7 @@ These are hard rules enforced by the API. Breaking them causes 403 or data corru
 1. **`completed_confirmed` is never technician-settable.** Only `POST /t/{token}/confirm` (customer) sets it. Technician API calls trying to set it get 403.
 2. **`trust_state` is forward-only and server-owned.** Never trust a `trust_state` value from the browser.
 3. **Status is forward-only for technicians.** `can_technician_transition(current, target)` enforces this — only forward movement, only within TECHNICIAN_SETTABLE.
-4. **`dispatch_attempts` only increments when technicians were available to evaluate.** Do not revert this — it prevents jobs from dying during off-hours.
+4. **Only a dispatcher may create offers.** `POST /ops/queue/{job_id}/assign` is the sole path to offer creation. `_dispatch_write()` is not called at ticket creation and does not run automatically. No background process creates offers.
 5. **`save(ticket)` never overwrites an operational status.** Once a job enters the dispatch pipeline (status is any operational value from `pending_dispatch` onward), the JSONB upsert's CASE guard in `store.py` leaves `status` alone. Only `set_job_status()` and the fulfillment transitions may change it.
 6. **Channel slugs are server-resolved; never trust the browser's `intake_channel` as an org ID.** `resolve_intake_channel()` is the single trust boundary.
 7. **Offer privacy: area only before acceptance.** `list_technician_offers` returns `area_lat/area_lng` rounded to 1km — never the exact address. Exact address only after acceptance.
@@ -647,20 +661,16 @@ These are hard rules enforced by the API. Breaking them causes 403 or data corru
 ### "Job created but tech sees nothing in the app"
 
 Checklist:
-1. **Is the tech `is_available = false`?** Check: `SELECT is_available FROM technicians WHERE ...`. Fix: `UPDATE technicians SET is_available = true WHERE ...`
-2. **Did dispatch fire?** Check `dispatch_attempts` on the job. If `dispatch_attempts = 0`, dispatch didn't fire (cutover was off). Fix: `POST /api/tickets/{id}/offers` manually.
-3. **Is the job exhausted?** If `dispatch_attempts >= MAX_REDISPATCH_ROUNDS (10)`, the manual endpoint also returns `no_eligible`. Fix: `UPDATE jobs SET dispatch_attempts = 0 WHERE id = '...'` then POST again.
-4. **Does the job have lat/lng?** `haversine_km` returns `inf` if either coordinate is null — no tech will be in range. Fix: `UPDATE jobs SET lat = 40.7128, lng = -74.0060 WHERE id = '...'` (use approximate coords), then re-dispatch.
-5. **Is the cutover active?** If you used the public intake form (`/`) and `DISPATCH_CUTOVER_PUBLIC` env var is not set, dispatch never fires at create. Set `DISPATCH_CUTOVER_PUBLIC=true` in Vercel for the intake-web project and redeploy.
+1. **Has a dispatcher assigned the job?** Dispatch is ops-controlled — no offer is created automatically. Sign in to `ops.cluexp.com`, open the queue, and assign a technician.
+2. **Does the job have lat/lng?** `haversine_km` returns `inf` if either coordinate is null — the candidates view will show techs without distances. Fix: `UPDATE jobs SET lat = 40.7128, lng = -74.0060 WHERE id = '...'`
+3. **Is the cutover active?** If you used the public intake form (`/`) and `DISPATCH_CUTOVER_PUBLIC` env var is not set, the job never enters `pending_dispatch`. Set `DISPATCH_CUTOVER_PUBLIC=true` in Vercel and redeploy.
+4. **Is the offer expired?** If the offer was created but the tech didn't respond within `OFFER_TTL_SECONDS` (default 90s), the offer expired and the job returned to `pending_dispatch`. Dispatcher must assign again.
 
 ### "Tech can see offer but accept fails with 409"
-Another tech already accepted the same job. The offer was superseded. Normal race condition — tech will see the offer's status update to `superseded` on next poll.
+Another session accepted the same targeted offer. Should not happen in the single-offer model (dispatcher sends to one tech), but the partial unique index on `dispatch_offers (job_id) WHERE status='offered'` prevents duplicates. Normal behavior on a race — tech should see the offer status update to `superseded` on next poll.
 
-### "Tracking page is stuck at `waiting` forever"
-Either:
-- `dispatch_attempts` hit `MAX_REDISPATCH_ROUNDS` but no tech was online — job is now terminal
-- Total timeout (`TOTAL_TIMEOUT_SECONDS`) elapsed — cron sweep no longer re-dispatches this job
-Fix: Reset `dispatch_attempts` and POST to `/tickets/{id}/offers`.
+### "Tracking page is stuck at `waiting`"
+The job is in `pending_dispatch` — no dispatcher has assigned a technician yet, or the offer expired and wasn't renewed. Sign in to the ops console and assign. The customer tracking page shows "Looking for a technician..." for the full waiting period; there is no automatic escalation to the customer.
 
 ---
 
@@ -670,7 +680,7 @@ When asked to change or debug something, these are the key files:
 
 | Topic | File |
 |-------|------|
-| Business logic for dispatch ranking | `apps/intake-web/api/dispatch.py` |
+| Dispatch pure functions (distance, ETA, state machine, status constants) | `apps/intake-web/api/dispatch.py` |
 | All tunable constants + feature flags | `apps/intake-web/api/config.py` |
 | All HTTP endpoints | `apps/intake-web/api/main.py` |
 | DB schema (runtime) + all SQL queries | `apps/intake-web/api/store.py` |

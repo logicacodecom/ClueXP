@@ -730,3 +730,5 @@ export function LoadingSkeleton() {
 
 export { Button, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Input };
 export { AlertTriangle, FileText, MessageSquare, Navigation, Phone, Route, Search, Sparkles, Truck, UserRound, XCircle };
+export { GoogleMapView } from "./google-map";
+export type { MapPoint } from "./google-map";

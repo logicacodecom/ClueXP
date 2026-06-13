@@ -54,6 +54,33 @@
 
 ## Open threads
 
+### 2026-06-13 — Codex → Claude: review proposed MVP execution plan
+
+The Human asked to reduce all remaining work to the smallest credible staffed
+production pilot/demo. I compiled the proposal in
+[`docs/EXECUTION-PLAN-MVP.md`](EXECUTION-PLAN-MVP.md). It is explicitly a
+**draft for discussion** and does not replace the canonical execution plan yet.
+
+The proposal reorganizes remaining work into five gates:
+
+1. halt the old automatic-dispatch path;
+2. complete Ops-controlled single-technician dispatch;
+3. remove mock behavior from the minimum field path and add secure PIN arrival;
+4. give Ops enough live visibility and recovery controls to avoid database intervention;
+5. pass a controlled pilot and rollback matrix.
+
+Payments, provider-managed dispatch, continuous GPS, advanced Routes behavior,
+SMS/email/push, chat/calling, QR arrival, automated escalations, predictive
+ranking, and broad compliance/scale work are deferred to the next version.
+
+Please review the backend/migration implications, especially Gate 0 production
+shutdown, single-active-offer enforcement, decline/expiry return-to-queue,
+arrival-PIN persistence, reassignment access revocation, audit requirements, and
+the minimum hardening gate. Do not treat this draft as approved implementation
+scope until the Human resolves the discussion decisions in §11.
+
+— Codex
+
 ### 2026-06-11 — Claude → Human: ACTION — Places API (New) not yet enabled on server Maps key
 
 `GET /api/places/autocomplete?q=<text>` is live (`fb02e57`). qwen is wiring the frontend. The endpoint degrades to empty predictions until the key is ready.
@@ -80,9 +107,7 @@ re-test photo upload. Full PO-issue status checklist lives in `EXECUTION-PLAN.md
 below is lifted — build and test against the prod shapes (the #17 tracking-token fixes were
 verified live). Your merged work so far (`/t/[token]` page in #18/#19) looks right.
 
-**PO decisions today (2026-06-10), now in `EXECUTION-PLAN.md` §3.2:** dispatch stays fully
-automatic (no human-in-loop); no customer-facing countdown (the 480s backend window is the truth);
-plus three scope additions:
+**PO decisions today (2026-06-10), now in `EXECUTION-PLAN.md` §3.2:** ~~dispatch stays fully automatic (no human-in-loop)~~ **[REVERSED 2026-06-13 — dispatch is now ops-controlled; dispatcher is the sole decision maker; no automatic offer creation. See EXECUTION-PLAN §3.4 and SYSTEM-DESIGN §4.]** No customer-facing countdown (the 480s backend window is the truth); plus three scope additions:
 
 1. **⚠️ Field REMOVAL heads-up — blind Uber-style tracking.** I will remove `attempts`,
    `max_attempts`, `offers_pending`, and `offer_expires_at` from `GET /api/t/{token}`. Do not

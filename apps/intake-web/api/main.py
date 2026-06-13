@@ -26,6 +26,8 @@ from api.dispatch import (
     STATUS_DISPUTED,
     can_customer_cancel,
     can_technician_transition,
+    eta_range_from_km,
+    haversine_km,
     normalize_policy,
     select_candidates,
     to_db_policy,
@@ -803,15 +805,9 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     public_on = bool(not origin and config.DISPATCH_CUTOVER_PUBLIC)
     cutover = (channel_on or public_on) and not config.DISPATCH_CUTOVER_GLOBAL_OFF
     if cutover:
-        # Put the job on the operational ladder, then run the dispatch WRITE so the
-        # offer→accept loop drives fulfillment instead of the instant-match stub.
+        # Put the job on the operational ladder. No offer is created here —
+        # a dispatcher must assign via POST /ops/queue/{id}/assign.
         await store.set_job_status(ticket.ticket_id, "pending_dispatch")
-        job = await store.get_dispatch_job(ticket.ticket_id)
-        if job is not None:
-            try:
-                await _dispatch_write(ticket.ticket_id, job)
-            except Exception:
-                logger.exception("dispatch_write failed at create for job %s", ticket.ticket_id)
         await log_transition(ticket, "dispatch_cutover")
         token = await store.get_tracking_token(ticket.ticket_id)
         if token:
@@ -992,26 +988,12 @@ async def verify_otp(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelope
     return await envelope(ticket)
 
 
-@app.post("/tickets/{ticket_id}/dispatch", response_model=TicketEnvelope)
-async def dispatch(ticket_id: UUID) -> TicketEnvelope:
-    await latency()
-    ticket = await require_ticket(ticket_id)
-    if not ticket.is_dispatchable():
-        raise HTTPException(status_code=409, detail="Ticket is not dispatchable")
-    ticket.technician_assignment = TechnicianAssignment(
-        technician_id="tech_stub_247",
-        display_name="Sam Reyes",
-        role="Specialist",
-        photo_url=None,
-        rating=4.9,
-        eta_minutes_min=18,
-        eta_minutes_max=24,
-        assigned_at=now(),
+@app.post("/tickets/{ticket_id}/dispatch")
+async def dispatch(ticket_id: UUID) -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Removed. Use POST /ops/queue/{job_id}/assign via the ops console.",
     )
-    ticket.trust_state = TrustState.MATCHED
-    await save(ticket)
-    await log_transition(ticket, "matched")
-    return await envelope(ticket)
 
 
 async def _dispatch_write(ticket_id: UUID, job: dict[str, Any]) -> dict[str, Any]:
@@ -1050,25 +1032,19 @@ async def _dispatch_write(ticket_id: UUID, job: dict[str, Any]) -> dict[str, Any
 
 
 @app.post("/tickets/{ticket_id}/offers")
-async def create_offers(ticket_id: UUID) -> dict[str, Any]:
-    """Dispatch engine v1 (explicit write). **Additive** to the legacy stub
-    ``/dispatch`` — returns the ranked offers; the customer is never shown a
-    technician before assignment."""
-    await latency()
-    job = await store.get_dispatch_job(ticket_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return await _dispatch_write(ticket_id, job)
+async def create_offers(ticket_id: UUID) -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Removed. Use POST /ops/queue/{job_id}/assign via the ops console.",
+    )
 
 
 @app.api_route("/cron/dispatch-sweep", methods=["GET", "POST"])
 async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    """Scheduler-driven sweep — callable by Vercel Cron OR Supabase pg_cron/pg_net
-    OR any external scheduler. Secret-protected via ``Authorization: Bearer
-    ${CRON_SECRET}``. Expires stale offers and re-dispatches unmatched jobs per
-    their fulfillment policy (owner pool first, then network as rounds advance),
-    enforcing max rounds + total timeout so a customer never waits forever. This
-    is a WRITE owned by the scheduler — the customer tracking poll never triggers it."""
+    """Cleanup-only sweep — no re-dispatch. Secret-protected via
+    ``Authorization: Bearer ${CRON_SECRET}``. Expires stale offers (returning
+    affected jobs to pending_dispatch) and auto-closes unconfirmed jobs. The
+    same cleanup runs inline on GET /ops/queue; this cron is a safety net."""
     if not config.CRON_SECRET:
         raise HTTPException(status_code=503, detail="Sweep disabled: CRON_SECRET unset")
     presented = authorization.split(" ", 1)[1].strip() if (
@@ -1077,34 +1053,124 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     if not hmac.compare_digest(presented, config.CRON_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
     expired = await store.expire_stale_offers()
-    jobs = await store.list_dispatchable_jobs(
-        max_attempts=config.MAX_REDISPATCH_ROUNDS,
-        total_timeout_seconds=config.TOTAL_TIMEOUT_SECONDS,
-    )
-    technicians = await store.list_available_technicians() if jobs else []
-    redispatched = 0
-    for job in jobs:
-        owner_org_id = job.get("customer_owner_org_id")
-        policy = normalize_policy(job.get("fulfillment_policy"), owner_org_id)
-        ranked = select_candidates(
-            job, technicians, policy=policy, owner_org_id=owner_org_id,
-            round_index=job.get("dispatch_attempts", 0), top_n=config.TOP_N_OFFERS,
-        )
-        if technicians:
-            await store.bump_dispatch_attempt(job["id"])
-        if ranked:
-            expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
-            await store.create_dispatch_offers(job["id"], ranked, expires_at)
-            redispatched += 1
-    # Cutover: auto-close jobs the customer never confirmed within the window
-    # (completed_pending_customer → completed_auto_closed). Cron-owned.
     auto_closed = await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
+    return {"expired_offers": expired, "auto_closed": auto_closed}
+
+
+class OpsAssignPayload(BaseModel):
+    technician_id: UUID
+
+
+@app.get("/ops/queue")
+async def ops_get_queue(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Return all pending_dispatch jobs ordered by arrival. Runs cleanup inline
+    (expire stale offers + auto-close) so the queue is always fresh."""
+    require_any_role(session, {"dispatcher", "platform_admin"})
+    await store.expire_stale_offers()
+    await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
+    return await store.get_ops_queue()
+
+
+@app.get("/ops/queue/{job_id}/candidates")
+async def ops_get_candidates(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Return the job plus all active+verified technicians with advisory signals."""
+    require_any_role(session, {"dispatcher", "platform_admin"})
+    jobs = await store.get_ops_queue()
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
+    techs = await store.list_all_technicians_for_ops()
+    now_dt = datetime.now(tz=timezone.utc)
+    threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
+    enriched = []
+    for tech in techs:
+        dist = haversine_km(
+            job.get("lat"), job.get("lng"),
+            tech.get("current_lat") or tech.get("service_area_center_lat"),
+            tech.get("current_lng") or tech.get("service_area_center_lng"),
+        )
+        eta_min, eta_max = eta_range_from_km(dist)
+        loc_updated = tech.get("location_updated_at")
+        if loc_updated and not isinstance(loc_updated, datetime):
+            loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
+        is_online = bool(
+            loc_updated and (now_dt - loc_updated) < threshold
+        ) if loc_updated else False
+        active_job = await store.get_technician_active_job(tech["id"])
+        skills = tech.get("skills") or []
+        access_type = job.get("access_type")
+        enriched.append({
+            "id": tech["id"],
+            "display_name": tech.get("display_name"),
+            "skills": skills,
+            "skills_match": access_type in skills if access_type else False,
+            "dist_km": round(dist, 2) if dist is not None else None,
+            "eta_min": eta_min,
+            "eta_max": eta_max,
+            "is_online": is_online,
+            "is_busy": active_job is not None,
+            "active_job": {
+                "id": active_job["id"],
+                "status": active_job.get("status"),
+                "address": active_job.get("address"),
+                "lat": active_job.get("lat"),
+                "lng": active_job.get("lng"),
+            } if active_job else None,
+            "current_lat": tech.get("current_lat"),
+            "current_lng": tech.get("current_lng"),
+            "service_area_center_lat": tech.get("service_area_center_lat"),
+            "service_area_center_lng": tech.get("service_area_center_lng"),
+        })
+    return {"job": job, "candidates": enriched}
+
+
+@app.post("/ops/queue/{job_id}/assign")
+async def ops_assign(
+    job_id: UUID,
+    payload: OpsAssignPayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Dispatcher sends a single targeted offer to one technician. Returns 409
+    if the job already has an active offer or is not pending_dispatch."""
+    require_any_role(session, {"dispatcher", "platform_admin"})
+    jobs = await store.get_ops_queue()
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
+    if job.get("offer_active"):
+        raise HTTPException(
+            status_code=409,
+            detail="An active offer already exists for this job. Wait for it to expire or be declined.",
+        )
+    expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
+    tech_row = {"id": str(payload.technician_id)}
+    offers = await store.create_dispatch_offers(job_id, [tech_row], expires_at)
+    if not offers:
+        raise HTTPException(status_code=500, detail="Failed to create offer")
+    offer = offers[0]
+    await store.log_event_raw(
+        job_id,
+        f"ops:assign:tech={payload.technician_id}:by={session.get('id', 'unknown')}",
+    )
     return {
-        "expired_offers": expired,
-        "dispatchable_jobs": len(jobs),
-        "redispatched": redispatched,
-        "auto_closed": auto_closed,
+        "offer_id": offer.get("id"),
+        "technician_id": str(payload.technician_id),
+        "expires_at": expires_at.isoformat(),
     }
+
+
+@app.get("/ops/fleet")
+async def ops_fleet(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Return all active+verified technicians with location and active job data."""
+    require_any_role(session, {"dispatcher", "platform_admin"})
+    return await store.get_fleet_state()
 
 
 @app.post("/offers/{offer_id}/accept")

@@ -77,33 +77,25 @@ After submit the customer is redirected to their tracking link:
 
 ---
 
-### Step 2 — Dispatch runs automatically
+### Step 2 — Dispatcher assigns a technician
 
-The backend dispatches immediately on commit and retries every ~90 seconds for up to 8 minutes (3 rounds). The customer tracking page shows **"Searching for a specialist"** with no dispatch internals visible.
+Dispatch is **ops-controlled** — no offer is created automatically. After the customer submits, the job enters `pending_dispatch` and waits in the ops queue.
 
-To verify dispatch is running:
+1. Sign in to `https://ops.cluexp.com` as **Avery Knox** (`avery@cluexp.com` / `123456`)
+2. Open **Queue** — the new job appears with address, access type, and time-in-queue
+3. Click the job → view candidates list: all verified technicians with distance, ETA, online/offline, busy/free signals, and skill-match highlight
+4. Click **Assign** next to the chosen technician
+
+The system sends a single 90-second offer to that technician. If it expires without a response, the job returns to `pending_dispatch` — the dispatcher assigns again.
+
+To verify queue state via SQL:
 
 ```sql
 SELECT id, status, access_type, dispatch_attempts, lat, lng
 FROM jobs ORDER BY created_at DESC LIMIT 5;
 ```
 
-#### Understanding `dispatch_attempts`
-
-`dispatch_attempts` counts how many dispatch rounds have run for a job. Each round:
-
-1. Engine queries all available, verified technicians
-2. Filters by skill + distance
-3. Creates offer rows for the top 3 ranked candidates
-4. Offers expire after ~90 seconds
-5. If nobody accepts, a background sweep picks up the job and runs the next round, incrementing `dispatch_attempts`
-6. Repeats until someone accepts **or** `dispatch_attempts` reaches 3 (max) **or** the 480-second total window elapses
-
-| Value | Meaning |
-|---|---|
-| `0` | Job never committed, or dispatch has not run yet |
-| `1–2` | Rounds ran, offers expired, nobody accepted — more rounds pending |
-| `3` | All rounds exhausted — falls to human handoff |
+> **Common reason for job missing from queue:** `lat`/`lng` are null — always select an address from the autocomplete dropdown, never type freehand.
 
 ---
 
@@ -112,35 +104,19 @@ FROM jobs ORDER BY created_at DESC LIMIT 5;
 1. Open `https://tech.cluexp.com` and sign in as **Jordan Lee** (`jordan@cluexp.example` / `123456`)
 2. Navigate to **Jobs** tab
 3. An offer card appears with a 90-second countdown timer
-4. Tap **Accept** — first-accept-wins; other technicians' offers are automatically revoked
+4. Tap **Accept** — first-accept-wins at DB level
 
 The customer tracking page updates to **"Specialist assigned"** with the technician's first name and rating.
 
-#### What makes a technician see an offer
+#### What makes a technician eligible to be assigned
 
-A technician only receives an offer when **all** of the following are true at the moment dispatch runs:
+The dispatcher may select **any** `status=active` + `vetting_status=verified` technician from the candidates view. The view highlights these signals to guide the decision:
 
-**Job conditions:**
-- `status = pending_dispatch` (job was fully committed — not draft)
-- `lat` / `lng` are not null (requires address selected from autocomplete)
-- `dispatch_cutover_enabled = true` on the intake channel
-- Job is not yet matched and not timed out
+- `is_online`: `location_updated_at` within the last 15 minutes
+- `is_busy`: technician already has an active job
+- `skills_match`: job's `access_type` is in the technician's skills (highlight only — not enforced)
 
-**Technician conditions (all four required):**
-- `status = active` and `vetting_status = verified`
-- `is_available = true` — toggled online in the app
-- `skills` array contains the job's `access_type` (e.g. job is `home`, tech must have `home` in skills)
-- Distance from technician's service area center to job coordinates ≤ `service_area_radius_km`
-
-**Policy filter:**
-- `network_open` (metro-key default) — any verified tech in range qualifies
-- `private` — only technicians in the owner org's pool are eligible
-
-The engine picks the top 3 by nearest-first, then highest rating. If no technician passes all filters, the round produces 0 offers and `dispatch_attempts` increments silently.
-
-> **Common reason for 0 offers:** job `lat`/`lng` are null — always select an address from the autocomplete dropdown, never type freehand. Freehand entry skips geocoding and leaves coordinates empty.
-
-> If no offer appears within 90 seconds, check `dispatch_attempts` and `lat`/`lng` via the SQL above.
+> The dispatcher is the sole decision maker. There is no automatic filtering by distance or availability toggle.
 
 ---
 

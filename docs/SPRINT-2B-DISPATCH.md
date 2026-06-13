@@ -2,6 +2,12 @@
 
 > Owner: Claude (backend/infra). Couples to Codex (technician offer-delivery UI). Auth/Clerk
 > deferred. Branch: `feat/sprint2b-dispatch` (worktree, off `main`).
+>
+> **⚠️ Historical document.** The automatic dispatch model described here (engine auto-selects
+> top-N candidates and creates offers at ticket creation + cron re-dispatch) was **superseded
+> 2026-06-13** by the **ops-controlled model** (Sprint 3.4). Dispatch is now exclusively a human
+> decision: the ops dispatcher selects one technician and sends a single targeted offer.
+> See `docs/EXECUTION-PLAN.md §3.4` and `docs/SYSTEM-DESIGN.md §4` for the current model.
 
 ## Status (2026-06-06)
 - **Schema ready — no migration needed.** `technicians` + `dispatch_offers` already exist in prod
