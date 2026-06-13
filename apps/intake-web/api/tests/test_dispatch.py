@@ -540,6 +540,149 @@ def test_inmemory_get_ops_technician_returns_none_for_unknown():
     assert result is None
 
 
+def test_inmemory_update_technician_profile_updates_user_and_technician():
+    store = InMemoryStore()
+    tid = str(uuid4())
+    store.users[tid] = {"id": tid, "display_name": "Old Name", "phone": "5550000000"}
+    store._technicians = [{
+        "id": tid,
+        "display_name": "Old Name",
+        "phone": "5550000000",
+        "skills": ["home"],
+        "service_area_radius_km": 15,
+    }]
+    result = asyncio.run(store.update_technician_profile(UUID(tid), {
+        "display_name": "New Name",
+        "phone": "5551112222",
+        "skills": ["business", "vehicle"],
+        "service_area_radius_km": 30,
+    }))
+    assert result is not None
+    assert store.users[tid]["display_name"] == "New Name"
+    assert store.users[tid]["phone"] == "5551112222"
+    assert store._technicians[0]["skills"] == ["business", "vehicle"]
+    assert store._technicians[0]["service_area_radius_km"] == 30
+
+
+# ---------------------------------------------------------------------------
+# HTTP: PATCH /technicians/me/profile — self-scoped, validated, persisted
+# ---------------------------------------------------------------------------
+def test_http_update_my_profile_validates_and_persists():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "tech_profile@cluexp.test", "phone": "5550000000",
+        "display_name": "Old Name", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": uid, "status": "active", "vetting_status": "verified",
+        "display_name": "Old Name", "phone": "5550000000",
+        "skills": ["home"], "service_area_radius_km": 15,
+    })
+    # The InMemory session has no technician block (only PostgresStore builds one);
+    # inject it so the endpoint sees a technician, mirroring production.
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == uid:
+            s["technician"] = {
+                "id": uid, "approved": True,
+                "status": "active", "vetting_status": "verified",
+            }
+        return s
+
+    app_store.get_user_session = _patched_session
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["technician"]})
+    client = TestClient(app)
+    try:
+        # Happy path: persists, and normalizes skills (trim, lowercase, dedupe, sort).
+        ok = client.patch(
+            "/technicians/me/profile",
+            json={"display_name": "New Name", "phone": "5551112222",
+                  "skills": ["Business", " vehicle ", "business"],
+                  "service_area_radius_km": 30},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert ok.status_code == 200, ok.text
+        assert app_store.users[uid]["display_name"] == "New Name"
+        assert app_store.users[uid]["phone"] == "5551112222"
+        tech = next(t for t in app_store._technicians if t["id"] == uid)
+        assert tech["skills"] == ["business", "vehicle"]
+        assert tech["service_area_radius_km"] == 30
+
+        # Too-short display name → 422.
+        bad_name = client.patch(
+            "/technicians/me/profile", json={"display_name": "x"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert bad_name.status_code == 422
+
+        # Too-short phone → 422.
+        bad_phone = client.patch(
+            "/technicians/me/profile", json={"phone": "123"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert bad_phone.status_code == 422
+
+        # Radius outside 1..250 → 422.
+        bad_radius = client.patch(
+            "/technicians/me/profile", json={"service_area_radius_km": 999},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert bad_radius.status_code == 422
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_http_update_my_profile_requires_technician_role():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "notatech@cluexp.test", "phone": None,
+        "display_name": "Admin Only", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.patch(
+        "/technicians/me/profile", json={"display_name": "Hacker"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Security: technician status transitions must advance exactly one step
+# (so a tech cannot skip the arrival milestone behind the PIN gate).
+# ---------------------------------------------------------------------------
+def test_can_technician_transition_requires_single_step():
+    # Single forward step is allowed at each rung of the ladder.
+    assert can_technician_transition(STATUS_ASSIGNED, STATUS_EN_ROUTE) is True
+    assert can_technician_transition(STATUS_EN_ROUTE, STATUS_ARRIVED) is True
+    assert can_technician_transition(STATUS_ARRIVED, STATUS_IN_PROGRESS) is True
+    assert can_technician_transition(STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING) is True
+
+    # Skipping a milestone is rejected (assigned -> arrived skips en_route).
+    assert can_technician_transition(STATUS_ASSIGNED, STATUS_ARRIVED) is False
+    assert can_technician_transition(STATUS_ASSIGNED, STATUS_IN_PROGRESS) is False
+    assert can_technician_transition(STATUS_EN_ROUTE, STATUS_IN_PROGRESS) is False
+
+    # Backward moves are rejected.
+    assert can_technician_transition(STATUS_ARRIVED, STATUS_EN_ROUTE) is False
+
+    # completed_confirmed is never technician-settable, even one step ahead.
+    assert can_technician_transition(STATUS_COMPLETED_PENDING, STATUS_COMPLETED_CONFIRMED) is False
+
+
 # --- HTTP: platform_admin can query ops queue (empty) -----------------------
 def test_ops_queue_ok_for_platform_admin():
     from starlette.testclient import TestClient

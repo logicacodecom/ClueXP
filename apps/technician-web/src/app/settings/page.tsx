@@ -1,6 +1,6 @@
 "use client";
 
-import { AppFrame, MiniStat, Pill, Screen, Section, icons } from "@/components/mobile";
+import { AppFrame, Pill, Screen, Section, icons } from "@/components/mobile";
 import { LanguageSettings, useSession } from "@cluexp/app-core";
 import { LocateFixed, Power } from "lucide-react";
 import { useState } from "react";
@@ -77,14 +77,7 @@ export default function SettingsPage() {
           </div>
           {message ? <p className="mt-3 rounded-xl border border-border bg-card p-3 text-sm text-muted" role="status">{message}</p> : null}
         </Section>
-        <Section title="System state">
-          <div className="grid grid-cols-2 gap-2">
-            <MiniStat label="Offers" value={online ? "Active" : "Paused"} tone={online ? "success" : undefined} />
-            <MiniStat label="GPS" value={gpsState === "live" ? "Live" : "Check"} tone={gpsState === "live" ? "success" : "warn"} />
-            <MiniStat label="Polling" value="15s" tone="info" />
-            <MiniStat label="PWA" value="Ready" tone="success" />
-          </div>
-        </Section>
+        <p className="pb-5 text-xs leading-5 text-muted">Location is shared only when you update GPS or start a route. Continuous background tracking is not enabled.</p>
       </Screen>
     </AppFrame>
   );

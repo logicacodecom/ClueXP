@@ -172,6 +172,11 @@ class Store:
     async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def update_technician_profile(
+        self, technician_id: UUID, data: dict
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def list_pending_registrations(self) -> list[dict]:  # pragma: no cover
         return []
 
@@ -808,6 +813,20 @@ class InMemoryStore(Store):
     async def update_user_locale(self, user_id: str, locale: str) -> None:
         return None
 
+    async def update_technician_profile(self, technician_id: UUID, data: dict) -> dict | None:
+        tid = str(technician_id)
+        technician = next((item for item in getattr(self, "_technicians", []) if item.get("id") == tid), None)
+        if technician is None:
+            return None
+        technician.update(data)
+        user = self.users.get(tid)
+        if user:
+            if data.get("display_name"):
+                user["display_name"] = data["display_name"]
+            if data.get("phone"):
+                user["phone"] = data["phone"]
+        return {"id": tid, **data}
+
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         return []
 
@@ -1399,7 +1418,8 @@ class PostgresStore(Store):
         org_row = await cur.fetchone()
         # Technician profile is 1:1 with the user (same id) when self-registered.
         cur = await conn.execute(
-            "select id, status, vetting_status, is_available from technicians where id = %s",
+            "select id, status, vetting_status, is_available, display_name, phone,"
+            " skills, service_area_radius_km from technicians where id = %s",
             (user_id,),
         )
         tech_row = await cur.fetchone()
@@ -1419,6 +1439,10 @@ class PostgresStore(Store):
                 "status": tech_row[1],
                 "vetting_status": tech_row[2],
                 "is_available": tech_row[3],
+                "display_name": tech_row[4],
+                "phone": tech_row[5],
+                "skills": list(tech_row[6] or []),
+                "service_area_radius_km": tech_row[7],
                 "approved": tech_row[1] == "active" and tech_row[2] == "verified",
             }
             if tech_row
@@ -2462,6 +2486,47 @@ class PostgresStore(Store):
                 "update users set locale = %s, updated_at = now() where id = %s",
                 (locale, str(user_id)),
             )
+
+    async def update_technician_profile(self, technician_id: UUID, data: dict) -> dict | None:
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "update technicians set"
+                    " display_name = coalesce(%s, display_name),"
+                    " phone = coalesce(%s, phone),"
+                    " skills = coalesce(%s, skills),"
+                    " service_area_radius_km = coalesce(%s, service_area_radius_km)"
+                    " where id = %s"
+                    " returning id, display_name, phone, skills, service_area_radius_km",
+                    (
+                        data.get("display_name"),
+                        data.get("phone"),
+                        data.get("skills"),
+                        data.get("service_area_radius_km"),
+                        str(technician_id),
+                    ),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return None
+                await conn.execute(
+                    "update users set"
+                    " display_name = coalesce(%s, display_name),"
+                    " phone = coalesce(%s, phone), updated_at = now()"
+                    " where id = %s",
+                    (data.get("display_name"), data.get("phone"), str(technician_id)),
+                )
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise ValueError("Phone number is already in use")
+            raise
+        return {
+            "id": str(row[0]),
+            "display_name": row[1],
+            "phone": row[2],
+            "skills": list(row[3] or []),
+            "service_area_radius_km": row[4],
+        }
 
     async def list_pending_registrations(self) -> list[dict]:
         async with await self._connect() as conn:

@@ -115,6 +115,10 @@ export interface AuthSession {
     status: string;
     vetting_status: string;
     is_available: boolean;
+    display_name?: string;
+    phone?: string | null;
+    skills?: string[];
+    service_area_radius_km?: number | null;
     approved: boolean;
   } | null;
 }

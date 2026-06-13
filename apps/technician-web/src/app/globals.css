@@ -4,12 +4,12 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #0b0d10;
-  --foreground: #f4f6f8;
-  --card: #15181d;
-  --card-strong: #1b1f26;
-  --muted: #99a2ad;
-  --border: #272d35;
+  --background: #0e0e0e;
+  --foreground: #f4f1e8;
+  --card: #171717;
+  --card-strong: #202020;
+  --muted: #a49f94;
+  --border: #30302e;
   --primary: #ffbf00;
   --primary-foreground: #1d1500;
   --success: #31d291;
@@ -49,15 +49,14 @@
 
   html {
     min-height: 100%;
-    background: #07080a;
+    background: #090909;
     overscroll-behavior: none;
   }
 
   body {
     min-height: 100%;
     margin: 0;
-    background:
-      linear-gradient(180deg, #101319 0%, #07080a 100%);
+    background: #090909;
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;

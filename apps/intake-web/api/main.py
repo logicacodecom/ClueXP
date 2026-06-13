@@ -246,6 +246,13 @@ class TechnicianAvailabilityRequest(BaseModel):
     is_available: bool
 
 
+class TechnicianProfileUpdateRequest(BaseModel):
+    display_name: str | None = None
+    phone: str | None = None
+    skills: list[str] | None = None
+    service_area_radius_km: float | None = None
+
+
 class JobStatusUpdateRequest(BaseModel):
     status: str
 
@@ -753,6 +760,38 @@ async def update_my_availability(
     )
     if result is None:
         raise HTTPException(status_code=409, detail="Technician is not eligible for dispatch")
+    return result
+
+
+@app.patch("/technicians/me/profile")
+async def update_my_profile(
+    payload: TechnicianProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"technician"})
+    technician = session.get("technician")
+    if not technician:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    data = payload.model_dump(exclude_none=True)
+    if "display_name" in data:
+        data["display_name"] = data["display_name"].strip()
+        if len(data["display_name"]) < 2:
+            raise HTTPException(status_code=422, detail="Display name is too short")
+    if "phone" in data:
+        data["phone"] = data["phone"].strip()
+        if len(data["phone"]) < 7:
+            raise HTTPException(status_code=422, detail="Enter a valid phone number")
+    if "skills" in data:
+        data["skills"] = sorted({skill.strip().lower() for skill in data["skills"] if skill.strip()})
+    radius = data.get("service_area_radius_km")
+    if radius is not None and not 1 <= radius <= 250:
+        raise HTTPException(status_code=422, detail="Service radius must be between 1 and 250 km")
+    try:
+        result = await store.update_technician_profile(UUID(technician["id"]), data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
     return result
 
 

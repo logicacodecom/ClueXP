@@ -19,7 +19,7 @@ const inter = localFont({
 
 export const metadata: Metadata = {
   title: "ClueXP Technician",
-  description: "ClueXP technician PWA live mockups",
+  description: "ClueXP field technician application",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
@@ -32,7 +32,6 @@ export const viewport: Viewport = {
   themeColor: "#ffbf00",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
   viewportFit: "cover"
 };
 

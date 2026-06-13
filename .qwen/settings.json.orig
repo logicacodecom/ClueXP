@@ -9,7 +9,11 @@
       "Bash(claude *)",
       "Bash(setx *)",
       "Bash(powershell *)",
-      "Bash(type *)"
+      "Bash(type *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(npm run *)"
     ]
   },
   "$version": 4

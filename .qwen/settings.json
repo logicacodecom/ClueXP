@@ -10,7 +10,11 @@
       "Bash(setx *)",
       "Bash(powershell *)",
       "Bash(type *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(npm run *)",
+      "Bash(npx *)"
     ]
   },
   "$version": 4
