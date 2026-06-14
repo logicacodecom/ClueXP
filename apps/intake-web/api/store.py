@@ -719,7 +719,7 @@ class InMemoryStore(Store):
             "status": statuses.get(jid),
             "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
             "fulfillment_org_id": None,
-            "customer_owner_org_id": None,
+            "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
         }
 
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
