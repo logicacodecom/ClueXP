@@ -445,6 +445,250 @@ def test_inmemory_decline_returns_false_for_nonexistent():
     assert result is False
 
 
+def test_inmemory_decline_reason_persisted_and_surfaced_in_queue():
+    from datetime import datetime, timezone
+    store = InMemoryStore()
+    jid = str(uuid4())
+    tid = uuid4()
+    store._job_status = {jid: STATUS_PENDING_DISPATCH}
+    offer = asyncio.run(
+        store.ops_create_single_offer(UUID(jid), tid, None, datetime.now(timezone.utc))
+    )
+    assert "id" in offer
+    ok = asyncio.run(store.decline_dispatch_offer(UUID(offer["id"]), tid, "Too far"))
+    assert ok is True
+    assert store._offers[offer["id"]]["decline_reason"] == "Too far"
+    # Declining with no active offer left returns the job to the Ops queue,
+    # annotated with the most recent decline reason for reassignment.
+    queue = asyncio.run(store.get_ops_queue())
+    row = next(r for r in queue if r["id"] == jid)
+    assert row["last_decline_reason"] == "Too far"
+    assert row["decline_count"] == 1
+
+
+def test_http_decline_offer_records_reason():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    oid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "tech_decline@cluexp.test", "phone": None,
+        "display_name": "Decliner", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._offers = getattr(app_store, "_offers", {})
+    app_store._offers[oid] = {
+        "id": oid, "job_id": str(uuid4()), "status": "offered", "technician_id": uid,
+    }
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == uid:
+            s["technician"] = {"id": uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["technician"]})
+    client = TestClient(app)
+    try:
+        resp = client.post(
+            f"/offers/{oid}/decline", json={"reason": "On another job"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("declined") is True
+        assert app_store._offers[oid]["decline_reason"] == "On another job"
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+# ---------------------------------------------------------------------------
+# Gate 2: secure arrival PIN — store-level state machine
+# ---------------------------------------------------------------------------
+
+def _pin_future(minutes: int = 10):
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone.utc) + timedelta(minutes=minutes)
+
+
+def _pin_past(minutes: int = 10):
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+
+def test_inmemory_arrival_pin_success_then_single_use():
+    store = InMemoryStore()
+    jid, tid = uuid4(), uuid4()
+    asyncio.run(store.create_arrival_pin(jid, tid, "H", _pin_future(), 5))
+    ok = asyncio.run(store.verify_arrival_pin(jid, tid, "H"))
+    assert ok["ok"] is True
+    # single-use: the same correct hash cannot verify twice
+    again = asyncio.run(store.verify_arrival_pin(jid, tid, "H"))
+    assert again["ok"] is False and again["reason"] == "already_used"
+
+
+def test_inmemory_arrival_pin_wrong_then_lockout():
+    store = InMemoryStore()
+    jid, tid = uuid4(), uuid4()
+    asyncio.run(store.create_arrival_pin(jid, tid, "RIGHT", _pin_future(), 3))
+    results = [asyncio.run(store.verify_arrival_pin(jid, tid, "WRONG")) for _ in range(3)]
+    assert [r["remaining"] for r in results] == [2, 1, 0]
+    assert results[-1]["reason"] == "locked"
+    # the correct PIN is refused once locked — no advance past the attempt cap
+    blocked = asyncio.run(store.verify_arrival_pin(jid, tid, "RIGHT"))
+    assert blocked["ok"] is False and blocked["reason"] == "locked"
+
+
+def test_inmemory_arrival_pin_expired():
+    store = InMemoryStore()
+    jid, tid = uuid4(), uuid4()
+    asyncio.run(store.create_arrival_pin(jid, tid, "H", _pin_past(), 5))
+    r = asyncio.run(store.verify_arrival_pin(jid, tid, "H"))
+    assert r["ok"] is False and r["reason"] == "expired"
+
+
+def test_inmemory_arrival_pin_technician_mismatch():
+    store = InMemoryStore()
+    jid, tid, other = uuid4(), uuid4(), uuid4()
+    asyncio.run(store.create_arrival_pin(jid, tid, "H", _pin_future(), 5))
+    r = asyncio.run(store.verify_arrival_pin(jid, other, "H"))
+    assert r["ok"] is False and r["reason"] == "technician_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Gate 2: secure arrival PIN — HTTP flow
+# ---------------------------------------------------------------------------
+
+def _seed_en_route_job(app_store, tech_uid, jid, *, token=None):
+    app_store.users[tech_uid] = {
+        "id": tech_uid, "email": f"arr_{tech_uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Arr Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_EN_ROUTE
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    if token is not None:
+        app_store._tokens = getattr(app_store, "_tokens", {})
+        app_store._tokens[jid] = token
+
+
+def test_http_arrival_pin_issue_and_verify_flow():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    token = "track-" + uuid4().hex
+    _seed_en_route_job(app_store, tech_uid, jid, token=token)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    client = TestClient(app)
+    try:
+        # Customer issues the PIN through the tracking token (no account auth).
+        issued = client.post(f"/t/{token}/arrival-pin")
+        assert issued.status_code == 200, issued.text
+        pin = issued.json()["pin"]
+        assert len(pin) == 6 and pin.isdigit()
+
+        # A wrong PIN never advances the job.
+        wrong = "000000" if pin != "000000" else "111111"
+        bad = client.post(
+            f"/jobs/{jid}/arrival/verify", json={"pin": wrong},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert bad.status_code in (422, 429)
+        assert app_store._job_status[jid] == STATUS_EN_ROUTE
+
+        # The correct PIN moves en_route -> arrived.
+        good = client.post(
+            f"/jobs/{jid}/arrival/verify", json={"pin": pin},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert good.status_code == 200, good.text
+        assert good.json()["status"] == STATUS_ARRIVED
+        assert app_store._job_status[jid] == STATUS_ARRIVED
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_http_technician_cannot_set_arrived_directly():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    _seed_en_route_job(app_store, tech_uid, jid)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    client = TestClient(app)
+    try:
+        resp = client.patch(
+            f"/tickets/{jid}/status", json={"status": "arrived"},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert resp.status_code == 409
+        assert "PIN" in resp.json().get("detail", "")
+        assert app_store._job_status[jid] == STATUS_EN_ROUTE
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_http_ops_override_arrival_requires_reason():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin_uid = str(uuid4())
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    _seed_en_route_job(app_store, tech_uid, jid)
+    app_store.users[admin_uid] = {
+        "id": admin_uid, "email": "arr_admin@cluexp.test", "phone": None,
+        "display_name": "Avery", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    access = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+
+    missing = client.post(
+        f"/ops/jobs/{jid}/arrival/override", json={"reason": ""},
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert missing.status_code == 422
+    assert app_store._job_status[jid] == STATUS_EN_ROUTE
+
+    ok = client.post(
+        f"/ops/jobs/{jid}/arrival/override", json={"reason": "Customer could not read the PIN"},
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == STATUS_ARRIVED
+    assert app_store._job_status[jid] == STATUS_ARRIVED
+
+
 # --- ops endpoints require platform_admin, not just any dispatcher ----------
 def test_ops_queue_requires_platform_admin_not_provider_dispatcher():
     from starlette.testclient import TestClient

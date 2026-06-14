@@ -76,6 +76,8 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [location, setLocation] = useState<LocationState>({ state: "idle" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pinMode, setPinMode] = useState(false);
+  const [pin, setPin] = useState("");
   const copy = statusCopy(job.status);
   const currentIndex = stages.findIndex((stage) => stage.status === job.status);
 
@@ -159,9 +161,43 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     });
   }
 
+  async function verifyArrival() {
+    const code = pin.trim();
+    if (code.length !== 6 || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/arrival/verify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pin: code })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        window.location.assign("/signin");
+        return;
+      }
+      if (!response.ok) throw new Error(body.detail || "PIN verification failed");
+      setJob((current) => ({ ...current, status: "arrived" }));
+      setPinMode(false);
+      setPin("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "PIN verification failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function advance() {
     const target = nextStatus(job.status);
     if (!target || busy) return;
+    // Arrival is gated by the customer-held PIN — open the entry panel instead of
+    // a direct status write (the API rejects a direct en_route -> arrived).
+    if (job.status === "en_route") {
+      setError(null);
+      setPinMode(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -272,6 +308,27 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
           <div className="mt-4 flex gap-3 border border-danger/35 bg-danger/10 p-3 text-sm text-danger" role="alert">
             <AlertTriangle className="size-5 shrink-0" />
             <p>{error}</p>
+          </div>
+        ) : null}
+
+        {pinMode && job.status === "en_route" ? (
+          <div className="mt-5 border border-primary/35 bg-primary/5 p-4">
+            <p className="text-[11px] font-black uppercase tracking-[.1em] text-primary">Arrival verification</p>
+            <p className="mt-1 text-sm leading-5 text-muted">Ask the customer for the 6-digit arrival PIN shown on their tracking page, then enter it to confirm you are on site.</p>
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="------"
+              aria-label="Customer arrival PIN"
+              className="mt-3 w-full border border-border bg-card px-4 py-3 text-center font-condensed text-3xl tracking-[.4em]"
+            />
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button className="touch-target min-h-12 border border-border bg-card-strong font-black" onClick={() => { setPinMode(false); setPin(""); }} type="button">Cancel</button>
+              <button className="touch-target min-h-12 bg-primary font-black text-primary-foreground disabled:opacity-50" disabled={busy || pin.length !== 6} onClick={() => void verifyArrival()} type="button">{busy ? "Verifying..." : "Confirm arrival"}</button>
+            </div>
           </div>
         ) : null}
 

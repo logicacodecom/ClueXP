@@ -52,6 +52,7 @@ export function LiveOffersFeed() {
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState<string | null>(null);
   const [declining, setDeclining] = useState<string | null>(null);
+  const [reasonFor, setReasonFor] = useState<string | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -88,13 +89,18 @@ export function LiveOffersFeed() {
     [offers]
   );
 
-  async function decline(offer: LiveOffer) {
+  async function decline(offer: LiveOffer, reason?: string) {
     const id = offer.id || offer.offer_id;
     if (!id) return;
     setDeclining(id);
+    setReasonFor(null);
     setError(null);
     try {
-      const response = await fetch(`/api/offers/${encodeURIComponent(id)}/decline`, { method: "POST" });
+      const response = await fetch(`/api/offers/${encodeURIComponent(id)}/decline`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(reason ? { reason } : {}),
+      });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         setError((body as { detail?: string }).detail ?? "Could not decline offer");
@@ -107,6 +113,8 @@ export function LiveOffersFeed() {
       setDeclining(null);
     }
   }
+
+  const DECLINE_REASONS = ["Too far", "On another job", "Outside my skills", "Schedule conflict"];
 
   async function accept(offer: LiveOffer) {
     setAccepting(offer.id || offer.offer_id || null);
@@ -175,11 +183,22 @@ export function LiveOffersFeed() {
             <OfferMetric label="Rank" value={offer.rank ? `#${offer.rank}` : "--"} />
           </div>
           <div className="mt-4 grid grid-cols-[.72fr_1.28fr] gap-3">
-            <button className="touch-target min-h-[52px] rounded-2xl border border-border bg-card-strong px-4 font-black disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => void decline(offer)}><X className="mr-2 inline size-5" />{declining === (offer.id || offer.offer_id) ? t("loading") : t("decline")}</button>
+            <button className="touch-target min-h-[52px] rounded-2xl border border-border bg-card-strong px-4 font-black disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => { const oid = offer.id || offer.offer_id || null; setReasonFor((current) => current === oid ? null : oid); }}><X className="mr-2 inline size-5" />{declining === (offer.id || offer.offer_id) ? t("loading") : t("decline")}</button>
             <button className="touch-target min-h-[52px] rounded-2xl bg-primary px-4 font-black text-primary-foreground disabled:opacity-50" disabled={accepting === (offer.id || offer.offer_id)} onClick={() => void accept(offer)}>
               <Check className="mr-2 inline size-5" />{accepting === (offer.id || offer.offer_id) ? t("loading") : t("accept")}
             </button>
           </div>
+          {reasonFor === (offer.id || offer.offer_id) ? (
+            <div className="mt-3 rounded-2xl border border-border bg-card-strong p-3">
+              <p className="text-[11px] font-black uppercase text-muted">Why are you declining?</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {DECLINE_REASONS.map((reason) => (
+                  <button key={reason} className="touch-target min-h-10 rounded-full border border-border bg-card px-3 text-sm font-bold disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => void decline(offer, reason)}>{reason}</button>
+                ))}
+                <button className="touch-target min-h-10 rounded-full border border-border bg-card px-3 text-sm font-bold text-muted disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => void decline(offer)}>Skip</button>
+              </div>
+            </div>
+          ) : null}
         </article>
       ))}
     </div>

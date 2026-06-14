@@ -48,6 +48,17 @@ DISPATCH_CUTOVER_PUBLIC = (
     os.environ.get("DISPATCH_CUTOVER_PUBLIC", "false").strip().lower() == "true"
 )
 
+# --- arrival verification (Gate 2) ---
+# Secure customer-held PIN the technician must enter to move en_route -> arrived.
+# Only a hash is stored; the PIN expires, is single-use, and attempt-limited.
+ARRIVAL_PIN_TTL_SECONDS = _int("ARRIVAL_PIN_TTL_SECONDS", 900)
+ARRIVAL_PIN_MAX_ATTEMPTS = _int("ARRIVAL_PIN_MAX_ATTEMPTS", 5)
+# Server-side key for the keyed PIN hash (HMAC). Stable per deployment so the
+# stored hash can be recomputed for comparison; protects PINs if the DB leaks.
+ARRIVAL_PIN_SECRET = (
+    os.environ.get("ARRIVAL_PIN_SECRET") or os.environ.get("CRON_SECRET") or "dev-arrival-pin-secret"
+)
+
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
 LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)
