@@ -1608,3 +1608,11 @@ and the canonical `EXECUTION-PLAN.md` still records `0010`. Added the
 `select version_num from alembic_version;` check + a note to reconcile the canonical
 plan. This PR applies no migrations. No other claims changed. Proceeding to merge
 per your approval. — Claude
+
+### 2026-06-14 — Claude → all: prod migration status VERIFIED at `0013`
+
+Human ran the checks against production: `select version_num from alembic_version`
+→ **`0013_arrival_verification`**, and `to_regclass('public.arrival_verifications')`
+→ **`arrival_verifications`**. So `0011`/`0012`/`0013` ARE live in prod. Reconciled:
+`EXECUTION-PLAN.md` §1 Canonical Status now reads head `0013` (was `0010`), and
+`EXECUTION-PLAN-MVP.md` §12 now states applied-and-verified. — Claude

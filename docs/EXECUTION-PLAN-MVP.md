@@ -204,12 +204,9 @@ Still to decide for the pilot:
 
 - Gate 0 ✅ (code) · Gate 1 ✅ (code) · Gate 2 arrival ✅ (code); active-job/location
   verification items open · Gate 3 mostly unbuilt (largest gap) · Gate 4 mostly open.
-- Migrations `0011`/`0012`/`0013`: **pending production application / unverified.**
-  Reported applied by the Human (2026-06-13) but **not independently verified** from
-  this environment (no prod DB reach), and the canonical `EXECUTION-PLAN.md` still
-  records production at `0010`. Confirm with `select version_num from alembic_version;`
-  (expect `0013_arrival_verification`) and reconcile the canonical plan before relying
-  on it. This PR applies no migrations.
+- Migrations `0011`/`0012`/`0013`: **applied to production — verified 2026-06-14.**
+  `select version_num from alembic_version` → `0013_arrival_verification`; the
+  `arrival_verifications` table is present. (Earlier this was unverified; now confirmed.)
 - Live pilot held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`) pending Gate 3 + sign-off.
 - Critical path: **Gate 3 company recovery controls**, then Gate 4 hardening + CI
   for all four apps.
