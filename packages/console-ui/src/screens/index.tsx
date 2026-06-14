@@ -181,6 +181,8 @@ type OpsJob = {
   offer_id: string | null;
   offered_technician_id: string | null;
   offer_expires_at: string | null;
+  last_decline_reason: string | null;
+  decline_count: number;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL ?? "";
@@ -672,6 +674,13 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                     <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
                   </div>
                   <div className="text-sm text-muted-foreground">Age: {ageLabel(job.created_at)} · {job.dispatch_attempts} attempt{job.dispatch_attempts === 1 ? "" : "s"}</div>
+                  {job.last_decline_reason ? (
+                    <div className="rounded-md border border-warn/35 bg-warn/10 p-2 text-sm text-warn">
+                      Last decline{job.decline_count > 1 ? ` (${job.decline_count} total)` : ""}: “{job.last_decline_reason}”
+                    </div>
+                  ) : job.decline_count > 0 ? (
+                    <div className="text-sm text-muted-foreground">{job.decline_count} prior decline{job.decline_count === 1 ? "" : "s"} (no reason given)</div>
+                  ) : null}
                 </CardContent>
               </Card>
             ) : null}

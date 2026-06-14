@@ -131,6 +131,7 @@ export default function TokenTrackingPage() {
     comment: ""
   });
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [arrivalPin, setArrivalPin] = useState<string | null>(null);
 
   const localeText = {
     waiting: {
@@ -533,6 +534,24 @@ export default function TokenTrackingPage() {
     }
   };
 
+  const handleGetArrivalPin = async () => {
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/t/${token}/arrival-pin`, { method: "POST" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es" ? "No se pudo generar el PIN" : "Could not generate PIN"));
+        return;
+      }
+      const data = await response.json();
+      setArrivalPin(data.pin);
+    } catch {
+      setError(locale === "es" ? "Error de red, intente de nuevo" : "Network error, please try again");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleReviewTag = (tag: string) => {
     setReviewData(prev => ({
       ...prev,
@@ -750,6 +769,32 @@ export default function TokenTrackingPage() {
                   ? "Esta es una estimación aproximada hasta que la ruta en vivo esté disponible."
                   : "This is a coarse estimate until live route tracking is available."}
               </p>
+            </div>
+            <div className="panel">
+              <p className="panel-title">
+                {locale === "es" ? "PIN de llegada" : "Arrival PIN"}
+              </p>
+              {arrivalPin ? (
+                <>
+                  <div className="big-number" style={{ letterSpacing: ".3em" }}>{arrivalPin}</div>
+                  <p className="fine">
+                    {locale === "es"
+                      ? "Comparta este código con el técnico cuando llegue para confirmar su llegada."
+                      : "Share this code with the technician when they arrive to confirm arrival."}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="fine">
+                    {locale === "es"
+                      ? "Genere un PIN seguro y compártalo con el técnico solo cuando esté en su puerta."
+                      : "Generate a secure PIN and share it with the technician only once they are at your door."}
+                  </p>
+                  <button className="primary" type="button" disabled={busy} onClick={() => void handleGetArrivalPin()}>
+                    {locale === "es" ? "Mostrar PIN de llegada" : "Show arrival PIN"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
           {customerActions.can_cancel && (

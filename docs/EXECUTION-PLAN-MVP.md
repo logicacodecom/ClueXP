@@ -1,6 +1,6 @@
 # ClueXP Execution Plan MVP
 
-> **Status:** Draft for discussion
+> **Status:** Draft for discussion — **redlined against code at commit `c559486` (PR #20) plus the uncommitted Gate 1 decline-reason and Gate 2 arrival-PIN work, 2026-06-13**
 > **Prepared:** 2026-06-13
 > **Purpose:** reduce the remaining roadmap to the smallest credible controlled
 > production pilot and product demo.
@@ -8,6 +8,8 @@
 > This document does not replace `docs/EXECUTION-PLAN.md` until approved. It
 > reorganizes its remaining work around MVP outcomes and moves nonessential work
 > into the next-version backlog.
+>
+> **Redline legend:** ✅ <s style="color:#1a7f37">green strikethrough = done & verified in code</s> · `- [ ]` = not started · items tagged _(partial)_ are begun but incomplete · _(operational)_ = a deploy/process step, not code.
 
 ## 1. MVP Objective
 
@@ -56,13 +58,16 @@ reused rather than rebuilt:
 **Outcome:** no new production request can enter the automatic dispatch path
 while the Ops-controlled replacement is being completed.
 
+> **Status: code-side DONE — only operational steps remain.** The legacy
+> automatic path is already removed in code, so this gate is now mostly a deploy
+> checklist rather than development work.
+
 - [ ] Set `DISPATCH_CUTOVER_GLOBAL_OFF=true` in production and redeploy before
-  changing dispatch behavior.
-- [ ] Confirm the current `metro-key` channel flag and record its exact state.
-- [ ] Verify a new request does not create automatic offers.
-- [ ] Keep existing jobs recoverable through current administrative controls.
-- [ ] Define rollback as the global-off switch or channel disable, not the legacy
-  instant-match route.
+  changing dispatch behavior. _(operational)_
+- [ ] Confirm the current `metro-key` channel flag and record its exact state. _(operational)_
+- ✅ <s style="color:#1a7f37">Verify a new request does not create automatic offers.</s> — `POST /tickets/{id}/offers` returns `410`; sweep is cleanup-only.
+- [ ] Keep existing jobs recoverable through current administrative controls. _(partial — see Gate 3)_
+- ✅ <s style="color:#1a7f37">Define rollback as the global-off switch or channel disable, not the legacy instant-match route.</s> — flags exist in `config.py`.
 
 **Exit:** production cannot create an automatic technician offer.
 
@@ -71,64 +76,63 @@ while the Ops-controlled replacement is being completed.
 **Outcome:** a dispatcher can see a new job, review technicians, and send one
 targeted offer without database access.
 
+> **Status: COMPLETE (code).** Only operational step remaining: apply migrations
+> `0011` + `0012` to prod.
+
 ### Backend
 
-- [ ] Remove automatic offer creation from ticket creation.
-- [ ] Remove automatic re-dispatch from the scheduled sweep.
-- [ ] Keep offer expiry and 72-hour completion auto-close.
-- [ ] Gate or remove public legacy dispatch and offer-creation endpoints.
-- [ ] Add a database constraint allowing only one active `offered` row per job.
-- [ ] Add authenticated, platform-Ops-only endpoints:
-  - `GET /ops/queue`
-  - `GET /ops/queue/{job_id}/candidates`
-  - `POST /ops/queue/{job_id}/assign`
-  - `GET /ops/fleet` only if required by the queue UI
-- [ ] Return `409` when the job changed, was cancelled, was assigned, or already
-  has an active offer.
-- [ ] On decline or expiry, return the job to an assignable queue state.
-- [ ] Audit dispatcher identity, selected technician, time, and result.
-- [ ] Persist technician decline reason now, because Ops needs it for reassignment.
+- ✅ <s style="color:#1a7f37">Remove automatic offer creation from ticket creation.</s>
+- ✅ <s style="color:#1a7f37">Remove automatic re-dispatch from the scheduled sweep.</s>
+- ✅ <s style="color:#1a7f37">Keep offer expiry and 72-hour completion auto-close.</s>
+- ✅ <s style="color:#1a7f37">Gate or remove public legacy dispatch and offer-creation endpoints.</s>
+- ✅ <s style="color:#1a7f37">Add a database constraint allowing only one active `offered` row per job.</s> — migration `0011` partial unique index; **not yet applied to prod.**
+- ✅ <s style="color:#1a7f37">Add authenticated, platform-Ops-only endpoints:</s>
+  - ✅ <s style="color:#1a7f37">`GET /ops/queue`</s>
+  - ✅ <s style="color:#1a7f37">`GET /ops/queue/{job_id}/candidates`</s>
+  - ✅ <s style="color:#1a7f37">`POST /ops/queue/{job_id}/assign`</s>
+  - ✅ <s style="color:#1a7f37">`GET /ops/fleet` only if required by the queue UI</s>
+- ✅ <s style="color:#1a7f37">Return `409` when the job changed, was cancelled, was assigned, or already has an active offer.</s>
+- ✅ <s style="color:#1a7f37">On decline or expiry, return the job to an assignable queue state.</s>
+- ✅ <s style="color:#1a7f37">Audit dispatcher identity, selected technician, time, and result.</s>
+- ✅ <s style="color:#1a7f37">Persist technician decline reason now, because Ops needs it for reassignment.</s> — `dispatch_offers.decline_reason` (migration `0012`); captured at decline, surfaced as `last_decline_reason`/`decline_count` in the queue.
 
 ### Candidate Decision Support
 
-Show all active, verified pilot technicians with:
+✅ <s style="color:#1a7f37">Show all active, verified pilot technicians with:</s>
 
-- Skill match
-- Current or last-known location
-- Location freshness
-- Coarse distance and ETA
-- Online/offline signal
-- Busy/free signal and active-job status
-- Rating and organization
+- ✅ <s style="color:#1a7f37">Skill match</s>
+- ✅ <s style="color:#1a7f37">Current or last-known location</s>
+- ✅ <s style="color:#1a7f37">Location freshness</s>
+- ✅ <s style="color:#1a7f37">Coarse distance and ETA</s>
+- ✅ <s style="color:#1a7f37">Online/offline signal</s>
+- ✅ <s style="color:#1a7f37">Busy/free signal and active-job status</s>
+- ✅ <s style="color:#1a7f37">Rating and organization</s>
 
-For MVP, sort nearest-first and highlight skill match. Do not claim a predictive
-match percentage. The dispatcher owns the decision.
+✅ <s style="color:#1a7f37">For MVP, sort nearest-first and highlight skill match. Do not claim a predictive match percentage. The dispatcher owns the decision.</s>
 
-The Assign action must warn before selecting a technician who is offline, busy,
-missing the skill, or has stale/missing location. An override requires a reason.
+✅ <s style="color:#1a7f37">The Assign action warns before selecting a technician who is offline, busy, missing the skill, or has stale/missing location. An override requires a reason.</s>
 
 ### Ops UI
 
-- [ ] Replace the mock `/queue` with live pending and active-offer jobs.
-- [ ] Show time waiting, access type, location, urgency, offer state, and decline
-  reason.
-- [ ] Add a live candidate view with one Assign action per technician.
-- [ ] Show active-offer technician and expiry; disable duplicate assignment.
-- [ ] Poll every 30 seconds and provide manual refresh.
+- ✅ <s style="color:#1a7f37">Replace the mock `/queue` with live pending and active-offer jobs.</s>
+- ✅ <s style="color:#1a7f37">Show time waiting, access type, location, urgency, offer state, and decline reason.</s> — decline reason + count now surfaced on the job context card.
+- ✅ <s style="color:#1a7f37">Add a live candidate view with one Assign action per technician.</s>
+- ✅ <s style="color:#1a7f37">Show active-offer technician and expiry; disable duplicate assignment.</s> — "Active offer already sent · expires …" guard blocks reassignment until expiry/decline.
+- ✅ <s style="color:#1a7f37">Poll every 30 seconds and provide manual refresh.</s> — queue 30s, fleet 45s.
 - [ ] Handle loading, empty, unauthorized, stale-session, conflict, and error
-  states.
-- [ ] Use a simple list/table for MVP. A fleet map is optional.
+  states. _(partial — verify completeness)_
+- ✅ <s style="color:#1a7f37">Use a simple list/table for MVP. A fleet map is optional.</s>
 
 ### Acceptance
 
-- [ ] Ticket creation produces no offer.
-- [ ] Only an authorized ClueXP Ops user can assign.
-- [ ] Provider dispatchers cannot access platform-wide Ops endpoints.
-- [ ] Concurrent assignment attempts produce one offer and one safe conflict.
-- [ ] Customer polling never creates an offer.
-- [ ] Decline and expiry return the job to Ops.
-- [ ] Acceptance atomically sets the named technician and `assigned` state.
-- [ ] Customer identity remains hidden until authorized assignment/acceptance.
+- ✅ <s style="color:#1a7f37">Ticket creation produces no offer.</s>
+- ✅ <s style="color:#1a7f37">Only an authorized ClueXP Ops user can assign.</s>
+- ✅ <s style="color:#1a7f37">Provider dispatchers cannot access platform-wide Ops endpoints.</s>
+- ✅ <s style="color:#1a7f37">Concurrent assignment attempts produce one offer and one safe conflict.</s> — unit-tested; live-DB integration test `skip`-marked pending `0011`.
+- ✅ <s style="color:#1a7f37">Customer polling never creates an offer.</s>
+- ✅ <s style="color:#1a7f37">Decline and expiry return the job to Ops.</s>
+- ✅ <s style="color:#1a7f37">Acceptance atomically sets the named technician and `assigned` state.</s> — guarded on `pending_dispatch`.
+- ✅ <s style="color:#1a7f37">Customer identity remains hidden until authorized assignment/acceptance.</s>
 
 **Exit:** Ops can dispatch a real job from the UI, and no background process can
 select or offer it to another technician.
@@ -138,56 +142,67 @@ select or offer it to another technician.
 **Outcome:** the assigned technician can complete one honest field-service job
 without mock operational data.
 
+> **Status: arrival PIN DONE; remaining items are Gate-3-dependent or UI checks.**
+> The insecure stub was replaced by a hashed, expiring, single-use,
+> attempt-limited PIN (migration `0013`, table `arrival_verifications`), bound to
+> the job + assigned technician, issued only via the customer's tracking token.
+> The direct `en_route -> arrived` transition is now blocked behind verification.
+> The remaining open items (revoke former-tech access, Ops cancel/no-show) depend
+> on the Gate 3 recovery endpoints.
+
 ### Active Job
 
-- [ ] Use the real active-job API on every pilot technician screen.
-- [ ] Restore the job after refresh, sign-in, and normal reconnect.
+- [ ] Use the real active-job API on every pilot technician screen. _(partial — tech-app rewrite merged; confirm all screens)_
+- [ ] Restore the job after refresh, sign-in, and normal reconnect. _(verify)_
 - [ ] Remove mock job, movement, ETA, arrival, and completion data from the pilot
-  path.
-- [ ] Enforce that only the assigned technician can read or update the job.
-- [ ] Revoke the former technician's access after cancellation or reassignment.
+  path. _(partial — arrival stub now replaced; confirm movement/ETA/completion)_
+- [ ] Enforce that only the assigned technician can read or update the job. _(verify)_
+- [ ] Revoke the former technician's access after cancellation or reassignment. _(blocked on Gate 3 reassignment)_
+- ✅ <s style="color:#1a7f37">Single-step transition rule enforced (`can_technician_transition`, tgt == cur+1) — no milestone skipping.</s>
 
 ### Location and ETA
 
-- [ ] Capture GPS when the technician presses `Start route`.
-- [ ] Allow manual location refresh while the job is active.
-- [ ] Mark location stale after 15 minutes.
+- [ ] Capture GPS when the technician presses `Start route`. _(verify wiring)_
+- ✅ <s style="color:#1a7f37">Allow manual location refresh while the job is active.</s>
+- ✅ <s style="color:#1a7f37">Mark location stale after 15 minutes.</s> — `LOCATION_ONLINE_THRESHOLD_MINUTES=15`.
 - [ ] Use a traffic-aware route ETA if the Routes integration is quick and
   reliable; otherwise show the existing coarse estimate clearly labelled as an
-  estimate.
-- [ ] Never animate or imply continuous movement.
+  estimate. _(partial — coarse ETA exists)_
+- [ ] Never animate or imply continuous movement. _(verify in UI)_
 - [ ] Stop customer location access after cancellation, reassignment, completion,
-  or closure.
+  or closure. _(verify)_
 
 ### Arrival
 
-- [ ] Generate a secure six-digit customer PIN.
-- [ ] Bind it to the job and assigned technician.
-- [ ] Store a hash, not the PIN.
-- [ ] Make it expiring, single-use, and attempt-limited.
-- [ ] Move `en_route -> arrived` only after successful verification.
-- [ ] Allow an Ops override with a mandatory reason and audit event.
-- [ ] Defer QR arrival verification.
+> **DONE — secure PIN rebuilt (migration `0013`, `arrival_verifications`).**
+
+- ✅ <s style="color:#1a7f37">Generate a secure six-digit customer PIN.</s> — `secrets.randbelow`, issued via `POST /t/{token}/arrival-pin` (tracking-token-gated so the technician can't self-issue).
+- ✅ <s style="color:#1a7f37">Bind it to the job and assigned technician.</s>
+- ✅ <s style="color:#1a7f37">Store a hash, not the PIN.</s> — keyed HMAC-SHA256 (`ARRIVAL_PIN_SECRET` + job binding).
+- ✅ <s style="color:#1a7f37">Make it expiring, single-use, and attempt-limited.</s> — TTL 900s, single-use `verified_at`, max 5 attempts.
+- ✅ <s style="color:#1a7f37">Move `en_route -> arrived` only after successful verification.</s> — `POST /jobs/{id}/arrival/verify`; the generic status endpoint now 409s on a direct `arrived`.
+- ✅ <s style="color:#1a7f37">Allow an Ops override with a mandatory reason and audit event.</s> — `POST /ops/jobs/{id}/arrival/override`.
+- ✅ <s style="color:#1a7f37">Defer QR arrival verification.</s> — deferred per plan.
 
 ### Recovery
 
-- [ ] Customer can cancel before arrival under the existing policy.
+- ✅ <s style="color:#1a7f37">Customer can cancel before arrival under the existing policy.</s>
 - [ ] Technician can report `cannot_complete`, `customer_unavailable`, or
-  `unsafe`.
-- [ ] Ops can cancel, mark no-show, or return the job to `pending_dispatch`.
-- [ ] Reassignment preserves job history and revokes prior technician access.
+  `unsafe`. _(partial — `unsafe_location` enum exists; confirm end-to-end)_
+- [ ] Ops can cancel, mark no-show, or return the job to `pending_dispatch`. _(not built — no Ops recovery endpoints)_
+- [ ] Reassignment preserves job history and revokes prior technician access. _(not built)_
 - [ ] Every cancellation, no-show, failure, override, and reassignment records
-  actor, reason, time, and resulting state.
-- [ ] No payment fee is charged in MVP.
+  actor, reason, time, and resulting state. _(partial — assign is audited)_
+- ✅ <s style="color:#1a7f37">No payment fee is charged in MVP.</s>
 
 ### Acceptance
 
-- [ ] Active job survives a page refresh.
-- [ ] Wrong, expired, reused, or over-attempt PIN verification fails safely.
-- [ ] Correct PIN records arrival.
-- [ ] GPS and ETA never display fabricated values.
-- [ ] Cancellation immediately revokes offers and location visibility.
-- [ ] Reassignment removes the job from the previous technician.
+- [ ] Active job survives a page refresh. _(verify)_
+- ✅ <s style="color:#1a7f37">Wrong, expired, reused, or over-attempt PIN verification fails safely.</s> — regression-tested (wrong→lockout, expired, single-use, technician-mismatch).
+- ✅ <s style="color:#1a7f37">Correct PIN records arrival.</s>
+- [ ] GPS and ETA never display fabricated values. _(partial)_
+- [ ] Cancellation immediately revokes offers and location visibility. _(verify)_
+- [ ] Reassignment removes the job from the previous technician. _(not built)_
 - [ ] One job reaches `completed_pending_customer`.
 
 **Exit:** one real job reaches verified arrival and service completion, or is
@@ -198,13 +213,17 @@ manually recovered through cancellation, no-show, or reassignment.
 **Outcome:** Ops can observe and recover every supported pilot job without
 database changes.
 
+> **Status: LARGEST UNBUILT SURFACE.** No `/ops/*` mutation endpoints exist for
+> cancel / recall / release / return-to-queue / reassign / no-show / override;
+> only `resolve_job` (dispute) is present.
+
 ### Live Job View
 
-- [ ] Replace mock Ops job detail with real lifecycle data.
+- [ ] Replace mock Ops job detail with real lifecycle data. _(queue is live; a dedicated job-detail view is not present)_
 - [ ] Show request context, current status, active offer, assigned technician,
   ETA type, location freshness, and latest failure reason.
-- [ ] Show an append-only audit timeline.
-- [ ] Auto-refresh every 30 seconds with manual refresh.
+- [ ] Show an append-only audit timeline. _(events are logged via `log_event_raw`; timeline UI not confirmed)_
+- ✅ <s style="color:#1a7f37">Auto-refresh every 30 seconds with manual refresh.</s> — queue polling in place.
 
 ### Minimum Recovery Controls
 
@@ -215,14 +234,14 @@ database changes.
 - [ ] Assign a replacement technician.
 - [ ] Mark customer or technician no-show.
 - [ ] Override arrival.
-- [ ] Resolve or close a disputed job.
+- [ ] Resolve or close a disputed job. _(partial — `resolve_job` exists)_
 - [ ] Require a reason for every override or recovery action.
-- [ ] Make mutations atomic and return `409` for conflicting actions.
+- [ ] Make mutations atomic and return `409` for conflicting actions. _(partial — holds for existing ops endpoints)_
 
 ### Queue and Notes
 
 - [ ] Show pending dispatch, offer active, assigned, en route, arrived, in
-  progress, confirmation pending, disputed, cancelled, and stalled jobs.
+  progress, confirmation pending, disputed, cancelled, and stalled jobs. _(partial — pending + active-offer shown)_
 - [ ] Provide minimum filters for status, long wait, stale location, no response,
   and dispute.
 - [ ] Sort urgent and oldest unresolved jobs first.
@@ -231,11 +250,11 @@ database changes.
 
 ### Pilot Notifications
 
-- [ ] Keep technician offer polling.
+- ✅ <s style="color:#1a7f37">Keep technician offer polling.</s>
 - [ ] Provide an in-app visual offer alert and optional browser sound.
-- [ ] Show Ops whether an offer is active, accepted, declined, or expired.
-- [ ] Display the customer tracking link after intake.
-- [ ] Do not claim SMS, email, or push delivery.
+- ✅ <s style="color:#1a7f37">Show Ops whether an offer is active, accepted, declined, or expired.</s>
+- ✅ <s style="color:#1a7f37">Display the customer tracking link after intake.</s>
+- ✅ <s style="color:#1a7f37">Do not claim SMS, email, or push delivery.</s>
 
 ### Acceptance
 
@@ -252,17 +271,20 @@ database changes.
 
 **Outcome:** the controlled pilot is safe, repeatable, observable, and honest.
 
+> **Status: MOSTLY NOT STARTED.** Note: CI currently builds only `intake-web`;
+> `ops-web`, `provider-web`, and `technician-web` are not built in CI.
+
 ### Minimum Hardening
 
 - [ ] Retest Back navigation, GPS errors, photo upload, multiple-file selection,
   and file removal on production.
 - [ ] Gate demo `/charge`, `/finalize`, and legacy `/review` away from the MVP
   path.
-- [ ] Confirm Python dispatch/lifecycle tests run in CI.
-- [ ] Build/typecheck all four apps in CI.
+- ✅ <s style="color:#1a7f37">Confirm Python dispatch/lifecycle tests run in CI.</s> — `ci.yml` runs `pytest api/tests` + offline Alembic check.
+- [ ] Build/typecheck all four apps in CI. _(only `intake-web` today)_
 - [ ] Add a basic authenticated health check or deployment smoke test.
 - [ ] Rate-limit public tracking-token mutations.
-- [ ] Verify cross-tenant isolation for jobs, reviews, documents, and Ops routes.
+- [ ] Verify cross-tenant isolation for jobs, reviews, documents, and Ops routes. _(partial — ops role-isolation tested)_
 - [ ] Rotate any secrets previously shared outside the secret manager.
 - [ ] Document channel disable and global-off rollback procedures.
 
@@ -285,8 +307,8 @@ database changes.
 - [ ] Customer/technician no-show resolution.
 - [ ] Customer dispute and Ops closure.
 - [ ] 72-hour auto-close in a shortened non-production test configuration.
-- [ ] Duplicate assignment race.
-- [ ] Unauthorized technician, provider, and cross-tenant access.
+- [ ] Duplicate assignment race. _(unit-tested; live-DB integration test pending)_
+- [ ] Unauthorized technician, provider, and cross-tenant access. _(partial — ops endpoint isolation tested)_
 - [ ] Channel disable and global-off rollback.
 
 **MVP exit:** at least one controlled pilot job completes successfully and the
@@ -380,3 +402,12 @@ Before approving this plan, decide:
 7. Which production monitoring and compliance checks are mandatory before
    allowing real customers rather than internal test users?
 
+### Critical path (what actually remains)
+
+1. ~~Gate 2 — secure arrival PIN rebuild~~ ✅ **DONE** (migration `0013`; hashed, expiring, single-use, attempt-limited; token-gated issue + ops override).
+2. **Gate 3 — Ops recovery endpoints + live job detail** (now the largest unbuilt surface; also unblocks the remaining Gate 2 recovery items).
+3. **Gate 1 — apply migrations `0011` + `0012` to prod** (operational; code complete).
+4. **Gate 4 — CI builds for all four apps + hardening** (readiness, pre-real-customer).
+
+Internal demo can proceed on Gate 1 + an audited Ops arrival-override (per §11 Q6);
+real customers are blocked until the PIN rebuild and Gate 4 hardening land.

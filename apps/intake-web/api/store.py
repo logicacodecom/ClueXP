@@ -288,7 +288,9 @@ class Store:
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
-    async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:  # pragma: no cover
+    async def decline_dispatch_offer(
+        self, offer_id: UUID, technician_id: UUID, reason: str | None = None
+    ) -> bool:  # pragma: no cover
         raise NotImplementedError
 
     async def get_ops_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
@@ -307,6 +309,17 @@ class Store:
         expected_current: str | None = None,
         extra_timestamps: list[str] | None = None,
     ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_arrival_pin(
+        self, job_id: UUID, technician_id: UUID, pin_hash: str,
+        expires_at: datetime, max_attempts: int,
+    ) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def verify_arrival_pin(
+        self, job_id: UUID, technician_id: UUID, pin_hash: str
+    ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
     async def record_customer_review(
@@ -614,6 +627,11 @@ class InMemoryStore(Store):
                 (o for o in offers.values() if o.get("job_id") == jid and o.get("status") == "offered"),
                 None,
             )
+            declined = [
+                o for o in offers.values()
+                if o.get("job_id") == jid and o.get("status") == "declined"
+            ]
+            last_decline_reason = declined[-1].get("decline_reason") if declined else None
             result.append({
                 "id": jid, "address": None, "lat": None, "lng": None,
                 "access_type": None, "situation": None, "urgency": None,
@@ -623,6 +641,8 @@ class InMemoryStore(Store):
                 "offer_id": active_offer["id"] if active_offer else None,
                 "offered_technician_id": active_offer["technician_id"] if active_offer else None,
                 "offer_expires_at": None,
+                "decline_count": len(declined),
+                "last_decline_reason": last_decline_reason,
             })
         return result
 
@@ -703,11 +723,14 @@ class InMemoryStore(Store):
                 return {"id": jid, "status": statuses[jid], "access_type": None, "situation": None, "address": None, "lat": None, "lng": None}
         return None
 
-    async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:
+    async def decline_dispatch_offer(
+        self, offer_id: UUID, technician_id: UUID, reason: str | None = None
+    ) -> bool:
         offers = getattr(self, "_offers", {})
         offer = offers.get(str(offer_id))
         if offer and offer.get("technician_id") == str(technician_id) and offer.get("status") == "offered":
             offer["status"] = "declined"
+            offer["decline_reason"] = reason
             return True
         return False
 
@@ -717,6 +740,44 @@ class InMemoryStore(Store):
             if str(t.get("id")) == tid and t.get("status") == "active" and t.get("vetting_status") == "verified":
                 return t
         return None
+
+    async def create_arrival_pin(
+        self, job_id: UUID, technician_id: UUID, pin_hash: str,
+        expires_at: datetime, max_attempts: int,
+    ) -> None:
+        pins = getattr(self, "_arrival_pins", None)
+        if pins is None:
+            pins = self._arrival_pins = {}
+        pins[str(job_id)] = {
+            "technician_id": str(technician_id),
+            "pin_hash": pin_hash,
+            "expires_at": expires_at,
+            "attempts": 0,
+            "max_attempts": max_attempts,
+            "verified_at": None,
+        }
+
+    async def verify_arrival_pin(
+        self, job_id: UUID, technician_id: UUID, pin_hash: str
+    ) -> dict:
+        rec = getattr(self, "_arrival_pins", {}).get(str(job_id))
+        if rec is None:
+            return {"ok": False, "reason": "no_pin", "remaining": 0}
+        if rec["verified_at"] is not None:
+            return {"ok": False, "reason": "already_used", "remaining": 0}
+        remaining = rec["max_attempts"] - rec["attempts"]
+        if rec["technician_id"] != str(technician_id):
+            return {"ok": False, "reason": "technician_mismatch", "remaining": remaining}
+        if rec["attempts"] >= rec["max_attempts"]:
+            return {"ok": False, "reason": "locked", "remaining": 0}
+        if datetime.now(timezone.utc) > rec["expires_at"]:
+            return {"ok": False, "reason": "expired", "remaining": remaining}
+        if rec["pin_hash"] == pin_hash:
+            rec["verified_at"] = datetime.now(timezone.utc)
+            return {"ok": True, "reason": None, "remaining": remaining}
+        rec["attempts"] += 1
+        remaining = max(0, rec["max_attempts"] - rec["attempts"])
+        return {"ok": False, "reason": "locked" if remaining == 0 else "incorrect", "remaining": remaining}
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
@@ -1951,10 +2012,18 @@ class PostgresStore(Store):
                 "select j.id, j.address, j.lat, j.lng, j.access_type, j.situation,"
                 " j.urgency, j.created_at, j.customer_owner_org_id,"
                 " j.fulfillment_policy, j.dispatch_attempts,"
-                " o.id as offer_id, o.technician_id as offered_tech_id, o.expires_at"
+                " o.id as offer_id, o.technician_id as offered_tech_id, o.expires_at,"
+                " d.decline_reason, d.declined_count"
                 " from jobs j"
                 " left join dispatch_offers o"
                 "   on o.job_id = j.id and o.status = 'offered'"
+                " left join lateral ("
+                "   select count(*) as declined_count,"
+                "     (array_agg(decline_reason order by responded_at desc nulls last))[1]"
+                "       as decline_reason"
+                "   from dispatch_offers"
+                "   where job_id = j.id and status = 'declined'"
+                " ) d on true"
                 " where j.status = 'pending_dispatch'"
                 " order by j.created_at asc"
             )
@@ -1976,6 +2045,8 @@ class PostgresStore(Store):
                 "offer_id": str(r[11]) if r[11] else None,
                 "offered_technician_id": str(r[12]) if r[12] else None,
                 "offer_expires_at": r[13].isoformat() if r[13] else None,
+                "last_decline_reason": r[14],
+                "decline_count": r[15] or 0,
             }
             for r in rows
         ]
@@ -2053,14 +2124,18 @@ class PostgresStore(Store):
             for r in rows
         ]
 
-    async def decline_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> bool:
-        """Mark offer declined; return job to pending_dispatch when no active offer remains."""
+    async def decline_dispatch_offer(
+        self, offer_id: UUID, technician_id: UUID, reason: str | None = None
+    ) -> bool:
+        """Mark offer declined (capturing the reason for Ops reassignment); return
+        the job to pending_dispatch when no active offer remains."""
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "update dispatch_offers set status = 'declined', responded_at = now()"
+                "update dispatch_offers"
+                " set status = 'declined', responded_at = now(), decline_reason = %s"
                 " where id = %s and technician_id = %s and status = 'offered'"
                 " returning job_id",
-                (str(offer_id), str(technician_id)),
+                (reason, str(offer_id), str(technician_id)),
             )
             row = await cur.fetchone()
             if row:
@@ -2102,6 +2177,70 @@ class PostgresStore(Store):
             "location_updated_at": row[9].isoformat() if row[9] else None,
             "primary_organization_id": str(row[10]) if row[10] else None,
         }
+
+    async def create_arrival_pin(
+        self, job_id: UUID, technician_id: UUID, pin_hash: str,
+        expires_at: datetime, max_attempts: int,
+    ) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "insert into arrival_verifications"
+                " (job_id, technician_id, pin_hash, expires_at, attempts, max_attempts,"
+                "  verified_at, updated_at)"
+                " values (%s, %s, %s, %s, 0, %s, null, now())"
+                " on conflict (job_id) do update set"
+                "   technician_id = excluded.technician_id,"
+                "   pin_hash = excluded.pin_hash,"
+                "   expires_at = excluded.expires_at,"
+                "   attempts = 0, max_attempts = excluded.max_attempts,"
+                "   verified_at = null, updated_at = now()",
+                (str(job_id), str(technician_id), pin_hash, expires_at, max_attempts),
+            )
+
+    async def verify_arrival_pin(
+        self, job_id: UUID, technician_id: UUID, pin_hash: str
+    ) -> dict:
+        async with await self._connect() as conn:
+            # Atomic single-use claim: only a correct, live, unlocked PIN bound to
+            # this technician flips verified_at — concurrent retries can't double-verify.
+            cur = await conn.execute(
+                "update arrival_verifications set verified_at = now(), updated_at = now()"
+                " where job_id = %s and technician_id = %s and pin_hash = %s"
+                "   and verified_at is null and expires_at > now() and attempts < max_attempts"
+                " returning job_id",
+                (str(job_id), str(technician_id), pin_hash),
+            )
+            if await cur.fetchone():
+                return {"ok": True, "reason": None, "remaining": 0}
+            cur = await conn.execute(
+                "select technician_id, expires_at, attempts, max_attempts, verified_at"
+                " from arrival_verifications where job_id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return {"ok": False, "reason": "no_pin", "remaining": 0}
+            tech_id, expires_at, attempts, max_attempts, verified_at = row
+            remaining = max(0, max_attempts - attempts)
+            if verified_at is not None:
+                return {"ok": False, "reason": "already_used", "remaining": 0}
+            if str(tech_id) != str(technician_id):
+                return {"ok": False, "reason": "technician_mismatch", "remaining": remaining}
+            if attempts >= max_attempts:
+                return {"ok": False, "reason": "locked", "remaining": 0}
+            if datetime.now(timezone.utc) > expires_at:
+                return {"ok": False, "reason": "expired", "remaining": remaining}
+            # Wrong PIN on a live, unlocked record → count the failed attempt.
+            cur = await conn.execute(
+                "update arrival_verifications set attempts = attempts + 1, updated_at = now()"
+                " where job_id = %s and verified_at is null"
+                " returning attempts, max_attempts",
+                (str(job_id),),
+            )
+            urow = await cur.fetchone()
+            remaining = max(0, urow[1] - urow[0]) if urow else 0
+            return {"ok": False, "reason": "locked" if remaining == 0 else "incorrect",
+                    "remaining": remaining}
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime

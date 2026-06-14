@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import logging
 import math
 import os
 import random
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -20,10 +22,12 @@ from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
 from api.dispatch import (
+    STATUS_ARRIVED,
     STATUS_CANCELLED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
     STATUS_DISPUTED,
+    STATUS_EN_ROUTE,
     can_customer_cancel,
     can_technician_transition,
     eta_range_from_km,
@@ -85,11 +89,15 @@ async def strip_vercel_api_prefix(request, call_next):
     return await call_next(request)
 
 
-# OTP is deferred this sprint (no frontend gate); arrival codes back the
-# fulfillment demo and are best-effort — they may not survive a serverless cold
-# start, which is acceptable for a demo-only path.
+# OTP is deferred this sprint (no frontend gate); best-effort, demo-only.
 otp_codes: dict[UUID, str] = {}
-arrival_codes: dict[UUID, str] = {}
+
+
+def _arrival_pin_hash(job_id: UUID, pin: str) -> str:
+    """Keyed HMAC of the PIN, bound to the job. Only this hash is persisted, so a
+    DB leak never exposes a usable PIN without the server-side secret."""
+    msg = f"{job_id}:{pin}".encode()
+    return hmac.new(config.ARRIVAL_PIN_SECRET.encode(), msg, hashlib.sha256).hexdigest()
 
 
 class TicketEnvelope(BaseModel):
@@ -255,6 +263,14 @@ class TechnicianProfileUpdateRequest(BaseModel):
 
 class JobStatusUpdateRequest(BaseModel):
     status: str
+
+
+class ArrivalVerifyRequest(BaseModel):
+    pin: str
+
+
+class ArrivalOverrideRequest(BaseModel):
+    reason: str
 
 
 class CustomerReviewRequest(BaseModel):
@@ -1101,6 +1117,10 @@ class OpsAssignPayload(BaseModel):
     override_reason: str | None = None
 
 
+class DeclineOfferPayload(BaseModel):
+    reason: str | None = None
+
+
 @app.get("/ops/queue")
 async def ops_get_queue(
     session: dict[str, Any] = Depends(require_session),
@@ -1280,13 +1300,17 @@ async def accept_offer(offer_id: UUID) -> dict[str, Any]:
 
 @app.post("/offers/{offer_id}/decline")
 async def decline_offer(
-    offer_id: UUID, session: dict[str, Any] = Depends(require_session)
+    offer_id: UUID,
+    payload: DeclineOfferPayload | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Technician declines an offer — marks it declined so it stops appearing in the feed."""
+    """Technician declines an offer — marks it declined (recording an optional
+    reason for Ops reassignment) so it stops appearing in the feed."""
     tech = session.get("technician")
     if not tech:
         raise HTTPException(status_code=403, detail="Technician session required")
-    declined = await store.decline_dispatch_offer(offer_id, UUID(tech["id"]))
+    reason = payload.reason.strip()[:280] if payload and payload.reason else None
+    declined = await store.decline_dispatch_offer(offer_id, UUID(tech["id"]), reason)
     if not declined:
         raise HTTPException(status_code=404, detail="Offer not found or not eligible to decline")
     return {"declined": True}
@@ -1481,6 +1505,11 @@ async def technician_update_status(
         raise HTTPException(status_code=409, detail="Technician profile is required")
     if payload.status == STATUS_COMPLETED_CONFIRMED:
         raise HTTPException(status_code=403, detail="Only the customer can confirm completion")
+    if payload.status == STATUS_ARRIVED:
+        raise HTTPException(
+            status_code=409,
+            detail="Arrival requires customer PIN verification (POST /jobs/{id}/arrival/verify).",
+        )
     lifecycle = await store.get_job_lifecycle(ticket_id)
     if lifecycle is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1527,13 +1556,117 @@ async def resolve_job(
 
 @app.post("/tickets/{ticket_id}/arrival-handshake")
 async def arrival_handshake(ticket_id: UUID, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    raise HTTPException(
+        status_code=410,
+        detail="Removed. Customer issues a PIN via POST /t/{token}/arrival-pin; "
+               "the technician verifies via POST /jobs/{job_id}/arrival/verify.",
+    )
+
+
+@app.post("/t/{token}/arrival-pin")
+async def issue_arrival_pin(token: str) -> dict[str, Any]:
+    """Customer (tracking-token holder only) issues a fresh six-digit arrival PIN
+    bound to the job's assigned technician. Returned once for display; only a
+    keyed hash is stored. Issuing invalidates any prior PIN and resets attempts.
+    The technician — who has no tracking token — cannot reach this route."""
     await latency()
-    await require_ticket(ticket_id)
-    if not payload or "code" not in payload:
-        code = str(random.randint(1000, 9999))
-        arrival_codes[ticket_id] = code
-        return {"customer_code": code, "verified": False}
-    return {"verified": str(payload["code"]) == arrival_codes.get(ticket_id)}
+    job_id = await _require_token_job(token)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    tech_id = lifecycle.get("fulfillment_technician_id")
+    if not tech_id:
+        raise HTTPException(status_code=409, detail="No technician is assigned yet.")
+    if lifecycle["status"] != STATUS_EN_ROUTE:
+        raise HTTPException(
+            status_code=409,
+            detail="A PIN is available once your technician is en route.",
+        )
+    pin = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=config.ARRIVAL_PIN_TTL_SECONDS)
+    await store.create_arrival_pin(
+        job_id, UUID(tech_id), _arrival_pin_hash(job_id, pin),
+        expires_at, config.ARRIVAL_PIN_MAX_ATTEMPTS,
+    )
+    return {"pin": pin, "expires_at": expires_at.isoformat()}
+
+
+@app.post("/jobs/{job_id}/arrival/verify")
+async def verify_arrival(
+    job_id: UUID,
+    payload: ArrivalVerifyRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Assigned technician enters the customer-held PIN to move en_route -> arrived.
+    The PIN is single-use, expiring, and attempt-limited; failures never advance
+    the job."""
+    await latency()
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
+        raise HTTPException(status_code=403, detail="Not your job")
+    if lifecycle["status"] != STATUS_EN_ROUTE:
+        raise HTTPException(status_code=409, detail="Job is not en route")
+    pin = (payload.pin or "").strip()
+    result = await store.verify_arrival_pin(job_id, UUID(tech["id"]), _arrival_pin_hash(job_id, pin))
+    if not result.get("ok"):
+        reason = result.get("reason")
+        if reason in {"locked", "already_used"}:
+            code = 429
+        elif reason in {"no_pin", "expired"}:
+            code = 409
+        else:
+            code = 422
+        detail = {
+            "no_pin": "No active PIN — ask the customer to generate one.",
+            "expired": "The PIN expired — ask the customer to generate a new one.",
+            "locked": "Too many incorrect attempts — ask the customer to generate a new PIN.",
+            "already_used": "This PIN was already used.",
+            "technician_mismatch": "This PIN is not bound to you.",
+            "incorrect": f"Incorrect PIN. {result.get('remaining', 0)} attempt(s) left.",
+        }.get(reason, "Verification failed.")
+        raise HTTPException(status_code=code, detail=detail)
+    updated = await store.set_job_status(
+        job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Status changed concurrently")
+    await store.log_event_raw(job_id, f"arrival:pin_verified:tech={tech['id']}")
+    return {"status": updated["status"]}
+
+
+@app.post("/ops/jobs/{job_id}/arrival/override")
+async def ops_override_arrival(
+    job_id: UUID,
+    payload: ArrivalOverrideRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Platform admin forces en_route -> arrived without a PIN (e.g. customer can't
+    read it). Reason is mandatory and audited."""
+    require_any_role(session, {"platform_admin"})
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="An override reason is required.")
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle["status"] != STATUS_EN_ROUTE:
+        raise HTTPException(status_code=409, detail="Job is not en route")
+    updated = await store.set_job_status(
+        job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Status changed concurrently")
+    actor_id = session.get("user", {}).get("id", "unknown")
+    await store.log_event_raw(
+        job_id, f"arrival:ops_override:by={actor_id}:reason={reason[:140]}"
+    )
+    return {"status": updated["status"]}
 
 
 @app.post("/tickets/{ticket_id}/finalize", response_model=TicketEnvelope)

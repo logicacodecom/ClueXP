@@ -9,7 +9,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
 
   const incoming = await request.json().catch(() => ({}));
-  const response = await fetch(`${apiBase}/api/offers/${encodeURIComponent(id)}/decline`, {
+  const response = await fetch(`${apiBase}/api/jobs/${encodeURIComponent(id)}/arrival/verify`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify(incoming ?? {}),
