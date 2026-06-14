@@ -689,6 +689,150 @@ def test_http_ops_override_arrival_requires_reason():
     assert app_store._job_status[jid] == STATUS_ARRIVED
 
 
+# ---------------------------------------------------------------------------
+# Provider-managed dispatch (SaaS pivot): company dispatcher, org-scoped,
+# tenant-isolated. ClueXP does not dispatch — the company does.
+# ---------------------------------------------------------------------------
+
+def _seed_dispatcher(app_store, uid, org_id):
+    app_store.users[uid] = {
+        "id": uid, "email": f"disp_{uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": org_id, "organization_name": "Acme",
+    }
+
+
+def _seed_provider_job(app_store, org_id, jid):
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org_id
+
+
+def _seed_org_tech(app_store, org_id, tid):
+    from datetime import datetime, timezone
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "Org Tech", "skills": [], "rating": 4.5,
+        "current_lat": None, "current_lng": None,
+        "service_area_center_lat": None, "service_area_center_lng": None,
+        "location_updated_at": datetime.now(timezone.utc).isoformat(),
+        "primary_organization_id": org_id,
+    })
+
+
+def test_provider_queue_scoped_to_org():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org_a, org_b = str(uuid4()), str(uuid4())
+    uid = str(uuid4())
+    job_a, job_b = str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org_a)
+    _seed_provider_job(app_store, org_a, job_a)
+    _seed_provider_job(app_store, org_b, job_b)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    ids = [j["id"] for j in resp.json()]
+    assert job_a in ids and job_b not in ids, "dispatcher must see only their own org's jobs"
+
+
+def test_provider_assign_happy_path_own_tech():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid, jid, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/provider/queue/{jid}/assign", json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "offer_id" in resp.json()
+
+
+def test_provider_assign_rejects_foreign_technician():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org_a, org_b = str(uuid4()), str(uuid4())
+    uid, jid, foreign_tid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org_a)
+    _seed_provider_job(app_store, org_a, jid)
+    _seed_org_tech(app_store, org_b, foreign_tid)  # tech belongs to a DIFFERENT org
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/provider/queue/{jid}/assign", json={"technician_id": foreign_tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422  # not eligible: not this company's technician
+
+
+def test_provider_cannot_touch_other_orgs_job():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org_a, org_b = str(uuid4()), str(uuid4())
+    uid, other_job, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org_a)
+    _seed_provider_job(app_store, org_b, other_job)  # job owned by another company
+    _seed_org_tech(app_store, org_a, tid)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/provider/queue/{other_job}/assign", json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404  # not in this dispatcher's queue
+
+
+def test_provider_requires_active_org():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "disp_noorg@cluexp.test", "phone": None,
+        "display_name": "Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 409
+
+
+def test_provider_queue_rejects_technician_role():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "techrole@cluexp.test", "phone": None,
+        "display_name": "Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["technician"]})
+    client = TestClient(app)
+    resp = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+
+
 # --- ops endpoints require platform_admin, not just any dispatcher ----------
 def test_ops_queue_requires_platform_admin_not_provider_dispatcher():
     from starlette.testclient import TestClient

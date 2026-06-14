@@ -293,7 +293,9 @@ class Store:
     ) -> bool:  # pragma: no cover
         raise NotImplementedError
 
-    async def get_ops_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+    async def get_ops_technician(
+        self, technician_id: UUID, org_id: str | None = None
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def ops_create_single_offer(
@@ -616,12 +618,16 @@ class InMemoryStore(Store):
     async def expire_stale_offers(self) -> int:
         return 0
 
-    async def get_ops_queue(self) -> list[dict]:
+    async def get_ops_queue(self, org_id: str | None = None) -> list[dict]:
         statuses = getattr(self, "_job_status", {})
         offers = getattr(self, "_offers", {})
+        job_org = getattr(self, "_job_org", {})
         result = []
         for jid, status in statuses.items():
             if status != STATUS_PENDING_DISPATCH:
+                continue
+            owner_org = job_org.get(jid)
+            if org_id is not None and owner_org != str(org_id):
                 continue
             active_offer = next(
                 (o for o in offers.values() if o.get("job_id") == jid and o.get("status") == "offered"),
@@ -635,7 +641,7 @@ class InMemoryStore(Store):
             result.append({
                 "id": jid, "address": None, "lat": None, "lng": None,
                 "access_type": None, "situation": None, "urgency": None,
-                "created_at": None, "customer_owner_org_id": None,
+                "created_at": None, "customer_owner_org_id": owner_org,
                 "fulfillment_policy": None, "dispatch_attempts": 0,
                 "offer_active": active_offer is not None,
                 "offer_id": active_offer["id"] if active_offer else None,
@@ -646,10 +652,13 @@ class InMemoryStore(Store):
             })
         return result
 
-    async def list_all_technicians_for_ops(self) -> list[dict]:
-        return list(getattr(self, "_technicians", []))
+    async def list_all_technicians_for_ops(self, org_id: str | None = None) -> list[dict]:
+        techs = list(getattr(self, "_technicians", []))
+        if org_id is not None:
+            techs = [t for t in techs if str(t.get("primary_organization_id")) == str(org_id)]
+        return techs
 
-    async def get_fleet_state(self) -> list[dict]:
+    async def get_fleet_state(self, org_id: str | None = None) -> list[dict]:
         return []
 
     async def list_dispatchable_jobs(
@@ -734,10 +743,12 @@ class InMemoryStore(Store):
             return True
         return False
 
-    async def get_ops_technician(self, technician_id: UUID) -> dict | None:
+    async def get_ops_technician(self, technician_id: UUID, org_id: str | None = None) -> dict | None:
         tid = str(technician_id)
         for t in getattr(self, "_technicians", []):
             if str(t.get("id")) == tid and t.get("status") == "active" and t.get("vetting_status") == "verified":
+                if org_id is not None and str(t.get("primary_organization_id")) != str(org_id):
+                    return None
                 return t
         return None
 
@@ -2004,9 +2015,15 @@ class PostgresStore(Store):
 
     # --- ops-controlled dispatch (Sprint 3.4) ----------------------------------
 
-    async def get_ops_queue(self) -> list[dict]:
-        """All pending_dispatch jobs in arrival order, each annotated with any
-        active offer so the dispatcher can see 'Offer sent' state inline."""
+    async def get_ops_queue(self, org_id: str | None = None) -> list[dict]:
+        """Pending_dispatch jobs in arrival order, each annotated with any active
+        offer so the dispatcher can see 'Offer sent' state inline. With org_id set,
+        scoped to jobs the company owns or fulfills (provider dispatch)."""
+        org_filter = ""
+        params: tuple = ()
+        if org_id is not None:
+            org_filter = " and (j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)"
+            params = (str(org_id), str(org_id))
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select j.id, j.address, j.lat, j.lng, j.access_type, j.situation,"
@@ -2024,8 +2041,9 @@ class PostgresStore(Store):
                 "   from dispatch_offers"
                 "   where job_id = j.id and status = 'declined'"
                 " ) d on true"
-                " where j.status = 'pending_dispatch'"
-                " order by j.created_at asc"
+                " where j.status = 'pending_dispatch'" + org_filter +
+                " order by j.created_at asc",
+                params,
             )
             rows = await cur.fetchall()
         return [
@@ -2051,9 +2069,15 @@ class PostgresStore(Store):
             for r in rows
         ]
 
-    async def list_all_technicians_for_ops(self) -> list[dict]:
-        """All active+verified technicians with location data — no availability
-        filter. Provides the full pool for the dispatcher's candidates view."""
+    async def list_all_technicians_for_ops(self, org_id: str | None = None) -> list[dict]:
+        """Active+verified technicians with location data — no availability filter.
+        With org_id set, restricted to the company's own W-2/affiliated technicians
+        (primary_organization_id = org); otherwise the full platform pool."""
+        org_filter = ""
+        params: tuple = ()
+        if org_id is not None:
+            org_filter = " and primary_organization_id = %s"
+            params = (str(org_id),)
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, display_name, skills, current_lat, current_lng,"
@@ -2061,8 +2085,9 @@ class PostgresStore(Store):
                 " service_area_radius_km, rating, is_available,"
                 " location_updated_at, provider_type, primary_organization_id"
                 " from technicians"
-                " where status = 'active' and vetting_status = 'verified'"
-                " order by display_name"
+                " where status = 'active' and vetting_status = 'verified'" + org_filter +
+                " order by display_name",
+                params,
             )
             rows = await cur.fetchall()
         return [
@@ -2084,9 +2109,13 @@ class PostgresStore(Store):
             for r in rows
         ]
 
-    async def get_fleet_state(self) -> list[dict]:
+    async def get_fleet_state(self, org_id: str | None = None) -> list[dict]:
         """All active+verified technicians with their current location and active
-        job (if any). Single LEFT JOIN — one round trip for the fleet map."""
+        job (if any). Single LEFT JOIN — one round trip for the fleet map. With
+        org_id set, restricted to the company's own technicians."""
+        org_filter = " and t.primary_organization_id = %s" if org_id is not None else ""
+        active = ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]
+        params = (active,) + ((str(org_id),) if org_id is not None else ())
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select t.id, t.display_name, t.skills, t.is_available,"
@@ -2097,9 +2126,9 @@ class PostgresStore(Store):
                 " left join jobs j"
                 "   on j.fulfillment_technician_id = t.id"
                 "   and j.status = any(%s)"
-                " where t.status = 'active' and t.vetting_status = 'verified'"
+                " where t.status = 'active' and t.vetting_status = 'verified'" + org_filter +
                 " order by t.display_name",
-                (["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"],),
+                params,
             )
             rows = await cur.fetchall()
         return [
@@ -2150,16 +2179,19 @@ class PostgresStore(Store):
                 )
         return row is not None
 
-    async def get_ops_technician(self, technician_id: UUID) -> dict | None:
-        """Fetch one technician only if currently active and verified."""
+    async def get_ops_technician(self, technician_id: UUID, org_id: str | None = None) -> dict | None:
+        """Fetch one technician only if currently active and verified. With org_id
+        set, also require the technician belongs to that company (provider dispatch)."""
+        org_filter = " and primary_organization_id = %s" if org_id is not None else ""
+        params = (str(technician_id),) + ((str(org_id),) if org_id is not None else ())
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, display_name, skills, current_lat, current_lng,"
                 " service_area_center_lat, service_area_center_lng,"
                 " rating, is_available, location_updated_at, primary_organization_id"
                 " from technicians"
-                " where id = %s and status = 'active' and vetting_status = 'verified'",
-                (str(technician_id),),
+                " where id = %s and status = 'active' and vetting_status = 'verified'" + org_filter,
+                params,
             )
             row = await cur.fetchone()
         if row is None:

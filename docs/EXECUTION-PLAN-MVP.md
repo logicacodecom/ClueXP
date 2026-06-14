@@ -1,6 +1,6 @@
 # ClueXP Execution Plan MVP
 
-> **Status:** Draft for discussion — **redlined against code at commit `c559486` (PR #20) plus the uncommitted Gate 1 decline-reason and Gate 2 arrival-PIN work, 2026-06-13**
+> **Status:** Draft for discussion — **redlined 2026-06-13. Superseded in part by the provider-dispatch pivot (see §2 banner): ClueXP is SaaS and does not dispatch; the owning company's dispatcher does, via `/provider/*`. Public/channelless intake disabled.**
 > **Prepared:** 2026-06-13
 > **Purpose:** reduce the remaining roadmap to the smallest credible controlled
 > production pilot and product demo.
@@ -25,7 +25,18 @@ exists when it does not.
 
 ## 2. MVP Product Decisions
 
-- Dispatch is exclusively controlled by ClueXP Ops.
+> **⚠️ Architecture pivot (2026-06-13): ClueXP is a SaaS platform and does NOT dispatch.**
+> A request belongs to a **provider company** (via its branded intake channel), and that
+> **company's dispatcher assigns the company's own (W-2/affiliated) technicians**. ClueXP
+> Ops (`/ops/*`) is retained for **platform oversight + user/resource management**, not
+> dispatch. The earlier "ClueXP-Ops global-pool dispatch" decisions below are superseded
+> by provider-managed dispatch; treat references to "ClueXP Ops dispatches" as
+> "the owning company's dispatcher dispatches." Implemented under `/provider/*`
+> (tenant-scoped). Public/channelless intake is **disabled** — every dispatchable request
+> must belong to a company.
+
+- Dispatch is controlled by the **provider company that owns the request** (its dispatcher),
+  not by ClueXP. (Superseded: "exclusively controlled by ClueXP Ops.")
 - The system displays advisory technician signals; it never auto-assigns or
   automatically re-dispatches.
 - One targeted technician offer may be active for a job at a time.

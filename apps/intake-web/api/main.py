@@ -853,15 +853,16 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     await log_transition(ticket, "created")
     env = await envelope(ticket)
 
-    # Cutover fires when (a) the resolved channel has its per-channel flag on, OR
-    # (b) no channel was resolved (public intake) and DISPATCH_CUTOVER_PUBLIC is set —
-    # AND the global kill-switch is off.
+    # ClueXP is a SaaS platform — it does not dispatch. A request only enters the
+    # operational ladder when it belongs to a provider company via a branded intake
+    # channel whose per-channel flag is on (and the global kill-switch is off). The
+    # public/channelless path is intentionally disabled: a request with no owning
+    # company is never made dispatchable.
     channel_on = bool(origin and origin.get("dispatch_cutover_enabled"))
-    public_on = bool(not origin and config.DISPATCH_CUTOVER_PUBLIC)
-    cutover = (channel_on or public_on) and not config.DISPATCH_CUTOVER_GLOBAL_OFF
+    cutover = channel_on and not config.DISPATCH_CUTOVER_GLOBAL_OFF
     if cutover:
-        # Put the job on the operational ladder. No offer is created here —
-        # a dispatcher must assign via POST /ops/queue/{id}/assign.
+        # Put the job on the company's operational ladder. No offer is created
+        # here — the company's dispatcher assigns via POST /provider/queue/{id}/assign.
         await store.set_job_status(ticket.ticket_id, "pending_dispatch")
         await log_transition(ticket, "dispatch_cutover")
         token = await store.get_tracking_token(ticket.ticket_id)
@@ -1121,30 +1122,11 @@ class DeclineOfferPayload(BaseModel):
     reason: str | None = None
 
 
-@app.get("/ops/queue")
-async def ops_get_queue(
-    session: dict[str, Any] = Depends(require_session),
-) -> list[dict[str, Any]]:
-    """Return all pending_dispatch jobs ordered by arrival. Runs cleanup inline
-    (expire stale offers + auto-close) so the queue is always fresh."""
-    require_any_role(session, {"platform_admin"})
-    await store.expire_stale_offers()
-    await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
-    return await store.get_ops_queue()
+# --- shared dispatch core (used by both platform /ops/* and company /provider/*) ---
 
-
-@app.get("/ops/queue/{job_id}/candidates")
-async def ops_get_candidates(
-    job_id: UUID,
-    session: dict[str, Any] = Depends(require_session),
-) -> dict[str, Any]:
-    """Return the job plus all active+verified technicians with advisory signals."""
-    require_any_role(session, {"platform_admin"})
-    jobs = await store.get_ops_queue()
-    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
-    techs = await store.list_all_technicians_for_ops()
+async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Annotate a technician pool with advisory signals for a job and sort
+    nearest-first (unknown distance last), rating as tie-breaker."""
     now_dt = datetime.now(tz=timezone.utc)
     threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
     enriched = []
@@ -1159,9 +1141,7 @@ async def ops_get_candidates(
         loc_updated = tech.get("location_updated_at")
         if loc_updated and not isinstance(loc_updated, datetime):
             loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
-        is_online = bool(
-            loc_updated and (now_dt - loc_updated) < threshold
-        ) if loc_updated else False
+        is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
         active_job = await store.get_technician_active_job(tech["id"])
         skills = tech.get("skills") or []
         access_type = job.get("access_type")
@@ -1188,13 +1168,95 @@ async def ops_get_candidates(
             "service_area_center_lat": tech.get("service_area_center_lat"),
             "service_area_center_lng": tech.get("service_area_center_lng"),
         })
-    # Sort: nearest-first (known distance before unknown), then rating descending.
     enriched.sort(key=lambda c: (
         c["dist_km"] is None,
         c["dist_km"] if c["dist_km"] is not None else 0.0,
         -(c.get("rating") or 0.0),
     ))
-    return {"job": job, "candidates": enriched}
+    return enriched
+
+
+async def _send_targeted_offer(
+    *, job: dict[str, Any], job_id: UUID, technician_id: UUID, tech: dict[str, Any],
+    override_reason: str | None, session: dict[str, Any], audit_prefix: str,
+) -> dict[str, Any]:
+    """Advisory-flag check + single-offer creation + audit. Raises HTTPException on
+    override-required (422) or job/offer conflict (409). Shared by ops + provider."""
+    now_dt = datetime.now(tz=timezone.utc)
+    threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
+    loc_updated = tech.get("location_updated_at")
+    if loc_updated and not isinstance(loc_updated, datetime):
+        loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
+    is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
+    is_busy = (await store.get_technician_active_job(tech["id"])) is not None
+    skills = tech.get("skills") or []
+    access_type = job.get("access_type")
+    skills_match = (access_type in skills) if access_type else True
+    override_flags: list[str] = []
+    if not is_online:
+        override_flags.append("offline or location stale")
+    if is_busy:
+        override_flags.append("has an active job")
+    if not skills_match:
+        override_flags.append(f"skill mismatch (job needs '{access_type}')")
+    if override_flags and not override_reason:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Override required: technician {', '.join(override_flags)}. "
+                   f"Supply override_reason to proceed.",
+        )
+    org_id_str = tech.get("primary_organization_id")
+    org_id = UUID(org_id_str) if org_id_str else None
+    expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
+    offer = await store.ops_create_single_offer(job_id, technician_id, org_id, expires_at)
+    if offer is None or "error_code" in offer:
+        error_code = (offer or {}).get("error_code", "concurrent_offer")
+        if error_code == "job_not_pending":
+            raise HTTPException(
+                status_code=409,
+                detail="Job is no longer pending dispatch (cancelled or already assigned).",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail="Concurrent assignment — another offer was just created for this job.",
+        )
+    actor_id = session.get("user", {}).get("id", "unknown")
+    audit = f"{audit_prefix}:assign:tech={technician_id}:by={actor_id}"
+    if override_reason:
+        audit += f":override={override_reason[:100]}"
+    await store.log_event_raw(job_id, audit)
+    return {
+        "offer_id": offer.get("id"),
+        "technician_id": str(technician_id),
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+@app.get("/ops/queue")
+async def ops_get_queue(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Return all pending_dispatch jobs ordered by arrival. Runs cleanup inline
+    (expire stale offers + auto-close) so the queue is always fresh."""
+    require_any_role(session, {"platform_admin"})
+    await store.expire_stale_offers()
+    await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
+    return await store.get_ops_queue()
+
+
+@app.get("/ops/queue/{job_id}/candidates")
+async def ops_get_candidates(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Return the job plus all active+verified technicians with advisory signals."""
+    require_any_role(session, {"platform_admin"})
+    jobs = await store.get_ops_queue()
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
+    techs = await store.list_all_technicians_for_ops()
+    return {"job": job, "candidates": await _enriched_candidates(job, techs)}
 
 
 @app.post("/ops/queue/{job_id}/assign")
@@ -1223,55 +1285,10 @@ async def ops_assign(
             status_code=422,
             detail="Technician not found or not eligible (must be active and verified).",
         )
-    # Compute advisory signals: offline, busy, skill mismatch.
-    now_dt = datetime.now(tz=timezone.utc)
-    threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
-    loc_updated = tech.get("location_updated_at")
-    if loc_updated and not isinstance(loc_updated, datetime):
-        loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
-    is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
-    is_busy = (await store.get_technician_active_job(tech["id"])) is not None
-    skills = tech.get("skills") or []
-    access_type = job.get("access_type")
-    skills_match = (access_type in skills) if access_type else True
-    override_flags: list[str] = []
-    if not is_online:
-        override_flags.append("offline or location stale")
-    if is_busy:
-        override_flags.append("has an active job")
-    if not skills_match:
-        override_flags.append(f"skill mismatch (job needs '{access_type}')")
-    if override_flags and not payload.override_reason:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Override required: technician {', '.join(override_flags)}. "
-                   f"Supply override_reason to proceed.",
-        )
-    org_id_str = tech.get("primary_organization_id")
-    org_id = UUID(org_id_str) if org_id_str else None
-    expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
-    offer = await store.ops_create_single_offer(job_id, payload.technician_id, org_id, expires_at)
-    if offer is None or "error_code" in offer:
-        error_code = (offer or {}).get("error_code", "concurrent_offer")
-        if error_code == "job_not_pending":
-            raise HTTPException(
-                status_code=409,
-                detail="Job is no longer pending dispatch (cancelled or already assigned).",
-            )
-        raise HTTPException(
-            status_code=409,
-            detail="Concurrent assignment — another offer was just created for this job.",
-        )
-    actor_id = session.get("user", {}).get("id", "unknown")
-    audit = f"ops:assign:tech={payload.technician_id}:by={actor_id}"
-    if payload.override_reason:
-        audit += f":override={payload.override_reason[:100]}"
-    await store.log_event_raw(job_id, audit)
-    return {
-        "offer_id": offer.get("id"),
-        "technician_id": str(payload.technician_id),
-        "expires_at": expires_at.isoformat(),
-    }
+    return await _send_targeted_offer(
+        job=job, job_id=job_id, technician_id=payload.technician_id, tech=tech,
+        override_reason=payload.override_reason, session=session, audit_prefix="ops",
+    )
 
 
 @app.get("/ops/fleet")
@@ -1281,6 +1298,85 @@ async def ops_fleet(
     """Return all active+verified technicians with location and active job data."""
     require_any_role(session, {"platform_admin"})
     return await store.get_fleet_state()
+
+
+# --- company (provider-managed) dispatch: org-scoped clones of the ops console ---
+# ClueXP is SaaS — the company's own dispatcher assigns the company's own
+# technicians. Everything is scoped to session.active_organization_id; a
+# dispatcher can never see another company's jobs or technicians.
+
+def _require_dispatch_org(session: dict[str, Any]) -> str:
+    require_any_role(session, {"dispatcher", "provider_admin"})
+    org_id = session.get("active_organization_id")
+    if not org_id:
+        raise HTTPException(status_code=409, detail="A provider organization is required")
+    return str(org_id)
+
+
+@app.get("/provider/queue")
+async def provider_get_queue(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """The company's pending_dispatch jobs (owned or fulfilled by this org)."""
+    org_id = _require_dispatch_org(session)
+    await store.expire_stale_offers()
+    await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
+    return await store.get_ops_queue(org_id=org_id)
+
+
+@app.get("/provider/queue/{job_id}/candidates")
+async def provider_get_candidates(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """The job plus the company's own active+verified technicians, advisory-scored."""
+    org_id = _require_dispatch_org(session)
+    jobs = await store.get_ops_queue(org_id=org_id)
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    techs = await store.list_all_technicians_for_ops(org_id=org_id)
+    return {"job": job, "candidates": await _enriched_candidates(job, techs)}
+
+
+@app.post("/provider/queue/{job_id}/assign")
+async def provider_assign(
+    job_id: UUID,
+    payload: OpsAssignPayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """The company's dispatcher sends a targeted offer to one of its own
+    technicians. Tenant-scoped: the job must be in this org's queue and the
+    technician must belong to this org."""
+    org_id = _require_dispatch_org(session)
+    jobs = await store.get_ops_queue(org_id=org_id)
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    if job.get("offer_active"):
+        raise HTTPException(
+            status_code=409,
+            detail="An active offer already exists for this job. Wait for it to expire or be declined.",
+        )
+    tech = await store.get_ops_technician(payload.technician_id, org_id=org_id)
+    if tech is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Technician not found or not eligible (must be your active, verified technician).",
+        )
+    return await _send_targeted_offer(
+        job=job, job_id=job_id, technician_id=payload.technician_id, tech=tech,
+        override_reason=payload.override_reason, session=session, audit_prefix="provider",
+    )
+
+
+@app.get("/provider/fleet")
+async def provider_fleet(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """The company's own technicians with location and active-job data."""
+    org_id = _require_dispatch_org(session)
+    return await store.get_fleet_state(org_id=org_id)
 
 
 @app.post("/offers/{offer_id}/accept")
