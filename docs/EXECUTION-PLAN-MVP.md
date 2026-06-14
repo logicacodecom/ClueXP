@@ -109,27 +109,30 @@ mock operational data.
 - [ ] Confirm real active-job hydration on every pilot screen; job survives refresh. _(verify)_
 - [ ] Stop customer location access after cancel/reassign/complete/closure. _(verify)_
 - [ ] Technician failure reporting (`cannot_complete`/`customer_unavailable`/`unsafe`) end-to-end. _(partial)_
-- [ ] Revoke former technician's access on reassignment. _(blocked on Gate 3)_
+- ✅ <s style="color:#1a7f37">Revoke former technician's access on reassignment.</s> — provider release/cancel/no-show clear `fulfillment_technician_id` and supersede the offer (Gate 3).
 
 **Exit:** one real job reaches verified arrival + `completed_pending_customer`.
 Recovery is proved separately in Gate 3; it does not substitute for the happy path.
 
-## 7. Gate 3 — Company recovery controls  ← LARGEST REMAINING GAP
+## 7. Gate 3 — Company recovery controls  (recovery primitives + UI shipped)
 
 **Outcome:** a company's dispatcher can observe and recover every supported pilot job
 from its own console, tenant-scoped, without DB access.
 
 - ✅ <s style="color:#1a7f37">Arrival override (Gate 2).</s>
-- [ ] Provider live job view (real lifecycle data, audit timeline) for the company's active jobs.
-- [ ] Tenant-scoped recovery: cancel, recall/expire offer, release technician,
-  return to `pending_dispatch`, assign replacement, mark no-show.
-- [ ] Reassignment preserves history and **revokes the prior technician's access**.
-- [ ] Resolve/close a disputed job (org-scoped).
-- [ ] Reason required for every override/recovery; mutations atomic with `409` on conflict.
+- ✅ <s style="color:#1a7f37">Tenant-scoped recovery mutations: cancel, release technician (→ `pending_dispatch`), mark no-show — `POST /provider/jobs/{id}/{cancel,release,no-show}`.</s> (Reassignment = release → existing `POST /provider/queue/{id}/assign`.)
+- ✅ <s style="color:#1a7f37">Reassignment preserves history (events) and **revokes the prior technician's access**.</s>
+- ✅ <s style="color:#1a7f37">Reason required for every recovery; mutations atomic with `409` on stale/expected-status conflict; foreign/missing job → 404 (no existence leak); audited (`actor:org:reason`).</s>
+- ✅ <s style="color:#1a7f37">Restricted legacy `/admin/jobs/{id}/resolve` — tenant-scoped, no platform-admin cross-tenant override.</s>
+- ✅ <s style="color:#1a7f37">Provider recovery workspace UI (`/recovery`): active-jobs list + per-job cancel/release/no-show with reason capture.</s>
+- [ ] Provider live job view — **audit timeline** for an individual job (the list view exists; per-job timeline does not yet).
+- [ ] Recall/expire an active offer as a dedicated action (today: offers auto-expire, and cancel/release supersede them).
+- [ ] Resolve/close a **disputed** job from the provider console UI (the tenant-scoped resolve endpoint exists; a dispute-resolution screen does not).
 - [ ] Internal notes (author + timestamp), invisible to customers/technicians.
-- ✅ <s style="color:#1a7f37">Restricted legacy `/admin/jobs/{id}/resolve` — tenant-scoped, no platform-admin cross-tenant override.</s> Still to do: the full Gate 3 expected-status recovery contract (atomic, `409` on conflict) and the dedicated recovery mutations below.
 
 **Exit:** every supported pilot failure is recoverable from the company console.
+Core recovery (cancel/release/no-show/reassign) is shipped; internal notes and the
+in-console dispute-resolution screen remain.
 
 ## 8. Gate 4 — Pilot readiness and proof
 
@@ -217,12 +220,16 @@ Still to decide for the pilot:
 ## 12. Current code status (2026-06-14)
 
 - Gate 0 ✅ (code) · Gate 1 ✅ (code) · Gate 2 arrival ✅ (code); active-job/location
-  verification items open · Gate 3 mostly unbuilt (largest gap) · Gate 4 CI and
-  operational runbook complete, remaining hardening/proof items open.
+  verification items open · Gate 3 core recovery (cancel/release/no-show/reassign,
+  tenant-scoped, audited) + provider `/recovery` UI ✅ (code) — internal notes and the
+  in-console dispute-resolution screen remain · Gate 4 CI + operational runbook
+  complete, remaining hardening/proof items open.
 - Migrations `0011`/`0012`/`0013`: **applied to production — verified 2026-06-14.**
   `select version_num from alembic_version` → `0013_arrival_verification`; the
   `arrival_verifications` table is present. (Earlier this was unverified; now confirmed.)
 - Live pilot is **reported** held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`) pending
   Gate 3 + sign-off; re-verify the deployed environment before relying on it.
-- Critical path: **Gate 3 company recovery controls**, then Gate 4 hardening + CI
-  for all four apps.
+- Critical path: **Gate 4 hardening** (health check, tracking-token rate-limit, gate
+  demo `/charge`·`/finalize`·`/review` off the MVP path) + execute the pilot matrix
+  (`docs/MVP-PILOT-RUNBOOK.md`). Remaining Gate 3 polish (internal notes, in-console
+  dispute resolution) is non-blocking for the controlled pilot.
