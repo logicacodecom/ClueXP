@@ -1,5 +1,10 @@
 # ClueXP Pilot Demo Guide
 
+> **Superseded for the provider-managed MVP.** This June 12 guide documents the
+> retired ClueXP-Ops dispatch flow and contains stale arrival/provider-console
+> instructions. Do not use it to run the current pilot. Use
+> `docs/MVP-PILOT-RUNBOOK.md` and `docs/EXECUTION-PLAN-MVP.md`.
+
 **Pilot channel:** `metro-key` · **Date:** 2026-06-12 · **Status:** Sprint 3 cutover live
 
 ---

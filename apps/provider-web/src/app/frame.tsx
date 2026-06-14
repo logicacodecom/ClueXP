@@ -16,9 +16,13 @@ export function AppFrame({ children }: { children: ReactNode }) {
   if (loading) return <div className="min-h-screen bg-background" aria-busy="true" />;
   if (error) return <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">{error}</main>;
   if (!session) return null;
-  const providerNav = defaultNav.map((item) =>
+  const mappedNav = defaultNav.map((item) =>
     item.label === "Technicians" ? { ...item, href: "/jobs/JOB-B-2248/assign" } : item
   );
+  const providerNav = [
+    ...mappedNav,
+    { ...defaultNav[0], label: "Recovery", href: "/recovery" },
+  ];
   return (
     <AppShell
       activePath={pathname}

@@ -1441,3 +1441,89 @@ def test_resolve_job_is_tenant_scoped():
         headers={"Authorization": f"Bearer {token}"},
     )
     assert own.status_code == 200, own.text
+
+
+# ---------------------------------------------------------------------------
+# Gate 3: company recovery controls — tenant-scoped, expected-status, revoke
+# prior technician on release.
+# ---------------------------------------------------------------------------
+
+def _client_for_dispatcher(org_id):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org_id)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    return TestClient(app), app_store, token
+
+
+def test_provider_cancel_tenant_scoped():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org_a)
+    own, foreign = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org_a, own)
+    _seed_provider_job(app_store, org_b, foreign)
+    h = {"Authorization": f"Bearer {token}"}
+    # Another company's job is not cancellable (and not revealed).
+    r_foreign = client.post(f"/provider/jobs/{foreign}/cancel", json={"reason": "x"}, headers=h)
+    assert r_foreign.status_code == 404
+    assert app_store._job_status[foreign] == STATUS_PENDING_DISPATCH
+    # Reason required.
+    r_noreason = client.post(f"/provider/jobs/{own}/cancel", json={"reason": ""}, headers=h)
+    assert r_noreason.status_code == 422
+    # Own job cancels.
+    r_ok = client.post(f"/provider/jobs/{own}/cancel", json={"reason": "customer no longer needs it"}, headers=h)
+    assert r_ok.status_code == 200, r_ok.text
+    assert app_store._job_status[own] == "cancelled"
+
+
+def test_provider_release_revokes_prior_technician():
+    import asyncio
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org, jid)
+    # Put the job on the ladder with an assigned technician.
+    app_store._job_status[jid] = STATUS_EN_ROUTE
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tid
+    # Tech can see it as their active job before release.
+    assert asyncio.run(app_store.get_technician_active_job(UUID(tid))) is not None
+    resp = client.post(
+        f"/provider/jobs/{jid}/release", json={"reason": "tech unresponsive"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    # Prior technician's access is revoked: no longer their active job.
+    assert app_store._job_tech.get(jid) is None
+    assert asyncio.run(app_store.get_technician_active_job(UUID(tid))) is None
+
+
+def test_provider_recover_expected_status_409():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid = str(uuid4())
+    _seed_provider_job(app_store, org, jid)
+    # Job already completed_pending_customer — not a no-show-able state.
+    app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+    resp = client.post(
+        f"/provider/jobs/{jid}/no-show", json={"reason": "n/a"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+
+
+def test_provider_jobs_list_scoped():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org_a)
+    ja, jb = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org_a, ja)
+    _seed_provider_job(app_store, org_b, jb)
+    app_store._job_status[ja] = STATUS_EN_ROUTE
+    app_store._job_status[jb] = STATUS_EN_ROUTE
+    resp = client.get("/provider/jobs", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    ids = [j["id"] for j in resp.json()]
+    assert ja in ids and jb not in ids
