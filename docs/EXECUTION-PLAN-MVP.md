@@ -25,15 +25,19 @@ exists when it does not.
 
 ## 2. MVP Product Decisions
 
-> **⚠️ Architecture pivot (2026-06-13): ClueXP is a SaaS platform and does NOT dispatch.**
-> A request belongs to a **provider company** (via its branded intake channel), and that
+> **⚠️ Architecture pivot (2026-06-13): ClueXP is an isolated-tenant SaaS platform and does NOT dispatch.**
+> Each company is an **isolated tenant** — its own branded intake link, its own technicians,
+> and it dispatches **only to its own roster** (no cross-tenant visibility). A request
+> belongs to the **provider company** that owns its intake channel, and that
 > **company's dispatcher assigns the company's own (W-2/affiliated) technicians**. ClueXP
 > Ops (`/ops/*`) is retained for **platform oversight + user/resource management**, not
 > dispatch. The earlier "ClueXP-Ops global-pool dispatch" decisions below are superseded
 > by provider-managed dispatch; treat references to "ClueXP Ops dispatches" as
 > "the owning company's dispatcher dispatches." Implemented under `/provider/*`
 > (tenant-scoped). Public/channelless intake is **disabled** — every dispatchable request
-> must belong to a company.
+> must belong to a company. **Public marketplace intake + dispatch to independent
+> technicians/companies, and a company sourcing independent techs (network/overflow), are
+> the explicit next-version widening (see §10) — out of scope for this MVP.**
 
 - Dispatch is controlled by the **provider company that owns the request** (its dispatcher),
   not by ClueXP. (Superseded: "exclusively controlled by ClueXP Ops.")
@@ -351,12 +355,23 @@ The demo must explicitly disclose:
 
 ## 10. Deferred to Next Version
 
+### Marketplace & network dispatch (the widened scope)
+
+The current MVP is an **isolated-tenant SaaS**: each company has its own branded intake
+link, its own technicians, and dispatches only to its own roster — no cross-tenant
+visibility. The next version widens this:
+
+- **Public intake** (not tied to one company's channel) routed/dispatched by ClueXP to
+  **independent technicians or companies** — i.e. a marketplace.
+- A **company sourcing independent technicians** beyond its own W-2/affiliated roster
+  (network / overflow dispatch) when it can't cover a job itself.
+- Policy-enforced private/overflow/open routing across the network.
+
 ### Dispatch Intelligence
 
 - Weighted match scores and predictive recommendations.
 - Current-job completion prediction and `next_available_at`.
 - Automated SLA alerts, after-hours fallback, and dispatcher scheduling.
-- Organization-managed dispatch and policy-enforced private/overflow routing.
 - Bulk dispatch actions and advanced capacity planning.
 
 ### Maps and Field Experience
