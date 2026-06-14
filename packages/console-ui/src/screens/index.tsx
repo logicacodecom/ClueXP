@@ -51,7 +51,6 @@ import {
   Navigation,
   PageHeader,
   Phone,
-  RequestTable,
   Route,
   RowActions,
   SlaCountdown,
@@ -204,17 +203,20 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
   const router = useRouter();
   const [queue, setQueue] = useState<OpsJob[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // ClueXP ops dispatches from the global pool; a provider company dispatches
+  // its own org-scoped queue. Same UI, different tenant-scoped endpoint.
+  const apiPrefix = mode === "org" ? "/api/provider" : "/api/ops";
 
   const fetchQueue = useCallback(async () => {
     try {
-      const res = await fetch(`/api/ops/queue`);
+      const res = await fetch(`${apiPrefix}/queue`);
       if (!res.ok) throw new Error(`${res.status}`);
       setQueue(await res.json());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load queue");
     }
-  }, []);
+  }, [apiPrefix]);
 
   useEffect(() => {
     fetchQueue();
@@ -222,20 +224,10 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
     return () => window.clearInterval(id);
   }, [fetchQueue]);
 
-  if (mode === "org") {
-    const fallbackQueue = [...scopedJobs(mode)].sort((a, b) => byPriority(a) - byPriority(b));
-    return (
-      <div>
-        <PageHeader kicker="Organization queue" title="Live Dispatch Queue" description="Organization-scoped dispatch queue." actions={<Button asChild><Link href="/intake/new">Create Request</Link></Button>} />
-        <RequestTable jobs={fallbackQueue} />
-      </div>
-    );
-  }
-
   return (
     <div>
       <PageHeader
-        kicker="Ops dispatch queue"
+        kicker={mode === "org" ? "Company dispatch queue" : "Ops dispatch queue"}
         title="Live Dispatch Queue"
         description="All pending jobs in arrival order. Click a job to view candidates and send an assignment offer."
         actions={<Button variant="outline" onClick={fetchQueue}>Refresh</Button>}
@@ -538,18 +530,19 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   const [assigned, setAssigned] = useState<string | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<MapPoint | null>(null);
+  const apiPrefix = mode === "org" ? "/api/provider" : "/api/ops";
 
   const fetchCandidates = useCallback(async () => {
     if (!jobId) return;
     try {
-      const res = await fetch(`/api/ops/queue/${jobId}/candidates`);
+      const res = await fetch(`${apiPrefix}/queue/${jobId}/candidates`);
       if (!res.ok) throw new Error(`${res.status}`);
       setData(await res.json());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load candidates");
     }
-  }, [jobId]);
+  }, [jobId, apiPrefix]);
 
   useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
 
@@ -558,7 +551,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
     setAssigning(technicianId);
     setAssignError(null);
     try {
-      const res = await fetch(`/api/ops/queue/${jobId}/assign`, {
+      const res = await fetch(`${apiPrefix}/queue/${jobId}/assign`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ technician_id: technicianId }),
@@ -574,7 +567,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
     }
   }
 
-  if (!jobId || mode === "org") {
+  if (!jobId) {
     const job = primaryJob(mode);
     const offer = offers.find((item) => item.job_id === job.id) ?? firstOffer();
     const candidates = mode === "org" ? technicians.filter((tech) => tech.primary_organization_id === orgId) : technicians;
@@ -929,17 +922,18 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
   const [fleet, setFleet] = useState<FleetTech[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<MapPoint | null>(null);
+  const apiPrefix = mode === "org" ? "/api/provider" : "/api/ops";
 
   const fetchFleet = useCallback(async () => {
     try {
-      const res = await fetch(`/api/ops/fleet`);
+      const res = await fetch(`${apiPrefix}/fleet`);
       if (!res.ok) throw new Error(`${res.status}`);
       setFleet(await res.json());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load fleet");
     }
-  }, []);
+  }, [apiPrefix]);
 
   useEffect(() => {
     fetchFleet();
@@ -970,13 +964,9 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
   const online = (fleet ?? []).filter((t) => t.is_available).length;
   const busy = (fleet ?? []).filter((t) => t.active_job != null).length;
 
-  if (mode === "org") {
-    return <EmptyState title="Fleet map" description="Fleet map is available in ClueXP ops mode only." />;
-  }
-
   return (
     <div>
-      <PageHeader kicker="Live fleet" title="Fleet Map" description="All active technicians and their current jobs. Click a marker for details. Refreshes every 45s." actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
+      <PageHeader kicker="Live fleet" title="Fleet Map" description={mode === "org" ? "Your company's active technicians and their current jobs. Click a marker for details. Refreshes every 45s." : "All active technicians and their current jobs. Click a marker for details. Refreshes every 45s."} actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         <StatCard label="Active technicians" value={fleet ? String(fleet.length) : "—"} />
         <StatCard label="Online / available" value={fleet ? String(online) : "—"} intent="success" />
