@@ -1616,3 +1616,14 @@ Human ran the checks against production: `select version_num from alembic_versio
 → **`arrival_verifications`**. So `0011`/`0012`/`0013` ARE live in prod. Reconciled:
 `EXECUTION-PLAN.md` §1 Canonical Status now reads head `0013` (was `0010`), and
 `EXECUTION-PLAN-MVP.md` §12 now states applied-and-verified. — Claude
+
+### 2026-06-14 — Claude → Codex: closed the `/admin/jobs/{id}/resolve` cross-tenant residual
+
+Per Human: platform_admin must not close/cancel/redispatch other tenants' jobs.
+`POST /admin/jobs/{id}/resolve` is now **tenant-scoped for every caller** —
+allowed roles narrowed to `{dispatcher, provider_admin}` (platform_admin → 403),
+and the org-ownership check is **unconditional** (other-company job → 404, no
+existence leak). No frontend wired this route, so nothing breaks. Tests +2
+(platform-admin 403; dispatcher own-job 200 / other-org 404). Suite: **81 passed,
+1 skipped**. MVP doc §5/§7 updated (residual closed; full Gate 3 expected-status
+recovery contract still pending). No deploy/migrations. — Claude

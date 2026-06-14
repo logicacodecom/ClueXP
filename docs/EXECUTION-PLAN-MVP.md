@@ -3,9 +3,10 @@
 > **Status:** provider-managed, isolated-tenant SaaS MVP. Rewritten 2026-06-14 to
 > replace the earlier "ClueXP-Ops global-pool dispatch" framing (now superseded).
 > **Prepared:** 2026-06-13 · **Rewritten:** 2026-06-14
+> **Code reconciliation:** merged `main` at `0c95e84` (2026-06-14).
 > **Purpose:** the smallest credible controlled production pilot and product demo.
 >
-> Redline legend: ✅ <s style="color:#1a7f37">done & verified in code</s> · `- [ ]` not started ·
+> Redline legend: ✅ <s style="color:#1a7f37">done in merged code/tests</s> · `- [ ]` not started ·
 > _(partial)_ begun · _(operational)_ a deploy/process step, not code.
 
 ## 1. MVP Objective
@@ -35,11 +36,14 @@ live movement, or automation that does not exist.
   auto-re-dispatches.
 - One targeted technician offer may be active for a job at a time.
 - A decline or expired offer returns the job to that company's queue.
-- The company's dispatcher may cancel/resolve/reassign with an audited reason.
+- The MVP requires the company's dispatcher to cancel/resolve/reassign with an
+  audited reason. The complete recovery workspace is Gate 3 work.
 - **Public / channelless intake is disabled** — every dispatchable request must
   belong to a company.
-- **ClueXP Ops (`/ops/*`) is read-only oversight** + user/resource management. There
-  is no platform dispatch mutation.
+- **ClueXP Ops (`/ops/*`) is read-only dispatch oversight** + user/resource
+  management. Platform assignment and arrival-override mutations are removed, and
+  `/admin/jobs/{id}/resolve` is now tenant-scoped (platform_admin → 403; org-owned
+  jobs only) — no cross-tenant platform recovery remains.
 - The customer sees truthful waiting / assigned / fulfillment / closure states.
 - Polling and manual refresh are acceptable for the controlled pilot.
 - Real payment collection is out of MVP; the UI must state no production charge occurs.
@@ -80,13 +84,14 @@ and sends one targeted offer — without DB access, without seeing other tenants
 - ✅ <s style="color:#1a7f37">Override confirmation: offline/busy/stale/skill-mismatch requires a reason; the console captures + submits `override_reason`.</s>
 - ✅ <s style="color:#1a7f37">`409` on changed/cancelled/assigned/already-offered; one-active-offer DB index (migration `0011`).</s>
 - ✅ <s style="color:#1a7f37">Decline returns the job to the company's queue; reason persisted (`0012`) + surfaced in queue.</s>
-- ✅ <s style="color:#1a7f37">Audit of dispatcher, technician, time, result, override reason.</s>
+- ✅ <s style="color:#1a7f37">Successful assignment audit records dispatcher, technician, timestamp, and any override reason.</s>
 - ✅ <s style="color:#1a7f37">Provider-web dispatch console (queue + candidates + assign) wired to `/api/provider/*`.</s>
 
 **Tenant isolation (tested):** other-company job → 404, foreign technician → 422,
 missing org → 409, technician role → 403, no platform assign mutation exists.
 
-**ClueXP Ops oversight:** ✅ <s style="color:#1a7f37">`/ops/queue`, `/ops/queue/{id}/candidates`, `/ops/fleet` are read-only; the platform assign mutation was removed.</s>
+**ClueXP Ops oversight:** ✅ <s style="color:#1a7f37">`/ops/queue`, `/ops/queue/{id}/candidates`, `/ops/fleet` are read-only; platform assignment and arrival override were removed.</s>
+✅ <s style="color:#1a7f37">`/admin/jobs/{id}/resolve` is now tenant-scoped for every caller — platform_admin is no longer allowed (403) and the org-ownership check is unconditional (other-company job → 404). No cross-tenant platform recovery remains.</s>
 
 **Exit:** a company dispatches a real job from its console; no other tenant or
 background process can offer it. ✅ met (code).
@@ -99,15 +104,15 @@ mock operational data.
 - ✅ <s style="color:#1a7f37">Single-step transition rule (no milestone skipping).</s>
 - ✅ <s style="color:#1a7f37">Secure arrival PIN (migration `0013`): six-digit, customer-issued via the tracking token, HMAC-hashed (never stored plain), expiring/single-use/attempt-limited; `en_route → arrived` only on verification.</s>
 - ✅ <s style="color:#1a7f37">`ARRIVAL_PIN_SECRET` fails secure — production startup refuses an absent secret (no public default).</s>
-- ✅ <s style="color:#1a7f37">Tenant-scoped arrival override for the company's dispatcher (`POST /provider/jobs/{id}/arrival/override`, reason mandatory + audited).</s>
+- ✅ <s style="color:#1a7f37">Tenant-scoped arrival-override backend + provider BFF (`POST /provider/jobs/{id}/arrival/override`, reason mandatory + audited).</s>
 - ✅ <s style="color:#1a7f37">Manual location refresh; stale after 15 min; customer cancel before arrival; no payment fee.</s>
 - [ ] Confirm real active-job hydration on every pilot screen; job survives refresh. _(verify)_
 - [ ] Stop customer location access after cancel/reassign/complete/closure. _(verify)_
 - [ ] Technician failure reporting (`cannot_complete`/`customer_unavailable`/`unsafe`) end-to-end. _(partial)_
 - [ ] Revoke former technician's access on reassignment. _(blocked on Gate 3)_
 
-**Exit:** one real job reaches verified arrival + completion, or is recovered via
-cancellation/no-show/reassignment (recovery half depends on Gate 3).
+**Exit:** one real job reaches verified arrival + `completed_pending_customer`.
+Recovery is proved separately in Gate 3; it does not substitute for the happy path.
 
 ## 7. Gate 3 — Company recovery controls  ← LARGEST REMAINING GAP
 
@@ -122,6 +127,7 @@ from its own console, tenant-scoped, without DB access.
 - [ ] Resolve/close a disputed job (org-scoped).
 - [ ] Reason required for every override/recovery; mutations atomic with `409` on conflict.
 - [ ] Internal notes (author + timestamp), invisible to customers/technicians.
+- ✅ <s style="color:#1a7f37">Restricted legacy `/admin/jobs/{id}/resolve` — tenant-scoped, no platform-admin cross-tenant override.</s> Still to do: the full Gate 3 expected-status recovery contract (atomic, `409` on conflict) and the dedicated recovery mutations below.
 
 **Exit:** every supported pilot failure is recoverable from the company console.
 
@@ -139,9 +145,13 @@ from its own console, tenant-scoped, without DB access.
   technician failure+replacement, no-show, dispute+resolution, 72h auto-close
   (shortened), duplicate-assign race, unauthorized/cross-tenant access, rollback.
 
-**MVP exit:** at least one controlled pilot job completes for the pilot company, and
-the failure matrix passes without DB intervention, fabricated data, privacy leakage,
-cross-tenant access, or automatic dispatch.
+**Demo-ready exit:** one scripted internal company-owned job completes through the
+real dispatch, technician, arrival, completion, and customer-confirmation path with
+the disclosures below.
+
+**Pilot-ready exit:** at least one controlled pilot job completes for the pilot
+company, and the failure matrix passes without DB intervention, fabricated data,
+privacy leakage, cross-tenant access, or automatic dispatch.
 
 ## 9. MVP Demo Script
 
@@ -207,6 +217,7 @@ Still to decide for the pilot:
 - Migrations `0011`/`0012`/`0013`: **applied to production — verified 2026-06-14.**
   `select version_num from alembic_version` → `0013_arrival_verification`; the
   `arrival_verifications` table is present. (Earlier this was unverified; now confirmed.)
-- Live pilot held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`) pending Gate 3 + sign-off.
+- Live pilot is **reported** held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`) pending
+  Gate 3 + sign-off; re-verify the deployed environment before relying on it.
 - Critical path: **Gate 3 company recovery controls**, then Gate 4 hardening + CI
   for all four apps.

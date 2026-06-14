@@ -1389,3 +1389,55 @@ def test_postgres_concurrent_assign_isolation():
         assert len(failures) == 1, f"Expected 1 loser, got {len(failures)}"
 
     _aio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Recovery (/admin/jobs/{id}/resolve) is tenant-scoped — no cross-tenant
+# platform override (ClueXP does not recover other companies' jobs).
+# ---------------------------------------------------------------------------
+
+def test_resolve_job_rejects_platform_admin():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    uid = str(uuid4())
+    jid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_resolve@cluexp.test", "phone": None,
+        "display_name": "Platform Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    _seed_provider_job(app_store, str(uuid4()), jid)  # job owned by some company
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/admin/jobs/{jid}/resolve", json={"action": "cancel"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403  # platform admins do not resolve tenant jobs
+
+
+def test_resolve_job_is_tenant_scoped():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    org_a, org_b = str(uuid4()), str(uuid4())
+    uid = str(uuid4())
+    own_job, other_job = str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org_a)
+    _seed_provider_job(app_store, org_a, own_job)
+    _seed_provider_job(app_store, org_b, other_job)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    # Another company's job is not resolvable (and not revealed).
+    foreign = client.post(
+        f"/admin/jobs/{other_job}/resolve", json={"action": "cancel"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert foreign.status_code == 404
+    # The company's own job resolves.
+    own = client.post(
+        f"/admin/jobs/{own_job}/resolve", json={"action": "cancel"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert own.status_code == 200, own.text

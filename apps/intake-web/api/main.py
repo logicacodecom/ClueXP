@@ -1603,20 +1603,20 @@ async def resolve_job(
     payload: ResolveJobRequest,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Dispatcher/admin resolution: close, cancel, or redispatch. platform_admin
-    may resolve any job; a dispatcher may resolve only jobs their org owns or
-    fulfills (tenant-safe)."""
-    require_any_role(session, {"platform_admin", "dispatcher"})
+    """Company recovery: the owning org's dispatcher/provider_admin closes, cancels,
+    or redispatches a job their organization owns or fulfills. Tenant-scoped for every
+    caller — ClueXP is SaaS and does not recover other companies' jobs, so there is no
+    cross-tenant platform override."""
+    require_any_role(session, {"dispatcher", "provider_admin"})
     if payload.action not in {"close", "cancel", "redispatch"}:
         raise HTTPException(status_code=422, detail="Invalid resolve action")
     lifecycle = await store.get_job_lifecycle(job_id)
     if lifecycle is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if "platform_admin" not in set(session.get("roles", [])):
-        org_id = session.get("active_organization_id")
-        owned = {lifecycle.get("customer_owner_org_id"), lifecycle.get("fulfillment_org_id")}
-        if not org_id or org_id not in owned:
-            raise HTTPException(status_code=403, detail="Not your job")
+    org_id = session.get("active_organization_id")
+    owned = {lifecycle.get("customer_owner_org_id"), lifecycle.get("fulfillment_org_id")}
+    if not org_id or org_id not in owned:
+        raise HTTPException(status_code=404, detail="Job not found in your organization")
     try:
         result = await store.resolve_job(job_id, action=payload.action, note=payload.note)
     except ValueError:
