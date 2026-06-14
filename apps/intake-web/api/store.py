@@ -21,11 +21,15 @@ from uuid import UUID, uuid4
 
 from api.auth import hash_password, verify_password
 from api.dispatch import (
+    STATUS_ARRIVED,
     STATUS_ASSIGNED,
     STATUS_CANCELLED,
     STATUS_COMPLETED_AUTO_CLOSED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
+    STATUS_DISPUTED,
+    STATUS_EN_ROUTE,
+    STATUS_IN_PROGRESS,
     STATUS_PENDING_DISPATCH,
     STATUS_TIMESTAMP_COLUMN,
     can_customer_cancel,
@@ -322,6 +326,15 @@ class Store:
     async def verify_arrival_pin(
         self, job_id: UUID, technician_id: UUID, pin_hash: str
     ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_provider_active_jobs(self, org_id: str) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def recover_job(
+        self, job_id: UUID, *, target_status: str, expected_statuses: list[str],
+        clear_technician: bool = False, reason: str | None = None, audit_label: str = "recover",
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def record_customer_review(
@@ -789,6 +802,49 @@ class InMemoryStore(Store):
         rec["attempts"] += 1
         remaining = max(0, rec["max_attempts"] - rec["attempts"])
         return {"ok": False, "reason": "locked" if remaining == 0 else "incorrect", "remaining": remaining}
+
+    async def get_provider_active_jobs(self, org_id: str) -> list[dict]:
+        statuses = getattr(self, "_job_status", {})
+        job_org = getattr(self, "_job_org", {})
+        job_tech = getattr(self, "_job_tech", {})
+        offers = getattr(self, "_offers", {})
+        recoverable = {
+            STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED,
+            STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING, STATUS_DISPUTED,
+        }
+        out = []
+        for jid, status in statuses.items():
+            if status not in recoverable or job_org.get(jid) != str(org_id):
+                continue
+            active_offer = next(
+                (o for o in offers.values() if o.get("job_id") == jid and o.get("status") == "offered"),
+                None,
+            )
+            out.append({
+                "id": jid, "status": status, "address": None, "access_type": None,
+                "situation": None, "urgency": None, "created_at": None,
+                "fulfillment_technician_id": job_tech.get(jid),
+                "offer_active": active_offer is not None,
+                "offer_id": active_offer["id"] if active_offer else None,
+            })
+        return out
+
+    async def recover_job(
+        self, job_id: UUID, *, target_status: str, expected_statuses: list[str],
+        clear_technician: bool = False, reason: str | None = None, audit_label: str = "recover",
+    ) -> dict | None:
+        self._job_status = getattr(self, "_job_status", {})
+        jid = str(job_id)
+        if self._job_status.get(jid) not in expected_statuses:
+            return None
+        self._job_status[jid] = target_status
+        if clear_technician:
+            getattr(self, "_job_tech", {}).pop(jid, None)
+        for o in getattr(self, "_offers", {}).values():
+            if o.get("job_id") == jid and o.get("status") == "offered":
+                o["status"] = "superseded"
+        await self.log_event_raw(job_id, f"{audit_label}:{(reason or '')[:200]}")
+        return {"id": jid, "status": target_status}
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
@@ -2382,6 +2438,66 @@ class PostgresStore(Store):
             job_id,
             f"customer_cancel:{reason[:200]}" if reason else "customer_cancel",
         )
+        return {"id": str(row[0]), "status": row[1]}
+
+    async def get_provider_active_jobs(self, org_id: str) -> list[dict]:
+        """The company's active/recoverable jobs (owned or fulfilled) with assigned
+        technician and active-offer state — backs the provider recovery workspace."""
+        recoverable = [
+            "pending_dispatch", "assigned", "en_route", "arrived", "in_progress",
+            "completed_pending_customer", "disputed",
+        ]
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select j.id, j.status, j.address, j.access_type, j.situation, j.urgency,"
+                " j.created_at, j.fulfillment_technician_id, o.id, o.expires_at"
+                " from jobs j"
+                " left join dispatch_offers o on o.job_id = j.id and o.status = 'offered'"
+                " where (j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)"
+                "   and j.status = any(%s)"
+                " order by j.created_at asc",
+                (str(org_id), str(org_id), recoverable),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "status": r[1], "address": r[2], "access_type": r[3],
+                "situation": r[4], "urgency": r[5],
+                "created_at": r[6].isoformat() if r[6] else None,
+                "fulfillment_technician_id": str(r[7]) if r[7] else None,
+                "offer_active": r[8] is not None,
+                "offer_id": str(r[8]) if r[8] else None,
+                "offer_expires_at": r[9].isoformat() if r[9] else None,
+            }
+            for r in rows
+        ]
+
+    async def recover_job(
+        self, job_id: UUID, *, target_status: str, expected_statuses: list[str],
+        clear_technician: bool = False, reason: str | None = None, audit_label: str = "recover",
+    ) -> dict | None:
+        """Atomic tenant recovery transition: guards on current status ∈
+        expected_statuses (concurrent change → None → 409), optionally clears the
+        assigned technician (revoking their access), and supersedes any active offer."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update jobs set status = %s,"
+                " fulfillment_technician_id = case when %s then null else fulfillment_technician_id end,"
+                " cancelled_at = case when %s = 'cancelled' then coalesce(cancelled_at, now()) else cancelled_at end,"
+                " updated_at = now()"
+                " where id = %s and status = any(%s)"
+                " returning id, status",
+                (target_status, clear_technician, target_status, str(job_id), expected_statuses),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            await conn.execute(
+                "update dispatch_offers set status = 'superseded', responded_at = now()"
+                " where job_id = %s and status = 'offered'",
+                (str(job_id),),
+            )
+        await self.log_event_raw(job_id, f"{audit_label}:{(reason or '')[:200]}")
         return {"id": str(row[0]), "status": row[1]}
 
     async def record_customer_review(

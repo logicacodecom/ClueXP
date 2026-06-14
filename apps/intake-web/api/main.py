@@ -23,11 +23,15 @@ from api.auth import create_access_token, decode_access_token
 from api import config
 from api.dispatch import (
     STATUS_ARRIVED,
+    STATUS_ASSIGNED,
     STATUS_CANCELLED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
     STATUS_DISPUTED,
     STATUS_EN_ROUTE,
+    STATUS_IN_PROGRESS,
+    STATUS_NO_SHOW,
+    STATUS_PENDING_DISPATCH,
     can_customer_cancel,
     can_technician_transition,
     eta_range_from_km,
@@ -270,6 +274,10 @@ class ArrivalVerifyRequest(BaseModel):
 
 
 class ArrivalOverrideRequest(BaseModel):
+    reason: str
+
+
+class RecoveryRequest(BaseModel):
     reason: str
 
 
@@ -1743,6 +1751,93 @@ async def provider_override_arrival(
         job_id, f"arrival:provider_override:by={actor_id}:org={org_id}:reason={reason[:140]}"
     )
     return {"status": updated["status"]}
+
+
+# --- company recovery workspace (Gate 3): tenant-scoped, expected-status, audited ---
+
+async def _require_org_job(org_id: str, job_id: UUID) -> dict[str, Any]:
+    """Fetch a job's lifecycle and assert it belongs to the dispatcher's org.
+    Returns 404 (not 403) for a foreign/missing job — no cross-tenant existence leak."""
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    owned = {lifecycle.get("customer_owner_org_id"), lifecycle.get("fulfillment_org_id")}
+    if org_id not in owned:
+        raise HTTPException(status_code=404, detail="Job not found in your organization")
+    return lifecycle
+
+
+@app.get("/provider/jobs")
+async def provider_active_jobs(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """The company's active/recoverable jobs (live recovery workspace)."""
+    org_id = _require_dispatch_org(session)
+    return await store.get_provider_active_jobs(org_id)
+
+
+_ASSIGNED_LADDER = [STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS]
+
+
+async def _provider_recover(
+    *, job_id: UUID, payload: RecoveryRequest, session: dict[str, Any],
+    target_status: str, expected_statuses: list[str], audit_label: str,
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)  # tenant gate first — foreign job is 404, not 422
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A reason is required.")
+    actor_id = session.get("user", {}).get("id", "unknown")
+    updated = await store.recover_job(
+        job_id, target_status=target_status, expected_statuses=expected_statuses,
+        clear_technician=True, reason=f"by={actor_id}:org={org_id}:{reason[:160]}",
+        audit_label=audit_label,
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Job is not in a state this action can be applied to (it changed concurrently).",
+        )
+    return {"status": updated["status"]}
+
+
+@app.post("/provider/jobs/{job_id}/cancel")
+async def provider_cancel_job(
+    job_id: UUID, payload: RecoveryRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Cancel one of the company's jobs (any pre-completion state). Revokes the
+    assigned technician's access and supersedes any active offer."""
+    return await _provider_recover(
+        job_id=job_id, payload=payload, session=session, target_status=STATUS_CANCELLED,
+        expected_statuses=[STATUS_PENDING_DISPATCH, *_ASSIGNED_LADDER],
+        audit_label="provider_cancel",
+    )
+
+
+@app.post("/provider/jobs/{job_id}/release")
+async def provider_release_job(
+    job_id: UUID, payload: RecoveryRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Release the assigned technician and return the job to the company's queue.
+    Revokes the prior technician's access; reassign via POST /provider/queue/{id}/assign."""
+    return await _provider_recover(
+        job_id=job_id, payload=payload, session=session, target_status=STATUS_PENDING_DISPATCH,
+        expected_statuses=list(_ASSIGNED_LADDER), audit_label="provider_release",
+    )
+
+
+@app.post("/provider/jobs/{job_id}/no-show")
+async def provider_no_show(
+    job_id: UUID, payload: RecoveryRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Mark a job no-show (technician dispatched but the visit could not complete).
+    Revokes the technician's access and supersedes any active offer."""
+    return await _provider_recover(
+        job_id=job_id, payload=payload, session=session, target_status=STATUS_NO_SHOW,
+        expected_statuses=[STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED],
+        audit_label="provider_no_show",
+    )
 
 
 @app.post("/tickets/{ticket_id}/finalize", response_model=TicketEnvelope)
