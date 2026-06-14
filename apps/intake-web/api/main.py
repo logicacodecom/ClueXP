@@ -8,6 +8,7 @@ import math
 import os
 import random
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -279,6 +280,10 @@ class ArrivalOverrideRequest(BaseModel):
 
 class RecoveryRequest(BaseModel):
     reason: str
+
+
+class NoteRequest(BaseModel):
+    body: str
 
 
 class CustomerReviewRequest(BaseModel):
@@ -1284,6 +1289,28 @@ async def ops_fleet(
     return await store.get_fleet_state()
 
 
+@app.get("/healthz")
+async def healthz() -> dict[str, Any]:
+    """Unauthenticated liveness/deploy smoke check. A 200 here confirms the app
+    booted — which in production also means the fail-secure ARRIVAL_PIN_SECRET
+    check passed (startup raises otherwise). Exposes no secrets or tenant data."""
+    return {"status": "ok"}
+
+
+@app.get("/ops/flags")
+async def ops_flags(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    """Read-only oversight: the effective dispatch flags on the running deployment,
+    so an operator can verify runtime state (e.g. DISPATCH_CUTOVER_GLOBAL_OFF) without
+    a DB query. Reports whether the arrival-PIN secret is configured — never its value."""
+    require_any_role(session, {"platform_admin"})
+    return {
+        "dispatch_cutover_global_off": config.DISPATCH_CUTOVER_GLOBAL_OFF,
+        "dispatch_cutover_public": config.DISPATCH_CUTOVER_PUBLIC,
+        "arrival_pin_configured": config.ARRIVAL_PIN_SECRET != "dev-arrival-pin-secret",
+        "is_production": config.IS_PRODUCTION,
+    }
+
+
 # --- company (provider-managed) dispatch: org-scoped clones of the ops console ---
 # ClueXP is SaaS — the company's own dispatcher assigns the company's own
 # technicians. Everything is scoped to session.active_organization_id; a
@@ -1484,7 +1511,24 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
     return status
 
 
+# Per-token sliding-window rate limit for capability-link mutations. In-process
+# (per-instance) — a first abuse layer for a leaked tracking link; reads are not gated.
+_token_action_hits: dict[str, list[float]] = {}
+
+
+def _rate_limit_token_action(token: str) -> None:
+    window = config.TOKEN_ACTION_WINDOW_SECONDS
+    now_t = time.monotonic()
+    hits = [t for t in _token_action_hits.get(token, []) if now_t - t < window]
+    if len(hits) >= config.TOKEN_ACTION_MAX:
+        _token_action_hits[token] = hits
+        raise HTTPException(status_code=429, detail="Too many requests — please slow down.")
+    hits.append(now_t)
+    _token_action_hits[token] = hits
+
+
 async def _require_token_job(token: str) -> UUID:
+    _rate_limit_token_action(token)
     job_id = await store.resolve_tracking_token(token)
     if job_id is None:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1782,6 +1826,7 @@ _ASSIGNED_LADDER = [STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_
 async def _provider_recover(
     *, job_id: UUID, payload: RecoveryRequest, session: dict[str, Any],
     target_status: str, expected_statuses: list[str], audit_label: str,
+    clear_technician: bool = True,
 ) -> dict[str, Any]:
     org_id = _require_dispatch_org(session)
     await _require_org_job(org_id, job_id)  # tenant gate first — foreign job is 404, not 422
@@ -1791,7 +1836,7 @@ async def _provider_recover(
     actor_id = session.get("user", {}).get("id", "unknown")
     updated = await store.recover_job(
         job_id, target_status=target_status, expected_statuses=expected_statuses,
-        clear_technician=True, reason=f"by={actor_id}:org={org_id}:{reason[:160]}",
+        clear_technician=clear_technician, reason=f"by={actor_id}:org={org_id}:{reason[:160]}",
         audit_label=audit_label,
     )
     if updated is None:
@@ -1840,65 +1885,71 @@ async def provider_no_show(
     )
 
 
-@app.post("/tickets/{ticket_id}/finalize", response_model=TicketEnvelope)
-async def finalize(ticket_id: UUID) -> TicketEnvelope:
-    await latency()
-    ticket = await require_ticket(ticket_id)
-    quote_max = ticket.price_quote.estimate_max if ticket.price_quote else 0
-    final_amount = quote_max - 20 if quote_max else 165.0
-    exceeds = bool(quote_max and final_amount > quote_max)
-    ticket.final_charge = FinalCharge(
-        final_amount=final_amount,
-        breakdown_note="Service completed with standard labor and parts.",
-        exceeds_estimate=exceeds,
-        customer_approval_required=exceeds,
+@app.post("/provider/jobs/{job_id}/recall-offer")
+async def provider_recall_offer(
+    job_id: UUID, payload: RecoveryRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Recall the active offer on a still-pending job (the offered technician hasn't
+    accepted). Supersedes the offer; the job stays in the company's queue to re-assign.
+    No technician is assigned at this point, so none is cleared."""
+    return await _provider_recover(
+        job_id=job_id, payload=payload, session=session, target_status=STATUS_PENDING_DISPATCH,
+        expected_statuses=[STATUS_PENDING_DISPATCH], audit_label="provider_recall_offer",
+        clear_technician=False,
     )
-    await save(ticket)
-    await log_transition(ticket, "finalized")
-    return await envelope(ticket)
 
 
-@app.post("/tickets/{ticket_id}/approve-final", response_model=TicketEnvelope)
-async def approve_final(ticket_id: UUID) -> TicketEnvelope:
-    await latency()
-    ticket = await require_ticket(ticket_id)
-    if ticket.final_charge is None:
-        raise HTTPException(status_code=409, detail="Final charge not ready")
-    ticket.final_charge.customer_approved = True
-    ticket.final_charge.customer_approved_at = now()
-    await save(ticket)
-    await log_transition(ticket, "final_approved")
-    return await envelope(ticket)
+@app.get("/provider/jobs/{job_id}/notes")
+async def provider_list_notes(
+    job_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Internal notes on one of the company's jobs (dispatcher coordination /
+    audit trail). Tenant-scoped; never exposed to customers or technicians."""
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    return await store.list_job_notes(job_id)
+
+
+@app.post("/provider/jobs/{job_id}/notes")
+async def provider_add_note(
+    job_id: UUID, payload: NoteRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Append an internal note (author + timestamp) to one of the company's jobs."""
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    body = (payload.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="Note text is required.")
+    user = session.get("user", {})
+    return await store.add_job_note(
+        job_id, author_id=user.get("id", "unknown"),
+        author_name=user.get("display_name"), body=body[:2000],
+    )
+
+
+# Demo payment/finalize chain — gated OFF the MVP path (no real payment in MVP).
+# The customer's real review path is the token-gated POST /t/{token}/review.
+_DEMO_GONE = "Removed from the MVP — no production payment/finalize flow. (Customer review: POST /t/{token}/review.)"
+
+
+@app.post("/tickets/{ticket_id}/finalize")
+async def finalize(ticket_id: UUID) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail=_DEMO_GONE)
+
+
+@app.post("/tickets/{ticket_id}/approve-final")
+async def approve_final(ticket_id: UUID) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail=_DEMO_GONE)
 
 
 @app.post("/tickets/{ticket_id}/charge")
-async def charge(ticket_id: UUID) -> dict[str, str]:
-    await latency()
-    ticket = await require_ticket(ticket_id)
-    if ticket.final_charge is None:
-        raise HTTPException(status_code=409, detail="Final charge not ready")
-    if ticket.final_charge.customer_approval_required and not ticket.final_charge.customer_approved:
-        raise HTTPException(status_code=409, detail="Customer approval required")
-    await log_transition(ticket, "charge_captured")
-    return {"status": "captured"}
+async def charge(ticket_id: UUID) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail=_DEMO_GONE)
 
 
 @app.post("/tickets/{ticket_id}/review")
-async def review_ticket(ticket_id: UUID, payload: JobReviewRequest) -> dict[str, Any]:
-    await latency()
-    ticket = await require_ticket(ticket_id)
-    if ticket.final_charge is None:
-        raise HTTPException(status_code=409, detail="Job must be finalized before review")
-    if payload.rating < 1 or payload.rating > 5:
-        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
-    review = await store.record_review(
-        ticket_id=ticket_id,
-        rating=payload.rating,
-        tags=payload.tags[:12],
-        comment=payload.comment,
-    )
-    await log_transition(ticket, "review_submitted")
-    return {"status": "recorded", "review": review}
+async def review_ticket(ticket_id: UUID) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail=_DEMO_GONE)
 
 
 @app.post("/tickets/{ticket_id}/handoff", response_model=TicketEnvelope)

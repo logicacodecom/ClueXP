@@ -73,6 +73,13 @@ if not _arrival_pin_secret:
     _arrival_pin_secret = "dev-arrival-pin-secret"
 ARRIVAL_PIN_SECRET = _arrival_pin_secret
 
+# --- tracking-token mutation rate limit (Gate 4) ---
+# Per-token sliding window guarding the customer capability-link mutations
+# (confirm / review / dispute / cancel / arrival-pin). Generous enough for normal
+# use; blocks abuse of a leaked link. In-process (per-instance) — a first layer.
+TOKEN_ACTION_MAX = _int("TOKEN_ACTION_MAX", 30)
+TOKEN_ACTION_WINDOW_SECONDS = _int("TOKEN_ACTION_WINDOW_SECONDS", 60)
+
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
 LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)

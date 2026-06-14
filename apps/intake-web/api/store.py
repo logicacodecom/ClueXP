@@ -337,6 +337,14 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def add_job_note(
+        self, job_id: UUID, *, author_id: str, author_name: str | None, body: str
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_job_notes(self, job_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
     async def record_customer_review(
         self,
         *,
@@ -845,6 +853,23 @@ class InMemoryStore(Store):
                 o["status"] = "superseded"
         await self.log_event_raw(job_id, f"{audit_label}:{(reason or '')[:200]}")
         return {"id": jid, "status": target_status}
+
+    async def add_job_note(
+        self, job_id: UUID, *, author_id: str, author_name: str | None, body: str
+    ) -> dict:
+        notes = getattr(self, "_job_notes", None)
+        if notes is None:
+            notes = self._job_notes = {}
+        rec = {
+            "id": str(uuid4()), "job_id": str(job_id), "author_id": author_id,
+            "author_name": author_name, "body": body,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        notes.setdefault(str(job_id), []).append(rec)
+        return rec
+
+    async def list_job_notes(self, job_id: UUID) -> list[dict]:
+        return list(getattr(self, "_job_notes", {}).get(str(job_id), []))
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
@@ -2499,6 +2524,38 @@ class PostgresStore(Store):
             )
         await self.log_event_raw(job_id, f"{audit_label}:{(reason or '')[:200]}")
         return {"id": str(row[0]), "status": row[1]}
+
+    async def add_job_note(
+        self, job_id: UUID, *, author_id: str, author_name: str | None, body: str
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into job_notes (job_id, author_id, author_name, body)"
+                " values (%s, %s, %s, %s)"
+                " returning id, author_id, author_name, body, created_at",
+                (str(job_id), str(author_id), author_name, body),
+            )
+            r = await cur.fetchone()
+        return {
+            "id": str(r[0]), "author_id": str(r[1]), "author_name": r[2],
+            "body": r[3], "created_at": r[4].isoformat() if r[4] else None,
+        }
+
+    async def list_job_notes(self, job_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, author_id, author_name, body, created_at from job_notes"
+                " where job_id = %s order by created_at asc",
+                (str(job_id),),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "author_id": str(r[1]), "author_name": r[2],
+                "body": r[3], "created_at": r[4].isoformat() if r[4] else None,
+            }
+            for r in rows
+        ]
 
     async def record_customer_review(
         self,
