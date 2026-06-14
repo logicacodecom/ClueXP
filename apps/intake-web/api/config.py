@@ -57,9 +57,21 @@ ARRIVAL_PIN_TTL_SECONDS = _int("ARRIVAL_PIN_TTL_SECONDS", 900)
 ARRIVAL_PIN_MAX_ATTEMPTS = _int("ARRIVAL_PIN_MAX_ATTEMPTS", 5)
 # Server-side key for the keyed PIN hash (HMAC). Stable per deployment so the
 # stored hash can be recomputed for comparison; protects PINs if the DB leaks.
-ARRIVAL_PIN_SECRET = (
-    os.environ.get("ARRIVAL_PIN_SECRET") or os.environ.get("CRON_SECRET") or "dev-arrival-pin-secret"
+# Fail secure: production MUST set ARRIVAL_PIN_SECRET explicitly. We never silently
+# fall back to a public default in production — startup fails instead.
+IS_PRODUCTION = (
+    os.environ.get("VERCEL_ENV", "").strip().lower() == "production"
+    or os.environ.get("APP_ENV", os.environ.get("ENVIRONMENT", "")).strip().lower() in {"production", "prod"}
 )
+_arrival_pin_secret = os.environ.get("ARRIVAL_PIN_SECRET")
+if not _arrival_pin_secret:
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            "ARRIVAL_PIN_SECRET must be set in production. Refusing to start with an "
+            "insecure default — set a high-entropy secret (e.g. `openssl rand -hex 32`)."
+        )
+    _arrival_pin_secret = "dev-arrival-pin-secret"
+ARRIVAL_PIN_SECRET = _arrival_pin_secret
 
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)

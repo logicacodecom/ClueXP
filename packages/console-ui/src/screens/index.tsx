@@ -276,7 +276,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                       </td>
                       <td className="px-4 py-3">
                         <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); router.push(`/queue/${job.id}`); }}>
-                          Assign
+                          {mode === "org" ? "Assign" : "View"}
                         </Button>
                       </td>
                     </tr>
@@ -530,7 +530,12 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   const [assigned, setAssigned] = useState<string | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<MapPoint | null>(null);
+  // Override confirmation: when a flagged candidate (offline/busy/skill-mismatch) is
+  // chosen, the backend requires a reason; capture it inline before submitting.
+  const [overrideFor, setOverrideFor] = useState<string | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
   const apiPrefix = mode === "org" ? "/api/provider" : "/api/ops";
+  const canAssign = mode === "org"; // ClueXP Ops is read-only oversight; companies dispatch.
 
   const fetchCandidates = useCallback(async () => {
     if (!jobId) return;
@@ -546,7 +551,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
 
   useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
 
-  async function assign(technicianId: string) {
+  async function assign(technicianId: string, reason?: string) {
     if (!jobId) return;
     setAssigning(technicianId);
     setAssignError(null);
@@ -554,17 +559,23 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
       const res = await fetch(`${apiPrefix}/queue/${jobId}/assign`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ technician_id: technicianId }),
+        body: JSON.stringify(reason ? { technician_id: technicianId, override_reason: reason } : { technician_id: technicianId }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.detail || `${res.status}`);
       setAssigned(technicianId);
+      setOverrideFor(null);
+      setOverrideReason("");
       await fetchCandidates();
     } catch (err) {
       setAssignError(err instanceof Error ? err.message : "Assignment failed");
     } finally {
       setAssigning(null);
     }
+  }
+
+  function isFlagged(tech: { is_online?: boolean; is_busy?: boolean; skills_match?: boolean }) {
+    return !tech.is_online || tech.is_busy || tech.skills_match === false;
   }
 
   if (!jobId) {
@@ -601,9 +612,11 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   return (
     <div>
       <PageHeader
-        kicker="Ops assignment"
-        title="Choose technician"
-        description="Dispatcher selects one technician to send a targeted offer. No automatic ranking — you decide."
+        kicker={canAssign ? "Dispatch assignment" : "Platform oversight (read-only)"}
+        title={canAssign ? "Choose technician" : "Candidate view"}
+        description={canAssign
+          ? "Dispatcher selects one of the company's technicians to send a targeted offer. No automatic ranking — you decide."
+          : "Read-only view of eligible technicians. ClueXP does not dispatch — the owning company assigns."}
         actions={
           <Button variant="outline" asChild><Link href="/queue">Back to queue</Link></Button>
         }
@@ -643,14 +656,38 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                       ) : null}
                       <div className="mt-2 flex flex-wrap gap-1">{tech.skills.map((s) => <Badge key={s} variant={s === job?.access_type ? "success" : "outline"}>{s}</Badge>)}</div>
                     </div>
-                    <Button
-                      size="sm"
-                      disabled={assigning === tech.id || Boolean(activeOffer)}
-                      onClick={() => assign(tech.id)}
-                    >
-                      {assigning === tech.id ? "Sending..." : "Assign"}
-                    </Button>
+                    {canAssign ? (
+                      <Button
+                        size="sm"
+                        disabled={assigning === tech.id || Boolean(activeOffer)}
+                        onClick={() => {
+                          if (isFlagged(tech)) { setOverrideFor(tech.id); setOverrideReason(""); }
+                          else { void assign(tech.id); }
+                        }}
+                      >
+                        {assigning === tech.id ? "Sending..." : isFlagged(tech) ? "Assign…" : "Assign"}
+                      </Button>
+                    ) : null}
                   </div>
+                  {canAssign && overrideFor === tech.id ? (
+                    <div className="mt-3 rounded-md border border-warn/35 bg-warn/10 p-3">
+                      <p className="text-sm font-medium text-warn">
+                        This technician is {[!tech.is_online && "offline/stale", tech.is_busy && "busy", tech.skills_match === false && "missing the skill"].filter(Boolean).join(", ")}. A reason is required to override.
+                      </p>
+                      <input
+                        className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                        placeholder="Reason for overriding (required)"
+                        value={overrideReason}
+                        onChange={(e) => setOverrideReason(e.target.value)}
+                      />
+                      <div className="mt-2 flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => { setOverrideFor(null); setOverrideReason(""); }}>Cancel</Button>
+                        <Button size="sm" disabled={assigning === tech.id || overrideReason.trim().length < 3 || Boolean(activeOffer)} onClick={() => void assign(tech.id, overrideReason.trim())}>
+                          {assigning === tech.id ? "Sending..." : "Override & assign"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
             ))}

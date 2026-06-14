@@ -389,7 +389,9 @@ def test_ops_candidates_requires_auth():
     assert resp.status_code == 401
 
 
-def test_ops_assign_requires_auth():
+def test_ops_assign_route_removed():
+    # ClueXP is SaaS and does not dispatch — the platform assign mutation is gone.
+    # Dispatch lives only under /provider/queue/{id}/assign.
     from starlette.testclient import TestClient
     from api.main import app
     client = TestClient(app)
@@ -397,7 +399,7 @@ def test_ops_assign_requires_auth():
         "/ops/queue/00000000-0000-0000-0000-000000000001/assign",
         json={"technician_id": "00000000-0000-0000-0000-000000000002"},
     )
-    assert resp.status_code == 401
+    assert resp.status_code in (404, 405)
 
 
 def test_ops_fleet_requires_auth():
@@ -558,6 +560,27 @@ def test_inmemory_arrival_pin_technician_mismatch():
     assert r["ok"] is False and r["reason"] == "technician_mismatch"
 
 
+def test_arrival_pin_secret_fails_secure_in_production(monkeypatch):
+    """In production, an absent ARRIVAL_PIN_SECRET must fail startup rather than
+    silently fall back to the public dev default."""
+    import importlib
+    import pytest
+    from api import config as config_module
+
+    monkeypatch.setenv("VERCEL_ENV", "production")
+    monkeypatch.delenv("ARRIVAL_PIN_SECRET", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    try:
+        with pytest.raises(RuntimeError):
+            importlib.reload(config_module)
+    finally:
+        # Restore the normal (dev-default) config for the rest of the suite.
+        monkeypatch.undo()
+        importlib.reload(config_module)
+    assert config_module.ARRIVAL_PIN_SECRET == "dev-arrival-pin-secret"
+
+
 # ---------------------------------------------------------------------------
 # Gate 2: secure arrival PIN — HTTP flow
 # ---------------------------------------------------------------------------
@@ -656,32 +679,52 @@ def test_http_technician_cannot_set_arrived_directly():
         app_store.get_user_session = _orig_session
 
 
-def test_http_ops_override_arrival_requires_reason():
+def test_http_provider_override_arrival_requires_reason_and_is_tenant_scoped():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
     from api.auth import create_access_token
 
-    admin_uid = str(uuid4())
+    org = str(uuid4())
+    disp_uid = str(uuid4())
     tech_uid = str(uuid4())
     jid = str(uuid4())
     _seed_en_route_job(app_store, tech_uid, jid)
-    app_store.users[admin_uid] = {
-        "id": admin_uid, "email": "arr_admin@cluexp.test", "phone": None,
-        "display_name": "Avery", "password_hash": "",
-        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org  # job belongs to this company
+    app_store.users[disp_uid] = {
+        "id": disp_uid, "email": "disp_ovr@cluexp.test", "phone": None,
+        "display_name": "Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": org, "organization_name": "Acme",
     }
-    access = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    access = create_access_token({"sub": disp_uid, "id": disp_uid, "roles": ["dispatcher"]})
     client = TestClient(app)
 
+    # Reason required.
     missing = client.post(
-        f"/ops/jobs/{jid}/arrival/override", json={"reason": ""},
+        f"/provider/jobs/{jid}/arrival/override", json={"reason": ""},
         headers={"Authorization": f"Bearer {access}"},
     )
     assert missing.status_code == 422
     assert app_store._job_status[jid] == STATUS_EN_ROUTE
 
+    # A dispatcher from a different org cannot override this company's job.
+    other_uid = str(uuid4())
+    app_store.users[other_uid] = {
+        "id": other_uid, "email": "disp_other@cluexp.test", "phone": None,
+        "display_name": "Other", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": str(uuid4()), "organization_name": "Other",
+    }
+    other_access = create_access_token({"sub": other_uid, "id": other_uid, "roles": ["dispatcher"]})
+    foreign = client.post(
+        f"/provider/jobs/{jid}/arrival/override", json={"reason": "trying cross-tenant"},
+        headers={"Authorization": f"Bearer {other_access}"},
+    )
+    assert foreign.status_code == 404
+    assert app_store._job_status[jid] == STATUS_EN_ROUTE
+
+    # The owning company's dispatcher can override with a reason.
     ok = client.post(
-        f"/ops/jobs/{jid}/arrival/override", json={"reason": "Customer could not read the PIN"},
+        f"/provider/jobs/{jid}/arrival/override", json={"reason": "Customer could not read the PIN"},
         headers={"Authorization": f"Bearer {access}"},
     )
     assert ok.status_code == 200, ok.text
@@ -850,25 +893,9 @@ def test_ops_queue_requires_platform_admin_not_provider_dispatcher():
     assert resp.status_code == 403
 
 
-def test_ops_assign_requires_platform_admin_not_provider_dispatcher():
-    from starlette.testclient import TestClient
-    from api.main import app, store as app_store
-    from api.auth import create_access_token
-    from uuid import uuid4
-    uid = "user-provider-dispatcher-98"
-    app_store.users[uid] = {
-        "id": uid, "email": "provdisp2@cluexp.test", "phone": None,
-        "display_name": "Provider Dispatcher 2", "password_hash": "",
-        "roles": ["dispatcher"], "active_organization_id": None, "organization_name": None,
-    }
-    token = create_access_token({"sub": uid, "id": uid})
-    client = TestClient(app)
-    resp = client.post(
-        f"/ops/queue/{uuid4()}/assign",
-        json={"technician_id": str(uuid4())},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 403
+# (Removed test_ops_assign_requires_platform_admin_not_provider_dispatcher: the
+# platform assign mutation no longer exists — see test_ops_assign_route_removed
+# and the provider tenant-isolation tests.)
 
 
 # --- InMemoryStore: ops_create_single_offer blocks duplicate ----------------
@@ -1090,69 +1117,51 @@ def test_ops_queue_ok_for_platform_admin():
 
 
 # --- HTTP: assign unknown technician returns 422 ----------------------------
-def test_ops_assign_unknown_tech_returns_422():
+def test_provider_assign_unknown_tech_returns_422():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
     from api.auth import create_access_token
     from uuid import uuid4
-    uid = "user-platform-admin-ops-2"
+    org = str(uuid4())
+    uid = str(uuid4())
     jid = str(uuid4())
-    app_store.users[uid] = {
-        "id": uid, "email": "admin_ops2@cluexp.test", "phone": None,
-        "display_name": "Platform Admin 2", "password_hash": "",
-        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
-    }
-    # Seed job in pending_dispatch
-    app_store._job_status = getattr(app_store, "_job_status", {})
-    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
-    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, jid)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
     client = TestClient(app)
     resp = client.post(
-        f"/ops/queue/{jid}/assign",
+        f"/provider/queue/{jid}/assign",
         json={"technician_id": str(uuid4())},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 422
 
 
-# --- HTTP: concurrent assign returns 409 ------------------------------------
-def test_ops_assign_concurrent_409():
+# --- HTTP: concurrent assign returns 409 (provider) -------------------------
+def test_provider_assign_concurrent_409():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
     from api.auth import create_access_token
     from uuid import uuid4
-    uid = "user-platform-admin-ops-3"
+    org = str(uuid4())
+    uid = str(uuid4())
     jid = str(uuid4())
     tid = str(uuid4())
-    app_store.users[uid] = {
-        "id": uid, "email": "admin_ops3@cluexp.test", "phone": None,
-        "display_name": "Platform Admin 3", "password_hash": "",
-        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
-    }
-    # Seed job in pending_dispatch and a verified tech
-    app_store._job_status = getattr(app_store, "_job_status", {})
-    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
-    app_store._technicians = getattr(app_store, "_technicians", [])
-    # include location_updated_at so tech is online and no override is needed
-    from datetime import datetime, timezone
-    app_store._technicians.append({
-        "id": tid, "status": "active", "vetting_status": "verified",
-        "display_name": "T", "primary_organization_id": None,
-        "location_updated_at": datetime.now(timezone.utc).isoformat(),
-        "skills": [],
-    })
-    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)  # online, in-org tech (no override needed)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
     client = TestClient(app)
     # First assign succeeds
     r1 = client.post(
-        f"/ops/queue/{jid}/assign",
+        f"/provider/queue/{jid}/assign",
         json={"technician_id": tid},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert r1.status_code == 200
+    assert r1.status_code == 200, r1.text
     # Second assign on same job → 409 (offer_active)
     r2 = client.post(
-        f"/ops/queue/{jid}/assign",
+        f"/provider/queue/{jid}/assign",
         json={"technician_id": tid},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -1288,31 +1297,27 @@ def test_ops_candidates_sorted_nearest_first():
 # P1 regression: override_reason required for flagged technicians
 # ---------------------------------------------------------------------------
 
-def test_ops_assign_offline_tech_requires_override():
+def test_provider_assign_offline_tech_requires_override():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
     from api.auth import create_access_token
 
-    uid = "user-platform-admin-ovr-1"
+    org = str(uuid4())
+    uid = str(uuid4())
     jid = str(uuid4())
     tid = str(uuid4())
-    app_store.users[uid] = {
-        "id": uid, "email": "admin_ovr@cluexp.test", "phone": None,
-        "display_name": "Admin", "password_hash": "",
-        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
-    }
-    app_store._job_status = getattr(app_store, "_job_status", {})
-    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, jid)
     app_store._technicians = getattr(app_store, "_technicians", [])
-    # No location_updated_at → is_online=False → override required
+    # In-org tech with no location_updated_at → is_online=False → override required
     app_store._technicians.append({
         "id": tid, "status": "active", "vetting_status": "verified",
-        "display_name": "Offline", "skills": [], "primary_organization_id": None,
+        "display_name": "Offline", "skills": [], "primary_organization_id": org,
     })
-    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
     client = TestClient(app)
     resp = client.post(
-        f"/ops/queue/{jid}/assign",
+        f"/provider/queue/{jid}/assign",
         json={"technician_id": tid},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -1320,31 +1325,27 @@ def test_ops_assign_offline_tech_requires_override():
     assert "Override required" in resp.json().get("detail", "")
 
 
-def test_ops_assign_offline_tech_with_override_succeeds():
+def test_provider_assign_offline_tech_with_override_succeeds():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
     from api.auth import create_access_token
 
-    uid = "user-platform-admin-ovr-2"
+    org = str(uuid4())
+    uid = str(uuid4())
     jid = str(uuid4())
     tid = str(uuid4())
-    app_store.users[uid] = {
-        "id": uid, "email": "admin_ovr2@cluexp.test", "phone": None,
-        "display_name": "Admin", "password_hash": "",
-        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
-    }
-    app_store._job_status = getattr(app_store, "_job_status", {})
-    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, jid)
     app_store._technicians = getattr(app_store, "_technicians", [])
-    # Same offline tech — override_reason unlocks the assignment
+    # Same offline in-org tech — override_reason unlocks the assignment
     app_store._technicians.append({
         "id": tid, "status": "active", "vetting_status": "verified",
-        "display_name": "Offline", "skills": [], "primary_organization_id": None,
+        "display_name": "Offline", "skills": [], "primary_organization_id": org,
     })
-    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
     client = TestClient(app)
     resp = client.post(
-        f"/ops/queue/{jid}/assign",
+        f"/provider/queue/{jid}/assign",
         json={"technician_id": tid, "override_reason": "urgent — only available tech"},
         headers={"Authorization": f"Bearer {token}"},
     )

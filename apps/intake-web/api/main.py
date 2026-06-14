@@ -1259,43 +1259,19 @@ async def ops_get_candidates(
     return {"job": job, "candidates": await _enriched_candidates(job, techs)}
 
 
-@app.post("/ops/queue/{job_id}/assign")
-async def ops_assign(
-    job_id: UUID,
-    payload: OpsAssignPayload,
-    session: dict[str, Any] = Depends(require_session),
-) -> dict[str, Any]:
-    """Platform admin sends a targeted offer to one technician.
-    Advisory flags (offline, busy, skill mismatch) block assignment unless the
-    caller supplies override_reason. Returns 409 when the job is no longer
-    pending_dispatch or a concurrent offer already exists."""
-    require_any_role(session, {"platform_admin"})
-    jobs = await store.get_ops_queue()
-    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
-    if job.get("offer_active"):
-        raise HTTPException(
-            status_code=409,
-            detail="An active offer already exists for this job. Wait for it to expire or be declined.",
-        )
-    tech = await store.get_ops_technician(payload.technician_id)
-    if tech is None:
-        raise HTTPException(
-            status_code=422,
-            detail="Technician not found or not eligible (must be active and verified).",
-        )
-    return await _send_targeted_offer(
-        job=job, job_id=job_id, technician_id=payload.technician_id, tech=tech,
-        override_reason=payload.override_reason, session=session, audit_prefix="ops",
-    )
+# NOTE: ClueXP is a SaaS platform and does NOT dispatch. There is intentionally no
+# platform assign mutation — dispatch is the owning company's responsibility via
+# POST /provider/queue/{job_id}/assign. The /ops/* queue/candidates/fleet endpoints
+# below are read-only platform oversight only. (Future: a separate "ClueXP Direct"
+# dispatcher for independent technicians — out of scope for this MVP.)
 
 
 @app.get("/ops/fleet")
 async def ops_fleet(
     session: dict[str, Any] = Depends(require_session),
 ) -> list[dict[str, Any]]:
-    """Return all active+verified technicians with location and active job data."""
+    """Read-only oversight: all active+verified technicians with location and active
+    job data across the platform. No mutation."""
     require_any_role(session, {"platform_admin"})
     return await store.get_fleet_state()
 
@@ -1736,21 +1712,25 @@ async def verify_arrival(
     return {"status": updated["status"]}
 
 
-@app.post("/ops/jobs/{job_id}/arrival/override")
-async def ops_override_arrival(
+@app.post("/provider/jobs/{job_id}/arrival/override")
+async def provider_override_arrival(
     job_id: UUID,
     payload: ArrivalOverrideRequest,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Platform admin forces en_route -> arrived without a PIN (e.g. customer can't
-    read it). Reason is mandatory and audited."""
-    require_any_role(session, {"platform_admin"})
+    """The owning company's dispatcher forces en_route -> arrived without a PIN
+    (e.g. the customer can't read it). Tenant-scoped: the job must belong to the
+    dispatcher's active organization. Reason is mandatory and audited."""
+    org_id = _require_dispatch_org(session)
     reason = (payload.reason or "").strip()
     if len(reason) < 3:
         raise HTTPException(status_code=422, detail="An override reason is required.")
     lifecycle = await store.get_job_lifecycle(job_id)
     if lifecycle is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    owned = {lifecycle.get("customer_owner_org_id"), lifecycle.get("fulfillment_org_id")}
+    if org_id not in owned:
+        raise HTTPException(status_code=404, detail="Job not found in your organization")
     if lifecycle["status"] != STATUS_EN_ROUTE:
         raise HTTPException(status_code=409, detail="Job is not en route")
     updated = await store.set_job_status(
@@ -1760,7 +1740,7 @@ async def ops_override_arrival(
         raise HTTPException(status_code=409, detail="Status changed concurrently")
     actor_id = session.get("user", {}).get("id", "unknown")
     await store.log_event_raw(
-        job_id, f"arrival:ops_override:by={actor_id}:reason={reason[:140]}"
+        job_id, f"arrival:provider_override:by={actor_id}:org={org_id}:reason={reason[:140]}"
     )
     return {"status": updated["status"]}
 

@@ -10,7 +10,7 @@ export async function POST(
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   const { jobId } = await params;
   const body = await request.json().catch(() => ({}));
-  const response = await fetch(`${apiBase}/api/ops/queue/${jobId}/assign`, {
+  const response = await fetch(`${apiBase}/api/provider/jobs/${jobId}/arrival/override`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify(body),
