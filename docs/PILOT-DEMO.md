@@ -30,16 +30,14 @@ and `@metrokey.example` are real addresses here, **not** placeholders.
 | Name | Email | Role in the demo |
 |---|---|---|
 | **Nadia Reyes** | `dispatch@metrokey.example` | **MetroKey dispatcher** — assigns + recovers (provider console) |
+| **Jordan Lee** | `jordan@cluexp.example` | MetroKey **affiliate technician** — assignable, online |
 | **Marcus Reyes** | `marcus@metrokey.example` | MetroKey **affiliate technician** — assignable, online |
 | **Lena Ortiz** | `lena@metrokey.example` | MetroKey **affiliate technician** — assignable, online |
 | Avery Knox | `avery@cluexp.com` | Platform admin — **oversight only, does not dispatch** |
-| Jordan Lee | `jordan@cluexp.example` | **Independent** technician — **NOT assignable by MetroKey** (no org), offline |
 
-> ⚠️ **Use Marcus or Lena as the demo technician** — they are MetroKey's affiliated
-> roster, so MetroKey's dispatcher can assign them. **Jordan is independent** (no
-> organization) and will **not** appear in MetroKey's candidate list under the
-> provider-managed model. (Dispatching to independent technicians is a future
-> "ClueXP Direct" capability — out of scope for this MVP.)
+> **For the demo, all three technicians belong to MetroKey**, so MetroKey's dispatcher
+> can assign any of them. (Dispatching to *independent* technicians — those with no
+> organization — is a future "ClueXP Direct" capability, out of scope for this MVP.)
 
 ---
 
@@ -55,11 +53,11 @@ and `@metrokey.example` are real addresses here, **not** placeholders.
 ### Step 2 — MetroKey dispatcher assigns (provider console)
 1. Sign in to **`https://partners.cluexp.com`** as **Nadia Reyes** (`dispatch@metrokey.example` / `123456`).
 2. Open **Queue** — the new job appears (MetroKey's jobs only).
-3. Click the job → candidates = **MetroKey's own technicians** (Marcus, Lena) with distance, ETA, online/busy, and skill-match highlight.
+3. Click the job → candidates = **MetroKey's own technicians** (Jordan, Marcus, Lena) with distance, ETA, online/busy, and skill-match highlight.
 4. Click **Assign**. If the technician is offline/busy/skill-mismatch, the console requires an **override reason** before sending. One 90-second offer goes out; on expiry the job returns to MetroKey's queue.
 
 ### Step 3 — Technician accepts (tech PWA)
-1. Open **`https://tech.cluexp.com`**, sign in as **Marcus** (`marcus@metrokey.example` / `123456`) — or Lena.
+1. Open **`https://tech.cluexp.com`**, sign in as the assigned technician — **Jordan** (`jordan@cluexp.example`), **Marcus** (`marcus@metrokey.example`), or **Lena** (`lena@metrokey.example`), all `123456`.
 2. An offer card appears with a countdown → tap **Accept** (first-accept-wins).
 3. The customer tracking page shows the named technician.
 

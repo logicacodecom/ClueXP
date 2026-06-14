@@ -1264,25 +1264,8 @@ class PostgresStore(Store):
             provider_org_id,
             "+15550140199",
         )
-        jordan_id = await ensure_user(
-            "jordan@cluexp.example",
-            "Jordan Lee",
-            ["technician"],
-            None,
-            "+15550142201",
-        )
-        if jordan_id:
-            await conn.execute(
-                "insert into technicians"
-                " (id, display_name, email, phone, status, vetting_status, skills,"
-                " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
-                " rating, is_available, provider_type)"
-                " values (%s, 'Jordan Lee', 'jordan@cluexp.example', '+15550142201',"
-                " 'active', 'verified', '{home,business,vehicle}', 40.7580, -73.9855, 30,"
-                " 4.9, true, 'individual')"
-                " on conflict (id) do update set status = 'active', vetting_status = 'verified'",
-                (jordan_id,),
-            )
+        # Jordan is seeded as a MetroKey affiliate (below) so the company's dispatcher
+        # can assign him during the demo — all demo technicians belong to MetroKey.
         if provider_org_id:
             cur = await conn.execute(
                 "insert into organization_teams"
@@ -1301,6 +1284,7 @@ class PostgresStore(Store):
                 team_row = await cur.fetchone()
             team_id = team_row[0] if team_row else None
             for email, name, phone, lat, lng, rating in [
+                ("jordan@cluexp.example", "Jordan Lee", "+15550142201", 40.7580, -73.9855, 4.9),
                 ("marcus@metrokey.example", "Marcus Reyes", "+15550142211", 40.7831, -73.9712, 4.9),
                 ("lena@metrokey.example", "Lena Ortiz", "+15550142212", 40.7484, -73.9857, 4.7),
             ]:
@@ -1319,7 +1303,9 @@ class PostgresStore(Store):
                     " %s, %s, 25, %s, %s, now(), %s, true, 'affiliate', %s)"
                     " on conflict (id) do update set status = 'active', vetting_status = 'verified',"
                     " is_available = true, current_lat = excluded.current_lat,"
-                    " current_lng = excluded.current_lng, location_updated_at = now()",
+                    " current_lng = excluded.current_lng, location_updated_at = now(),"
+                    " provider_type = 'affiliate',"
+                    " primary_organization_id = excluded.primary_organization_id",
                     (
                         technician_id, name, email, phone, lat, lng, lat, lng,
                         rating, provider_org_id,
