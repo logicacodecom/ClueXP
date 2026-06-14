@@ -3,7 +3,7 @@
 > **Status:** provider-managed, isolated-tenant SaaS MVP. Rewritten 2026-06-14 to
 > replace the earlier "ClueXP-Ops global-pool dispatch" framing (now superseded).
 > **Prepared:** 2026-06-13 · **Rewritten:** 2026-06-14
-> **Code reconciliation:** merged `main` at `0c95e84` (2026-06-14).
+> **Code reconciliation:** merged `main` through `17559e4` (2026-06-14).
 > **Purpose:** the smallest credible controlled production pilot and product demo.
 >
 > Redline legend: ✅ <s style="color:#1a7f37">done in merged code/tests</s> · `- [ ]` not started ·
@@ -134,16 +134,20 @@ from its own console, tenant-scoped, without DB access.
 ## 8. Gate 4 — Pilot readiness and proof
 
 - ✅ <s style="color:#1a7f37">Python dispatch/lifecycle tests + offline Alembic validation in CI.</s>
-- [ ] Build/typecheck all four apps in CI (currently only `intake-web`).
+- ✅ <s style="color:#1a7f37">Build/typecheck all four apps in CI.</s> — root
+  workspace install, shared package typecheck, then intake/technician/provider/ops builds.
 - [ ] Gate demo `/charge`/`/finalize`/legacy `/review` away from the MVP path.
 - [ ] Authenticated health check / deployment smoke test.
 - [ ] Rate-limit public tracking-token mutations.
 - [ ] Verify cross-tenant isolation across jobs, reviews, documents, dispatch, recovery.
-- [ ] Document channel-disable / global-off rollback.
+- ✅ <s style="color:#1a7f37">Document channel-disable / global-off rollback.</s> —
+  see `docs/MVP-PILOT-RUNBOOK.md`.
 - [ ] Controlled roster: only approved pilot technicians for the pilot company.
-- [ ] Pilot matrix: happy path, decline+reassign, expiry, customer cancel,
+- ✅ <s style="color:#1a7f37">Define the pilot evidence matrix and rollback procedure.</s> —
+  see `docs/MVP-PILOT-RUNBOOK.md`. Execution remains required for: happy path,
+  decline+reassign, expiry, customer cancel,
   technician failure+replacement, no-show, dispute+resolution, 72h auto-close
-  (shortened), duplicate-assign race, unauthorized/cross-tenant access, rollback.
+  (shortened), duplicate-assign race, unauthorized/cross-tenant access, and rollback.
 
 **Demo-ready exit:** one scripted internal company-owned job completes through the
 real dispatch, technician, arrival, completion, and customer-confirmation path with
@@ -213,7 +217,8 @@ Still to decide for the pilot:
 ## 12. Current code status (2026-06-14)
 
 - Gate 0 ✅ (code) · Gate 1 ✅ (code) · Gate 2 arrival ✅ (code); active-job/location
-  verification items open · Gate 3 mostly unbuilt (largest gap) · Gate 4 mostly open.
+  verification items open · Gate 3 mostly unbuilt (largest gap) · Gate 4 CI and
+  operational runbook complete, remaining hardening/proof items open.
 - Migrations `0011`/`0012`/`0013`: **applied to production — verified 2026-06-14.**
   `select version_num from alembic_version` → `0013_arrival_verification`; the
   `arrival_verifications` table is present. (Earlier this was unverified; now confirmed.)

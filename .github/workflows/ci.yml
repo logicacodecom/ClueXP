@@ -6,19 +6,25 @@ on:
 jobs:
   web:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/intake-web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: apps/intake-web/package-lock.json
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm run build
+          cache-dependency-path: package-lock.json
+      - name: install monorepo dependencies
+        run: npm ci
+      - name: shared package typecheck
+        run: npm run typecheck
+      - name: build intake
+        run: npm run build --workspace @cluexp/intake-web
+      - name: build technician
+        run: npm run build:tech
+      - name: build provider
+        run: npm run build:provider
+      - name: build ops
+        run: npm run build:ops
   api:
     runs-on: ubuntu-latest
     steps:
