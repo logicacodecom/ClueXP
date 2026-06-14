@@ -108,13 +108,13 @@ mock operational data.
 - ✅ <s style="color:#1a7f37">Manual location refresh; stale after 15 min; customer cancel before arrival; no payment fee.</s>
 - [ ] Confirm real active-job hydration on every pilot screen; job survives refresh. _(verify)_
 - [ ] Stop customer location access after cancel/reassign/complete/closure. _(verify)_
-- [ ] Technician failure reporting (`cannot_complete`/`customer_unavailable`/`unsafe`) end-to-end. _(partial)_
+- ✅ <s style="color:#1a7f37">Technician failure reporting (`cannot_complete`/`customer_unavailable`/`unsafe`) end-to-end — `POST /jobs/{id}/report-issue` (audited event) → surfaced to the company recovery workspace as a ⚠ issue badge; the dispatcher decides recovery.</s>
 - ✅ <s style="color:#1a7f37">Revoke former technician's access on reassignment.</s> — provider release/cancel/no-show clear `fulfillment_technician_id` and supersede the offer (Gate 3).
 
 **Exit:** one real job reaches verified arrival + `completed_pending_customer`.
 Recovery is proved separately in Gate 3; it does not substitute for the happy path.
 
-## 7. Gate 3 — Company recovery controls  (recovery primitives + UI shipped)
+## 7. Gate 3 — Company recovery controls  ✅ COMPLETE (code)
 
 **Outcome:** a company's dispatcher can observe and recover every supported pilot job
 from its own console, tenant-scoped, without DB access.
@@ -125,12 +125,13 @@ from its own console, tenant-scoped, without DB access.
 - ✅ <s style="color:#1a7f37">Reason required for every recovery; mutations atomic with `409` on stale/expected-status conflict; foreign/missing job → 404 (no existence leak); audited (`actor:org:reason`).</s>
 - ✅ <s style="color:#1a7f37">Restricted legacy `/admin/jobs/{id}/resolve` — tenant-scoped, no platform-admin cross-tenant override.</s>
 - ✅ <s style="color:#1a7f37">Provider recovery workspace UI (`/recovery`): active-jobs list + per-job cancel/release/no-show with reason capture.</s>
-- [ ] Provider live job view — **audit timeline** for an individual job (the list view exists; per-job timeline does not yet).
-- [ ] Recall/expire an active offer as a dedicated action (today: offers auto-expire, and cancel/release supersede them).
-- [ ] Resolve/close a **disputed** job from the provider console UI (the tenant-scoped resolve endpoint exists; a dispute-resolution screen does not).
-- [ ] Internal notes (author + timestamp), invisible to customers/technicians.
+- ✅ <s style="color:#1a7f37">Provider live job view + **audit timeline** for an individual job — `GET /provider/jobs/{id}/timeline` + a Timeline panel in `/recovery`.</s>
+- ✅ <s style="color:#1a7f37">Recall an active offer — `POST /provider/jobs/{id}/recall-offer` + `/recovery` action.</s>
+- ✅ <s style="color:#1a7f37">Resolve a **disputed** job from the provider console — `/recovery` action → tenant-scoped `/admin/jobs/{id}/resolve`.</s>
+- ✅ <s style="color:#1a7f37">Internal notes (author + timestamp, invisible to customers/technicians) — migration `0014` `job_notes`, `GET`/`POST /provider/jobs/{id}/notes` + `/recovery` panel.</s>
+- ✅ <s style="color:#1a7f37">Technician-reported field issues surfaced as a ⚠ `last_issue` badge in the recovery list (see Gate 2).</s>
 
-**Exit:** every supported pilot failure is recoverable from the company console.
+**Exit:** every supported pilot failure is recoverable from the company console. ✅ met (code).
 Core recovery (cancel/release/no-show/reassign) is shipped; internal notes and the
 in-console dispute-resolution screen remain.
 
@@ -139,10 +140,10 @@ in-console dispute-resolution screen remain.
 - ✅ <s style="color:#1a7f37">Python dispatch/lifecycle tests + offline Alembic validation in CI.</s>
 - ✅ <s style="color:#1a7f37">Build/typecheck all four apps in CI.</s> — root
   workspace install, shared package typecheck, then intake/technician/provider/ops builds.
-- [ ] Gate demo `/charge`/`/finalize`/legacy `/review` away from the MVP path.
-- [ ] Authenticated health check / deployment smoke test.
-- [ ] Rate-limit public tracking-token mutations.
-- [ ] Verify cross-tenant isolation across jobs, reviews, documents, dispatch, recovery.
+- ✅ <s style="color:#1a7f37">Gate demo `/charge`/`/finalize`/`/approve-final`/legacy `/review` away from the MVP path — all return `410`.</s>
+- ✅ <s style="color:#1a7f37">Health check / deploy smoke — `GET /healthz` (liveness; a prod 200 also confirms the fail-secure `ARRIVAL_PIN_SECRET` startup check) + `GET /ops/flags` (platform_admin runtime flags).</s>
+- ✅ <s style="color:#1a7f37">Rate-limit public tracking-token mutations — per-token sliding window (429) on confirm/review/dispute/cancel/arrival-pin; reads unaffected.</s>
+- ✅ <s style="color:#1a7f37">Cross-tenant isolation verified — `/provider/*` derive org from session; dispatch/recovery/notes/timeline foreign→404/422 tested; `/admin/*` are platform_admin oversight.</s> _(in-process token limiter is per-instance — a DB-backed version is a post-pilot follow-up.)_
 - ✅ <s style="color:#1a7f37">Document channel-disable / global-off rollback.</s> —
   see `docs/MVP-PILOT-RUNBOOK.md`.
 - [ ] Controlled roster: only approved pilot technicians for the pilot company.
@@ -219,17 +220,18 @@ Still to decide for the pilot:
 
 ## 12. Current code status (2026-06-14)
 
-- Gate 0 ✅ (code) · Gate 1 ✅ (code) · Gate 2 arrival ✅ (code); active-job/location
-  verification items open · Gate 3 core recovery (cancel/release/no-show/reassign,
-  tenant-scoped, audited) + provider `/recovery` UI ✅ (code) — internal notes and the
-  in-console dispute-resolution screen remain · Gate 4 CI + operational runbook
-  complete, remaining hardening/proof items open.
-- Migrations `0011`/`0012`/`0013`: **applied to production — verified 2026-06-14.**
-  `select version_num from alembic_version` → `0013_arrival_verification`; the
-  `arrival_verifications` table is present. (Earlier this was unverified; now confirmed.)
-- Live pilot is **reported** held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`) pending
-  Gate 3 + sign-off; re-verify the deployed environment before relying on it.
-- Critical path: **Gate 4 hardening** (health check, tracking-token rate-limit, gate
-  demo `/charge`·`/finalize`·`/review` off the MVP path) + execute the pilot matrix
-  (`docs/MVP-PILOT-RUNBOOK.md`). Remaining Gate 3 polish (internal notes, in-console
-  dispute resolution) is non-blocking for the controlled pilot.
+- **All gates code-complete** (merged through PR #32): Gate 0 ✅ · Gate 1 ✅ ·
+  Gate 2 ✅ (secure arrival PIN + single-step transitions; technician failure
+  reporting) · Gate 3 ✅ (cancel/release/no-show/reassign/recall/resolve + internal
+  notes + per-job audit timeline, tenant-scoped + `/recovery` UI) · Gate 4 ✅ (CI for
+  all four apps, demo-route gating, `/healthz` + `/ops/flags`, token rate-limit,
+  runbook). 95 tests pass.
+- Migrations: prod verified at `0013_arrival_verification` (2026-06-14). **Migration
+  `0014` (job_notes) — pending production application** (internal notes 500 without it).
+- Live pilot held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`); confirm at runtime via
+  `GET /ops/flags` after redeploy.
+- Remaining is **operational, not code**: apply `0014`, redeploy the four Vercel
+  projects from `main`, observe CI green, then execute the pilot matrix
+  (`docs/MVP-PILOT-RUNBOOK.md`) with an approved roster before flipping the channel on.
+- Post-pilot follow-ups (non-blocking): DB-backed token limiter; `/healthz` DB-ping
+  readiness variant.
