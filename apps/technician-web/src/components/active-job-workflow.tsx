@@ -78,6 +78,9 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [error, setError] = useState<string | null>(null);
   const [pinMode, setPinMode] = useState(false);
   const [pin, setPin] = useState("");
+  const [issueKind, setIssueKind] = useState<string | null>(null);
+  const [issueReason, setIssueReason] = useState("");
+  const [issueDone, setIssueDone] = useState(false);
   const copy = statusCopy(job.status);
   const currentIndex = stages.findIndex((stage) => stage.status === job.status);
 
@@ -183,6 +186,29 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       setPin("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "PIN verification failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reportIssue() {
+    if (!issueKind || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/report-issue`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: issueKind, reason: issueReason.trim() })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) { window.location.assign("/signin"); return; }
+      if (!response.ok) throw new Error(body.detail || "Could not report the problem");
+      setIssueDone(true);
+      setIssueKind(null);
+      setIssueReason("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not report the problem");
     } finally {
       setBusy(false);
     }
@@ -336,6 +362,30 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
           <div className="mt-5 flex gap-3 border border-warn/35 bg-warn/10 p-4">
             <Clock3 className="size-5 shrink-0 text-warn" />
             <div><p className="font-black">Customer confirmation pending</p><p className="mt-1 text-sm leading-5 text-muted">You cannot close this job yourself. This screen will refresh automatically.</p></div>
+          </div>
+        ) : null}
+
+        {(job.status === "en_route" || job.status === "arrived" || job.status === "in_progress") ? (
+          <div className="mt-5 border border-border p-4">
+            {issueDone ? (
+              <p className="text-sm font-semibold text-success">Problem reported — dispatch has been notified and will follow up.</p>
+            ) : (
+              <>
+                <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Report a problem</p>
+                <p className="mt-1 text-sm leading-5 text-muted">Flag a blocker to dispatch. This does not change the job — your dispatcher decides what happens next.</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {([["cannot_complete", "Can’t complete"], ["customer_unavailable", "Customer unavailable"], ["unsafe", "Unsafe"]] as const).map(([kind, label]) => (
+                    <button key={kind} className={`touch-target min-h-10 rounded-full border px-3 text-sm font-bold ${issueKind === kind ? "border-primary bg-primary/10 text-primary" : "border-border"}`} onClick={() => setIssueKind(kind)} type="button">{label}</button>
+                  ))}
+                </div>
+                {issueKind ? (
+                  <div className="mt-3 space-y-2">
+                    <input className="w-full border border-border bg-card px-3 py-2 text-sm" placeholder="Add detail (optional)" value={issueReason} onChange={(e) => setIssueReason(e.target.value)} aria-label="Problem detail" />
+                    <button className="touch-target min-h-11 w-full bg-primary font-black text-primary-foreground disabled:opacity-50" disabled={busy} onClick={() => void reportIssue()} type="button">{busy ? "Reporting…" : "Report to dispatch"}</button>
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
         ) : null}
       </div>

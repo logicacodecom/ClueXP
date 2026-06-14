@@ -345,6 +345,9 @@ class Store:
     async def list_job_notes(self, job_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def list_job_events(self, job_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
     async def record_customer_review(
         self,
         *,
@@ -828,14 +831,28 @@ class InMemoryStore(Store):
                 (o for o in offers.values() if o.get("job_id") == jid and o.get("status") == "offered"),
                 None,
             )
+            issues = [e for e in self._events_for(jid) if e["event"].startswith("tech_issue:")]
             out.append({
                 "id": jid, "status": status, "address": None, "access_type": None,
                 "situation": None, "urgency": None, "created_at": None,
                 "fulfillment_technician_id": job_tech.get(jid),
                 "offer_active": active_offer is not None,
                 "offer_id": active_offer["id"] if active_offer else None,
+                "last_issue": issues[-1]["event"] if issues else None,
             })
         return out
+
+    def _events_for(self, jid: str) -> list[dict]:
+        """Parse the flat in-memory event log into {at, event} for one job."""
+        out = []
+        for line in getattr(self, "events", []):
+            parts = line.split(" ", 2)
+            if len(parts) == 3 and parts[1] == jid:
+                out.append({"at": parts[0], "event": parts[2]})
+        return out
+
+    async def list_job_events(self, job_id: UUID) -> list[dict]:
+        return self._events_for(str(job_id))
 
     async def recover_job(
         self, job_id: UUID, *, target_status: str, expected_statuses: list[str],
@@ -2475,9 +2492,14 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select j.id, j.status, j.address, j.access_type, j.situation, j.urgency,"
-                " j.created_at, j.fulfillment_technician_id, o.id, o.expires_at"
+                " j.created_at, j.fulfillment_technician_id, o.id, o.expires_at, i.event"
                 " from jobs j"
                 " left join dispatch_offers o on o.job_id = j.id and o.status = 'offered'"
+                " left join lateral ("
+                "   select event from events"
+                "   where job_id = j.id and event like 'tech_issue:%'"
+                "   order by at desc limit 1"
+                " ) i on true"
                 " where (j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)"
                 "   and j.status = any(%s)"
                 " order by j.created_at asc",
@@ -2493,9 +2515,19 @@ class PostgresStore(Store):
                 "offer_active": r[8] is not None,
                 "offer_id": str(r[8]) if r[8] else None,
                 "offer_expires_at": r[9].isoformat() if r[9] else None,
+                "last_issue": r[10],
             }
             for r in rows
         ]
+
+    async def list_job_events(self, job_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select event, at from events where job_id = %s order by at asc, id asc",
+                (str(job_id),),
+            )
+            rows = await cur.fetchall()
+        return [{"event": r[0], "at": r[1].isoformat() if r[1] else None} for r in rows]
 
     async def recover_job(
         self, job_id: UUID, *, target_status: str, expected_statuses: list[str],
