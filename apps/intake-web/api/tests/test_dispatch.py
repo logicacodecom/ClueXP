@@ -1527,3 +1527,110 @@ def test_provider_jobs_list_scoped():
     assert resp.status_code == 200
     ids = [j["id"] for j in resp.json()]
     assert ja in ids and jb not in ids
+
+
+# ---------------------------------------------------------------------------
+# Gate 4 hardening: demo routes gated, health check, ops flags, token rate limit
+# ---------------------------------------------------------------------------
+
+def test_demo_payment_routes_gone():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    jid = str(uuid4())
+    for path in (f"/tickets/{jid}/finalize", f"/tickets/{jid}/approve-final",
+                 f"/tickets/{jid}/charge", f"/tickets/{jid}/review"):
+        r = client.post(path, json={})
+        assert r.status_code == 410, f"{path} -> {r.status_code}"
+
+
+def test_healthz_ok():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json().get("status") == "ok"
+
+
+def test_ops_flags_admin_only():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": "flags_admin@cluexp.test", "phone": None,
+        "display_name": "Avery", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    disp = str(uuid4())
+    app_store.users[disp] = {
+        "id": disp, "email": "flags_disp@cluexp.test", "phone": None,
+        "display_name": "D", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": str(uuid4()), "organization_name": "Acme",
+    }
+    client = TestClient(app)
+    ok = client.get("/ops/flags", headers={"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['platform_admin']})}"})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert "dispatch_cutover_global_off" in body and "arrival_pin_configured" in body
+    forbidden = client.get("/ops/flags", headers={"Authorization": f"Bearer {create_access_token({'sub': disp, 'id': disp, 'roles': ['dispatcher']})}"})
+    assert forbidden.status_code == 403
+
+
+def test_token_action_rate_limited(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, _token_action_hits
+    from api import config
+    monkeypatch.setattr(config, "TOKEN_ACTION_MAX", 2)
+    _token_action_hits.clear()
+    client = TestClient(app)
+    tok = "rl-" + uuid4().hex
+    # The limiter runs before token resolution: first 2 pass (unknown token → 404),
+    # the 3rd trips the limit → 429.
+    assert client.post(f"/t/{tok}/confirm").status_code == 404
+    assert client.post(f"/t/{tok}/confirm").status_code == 404
+    assert client.post(f"/t/{tok}/confirm").status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 remainder: recall-offer + internal notes (tenant-scoped)
+# ---------------------------------------------------------------------------
+
+def test_provider_recall_offer():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, oid = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org, jid)  # pending_dispatch
+    app_store._offers = getattr(app_store, "_offers", {})
+    app_store._offers[oid] = {"id": oid, "job_id": jid, "status": "offered", "technician_id": str(uuid4())}
+    resp = client.post(
+        f"/provider/jobs/{jid}/recall-offer", json={"reason": "wrong technician"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    assert app_store._offers[oid]["status"] == "superseded"
+
+
+def test_provider_internal_notes_tenant_scoped():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org_a)
+    own, foreign = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org_a, own)
+    _seed_provider_job(app_store, org_b, foreign)
+    h = {"Authorization": f"Bearer {token}"}
+    # Add a note to the company's own job.
+    add = client.post(f"/provider/jobs/{own}/notes", json={"body": "Customer prefers afternoon"}, headers=h)
+    assert add.status_code == 200, add.text
+    # It lists back.
+    listed = client.get(f"/provider/jobs/{own}/notes", headers=h)
+    assert listed.status_code == 200
+    assert any(n["body"] == "Customer prefers afternoon" for n in listed.json())
+    # Another company's job is not noteable (404, no leak).
+    foreign_add = client.post(f"/provider/jobs/{foreign}/notes", json={"body": "x"}, headers=h)
+    assert foreign_add.status_code == 404
+    # Empty note rejected.
+    empty = client.post(f"/provider/jobs/{own}/notes", json={"body": "   "}, headers=h)
+    assert empty.status_code == 422
