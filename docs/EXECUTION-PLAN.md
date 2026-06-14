@@ -28,7 +28,9 @@
 | Notifications | `[ ]` | No production SMS/email/push delivery |
 | CI | `[x]` | Green on `2f3f334`; latest push `8ba6b62` (fix /api prefix on token actions) |
 
-Current production migration head: **`0010`** (applied 2026-06-09).
+Current production migration head: **`0013_arrival_verification`** (verified 2026-06-14
+via `select version_num from alembic_version` + `arrival_verifications` present).
+`0011` (single-offer index), `0012` (decline_reason), `0013` (arrival PINs) are live.
 
 ## 2. Completed Foundation
 
