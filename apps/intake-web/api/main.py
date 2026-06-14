@@ -274,6 +274,11 @@ class ArrivalVerifyRequest(BaseModel):
     pin: str
 
 
+class IssueReportRequest(BaseModel):
+    kind: str
+    reason: str | None = None
+
+
 class ArrivalOverrideRequest(BaseModel):
     reason: str
 
@@ -1764,6 +1769,35 @@ async def verify_arrival(
     return {"status": updated["status"]}
 
 
+_ISSUE_KINDS = {"cannot_complete", "customer_unavailable", "unsafe"}
+
+
+@app.post("/jobs/{job_id}/report-issue")
+async def report_issue(
+    job_id: UUID,
+    payload: IssueReportRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Assigned technician reports a field problem (cannot_complete / customer_unavailable
+    / unsafe). Records an audited event surfaced to the company's recovery workspace;
+    it does not change the job status — the company's dispatcher decides recovery."""
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    kind = (payload.kind or "").strip()
+    if kind not in _ISSUE_KINDS:
+        raise HTTPException(status_code=422, detail=f"kind must be one of {sorted(_ISSUE_KINDS)}")
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
+        raise HTTPException(status_code=403, detail="Not your job")
+    reason = (payload.reason or "").strip()[:280]
+    await store.log_event_raw(job_id, f"tech_issue:{kind}:by={tech['id']}:{reason}")
+    return {"reported": True, "kind": kind}
+
+
 @app.post("/provider/jobs/{job_id}/arrival/override")
 async def provider_override_arrival(
     job_id: UUID,
@@ -1925,6 +1959,17 @@ async def provider_add_note(
         job_id, author_id=user.get("id", "unknown"),
         author_name=user.get("display_name"), body=body[:2000],
     )
+
+
+@app.get("/provider/jobs/{job_id}/timeline")
+async def provider_job_timeline(
+    job_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Append-only audit timeline (events) for one of the company's jobs — assignment,
+    arrival, recovery, technician-reported issues, etc. Tenant-scoped."""
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    return await store.list_job_events(job_id)
 
 
 # Demo payment/finalize chain — gated OFF the MVP path (no real payment in MVP).

@@ -14,9 +14,11 @@ type RecoveryJob = {
   offer_active: boolean;
   offer_id: string | null;
   offer_expires_at?: string | null;
+  last_issue?: string | null;
 };
 
 type Note = { id: string; author_name: string | null; body: string; created_at: string | null };
+type TimelineEvent = { event: string; at: string | null };
 
 type Action = "cancel" | "release" | "no-show" | "recall-offer" | "resolve";
 
@@ -51,6 +53,8 @@ function RecoveryWorkspace() {
   const [notesFor, setNotesFor] = useState<string | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [timelineFor, setTimelineFor] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -108,6 +112,16 @@ function RecoveryWorkspace() {
     } catch { /* surfaced on add */ }
   }
 
+  async function openTimeline(jobId: string) {
+    if (timelineFor === jobId) { setTimelineFor(null); return; }
+    setTimelineFor(jobId);
+    setTimeline([]);
+    try {
+      const res = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/timeline`, { cache: "no-store" });
+      if (res.ok) setTimeline(await res.json());
+    } catch { /* non-fatal */ }
+  }
+
   async function addNote(jobId: string) {
     if (newNote.trim().length < 1 || busy) return;
     setBusy(true);
@@ -162,7 +176,10 @@ function RecoveryWorkspace() {
               {jobs.map((job) => (
                 <tr key={job.id} className="border-t border-border align-top">
                   <td className="px-4 py-3 font-mono text-xs">{job.id.slice(0, 8)}</td>
-                  <td className="px-4 py-3"><span className="rounded-full border border-border px-2 py-0.5 text-xs">{job.status.replaceAll("_", " ")}</span></td>
+                  <td className="px-4 py-3">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-xs">{job.status.replaceAll("_", " ")}</span>
+                    {job.last_issue ? <span className="ml-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs text-warn" title={job.last_issue}>⚠ issue</span> : null}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground">{job.address ?? "—"}</td>
                   <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{job.fulfillment_technician_id ? job.fulfillment_technician_id.slice(0, 8) : "—"}</td>
                   <td className="px-4 py-3 text-muted-foreground">{job.offer_active ? "Offer active" : "—"}</td>
@@ -191,8 +208,21 @@ function RecoveryWorkspace() {
                         <button className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground" onClick={() => void openNotes(job.id)}>
                           {notesFor === job.id ? "Hide notes" : "Notes"}
                         </button>
+                        <button className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground" onClick={() => void openTimeline(job.id)}>
+                          {timelineFor === job.id ? "Hide timeline" : "Timeline"}
+                        </button>
                       </div>
                     )}
+                    {timelineFor === job.id ? (
+                      <div className="mt-3 rounded-md border border-border bg-card p-3">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">Audit timeline</p>
+                        <ul className="mt-2 space-y-1">
+                          {timeline.length === 0 ? <li className="text-xs text-muted-foreground">No events.</li> : timeline.map((e, i) => (
+                            <li key={i} className="text-xs"><span className="text-muted-foreground">{e.at ? new Date(e.at).toLocaleString() : ""}</span> — {e.event}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
                     {notesFor === job.id ? (
                       <div className="mt-3 rounded-md border border-border bg-card p-3">
                         <p className="text-xs font-semibold uppercase text-muted-foreground">Internal notes</p>

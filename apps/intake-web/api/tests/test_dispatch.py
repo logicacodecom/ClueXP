@@ -1634,3 +1634,118 @@ def test_provider_internal_notes_tenant_scoped():
     # Empty note rejected.
     empty = client.post(f"/provider/jobs/{own}/notes", json={"body": "   "}, headers=h)
     assert empty.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# #1 technician failure reporting + #4 provider audit timeline
+# ---------------------------------------------------------------------------
+
+def test_technician_report_issue_surfaces_to_provider_and_timeline():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    tech_uid = str(uuid4())
+    disp_uid = str(uuid4())
+    jid = str(uuid4())
+    # Job en route, assigned to the technician, owned by the company.
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_EN_ROUTE
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store.users[tech_uid] = {
+        "id": tech_uid, "email": "issue_tech@cluexp.test", "phone": None,
+        "display_name": "Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    _seed_dispatcher(app_store, disp_uid, org)
+    _orig = app_store.get_user_session
+
+    async def _patched(user_id):
+        s = await _orig(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched
+    tech_tok = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    disp_tok = create_access_token({"sub": disp_uid, "id": disp_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    try:
+        # Bad kind rejected.
+        assert client.post(f"/jobs/{jid}/report-issue", json={"kind": "bogus"},
+                           headers={"Authorization": f"Bearer {tech_tok}"}).status_code == 422
+        # Assigned technician reports a real issue.
+        rep = client.post(
+            f"/jobs/{jid}/report-issue", json={"kind": "unsafe", "reason": "aggressive dog on site"},
+            headers={"Authorization": f"Bearer {tech_tok}"},
+        )
+        assert rep.status_code == 200, rep.text
+        # It surfaces in the provider recovery list (last_issue) ...
+        jobs = client.get("/provider/jobs", headers={"Authorization": f"Bearer {disp_tok}"}).json()
+        row = next(j for j in jobs if j["id"] == jid)
+        assert row["last_issue"] and row["last_issue"].startswith("tech_issue:unsafe")
+        # ... and in the job's audit timeline.
+        tl = client.get(f"/provider/jobs/{jid}/timeline", headers={"Authorization": f"Bearer {disp_tok}"})
+        assert tl.status_code == 200
+        assert any(e["event"].startswith("tech_issue:unsafe") for e in tl.json())
+    finally:
+        app_store.get_user_session = _orig
+
+
+def test_report_issue_rejects_unassigned_technician():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    other_tech = str(uuid4())
+    jid = str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_EN_ROUTE
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = str(uuid4())  # assigned to someone else
+    app_store.users[other_tech] = {
+        "id": other_tech, "email": "other_tech@cluexp.test", "phone": None,
+        "display_name": "Other", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    _orig = app_store.get_user_session
+
+    async def _patched(user_id):
+        s = await _orig(user_id)
+        if s and user_id == other_tech:
+            s["technician"] = {"id": other_tech, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched
+    tok = create_access_token({"sub": other_tech, "id": other_tech, "roles": ["technician"]})
+    client = TestClient(app)
+    try:
+        r = client.post(f"/jobs/{jid}/report-issue", json={"kind": "cannot_complete", "reason": "x"},
+                        headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 403
+    finally:
+        app_store.get_user_session = _orig
+
+
+def test_provider_timeline_tenant_scoped():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org_a)
+    foreign = str(uuid4())
+    _seed_provider_job(app_store, org_b, foreign)
+    r = client.get(f"/provider/jobs/{foreign}/timeline", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 404
+
+
+def test_provider_candidates_tenant_scoped():
+    # Closes the cross-tenant sweep: a dispatcher cannot view candidates for
+    # another company's job.
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org_a)
+    foreign = str(uuid4())
+    _seed_provider_job(app_store, org_b, foreign)
+    r = client.get(f"/provider/queue/{foreign}/candidates", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 404
