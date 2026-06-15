@@ -1,6 +1,6 @@
 # ClueXP Execution Plan
 
-> **Verified/reconciled:** 2026-06-11
+> **Verified/reconciled:** 2026-06-15
 > **Primary objective:** complete and prove the production business cycle:
 > request -> dispatch -> accept -> fulfill -> customer confirm/review or dispute
 > -> resolve/close.
@@ -14,23 +14,24 @@
 | Capability | State | Notes |
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
-| Technician app | `[x]` shell / `[~]` operations | Live PWA; auth, offer feed, acceptance, availability and location are real; active fulfillment remains mostly mock-driven |
-| Provider app | `[~]` | Auth, organization workspace, teams, technicians and document submission are real; dispatch operations are mostly mock-driven |
-| Ops app | `[~]` | Auth, registration approval and compliance review are real; live queue/dispatch/escalation operations are mostly mock-driven |
+| Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline and completed-job history are wired; production migrations/redeploy and pilot verification remain |
+| Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
-| Dispatch engine | `[~]` | Pure functions (ranking, distance) live; ops-controlled model (§3.4) replaces auto-dispatch — backend/UI wiring in progress |
+| Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, single-targeted-offer dispatch and tenant-scoped recovery are implemented; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in ops queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`; `no_eligible` terminal state no longer auto-triggered — requires manual ops closure |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` channel live (`dispatch_cutover_enabled=true`); pilot smoke test pending |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
-| Payments | `[ ]` | Deferred; current charge/finalize/review behavior is demo-only |
+| Payment collection | `[~]` advisory only | Technician-reported amount/method and finished-job history are implemented in code (`0015`); no charge, capture, refund, payout or settlement occurs |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[x]` | Green on `2f3f334`; latest push `8ba6b62` (fix /api prefix on token actions) |
+| CI | `[x]` | Local gate on 2026-06-15: API `104 passed, 1 skipped`; shared typecheck and all four production builds pass |
 
-Current production migration head: **`0013_arrival_verification`** (verified 2026-06-14
-via `select version_num from alembic_version` + `arrival_verifications` present).
-`0011` (single-offer index), `0012` (decline_reason), `0013` (arrival PINs) are live.
+Current production migration head: **`0015_job_payments`** (verified 2026-06-15
+via `select version_num from alembic_version` + `job_notes` and `job_payment_reports`
+present). `0011` (single-offer index), `0012` (decline_reason), `0013` (arrival PINs),
+`0014` (job_notes), `0015` (job_payment_reports) are live.
 
 ## 2. Completed Foundation
 
@@ -279,6 +280,8 @@ Three distinct payment events — keep them separate:
 
 No payment model changes from the dispatch pivot. The trigger for final capture is `completed_confirmed`, not dispatcher assignment.
 
+- [~] Advisory technician-reported collection amount/method and finished-job
+  history are implemented (`0015`), but remain non-ledger operational records.
 - [!] Decide merchant-of-record, platform fee, provider settlement and independent
   technician payout policy.
 - [ ] Stripe payment-method collection and authorization hold at price-consent commit.
@@ -287,7 +290,7 @@ No payment model changes from the dispatch pivot. The trigger for final capture 
 - [ ] Idempotent capture, release, cancellation/no-show fee and refund flows.
 - [ ] Dispute linkage without conflating payment dispute and service issue.
 - [ ] Provider/technician settlement ledger and customer receipt.
-- [ ] Replace demo earnings and payment history with ledger-backed values.
+- [ ] Replace advisory collection totals/history with ledger-backed values.
 
 **Sprint 6 exit:** happy-path and failure-path money movement reconcile against a
 job, payment intent, settlement record and audit trail.
