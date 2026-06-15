@@ -1810,7 +1810,7 @@ def test_payment_reports_and_technician_history():
 
     client, access, _orig = _tech_client(app_store, tech_uid)
     try:
-        # Technician reports what they collected.
+        # Technician reports what they collected (the single source of truth).
         c = client.post(
             f"/jobs/{jid}/collection", json={"amount": 150, "method": "Cash App"},
             headers={"Authorization": f"Bearer {access}"},
@@ -1818,17 +1818,21 @@ def test_payment_reports_and_technician_history():
         assert c.status_code == 200, c.text
         assert c.json()["payment"]["method"] == "cash_app"
 
-        # Move to completion-pending so the customer side opens.
+        # Move to completion-pending so the customer can confirm.
         app_store._job_status[jid] = STATUS_COMPLETED_PENDING
 
-        # Customer reports what they paid, then reviews (which confirms).
-        p = client.post(f"/t/{token}/payment", json={"amount": 150.0, "method": "zelle"})
-        assert p.status_code == 200, p.text
+        # The customer sees the technician's payment on the tracking read and
+        # acknowledges it by confirming completion (no separate customer entry).
+        t = client.get(f"/t/{token}")
+        assert t.status_code == 200, t.text
+        assert t.json()["payment"] == {"amount": 150.0, "currency": "USD", "method": "cash_app"}
+
         r = client.post(f"/t/{token}/review", json={"rating": 5, "comment": "great"})
         assert r.status_code == 200, r.text
         assert app_store._job_status[jid] == STATUS_COMPLETED_CONFIRMED
 
-        # History shows the finished job with both sides + the review.
+        # History shows the finished job with the technician payment + the review;
+        # there is no separate customer-reported amount (Ops does not compare).
         h = client.get("/technician/jobs/history", headers={"Authorization": f"Bearer {access}"})
         assert h.status_code == 200, h.text
         rows = [row for row in h.json() if row["id"] == jid]
@@ -1836,7 +1840,7 @@ def test_payment_reports_and_technician_history():
         row = rows[0]
         assert row["payments"]["technician"]["amount"] == 150.0
         assert row["payments"]["technician"]["method"] == "cash_app"
-        assert row["payments"]["customer"]["method"] == "zelle"
+        assert row["payments"]["customer"] is None
         assert row["review"]["rating"] == 5
     finally:
         app_store.get_user_session = _orig
@@ -1903,3 +1907,61 @@ def test_history_includes_completed_pending_customer():
     h = client.get("/provider/jobs/history", headers={"Authorization": f"Bearer {token}"})
     assert h.status_code == 200, h.text
     assert any(row["id"] == jid for row in h.json())
+
+
+def test_customer_cancel_requires_reason():
+    """Cancellation must include a customer-provided reason; the reason is recorded."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    jid, token = str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = token
+    client = TestClient(app)
+
+    # No reason -> 422, job untouched.
+    bad = client.post(f"/t/{token}/cancel", json={})
+    assert bad.status_code == 422, bad.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+
+    # With a reason -> cancelled, and the reason is recorded as an audit event.
+    ok = client.post(f"/t/{token}/cancel", json={"reason": "Found my spare key"})
+    assert ok.status_code == 200, ok.text
+    assert app_store._job_status[jid] == "cancelled"
+    assert any("customer_cancel:Found my spare key" in e for e in app_store.events)
+
+
+def test_customer_live_location_gated_to_fulfillment():
+    """The customer sees the technician's live location + destination only while the
+    job is en_route/arrived/in_progress — never before (privacy gate)."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    tech_uid, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tech_location = getattr(app_store, "_tech_location", {})
+    app_store._job_loc = getattr(app_store, "_job_loc", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._tokens[jid] = token
+    app_store._tech_location[tech_uid] = (40.7128, -74.0060, "2026-06-15T00:00:00Z")
+    app_store._job_loc[jid] = (40.7589, -73.9851)
+    client = TestClient(app)
+
+    # Assigned (not yet en route) -> no live location, no destination.
+    app_store._job_status[jid] = STATUS_ASSIGNED
+    body = client.get(f"/t/{token}").json()
+    assert body["assignment"]["live_lat"] is None
+    assert body["destination"] is None
+    assert body["guards"]["may_show_live_tracking"] is False
+
+    # En route -> safe live location + destination exposed.
+    app_store._job_status[jid] = STATUS_EN_ROUTE
+    body = client.get(f"/t/{token}").json()
+    assert body["assignment"]["live_lat"] == 40.7128
+    assert body["assignment"]["live_lng"] == -74.0060
+    assert body["destination"] == {"lat": 40.7589, "lng": -73.9851}
+    assert body["guards"]["may_show_live_tracking"] is True

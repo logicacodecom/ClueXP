@@ -104,8 +104,6 @@ export default function ActivityPage() {
                 <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
                   <dt className="text-muted">You collected</dt>
                   <dd className="text-right font-bold">{money(job.payments.technician)}</dd>
-                  <dt className="text-muted">Customer paid</dt>
-                  <dd className="text-right font-bold">{money(job.payments.customer)}</dd>
                 </dl>
                 {job.review?.rating ? (
                   <div className="mt-3 flex items-center gap-1 border-t border-border pt-3 text-sm">

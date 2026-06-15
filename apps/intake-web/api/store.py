@@ -34,6 +34,7 @@ from api.dispatch import (
     STATUS_TIMESTAMP_COLUMN,
     HISTORY_STATUSES,
     can_customer_cancel,
+    may_show_live_tracking,
     customer_actions,
     eta_range_from_km,
     haversine_km,
@@ -727,6 +728,23 @@ class InMemoryStore(Store):
             attempts=attempts, max_attempts=max_attempts, timed_out=False,
         )
         status = (self._job_status.get(jid) if hasattr(self, "_job_status") else None)
+        tech_id = getattr(self, "_job_tech", {}).get(jid)
+        loc = getattr(self, "_tech_location", {}).get(str(tech_id)) if tech_id else None
+        show_live = bool(may_show_live_tracking(status) and loc)
+        assignment = None
+        if tech_id:
+            assignment = {
+                "customer_owner": None, "fulfillment_type": "independent_technician",
+                "provider_company": None, "technician_display_name": "Technician",
+                "role": "Verified Technician", "rating": None,
+                "eta_min": None, "eta_max": None, "eta_is_estimate": True,
+                "assigned_at": None, "job_status": status or "assigned",
+                "live_lat": loc[0] if show_live else None,
+                "live_lng": loc[1] if show_live else None,
+                "location_updated_at": (loc[2] if (show_live and len(loc) > 2) else None),
+            }
+        dest = getattr(self, "_job_loc", {}).get(jid)
+        payment = getattr(self, "_payments", {}).get((jid, "technician"))
         # Blind tracking: remove dispatch internals
         return {
             "state": state,
@@ -734,7 +752,9 @@ class InMemoryStore(Store):
             "status": status,
             "closed": False,
             "customer_actions": customer_actions(status),
-            "assignment": None,
+            "assignment": assignment,
+            "destination": ({"lat": dest[0], "lng": dest[1]} if (may_show_live_tracking(status) and dest) else None),
+            "payment": ({"amount": payment["amount"], "currency": payment.get("currency", "USD"), "method": payment["method"]} if payment else None),
         }
 
     # --- fulfillment cutover (Sprint 3) — minimal in-memory backing for tests ---
@@ -961,6 +981,9 @@ class InMemoryStore(Store):
         for o in getattr(self, "_offers", {}).values():
             if o.get("job_id") == jid and o.get("status") == "offered":
                 o["status"] = "superseded"
+        await self.log_event_raw(
+            job_id, f"customer_cancel:{reason[:200]}" if reason else "customer_cancel"
+        )
         return {"id": jid, "status": STATUS_CANCELLED}
 
     async def record_customer_review(
@@ -2056,6 +2079,18 @@ class PostgresStore(Store):
                 assignment = await self._safe_assignment(
                     conn, tech_id, org_id, owner_org_id, lat, lng, ticket_id, job_status
                 )
+            # Payment the technician reported collecting — shown to the customer so
+            # they view/acknowledge it when confirming completion (single source of
+            # truth; the customer does not enter a separate amount).
+            payment = None
+            pcur = await conn.execute(
+                "select amount, currency, method from job_payment_reports"
+                " where job_id = %s and reported_by = 'technician'",
+                (str(ticket_id),),
+            )
+            prow = await pcur.fetchone()
+            if prow:
+                payment = {"amount": float(prow[0]), "currency": prow[1], "method": prow[2]}
         from api.dispatch import TERMINAL_STATUSES
         # Blind tracking: remove dispatch internals (attempts, offers, expiry)
         # Customer sees only: searching / matched / failed (Uber-style)
@@ -2068,6 +2103,14 @@ class PostgresStore(Store):
             "closed": job_status in TERMINAL_STATUSES,
             "customer_actions": customer_actions(job_status),
             "assignment": assignment,
+            # Customer's own destination (their address) — only while live tracking is
+            # allowed, so the map has a tech marker + destination to plot.
+            "destination": (
+                {"lat": float(lat), "lng": float(lng)}
+                if (may_show_live_tracking(job_status) and lat is not None and lng is not None)
+                else None
+            ),
+            "payment": payment,
         }
 
     async def _safe_assignment(
@@ -2075,14 +2118,14 @@ class PostgresStore(Store):
     ) -> dict | None:
         cur = await conn.execute(
             "select display_name, rating, provider_type, current_lat, current_lng,"
-            " service_area_center_lat, service_area_center_lng"
+            " service_area_center_lat, service_area_center_lng, location_updated_at"
             " from technicians where id = %s",
             (str(tech_id),),
         )
         t = await cur.fetchone()
         if not t:
             return None
-        display_name, rating, _provider_type, cur_lat, cur_lng, sa_lat, sa_lng = t
+        display_name, rating, _provider_type, cur_lat, cur_lng, sa_lat, sa_lng, loc_at = t
 
         async def _org_name(oid):
             if not oid:
@@ -2115,6 +2158,10 @@ class PostgresStore(Store):
         ar = await cur.fetchone()
         assigned_at = ar[0] if ar else None
 
+        # Safe live location: only the technician's coarse current position, and only
+        # while the job is in a FULFILLMENT status (en_route/arrived/in_progress). No
+        # internal IDs, no roster, no service-area fallback — that is not "live".
+        show_live = may_show_live_tracking(job_status) and cur_lat is not None and cur_lng is not None
         return {
             "customer_owner": customer_owner,
             "fulfillment_type": fulfillment_type,
@@ -2127,6 +2174,9 @@ class PostgresStore(Store):
             "eta_is_estimate": True,
             "assigned_at": assigned_at.isoformat() if assigned_at else None,
             "job_status": job_status or "assigned",
+            "live_lat": float(cur_lat) if show_live else None,
+            "live_lng": float(cur_lng) if show_live else None,
+            "location_updated_at": loc_at.isoformat() if (show_live and loc_at) else None,
         }
 
     # --- fulfillment cutover (Sprint 3) ---

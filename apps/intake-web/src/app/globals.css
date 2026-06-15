@@ -141,23 +141,6 @@ button {
   gap: 12px;
 }
 
-.payment-report {
-  display: grid;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.payment-report__label {
-  font-size: 13px;
-  color: var(--muted, rgba(255, 255, 255, 0.65));
-}
-
-.payment-report__row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
 .choice,
 .field,
 .panel,

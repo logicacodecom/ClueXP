@@ -136,6 +136,16 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     };
   }, [refreshJob]);
 
+  // While the job is live (en route / on site), push the technician's location
+  // periodically so the customer's tracking map and the dispatcher's fleet map
+  // follow real movement — not a static assignment point.
+  useEffect(() => {
+    if (!["en_route", "arrived", "in_progress"].includes(job.status)) return;
+    const id = window.setInterval(() => void shareLocation(), 25_000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.status]);
+
   const points = useMemo(() => {
     const next: MapPoint[] = [];
     if (location.state === "ready") next.push({ lat: location.lat, lng: location.lng, kind: "tech", label: "Your shared location" });

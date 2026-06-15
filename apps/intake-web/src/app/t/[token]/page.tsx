@@ -5,6 +5,7 @@ import type { TicketGuards } from "@/types/schema.generated";
 import { useRouter, useParams } from "next/navigation";
 import { LoaderCircle, ShieldCheck } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
+import { TrackingMap } from "@/components/tracking-map";
 
 type Screen =
   | "loading"
@@ -33,6 +34,15 @@ interface DispatchAssignment {
   eta_is_estimate: boolean;
   assigned_at: string;
   job_status: string;
+  live_lat: number | null;
+  live_lng: number | null;
+  location_updated_at: string | null;
+}
+
+interface PaymentView {
+  amount: number;
+  currency: string;
+  method: string;
 }
 
 interface TrackingResponse {
@@ -44,6 +54,8 @@ interface TrackingResponse {
   situation: string;
   location: { raw_text: string };
   assignment: DispatchAssignment | null;
+  destination: { lat: number; lng: number } | null;
+  payment: PaymentView | null;
   guards: TicketGuards;
   customer_actions: {
     can_cancel: boolean;
@@ -85,21 +97,27 @@ const emptyCustomerActions: CustomerActions = {
   can_dispute: false
 };
 
-// Payment methods the customer can report paying by. Mirrors the backend
-// PAYMENT_METHODS set; "other" is the catch-all.
-const PAYMENT_METHODS: Array<{ value: string; label: string; labelEs: string }> = [
-  { value: "credit_card", label: "Credit card", labelEs: "Tarjeta de crédito" },
-  { value: "debit_card", label: "Debit card", labelEs: "Tarjeta de débito" },
-  { value: "cash", label: "Cash", labelEs: "Efectivo" },
-  { value: "check", label: "Check", labelEs: "Cheque" },
-  { value: "zelle", label: "Zelle", labelEs: "Zelle" },
-  { value: "cash_app", label: "Cash App", labelEs: "Cash App" },
-  { value: "apple_pay", label: "Apple Pay", labelEs: "Apple Pay" },
-  { value: "google_pay", label: "Google Pay", labelEs: "Google Pay" },
-  { value: "venmo", label: "Venmo", labelEs: "Venmo" },
-  { value: "paypal", label: "PayPal", labelEs: "PayPal" },
-  { value: "other", label: "Other", labelEs: "Otro" }
-];
+// Display labels for the technician-reported payment method (read-only on the
+// customer side). Mirrors the backend PAYMENT_METHODS set; "other" is the catch-all.
+const PAYMENT_METHOD_LABELS: Record<string, { en: string; es: string }> = {
+  credit_card: { en: "Credit card", es: "Tarjeta de crédito" },
+  debit_card: { en: "Debit card", es: "Tarjeta de débito" },
+  cash: { en: "Cash", es: "Efectivo" },
+  check: { en: "Check", es: "Cheque" },
+  zelle: { en: "Zelle", es: "Zelle" },
+  cash_app: { en: "Cash App", es: "Cash App" },
+  apple_pay: { en: "Apple Pay", es: "Apple Pay" },
+  google_pay: { en: "Google Pay", es: "Google Pay" },
+  venmo: { en: "Venmo", es: "Venmo" },
+  paypal: { en: "PayPal", es: "PayPal" },
+  other: { en: "Other", es: "Otro" }
+};
+
+function paymentMethodLabel(method: string, locale: string): string {
+  const entry = PAYMENT_METHOD_LABELS[method];
+  if (!entry) return method;
+  return locale === "es" ? entry.es : entry.en;
+}
 
 function TopBar() {
   const { locale } = useLocale();
@@ -147,8 +165,8 @@ export default function TokenTrackingPage() {
     comment: ""
   });
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
-  const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState("");
+  const [destination, setDestination] = useState<{ lat: number; lng: number } | null>(null);
+  const [payment, setPayment] = useState<PaymentView | null>(null);
   const [arrivalPin, setArrivalPin] = useState<string | null>(null);
 
   const localeText = {
@@ -293,6 +311,8 @@ export default function TokenTrackingPage() {
       
       const data = await response.json();
       setAssignment(data.assignment);
+      setDestination(data.destination ?? null);
+      setPayment(data.payment ?? null);
       setCustomerActions(data.customer_actions ?? emptyCustomerActions);
 
       const TERMINAL: Record<string, Screen> = {
@@ -342,7 +362,6 @@ export default function TokenTrackingPage() {
 
   const handleConfirm = async () => {
     setBusy(true);
-    await submitPaymentIfProvided();
     try {
       const response = await fetch(`/api/t/${token}/confirm`, { method: "POST" });
 
@@ -494,27 +513,10 @@ export default function TokenTrackingPage() {
     }
   };
 
-  // Best-effort: report what the customer paid (advisory record for the job
-  // history). Failures never block confirm/review — the amount is informational.
-  const submitPaymentIfProvided = async () => {
-    const amount = Number.parseFloat(payAmount);
-    if (!payMethod || !Number.isFinite(amount) || amount < 0) return;
-    try {
-      await fetch(`/api/t/${token}/payment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount, method: payMethod })
-      });
-    } catch {
-      /* advisory only */
-    }
-  };
-
   const handleSubmitReview = async () => {
     if (!reviewData.rating) return;
 
     setBusy(true);
-    await submitPaymentIfProvided();
     try {
       const response = await fetch(`/api/t/${token}/review`, {
         method: "POST",
@@ -598,19 +600,10 @@ export default function TokenTrackingPage() {
     }));
   };
 
-  const renderCancelControl = (withReason: boolean) => {
+  // Customer cancellation always requires a reason (recorded by the backend).
+  const renderCancelControl = () => {
     if (!customerActions.can_cancel) return null;
-    if (!withReason) {
-      return (
-        <button
-          className="ghost"
-          type="button"
-          onClick={() => void handleCancel()}
-        >
-          {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
-        </button>
-      );
-    }
+    const reasonValid = cancelReason.trim().length >= 3;
     return (
       <div className="panel">
         <p className="panel-title">
@@ -620,15 +613,21 @@ export default function TokenTrackingPage() {
           <>
             <textarea
               className="field"
-              placeholder={locale === "es" ? "Motivo opcional" : "Optional reason"}
+              placeholder={locale === "es" ? "Motivo de la cancelación (obligatorio)" : "Reason for cancelling (required)"}
               value={cancelReason}
               onChange={(event) => setCancelReason(event.target.value)}
+              aria-label={locale === "es" ? "Motivo de la cancelación" : "Reason for cancelling"}
             />
             <div className="row">
               <button className="ghost" type="button" onClick={() => setCancelReasonOpen(false)}>
                 {locale === "es" ? "Mantener solicitud" : "Keep request"}
               </button>
-              <button className="primary" type="button" onClick={() => void handleCancel(cancelReason)}>
+              <button
+                className="primary"
+                type="button"
+                disabled={!reasonValid || busy}
+                onClick={() => void handleCancel(cancelReason.trim())}
+              >
                 {locale === "es" ? "Confirmar cancelación" : "Confirm cancel"}
               </button>
             </div>
@@ -637,8 +636,8 @@ export default function TokenTrackingPage() {
           <>
             <p className="fine">
               {locale === "es"
-                ? "Puede cancelar antes de que el técnico llegue. Puede agregar un motivo si ayuda al despacho."
-                : "You can cancel before the technician arrives. Add a reason if it helps dispatch."}
+                ? "Puede cancelar antes de que el técnico llegue. Se requiere un motivo."
+                : "You can cancel before the technician arrives. A reason is required."}
             </p>
             <button className="ghost" type="button" onClick={() => setCancelReasonOpen(true)}>
               {locale === "es" ? "Cancelar solicitud" : "Cancel request"}
@@ -720,7 +719,7 @@ export default function TokenTrackingPage() {
             >
               {localeText.waiting.action}
             </button>
-            {renderCancelControl(false)}
+            {renderCancelControl()}
             <a
               className="ghost"
               href={`tel:${DISPATCH_PHONE}`}
@@ -774,7 +773,7 @@ export default function TokenTrackingPage() {
           )}
           {customerActions.can_cancel && (
             <div className="stack" style={{ marginTop: "2rem" }}>
-              {renderCancelControl(true)}
+              {renderCancelControl()}
             </div>
           )}
         </main>
@@ -791,7 +790,12 @@ export default function TokenTrackingPage() {
             {localeText.en_route.title}
           </AgentMessage>
           <div className="stack">
-            <div className="map" aria-label="Service area map preview" />
+            <TrackingMap
+              tech={assignment?.live_lat != null && assignment?.live_lng != null
+                ? { lat: assignment.live_lat, lng: assignment.live_lng } : null}
+              destination={destination}
+              label={assignment?.technician_display_name}
+            />
             <div className="panel">
               <p className="panel-title">
                 {locale === "es"
@@ -836,7 +840,7 @@ export default function TokenTrackingPage() {
           </div>
           {customerActions.can_cancel && (
             <div className="stack" style={{ marginTop: "2rem" }}>
-              {renderCancelControl(true)}
+              {renderCancelControl()}
             </div>
           )}
         </main>
@@ -852,6 +856,12 @@ export default function TokenTrackingPage() {
           <AgentMessage support={locale === "es" ? "Por favor, déjelos entrar." : "Please let them in."}>
             {localeText.arrived.title}
           </AgentMessage>
+          <TrackingMap
+            tech={assignment?.live_lat != null && assignment?.live_lng != null
+              ? { lat: assignment.live_lat, lng: assignment.live_lng } : null}
+            destination={destination}
+            label={assignment?.technician_display_name}
+          />
           {assignment && (
             <div className="panel">
               <p className="panel-title">
@@ -874,6 +884,12 @@ export default function TokenTrackingPage() {
           <AgentMessage support={localeText.in_progress.support}>
             {localeText.in_progress.title}
           </AgentMessage>
+          <TrackingMap
+            tech={assignment?.live_lat != null && assignment?.live_lng != null
+              ? { lat: assignment.live_lat, lng: assignment.live_lng } : null}
+            destination={destination}
+            label={assignment?.technician_display_name}
+          />
           <div className="panel">
             <p className="panel-title">
               {locale === "es"
@@ -902,6 +918,25 @@ export default function TokenTrackingPage() {
           <AgentMessage support={localeText.completed_pending_customer.support}>
             {localeText.completed_pending_customer.title}
           </AgentMessage>
+          {payment ? (
+            <div className="panel">
+              <p className="panel-title">
+                {locale === "es" ? "Pago" : "Payment"}
+              </p>
+              <div className="big-number">
+                {payment.currency === "USD" ? "$" : `${payment.currency} `}{payment.amount.toFixed(2)}
+              </div>
+              <p className="fine">
+                {locale === "es" ? "Método: " : "Method: "}
+                {paymentMethodLabel(payment.method, locale)}
+              </p>
+              <p className="fine">
+                {locale === "es"
+                  ? "Al confirmar que el trabajo está completo, usted reconoce este pago."
+                  : "By confirming the job is complete, you acknowledge this payment."}
+              </p>
+            </div>
+          ) : null}
           {reviewSubmitted ? (
             <div className="panel">
               <p className="panel-title">
@@ -967,34 +1002,6 @@ export default function TokenTrackingPage() {
                 value={reviewData.comment}
                 onChange={(e) => setReviewData(prev => ({ ...prev, comment: e.target.value }))}
               />
-              <div className="payment-report">
-                <p className="payment-report__label">
-                  {locale === "es"
-                    ? "¿Cuánto pagó y cómo? (opcional)"
-                    : "How much did you pay, and how? (optional)"}
-                </p>
-                <div className="payment-report__row">
-                  <input
-                    className="field"
-                    inputMode="decimal"
-                    placeholder={locale === "es" ? "Monto (USD)" : "Amount (USD)"}
-                    value={payAmount}
-                    onChange={(e) => setPayAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                    aria-label={locale === "es" ? "Monto pagado" : "Amount paid"}
-                  />
-                  <select
-                    className="field"
-                    value={payMethod}
-                    onChange={(e) => setPayMethod(e.target.value)}
-                    aria-label={locale === "es" ? "Método de pago" : "Payment method"}
-                  >
-                    <option value="">{locale === "es" ? "Método…" : "Method…"}</option>
-                    {PAYMENT_METHODS.map((m) => (
-                      <option key={m.value} value={m.value}>{locale === "es" ? m.labelEs : m.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
               {customerActions.can_review ? (
                 <button
                   className="primary"

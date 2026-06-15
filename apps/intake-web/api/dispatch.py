@@ -207,6 +207,15 @@ _FULFILLMENT_ORDER = [
 TECHNICIAN_SETTABLE = frozenset(
     {STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING}
 )
+# Live (FULFILLMENT) statuses — the technician is on the move / on site. Only while
+# the job is in one of these may the customer see the technician's live location.
+LIVE_TRACKING_STATUSES = frozenset({STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS})
+
+
+def may_show_live_tracking(status: str | None) -> bool:
+    """True if it is safe to expose the assigned technician's live location to the
+    customer for a job in ``status`` (FULFILLMENT only — en_route/arrived/in_progress)."""
+    return status in LIVE_TRACKING_STATUSES
 # Terminal operational states (no further automatic progress / closed to the customer).
 TERMINAL_STATUSES = frozenset(
     {
