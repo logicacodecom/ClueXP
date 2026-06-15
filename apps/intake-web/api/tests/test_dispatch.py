@@ -336,6 +336,25 @@ def test_token_endpoint_omits_dispatch_internals():
         assert field not in body, f"dispatch internal field {field!r} leaked into token response"
 
 
+def test_token_endpoint_always_returns_guards():
+    """The tracking UI reads guards.may_show_live_tracking / may_show_technician
+    unconditionally; the endpoint must always supply the guards object so the
+    customer page never crashes on `undefined` once a technician is assigned."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    client = TestClient(app)
+
+    jid = UUID("00000000-0000-0000-0000-000000000031")
+    token = "test-guards-token"
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[str(jid)] = token
+
+    body = client.get(f"/t/{token}").json()
+    assert "guards" in body, "guards object missing from tracking response"
+    for key in ("may_show_technician", "may_show_live_tracking", "may_show_eta"):
+        assert isinstance(body["guards"].get(key), bool), f"guards.{key} must be a bool"
+
+
 # --- ops-controlled model: legacy endpoints gated --------------------------
 def test_legacy_dispatch_endpoint_is_gone():
     from starlette.testclient import TestClient
