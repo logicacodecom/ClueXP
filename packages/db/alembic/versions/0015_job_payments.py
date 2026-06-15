@@ -1,10 +1,14 @@
 """job payment reports
 
-Two-sided payment reconciliation for a completed job: the assigned technician
-reports how much was collected and by what method; the customer reports how much
-they paid and how. One row per (job_id, reported_by) — the latest report from each
-side. Amounts are advisory records for the job history, not a payment-processing
-ledger (no real capture happens in the MVP).
+Payment record for a completed job. The assigned **technician** reports how much
+was collected and by what method (the single source of truth); the customer views
+and acknowledges it by confirming completion — there is no separate customer-entered
+amount. Amounts are advisory records for the job history (USD-only in the MVP), not
+a payment-processing ledger (no real capture happens).
+
+`reported_by` keeps a CHECK allowing 'customer' as a reserved value for forward
+compatibility, but the current contract only writes 'technician'. One row per
+(job_id, reported_by) — a re-report overwrites.
 
 Revision ID: 0015_job_payments
 Revises: 0014_job_notes

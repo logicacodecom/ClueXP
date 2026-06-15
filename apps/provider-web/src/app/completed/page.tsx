@@ -10,6 +10,7 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
+  completed_pending_customer: "Awaiting confirmation",
   completed_confirmed: "Confirmed", completed_auto_closed: "Auto-closed",
   cancelled: "Cancelled", no_show: "No-show"
 };

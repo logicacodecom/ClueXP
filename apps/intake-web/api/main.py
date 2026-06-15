@@ -302,7 +302,8 @@ class CustomerReviewRequest(BaseModel):
 class PaymentReportRequest(BaseModel):
     amount: float
     method: str
-    currency: str = "USD"
+    # MVP is USD-only: advisory totals are summed/displayed as a single dollar figure.
+    # The field is fixed server-side; a client-supplied value is ignored.
 
 class CancelRequest(BaseModel):
     reason: str | None = None
@@ -1865,7 +1866,7 @@ async def report_collection(
         )
     report = await store.record_payment_report(
         job_id=job_id, reported_by="technician", amount=amount, method=method,
-        currency=payload.currency,
+        currency="USD",
     )
     return {"status": "recorded", "payment": report}
 

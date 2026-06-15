@@ -1965,3 +1965,33 @@ def test_customer_live_location_gated_to_fulfillment():
     assert body["assignment"]["live_lng"] == -74.0060
     assert body["destination"] == {"lat": 40.7589, "lng": -73.9851}
     assert body["guards"]["may_show_live_tracking"] is True
+
+
+def test_no_show_in_provider_history_not_technician_history():
+    """A no-show appears in the org's provider history but NOT in the technician's
+    history (recovery clears the tech link; a no-show is not work they fulfilled)."""
+    from api.main import store as app_store
+
+    org = str(uuid4())
+    client, app_store2, token = _client_for_dispatcher(org)
+    tech_uid, jid = str(uuid4()), str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = "no_show"
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+
+    # Provider (org-scoped) history includes the no-show.
+    ph = client.get("/provider/jobs/history", headers={"Authorization": f"Bearer {token}"})
+    assert ph.status_code == 200, ph.text
+    assert any(row["id"] == jid for row in ph.json())
+
+    # Technician history excludes it.
+    tclient, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        th = tclient.get("/technician/jobs/history", headers={"Authorization": f"Bearer {access}"})
+        assert th.status_code == 200, th.text
+        assert all(row["id"] != jid for row in th.json())
+    finally:
+        app_store.get_user_session = _orig

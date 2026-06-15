@@ -230,6 +230,11 @@ TERMINAL_STATUSES = frozenset(
 # finished appears immediately — before the customer confirms — alongside the truly
 # terminal states. `disputed` stays in the live recovery workspace, not history.
 HISTORY_STATUSES = frozenset(TERMINAL_STATUSES | {STATUS_COMPLETED_PENDING})
+# Technician history excludes `no_show`: provider recovery clears the job's
+# `fulfillment_technician_id` on a no-show, so the technician/job link is no longer
+# reliable — a no-show is not a job the technician fulfilled. The provider history
+# (org-scoped) still includes it.
+TECHNICIAN_HISTORY_STATUSES = frozenset(HISTORY_STATUSES - {STATUS_NO_SHOW})
 # nullable lifecycle timestamp column written when a status is reached.
 STATUS_TIMESTAMP_COLUMN = {
     STATUS_ASSIGNED: "assigned_at",

@@ -33,6 +33,7 @@ from api.dispatch import (
     STATUS_PENDING_DISPATCH,
     STATUS_TIMESTAMP_COLUMN,
     HISTORY_STATUSES,
+    TECHNICIAN_HISTORY_STATUSES,
     can_customer_cancel,
     may_show_live_tracking,
     customer_actions,
@@ -1049,7 +1050,7 @@ class InMemoryStore(Store):
         statuses = getattr(self, "_job_status", {})
         out = []
         for jid, status in statuses.items():
-            if status not in HISTORY_STATUSES:
+            if status not in TECHNICIAN_HISTORY_STATUSES:
                 continue
             if str(getattr(self, "_job_tech", {}).get(jid)) != tid:
                 continue
@@ -2865,7 +2866,9 @@ class PostgresStore(Store):
             "created_at": row[3].isoformat() if row[3] else None,
         }
 
-    async def _job_history(self, where: str, params: tuple, limit: int) -> list[dict]:
+    async def _job_history(
+        self, where: str, params: tuple, limit: int, statuses=HISTORY_STATUSES
+    ) -> list[dict]:
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select j.id, j.status, j.address, j.situation, j.urgency, j.created_at,"
@@ -2880,7 +2883,7 @@ class PostgresStore(Store):
                 " ) r on true"
                 " where " + where + " and j.status = any(%s)"
                 " order by 7 desc nulls last limit %s",
-                params + (list(HISTORY_STATUSES), limit),
+                params + (list(statuses), limit),
             )
             rows = await cur.fetchall()
             payments = await self._payments_for(conn, [str(r[0]) for r in rows])
@@ -2913,6 +2916,7 @@ class PostgresStore(Store):
     ) -> list[dict]:
         return await self._job_history(
             "j.fulfillment_technician_id = %s", (str(technician_id),), limit,
+            statuses=TECHNICIAN_HISTORY_STATUSES,
         )
 
     async def auto_close_pending(self, window_seconds: int) -> int:
