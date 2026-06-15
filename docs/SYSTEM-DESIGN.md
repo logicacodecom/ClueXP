@@ -217,6 +217,27 @@ The customer holds a token link (`/t/{token}`). When the tech marks `completed_p
 - Customer taps → `POST /t/{token}/confirm` → sets `status = completed_confirmed`, `trust_state = fulfillment`
 - If customer doesn't confirm within `AUTO_CLOSE_WINDOW_SECONDS` (72h), cron auto-closes it to `completed_auto_closed`
 
+### 5.2a Payment Reconciliation (Two-Sided, Advisory)
+Both parties record what changed hands — surfaced later in the job history. These are
+**advisory records, not a payment ledger** (the MVP processes no real charge).
+
+- **Technician side:** once service is underway (`in_progress` / `completed_pending_customer`),
+  the tech reports amount + method via `POST /jobs/{id}/collection` (assigned-tech only).
+- **Customer side:** in the same window as the review (completion pending through the closed
+  grace window), the customer reports amount + method via `POST /t/{token}/payment` (token-gated).
+- **Method** is one of `PAYMENT_METHODS` (`api/dispatch.py`): credit_card, debit_card, cash, check,
+  zelle, cash_app, apple_pay, google_pay, venmo, paypal, other. Unknown → 422.
+- One row per side per job (`job_payment_reports`, unique on `(job_id, reported_by)`); a re-report overwrites.
+
+### 5.2b Finished-Job History
+Jobs leave the active workspace once terminal (`completed_confirmed`, `completed_auto_closed`,
+`cancelled`, `no_show`). History endpoints return them enriched with the customer review and
+**both** payment reports:
+- `GET /provider/jobs/history` — tenant-scoped; backs the provider **Completed** view (flags a
+  technician/customer amount **mismatch**).
+- `GET /technician/jobs/history` — the signed-in technician's finished jobs; backs the technician
+  **Activity** view.
+
 ### 5.3 Where Technician App Code Lives
 
 All pages are Next.js App Router server/client components in `apps/technician-web/src/app/`:
@@ -229,6 +250,10 @@ All pages are Next.js App Router server/client components in `apps/technician-we
 | Service | `jobs/[id]/service/page.tsx` | En route → arrived → in_progress → completed_pending flow |
 | Approval | `jobs/[id]/approval/page.tsx` | Waiting screen — customer confirms externally |
 | Complete | `jobs/[id]/complete/page.tsx` | Summary screen after confirmed |
+| Activity | `activity/page.tsx` | Finished-job history: payments collected/paid + customer review |
+
+The in-service screen (`components/active-job-workflow.tsx`) also carries the **"Payment collected"**
+form (amount + method → `POST /api/jobs/{id}/collection`) while the job is `in_progress` / `completed_pending_customer`.
 
 **BFF API routes** (Next.js serverless, in `src/app/api/`):
 - `GET /api/session` → proxies `GET /api/auth/me` (reads httpOnly cookie `cluexp_access_token`)
@@ -237,6 +262,8 @@ All pages are Next.js App Router server/client components in `apps/technician-we
 - `POST /api/offers/{id}/decline` → proxies to backend
 - `GET /api/active-job` → calls `/api/auth/me` then `/api/technicians/{id}/active-job`
 - `GET /api/jobs/{id}` → validates caller owns the active job, returns job detail
+- `POST /api/jobs/{id}/collection` → proxies the technician collection report
+- `GET /api/jobs/history` → proxies `GET /api/technician/jobs/history`
 - `PATCH /api/availability` → proxies `PATCH /api/technicians/me/availability`
 
 ---
@@ -374,6 +401,10 @@ created_at, updated_at timestamptz
 **`customers`** — `{ id, phone UNIQUE, name, created_at }` — global, not tenant-scoped.
 
 **`job_reviews`** — Post-completion review: `{ job_id, rating, tags[], comment, ... }`.
+
+**`job_payment_reports`** — Two-sided payment reconciliation (migration `0015`):
+`{ job_id, reported_by ('technician'|'customer'), amount, currency, method, reported_at }`,
+`UNIQUE (job_id, reported_by)`. Advisory records for the job history — not a payment ledger.
 
 **`media`** — Uploaded files: `{ owner_type, owner_id, kind, bucket, path, visibility, uploaded_by, uploaded_at }`.
 

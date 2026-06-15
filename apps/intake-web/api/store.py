@@ -32,6 +32,7 @@ from api.dispatch import (
     STATUS_IN_PROGRESS,
     STATUS_PENDING_DISPATCH,
     STATUS_TIMESTAMP_COLUMN,
+    TERMINAL_STATUSES,
     can_customer_cancel,
     customer_actions,
     eta_range_from_km,
@@ -357,6 +358,28 @@ class Store:
         issue_reported: bool = False,
         imply_confirm: bool = False,
     ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def record_payment_report(
+        self, *, job_id: UUID, reported_by: str, amount: float, method: str,
+        currency: str = "USD",
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_payment_reports(self, job_id: UUID) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_job_review(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_provider_job_history(
+        self, org_id: str, *, limit: int = 100
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_technician_job_history(
+        self, technician_id: UUID, *, limit: int = 100
+    ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
     async def auto_close_pending(self, window_seconds: int) -> int:  # pragma: no cover
@@ -951,6 +974,69 @@ class InMemoryStore(Store):
         self.reviews.append(review)
         return review
 
+    async def record_payment_report(
+        self, *, job_id: UUID, reported_by: str, amount: float, method: str,
+        currency: str = "USD",
+    ) -> dict:
+        payments = getattr(self, "_payments", None)
+        if payments is None:
+            payments = self._payments = {}
+        rec = {
+            "job_id": str(job_id), "reported_by": reported_by,
+            "amount": round(float(amount), 2), "currency": currency, "method": method,
+            "reported_at": datetime.now(timezone.utc).isoformat(),
+        }
+        payments[(str(job_id), reported_by)] = rec
+        return rec
+
+    async def get_payment_reports(self, job_id: UUID) -> dict:
+        payments = getattr(self, "_payments", {})
+        return {
+            "technician": payments.get((str(job_id), "technician")),
+            "customer": payments.get((str(job_id), "customer")),
+        }
+
+    async def get_job_review(self, job_id: UUID) -> dict | None:
+        jid = str(job_id)
+        for review in reversed(getattr(self, "reviews", [])):
+            if review.get("ticket_id") == jid:
+                return review
+        return None
+
+    async def get_provider_job_history(self, org_id: str, *, limit: int = 100) -> list[dict]:
+        statuses = getattr(self, "_job_status", {})
+        out = []
+        for jid, status in statuses.items():
+            if status not in TERMINAL_STATUSES:
+                continue
+            if org_id is not None and str(getattr(self, "_job_org", {}).get(jid)) != str(org_id):
+                continue
+            out.append({
+                "id": jid, "status": status,
+                "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
+                "review": await self.get_job_review(UUID(jid)),
+                "payments": await self.get_payment_reports(UUID(jid)),
+            })
+        return out[:limit]
+
+    async def get_technician_job_history(
+        self, technician_id: UUID, *, limit: int = 100
+    ) -> list[dict]:
+        tid = str(technician_id)
+        statuses = getattr(self, "_job_status", {})
+        out = []
+        for jid, status in statuses.items():
+            if status not in TERMINAL_STATUSES:
+                continue
+            if str(getattr(self, "_job_tech", {}).get(jid)) != tid:
+                continue
+            out.append({
+                "id": jid, "status": status,
+                "review": await self.get_job_review(UUID(jid)),
+                "payments": await self.get_payment_reports(UUID(jid)),
+            })
+        return out[:limit]
+
     async def auto_close_pending(self, window_seconds: int) -> int:
         return 0
 
@@ -1169,6 +1255,23 @@ class PostgresStore(Store):
                 "  success boolean not null default false,"
                 "  created_at timestamptz not null default now()"
                 ")"
+            )
+            await conn.execute(
+                "create table if not exists job_payment_reports ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  job_id uuid not null references jobs(id) on delete cascade,"
+                "  reported_by text not null check (reported_by in ('technician','customer')),"
+                "  amount numeric(10,2) not null check (amount >= 0),"
+                "  currency text not null default 'USD',"
+                "  method text not null,"
+                "  reported_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  unique (job_id, reported_by)"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_job_payment_reports_job"
+                " on job_payment_reports (job_id)"
             )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
@@ -2648,6 +2751,119 @@ class PostgresStore(Store):
             "technician_ref": tech_ref,
             "organization_id": str(fulfillment_org_id) if fulfillment_org_id else None,
         }
+
+    # --- payment reconciliation (job history) ----------------------------------
+
+    async def record_payment_report(
+        self, *, job_id: UUID, reported_by: str, amount: float, method: str,
+        currency: str = "USD",
+    ) -> dict:
+        """Upsert the latest payment report from one side (technician or customer)
+        for a job. One row per (job_id, reported_by) — a re-report overwrites."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into job_payment_reports"
+                " (job_id, reported_by, amount, currency, method)"
+                " values (%s, %s, %s, %s, %s)"
+                " on conflict (job_id, reported_by) do update set"
+                "   amount = excluded.amount, currency = excluded.currency,"
+                "   method = excluded.method, reported_at = now(), updated_at = now()"
+                " returning amount, currency, method, reported_at",
+                (str(job_id), reported_by, round(float(amount), 2), currency, method),
+            )
+            row = await cur.fetchone()
+        return {
+            "job_id": str(job_id), "reported_by": reported_by,
+            "amount": float(row[0]), "currency": row[1], "method": row[2],
+            "reported_at": row[3].isoformat() if row[3] else None,
+        }
+
+    async def _payments_for(self, conn, job_ids: list[str]) -> dict[str, dict]:
+        """job_id -> {'technician': {...}|None, 'customer': {...}|None}."""
+        out: dict[str, dict] = {jid: {"technician": None, "customer": None} for jid in job_ids}
+        if not job_ids:
+            return out
+        cur = await conn.execute(
+            "select job_id, reported_by, amount, currency, method, reported_at"
+            " from job_payment_reports where job_id = any(%s)",
+            (job_ids,),
+        )
+        for r in await cur.fetchall():
+            out[str(r[0])][r[1]] = {
+                "amount": float(r[2]), "currency": r[3], "method": r[4],
+                "reported_at": r[5].isoformat() if r[5] else None,
+            }
+        return out
+
+    async def get_payment_reports(self, job_id: UUID) -> dict:
+        async with await self._connect() as conn:
+            reports = await self._payments_for(conn, [str(job_id)])
+        return reports[str(job_id)]
+
+    async def get_job_review(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select rating, comment, issue_reported, created_at from job_reviews"
+                " where job_id = %s order by created_at desc limit 1",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "rating": row[0], "comment": row[1], "issue_reported": row[2],
+            "created_at": row[3].isoformat() if row[3] else None,
+        }
+
+    async def _job_history(self, where: str, params: tuple, limit: int) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select j.id, j.status, j.address, j.situation, j.urgency, j.created_at,"
+                " coalesce(j.confirmed_at, j.closed_at, j.cancelled_at, j.disputed_at, j.updated_at),"
+                " j.fulfillment_technician_id, t.display_name,"
+                " r.rating, r.comment, r.created_at"
+                " from jobs j"
+                " left join technicians t on t.id = j.fulfillment_technician_id"
+                " left join lateral ("
+                "   select rating, comment, created_at from job_reviews"
+                "   where job_id = j.id order by created_at desc limit 1"
+                " ) r on true"
+                " where " + where + " and j.status = any(%s)"
+                " order by 7 desc nulls last limit %s",
+                params + (list(TERMINAL_STATUSES), limit),
+            )
+            rows = await cur.fetchall()
+            payments = await self._payments_for(conn, [str(r[0]) for r in rows])
+        return [
+            {
+                "id": str(r[0]), "status": r[1], "address": r[2], "situation": r[3],
+                "urgency": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+                "finished_at": r[6].isoformat() if r[6] else None,
+                "fulfillment_technician_id": str(r[7]) if r[7] else None,
+                "technician_display_name": r[8],
+                "review": (
+                    {"rating": r[9], "comment": r[10],
+                     "created_at": r[11].isoformat() if r[11] else None}
+                    if r[9] is not None else None
+                ),
+                "payments": payments.get(str(r[0]), {"technician": None, "customer": None}),
+            }
+            for r in rows
+        ]
+
+    async def get_provider_job_history(self, org_id: str, *, limit: int = 100) -> list[dict]:
+        return await self._job_history(
+            "(j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)",
+            (str(org_id), str(org_id)), limit,
+        )
+
+    async def get_technician_job_history(
+        self, technician_id: UUID, *, limit: int = 100
+    ) -> list[dict]:
+        return await self._job_history(
+            "j.fulfillment_technician_id = %s", (str(technician_id),), limit,
+        )
 
     async def auto_close_pending(self, window_seconds: int) -> int:
         """Cron-owned: close jobs stuck in completed_pending_customer past the

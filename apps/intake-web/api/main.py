@@ -34,9 +34,12 @@ from api.dispatch import (
     STATUS_NO_SHOW,
     STATUS_PENDING_DISPATCH,
     can_customer_cancel,
+    can_report_collection,
     can_technician_transition,
+    customer_actions,
     eta_range_from_km,
     haversine_km,
+    normalize_payment_method,
     normalize_policy,
     select_candidates,
     to_db_policy,
@@ -294,6 +297,12 @@ class NoteRequest(BaseModel):
 class CustomerReviewRequest(BaseModel):
     rating: int
     comment: str | None = None
+
+
+class PaymentReportRequest(BaseModel):
+    amount: float
+    method: str
+    currency: str = "USD"
 
 class CancelRequest(BaseModel):
     reason: str | None = None
@@ -1597,6 +1606,41 @@ async def review_by_token(token: str, payload: CustomerReviewRequest) -> dict[st
         )
     return {"status": "recorded", "review": review}
 
+
+def _validate_payment(payload: PaymentReportRequest) -> tuple[float, str]:
+    """Shared validation for both sides of a payment report. Returns the rounded
+    amount + canonical method, or raises 422."""
+    if payload.amount is None or payload.amount < 0:
+        raise HTTPException(status_code=422, detail="Amount must be zero or greater")
+    if payload.amount > 1_000_000:
+        raise HTTPException(status_code=422, detail="Amount is implausibly large")
+    method = normalize_payment_method(payload.method)
+    if method is None:
+        raise HTTPException(status_code=422, detail="Unknown payment method")
+    return round(float(payload.amount), 2), method
+
+
+@app.post("/t/{token}/payment")
+async def report_payment_by_token(token: str, payload: PaymentReportRequest) -> dict[str, Any]:
+    """Customer reports how much they paid and by what method for THIS ticket.
+    Token-gated (capability link only) and allowed in the same window as the review
+    (completion pending through the closed grace window). Advisory record for the
+    job history — no real charge is processed here."""
+    await latency()
+    amount, method = _validate_payment(payload)
+    job_id = await _require_token_job(token)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not customer_actions(lifecycle["status"]).get("can_review"):
+        raise HTTPException(status_code=409, detail="Payment can't be reported for this job yet")
+    report = await store.record_payment_report(
+        job_id=job_id, reported_by="customer", amount=amount, method=method,
+        currency=payload.currency,
+    )
+    return {"status": "recorded", "payment": report}
+
+
 @app.post("/t/{token}/dispute")
 async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any]:
     """Customer reports an issue: completed_pending_customer → disputed. A human
@@ -1814,6 +1858,51 @@ async def report_issue(
     return {"reported": True, "kind": kind}
 
 
+@app.post("/jobs/{job_id}/collection")
+async def report_collection(
+    job_id: UUID,
+    payload: PaymentReportRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Assigned technician reports how much they collected and by what method.
+    Allowed once service is underway (in_progress / completed_pending_customer).
+    Advisory record for the job history — no real charge is processed here."""
+    await latency()
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    amount, method = _validate_payment(payload)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
+        raise HTTPException(status_code=403, detail="Not your job")
+    if not can_report_collection(lifecycle["status"]):
+        raise HTTPException(
+            status_code=409,
+            detail="Collection can only be reported while the job is in progress or completed.",
+        )
+    report = await store.record_payment_report(
+        job_id=job_id, reported_by="technician", amount=amount, method=method,
+        currency=payload.currency,
+    )
+    return {"status": "recorded", "payment": report}
+
+
+@app.get("/technician/jobs/history")
+async def technician_job_history(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """The signed-in technician's finished jobs (closed/confirmed/cancelled/no-show),
+    each with the customer review received and both reported payment amounts/methods."""
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    return await store.get_technician_job_history(UUID(tech["id"]))
+
+
 @app.post("/provider/jobs/{job_id}/arrival/override")
 async def provider_override_arrival(
     job_id: UUID,
@@ -1868,6 +1957,17 @@ async def provider_active_jobs(
     """The company's active/recoverable jobs (live recovery workspace)."""
     org_id = _require_dispatch_org(session)
     return await store.get_provider_active_jobs(org_id)
+
+
+@app.get("/provider/jobs/history")
+async def provider_job_history(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """The company's finished jobs (confirmed / auto-closed / cancelled / no-show),
+    each with the customer review and both reported payment amounts/methods —
+    the technician's collection and the customer's payment. Tenant-scoped."""
+    org_id = _require_dispatch_org(session)
+    return await store.get_provider_job_history(org_id)
 
 
 _ASSIGNED_LADDER = [STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS]

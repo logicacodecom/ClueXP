@@ -85,6 +85,22 @@ const emptyCustomerActions: CustomerActions = {
   can_dispute: false
 };
 
+// Payment methods the customer can report paying by. Mirrors the backend
+// PAYMENT_METHODS set; "other" is the catch-all.
+const PAYMENT_METHODS: Array<{ value: string; label: string; labelEs: string }> = [
+  { value: "credit_card", label: "Credit card", labelEs: "Tarjeta de crédito" },
+  { value: "debit_card", label: "Debit card", labelEs: "Tarjeta de débito" },
+  { value: "cash", label: "Cash", labelEs: "Efectivo" },
+  { value: "check", label: "Check", labelEs: "Cheque" },
+  { value: "zelle", label: "Zelle", labelEs: "Zelle" },
+  { value: "cash_app", label: "Cash App", labelEs: "Cash App" },
+  { value: "apple_pay", label: "Apple Pay", labelEs: "Apple Pay" },
+  { value: "google_pay", label: "Google Pay", labelEs: "Google Pay" },
+  { value: "venmo", label: "Venmo", labelEs: "Venmo" },
+  { value: "paypal", label: "PayPal", labelEs: "PayPal" },
+  { value: "other", label: "Other", labelEs: "Otro" }
+];
+
 function TopBar() {
   const { locale } = useLocale();
   return (
@@ -131,6 +147,8 @@ export default function TokenTrackingPage() {
     comment: ""
   });
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState("");
   const [arrivalPin, setArrivalPin] = useState<string | null>(null);
 
   const localeText = {
@@ -324,9 +342,10 @@ export default function TokenTrackingPage() {
 
   const handleConfirm = async () => {
     setBusy(true);
+    await submitPaymentIfProvided();
     try {
       const response = await fetch(`/api/t/${token}/confirm`, { method: "POST" });
-      
+
       if (response.status === 401) {
         setError(locale === "es" 
           ? "Sesión expirada, por favor actualice la página"
@@ -475,10 +494,27 @@ export default function TokenTrackingPage() {
     }
   };
 
+  // Best-effort: report what the customer paid (advisory record for the job
+  // history). Failures never block confirm/review — the amount is informational.
+  const submitPaymentIfProvided = async () => {
+    const amount = Number.parseFloat(payAmount);
+    if (!payMethod || !Number.isFinite(amount) || amount < 0) return;
+    try {
+      await fetch(`/api/t/${token}/payment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, method: payMethod })
+      });
+    } catch {
+      /* advisory only */
+    }
+  };
+
   const handleSubmitReview = async () => {
     if (!reviewData.rating) return;
-    
+
     setBusy(true);
+    await submitPaymentIfProvided();
     try {
       const response = await fetch(`/api/t/${token}/review`, {
         method: "POST",
@@ -931,6 +967,34 @@ export default function TokenTrackingPage() {
                 value={reviewData.comment}
                 onChange={(e) => setReviewData(prev => ({ ...prev, comment: e.target.value }))}
               />
+              <div className="payment-report">
+                <p className="payment-report__label">
+                  {locale === "es"
+                    ? "¿Cuánto pagó y cómo? (opcional)"
+                    : "How much did you pay, and how? (optional)"}
+                </p>
+                <div className="payment-report__row">
+                  <input
+                    className="field"
+                    inputMode="decimal"
+                    placeholder={locale === "es" ? "Monto (USD)" : "Amount (USD)"}
+                    value={payAmount}
+                    onChange={(e) => setPayAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                    aria-label={locale === "es" ? "Monto pagado" : "Amount paid"}
+                  />
+                  <select
+                    className="field"
+                    value={payMethod}
+                    onChange={(e) => setPayMethod(e.target.value)}
+                    aria-label={locale === "es" ? "Método de pago" : "Payment method"}
+                  >
+                    <option value="">{locale === "es" ? "Método…" : "Method…"}</option>
+                    {PAYMENT_METHODS.map((m) => (
+                      <option key={m.value} value={m.value}>{locale === "es" ? m.labelEs : m.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               {customerActions.can_review ? (
                 <button
                   className="primary"
