@@ -216,6 +216,11 @@ TERMINAL_STATUSES = frozenset(
         STATUS_NO_SHOW,
     }
 )
+# Statuses shown in the finished-job history (provider "Completed" + technician
+# "Activity"). Includes `completed_pending_customer` so a job the technician just
+# finished appears immediately — before the customer confirms — alongside the truly
+# terminal states. `disputed` stays in the live recovery workspace, not history.
+HISTORY_STATUSES = frozenset(TERMINAL_STATUSES | {STATUS_COMPLETED_PENDING})
 # nullable lifecycle timestamp column written when a status is reached.
 STATUS_TIMESTAMP_COLUMN = {
     STATUS_ASSIGNED: "assigned_at",

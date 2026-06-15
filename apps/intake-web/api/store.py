@@ -32,7 +32,7 @@ from api.dispatch import (
     STATUS_IN_PROGRESS,
     STATUS_PENDING_DISPATCH,
     STATUS_TIMESTAMP_COLUMN,
-    TERMINAL_STATUSES,
+    HISTORY_STATUSES,
     can_customer_cancel,
     customer_actions,
     eta_range_from_km,
@@ -1007,7 +1007,7 @@ class InMemoryStore(Store):
         statuses = getattr(self, "_job_status", {})
         out = []
         for jid, status in statuses.items():
-            if status not in TERMINAL_STATUSES:
+            if status not in HISTORY_STATUSES:
                 continue
             if org_id is not None and str(getattr(self, "_job_org", {}).get(jid)) != str(org_id):
                 continue
@@ -1026,7 +1026,7 @@ class InMemoryStore(Store):
         statuses = getattr(self, "_job_status", {})
         out = []
         for jid, status in statuses.items():
-            if status not in TERMINAL_STATUSES:
+            if status not in HISTORY_STATUSES:
                 continue
             if str(getattr(self, "_job_tech", {}).get(jid)) != tid:
                 continue
@@ -2830,7 +2830,7 @@ class PostgresStore(Store):
                 " ) r on true"
                 " where " + where + " and j.status = any(%s)"
                 " order by 7 desc nulls last limit %s",
-                params + (list(TERMINAL_STATUSES), limit),
+                params + (list(HISTORY_STATUSES), limit),
             )
             rows = await cur.fetchall()
             payments = await self._payments_for(conn, [str(r[0]) for r in rows])

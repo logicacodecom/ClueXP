@@ -54,6 +54,8 @@ export default function ActivityPage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const totalEarned = jobs.reduce((sum, j) => sum + (j.payments.technician?.amount ?? 0), 0);
+
   return (
     <div className="min-h-full bg-background pb-28">
       <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
@@ -67,6 +69,19 @@ export default function ActivityPage() {
           <RefreshCw className={`size-4 ${state === "loading" ? "animate-spin" : ""}`} />
         </button>
       </header>
+
+      {state === "ready" && jobs.length > 0 ? (
+        <div className="mx-4 mt-4 flex items-center justify-between border border-border bg-card p-4">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Total earned</p>
+            <p className="mt-1 font-condensed text-3xl font-bold">${totalEarned.toFixed(2)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Jobs</p>
+            <p className="mt-1 font-condensed text-3xl font-bold">{jobs.length}</p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="px-4 pt-4">
         {state === "error" ? (
