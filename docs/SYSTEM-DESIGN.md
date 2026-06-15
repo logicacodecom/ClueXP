@@ -450,18 +450,54 @@ Environment variable: `GOOGLE_MAPS_API_KEY` — must have both **Geocoding API**
 
 All environment variables for `intake-web`. Set in Vercel project dashboard under each environment (Production/Preview/Development).
 
-### Backend (Python / FastAPI)
+### Backend (Python / FastAPI) — Core
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | — | Postgres DSN. If unset, in-memory store is used. Use Session Pooler URL (port 5432) not direct (port 5432 IPv6 only). |
-| `JWT_SECRET` | — | Signs session JWTs. Must be set in prod. |
-| `GOOGLE_MAPS_API_KEY` | — | Server-side geocoding + Places autocomplete. Must have Geocoding + Places API (New) enabled. |
-| `CRON_SECRET` | `""` (disabled) | Secret for `POST /cron/dispatch-sweep`. Unset = endpoint returns 503. |
+| `AUTH_SECRET` | `cluexp-dev-auth-secret-change-me` (dev only) | Signs/verifies session JWTs (`auth.py`). **Must be a strong, unique value in prod** — the default literal is public, so an unset prod secret means forgeable tokens. |
+| `GOOGLE_MAPS_API_KEY` | — | Server-side geocoding + Places autocomplete. Must have Geocoding + Places API (New) enabled, Application Restrictions = None. |
 | `SUPABASE_URL` | — | Supabase project URL for storage signed URLs. |
-| `SUPABASE_SERVICE_KEY` | — | Service role key for storage operations. |
-| `ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set in prod. |
-| `DEMO_SEED` | `true` | If true, seeds demo technicians/orgs on startup (in-memory store only). |
+| `SUPABASE_SERVICE_ROLE_KEY` | — | Service-role key for storage operations. Legacy fallback `SUPABASE_SERVICE_KEY` is still read if the role-key name is absent. Server-only — never expose to the browser. |
+| `CRON_SECRET` | `""` (disabled) | Bearer secret for `POST /cron/dispatch-sweep`. Unset = endpoint returns 503. Sent as `Authorization: Bearer ${CRON_SECRET}` by Vercel Cron / pg_cron / any caller. |
+| `ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set explicitly in prod. |
+| `DEMO_SEED` | `true` | If true, seeds demo technicians/orgs on startup (in-memory store only). Set `false` to disable. |
+| `DEMO_SEED_PASSWORD` | `123456` | Login password for the seeded demo accounts. Intentionally simple for demos; the JWT signing secret (`AUTH_SECRET`) is separate and must still be strong. |
+
+### Backend — Environment Detection
+
+The backend decides it is "production" (which makes `ARRIVAL_PIN_SECRET` mandatory — see below) from any of these. None need an explicit value beyond what the host already sets.
+
+| Variable | Purpose |
+|----------|---------|
+| `VERCEL_ENV` | Set automatically by Vercel. `production` ⇒ `IS_PRODUCTION = true`. |
+| `APP_ENV` / `ENVIRONMENT` | Either set to `production`/`prod` also flips `IS_PRODUCTION` on (for non-Vercel hosts). |
+
+### Backend — Arrival Verification (Gate 2)
+
+Secure customer-held PIN the technician must enter to move `en_route → arrived`. Only a keyed hash is stored.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ARRIVAL_PIN_SECRET` | dev fallback (`dev-arrival-pin-secret`) | HMAC key for the stored PIN hash — stable per deployment so the hash can be recomputed for comparison; protects PINs if the DB leaks. **Fail-secure: production refuses to start if this is unset** (no silent fallback). Generate with `openssl rand -hex 32`. |
+| `ARRIVAL_PIN_TTL_SECONDS` | `900` | How long a generated PIN stays valid (15 min). |
+| `ARRIVAL_PIN_MAX_ATTEMPTS` | `5` | Wrong-PIN attempts before the PIN is burned. |
+
+### Backend — Customer Link Rate-Limit (Gate 4)
+
+Per-token sliding window guarding capability-link mutations (confirm / review / dispute / cancel / arrival-pin). In-process (per-instance) — a first layer of abuse protection on a leaked tracking link.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TOKEN_ACTION_MAX` | `30` | Max mutating actions per token within the window. |
+| `TOKEN_ACTION_WINDOW_SECONDS` | `60` | Length of the sliding window. |
+
+### Backend — Auth Hardening (Login)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LOGIN_MAX_FAILURES` | `8` | Failed logins within the window before the account is locked. Tracked in `login_attempts`. |
+| `LOGIN_WINDOW_SECONDS` | `900` | Lockout sliding window (15 min). |
 
 ### Dispatch Tunables
 
@@ -475,24 +511,37 @@ All environment variables for `intake-web`. Set in Vercel project dashboard unde
 
 ### Cutover Flags
 
+**What "cutover" means.** It is the migration of a request's fulfillment path from the **legacy auto-dispatch stub** (old code auto-creates offers on intake) to the **new ops-controlled, provider-managed model** (the job enters the owning company's dispatch queue as `pending_dispatch` with *no* automatic offer; a human dispatcher assigns a technician via `POST /provider/queue/{id}/assign`). It is rolled out **per company channel**, never as a single global flip. See the intake decision in `api/main.py` (`channel_on … cutover`).
+
+**Two gates decide the path** (`cutover = channel_on AND NOT DISPATCH_CUTOVER_GLOBAL_OFF`):
+
+1. **Per-channel (DB):** `intake_channels.dispatch_cutover_enabled` — turns the new model **on** for one company. This is the normal rollout knob.
+2. **Global (env):** `DISPATCH_CUTOVER_GLOBAL_OFF` — turns the new model **off** for **everyone** at once, overriding every per-channel flag.
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DISPATCH_CUTOVER_GLOBAL_OFF` | `false` | Emergency kill-switch — forces ALL channels back to legacy stub |
-| `DISPATCH_CUTOVER_PUBLIC` | `false` | Enable cutover for jobs submitted with no `intake_channel` slug (public intake) |
+| `DISPATCH_CUTOVER_GLOBAL_OFF` | `false` | **Emergency kill-switch.** When `true`, forces *all* channels back to the legacy stub regardless of their `dispatch_cutover_enabled` flag — a DB-free, redeploy-only rollback (no per-row SQL). This is the official rollback mechanism for the pilot. Verify the live value as a platform admin via `GET /ops/flags`. |
+| `DISPATCH_CUTOVER_PUBLIC` | `false` | **Deprecated / disabled.** Once enabled cutover for channelless (public) intake. ClueXP is a SaaS platform that never dispatches channelless requests — every dispatchable job must belong to a provider company via a branded channel. No longer read by the intake path; retained only so environments that still define it don't break. |
 
-### Technician App (`technician-web`)
+### Frontend (Next.js apps: `intake-web`, `ops-web`, `provider-web`, `technician-web`)
 
-| Variable | Purpose |
-|----------|---------|
-| `NEXT_PUBLIC_INTAKE_API_BASE` | Backend URL (e.g., `https://intake.cluexp.com`). Used by BFF routes to call the FastAPI backend. |
-| `COOKIE_NAME` | Session cookie name (default: `cluexp_access_token`). httpOnly, Secure. |
+These are read by the BFF API routes and client components. `NEXT_PUBLIC_*` vars are inlined into the browser bundle — never put secrets there. The session cookie name is hardcoded (`cluexp_access_token`, httpOnly + Secure), not env-configurable.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NEXT_PUBLIC_CLUEXP_API_BASE_URL` | `https://intake.cluexp.com` | Backend FastAPI base URL the BFF routes proxy to. |
+| `LOCAL_API_BASE_URL` | `http://127.0.0.1:8000` | Dev-only rewrite target in `next.config.mjs` (proxies `/api` to the local backend; production uses real route handlers). |
+| `CLUEXP_AUTH_LOCALE_PATH` | `/api/auth/me/locale` | Backend path the locale route posts the user's language preference to. |
+| `NEXT_PUBLIC_MAPS_BROWSER_KEY` | — | Browser Google Maps key for the technician map (separate from the server `GOOGLE_MAPS_API_KEY`; should be HTTP-referrer restricted). |
+| `NEXT_PUBLIC_DEMO_MODE` | `true` (any value but `"false"`) | Demo affordances on the public intake page; set `"false"` to disable. |
+| `NEXT_PUBLIC_DISPATCH_PHONE` | `+18005551234` | Fallback dispatch phone number shown on the intake page. |
 
 ---
 
 ## 10. Auth
 
 ### Session Tokens
-JWT tokens signed with `JWT_SECRET`. Claims: `{ sub: user_id, roles: [], org: org_id, technician: { id, is_available, ... } }`. Stored as httpOnly cookie `cluexp_access_token`.
+JWT tokens signed with `AUTH_SECRET`. Claims: `{ sub: user_id, roles: [], org: org_id, technician: { id, is_available, ... } }`. Stored as httpOnly cookie `cluexp_access_token`.
 
 ### Roles
 | Role | Access |
