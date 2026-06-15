@@ -262,7 +262,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
 
   const iconFor = useMemo(
     () => ({
-      car: <Car size={22} />,
+      vehicle: <Car size={22} />,
       home: <Home size={22} />,
       business: <Store size={22} />,
       other: <UserRound size={22} />
@@ -529,7 +529,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           </AgentMessage>
           <div className="stack">
             {[
-              ["vehicle", "Car", "Keys, fob, or vehicle entry"],
+              ["vehicle", "Vehicle", "Keys, fob, or vehicle entry"],
               ["home", "Home", "House, apartment, or rental"],
               ["business", "Business", "Storefront, office, or facility"],
               ["other", "Something else", "Talk with a person"]

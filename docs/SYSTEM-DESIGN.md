@@ -230,13 +230,15 @@ Both parties record what changed hands — surfaced later in the job history. Th
 - One row per side per job (`job_payment_reports`, unique on `(job_id, reported_by)`); a re-report overwrites.
 
 ### 5.2b Finished-Job History
-Jobs leave the active workspace once terminal (`completed_confirmed`, `completed_auto_closed`,
-`cancelled`, `no_show`). History endpoints return them enriched with the customer review and
+History covers `HISTORY_STATUSES` (`api/dispatch.py`): `completed_pending_customer` (so a job the
+tech just finished shows **immediately**, before the customer confirms) plus the terminal states
+`completed_confirmed`, `completed_auto_closed`, `cancelled`, `no_show`. (`disputed` stays in the
+live recovery workspace, not history.) Endpoints return jobs enriched with the customer review and
 **both** payment reports:
-- `GET /provider/jobs/history` — tenant-scoped; backs the provider **Completed** view (flags a
-  technician/customer amount **mismatch**).
+- `GET /provider/jobs/history` — tenant-scoped; backs the provider **Completed** view, which also
+  totals **earned (tech collected)** + **customer reported** and flags a per-job amount **mismatch**.
 - `GET /technician/jobs/history` — the signed-in technician's finished jobs; backs the technician
-  **Activity** view.
+  **Activity** view (with a **Total earned** summary).
 
 ### 5.3 Where Technician App Code Lives
 
@@ -563,7 +565,7 @@ These are read by the BFF API routes and client components. `NEXT_PUBLIC_*` vars
 | `NEXT_PUBLIC_CLUEXP_API_BASE_URL` | `https://intake.cluexp.com` | Backend FastAPI base URL the BFF routes proxy to. |
 | `LOCAL_API_BASE_URL` | `http://127.0.0.1:8000` | Dev-only rewrite target in `next.config.mjs` (proxies `/api` to the local backend; production uses real route handlers). |
 | `CLUEXP_AUTH_LOCALE_PATH` | `/api/auth/me/locale` | Backend path the locale route posts the user's language preference to. |
-| `NEXT_PUBLIC_MAPS_BROWSER_KEY` | — | Browser Google Maps key for the technician map (separate from the server `GOOGLE_MAPS_API_KEY`; should be HTTP-referrer restricted). |
+| `NEXT_PUBLIC_MAPS_BROWSER_KEY` | — | Browser Google Maps key for the map views (separate from the server `GOOGLE_MAPS_API_KEY`; should be HTTP-referrer restricted). **Required in every console that renders a map — `technician-web`, `provider-web`, AND `ops-web`.** Unset ⇒ the map renders the "Map key not configured" fallback. Because it's `NEXT_PUBLIC_*` it's inlined at build time, so set it per Vercel project and **redeploy** to take effect. |
 | `NEXT_PUBLIC_DEMO_MODE` | `true` (any value but `"false"`) | Demo affordances on the public intake page; set `"false"` to disable. |
 | `NEXT_PUBLIC_DISPATCH_PHONE` | `+18005551234` | Fallback dispatch phone number shown on the intake page. |
 

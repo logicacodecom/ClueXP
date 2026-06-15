@@ -60,6 +60,9 @@ function CompletedJobs() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const totalCollected = jobs.reduce((sum, j) => sum + (j.payments.technician?.amount ?? 0), 0);
+  const totalCustomerPaid = jobs.reduce((sum, j) => sum + (j.payments.customer?.amount ?? 0), 0);
+
   return (
     <section className="p-6">
       <div className="flex items-end justify-between gap-4">
@@ -71,6 +74,23 @@ function CompletedJobs() {
           {state === "loading" ? "Refreshing…" : "Refresh"}
         </button>
       </div>
+
+      {state === "ready" && jobs.length > 0 ? (
+        <div className="mt-5 grid grid-cols-3 gap-3">
+          <div className="border border-border bg-card p-4">
+            <p className="text-[11px] font-black uppercase tracking-wide text-muted">Completed jobs</p>
+            <p className="mt-1 font-condensed text-3xl font-bold">{jobs.length}</p>
+          </div>
+          <div className="border border-border bg-card p-4">
+            <p className="text-[11px] font-black uppercase tracking-wide text-muted">Earned (tech collected)</p>
+            <p className="mt-1 font-condensed text-3xl font-bold">${totalCollected.toFixed(2)}</p>
+          </div>
+          <div className="border border-border bg-card p-4">
+            <p className="text-[11px] font-black uppercase tracking-wide text-muted">Customer reported</p>
+            <p className="mt-1 font-condensed text-3xl font-bold">${totalCustomerPaid.toFixed(2)}</p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-6 overflow-x-auto border border-border">
         <table className="w-full min-w-[820px] border-collapse text-sm">

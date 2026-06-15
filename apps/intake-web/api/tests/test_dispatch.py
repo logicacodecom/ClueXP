@@ -1887,3 +1887,19 @@ def test_provider_job_history_scoped_and_enriched():
     rows = [row for row in h.json() if row["id"] == jid]
     assert len(rows) == 1
     assert rows[0]["payments"]["technician"]["method"] == "check"
+
+
+def test_history_includes_completed_pending_customer():
+    """A job the technician just finished (completed_pending_customer, before the
+    customer confirms) must already appear in the provider history."""
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid = str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+
+    h = client.get("/provider/jobs/history", headers={"Authorization": f"Bearer {token}"})
+    assert h.status_code == 200, h.text
+    assert any(row["id"] == jid for row in h.json())
