@@ -1936,6 +1936,7 @@ def test_customer_cancel_requires_reason():
 def test_customer_live_location_gated_to_fulfillment():
     """The customer sees the technician's live location + destination only while the
     job is en_route/arrived/in_progress — never before (privacy gate)."""
+    from datetime import datetime, timezone
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
 
@@ -1947,7 +1948,8 @@ def test_customer_live_location_gated_to_fulfillment():
     app_store._job_loc = getattr(app_store, "_job_loc", {})
     app_store._job_tech[jid] = tech_uid
     app_store._tokens[jid] = token
-    app_store._tech_location[tech_uid] = (40.7128, -74.0060, "2026-06-15T00:00:00Z")
+    fresh = datetime.now(timezone.utc).isoformat()
+    app_store._tech_location[tech_uid] = (40.7128, -74.0060, fresh)
     app_store._job_loc[jid] = (40.7589, -73.9851)
     client = TestClient(app)
 
@@ -1958,12 +1960,53 @@ def test_customer_live_location_gated_to_fulfillment():
     assert body["destination"] is None
     assert body["guards"]["may_show_live_tracking"] is False
 
-    # En route -> safe live location + destination exposed.
+    # En route + fresh location -> safe live location + destination exposed.
     app_store._job_status[jid] = STATUS_EN_ROUTE
     body = client.get(f"/t/{token}").json()
     assert body["assignment"]["live_lat"] == 40.7128
     assert body["assignment"]["live_lng"] == -74.0060
     assert body["destination"] == {"lat": 40.7589, "lng": -73.9851}
+    assert body["guards"]["may_show_live_tracking"] is True
+
+
+def test_customer_live_location_requires_fresh_position():
+    """Even while en_route, a stale or missing technician timestamp must not be
+    presented as a live location — the guard goes False and coordinates are nulled
+    so the UI can show "temporarily unavailable" instead of a frozen point."""
+    from datetime import datetime, timezone, timedelta
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    tech_uid, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tech_location = getattr(app_store, "_tech_location", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._tokens[jid] = token
+    app_store._job_status[jid] = STATUS_EN_ROUTE
+    client = TestClient(app)
+
+    # Stale timestamp (well past LOCATION_ONLINE_THRESHOLD_MINUTES) -> not live.
+    stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    app_store._tech_location[tech_uid] = (40.7128, -74.0060, stale)
+    body = client.get(f"/t/{token}").json()
+    assert body["assignment"]["live_lat"] is None
+    assert body["assignment"]["location_updated_at"] is None
+    assert body["guards"]["may_show_live_tracking"] is False
+
+    # Missing timestamp (2-tuple, no time) -> not live.
+    app_store._tech_location[tech_uid] = (40.7128, -74.0060)
+    body = client.get(f"/t/{token}").json()
+    assert body["assignment"]["live_lat"] is None
+    assert body["guards"]["may_show_live_tracking"] is False
+
+    # Fresh again -> live restored.
+    app_store._tech_location[tech_uid] = (
+        40.7128, -74.0060, datetime.now(timezone.utc).isoformat(),
+    )
+    body = client.get(f"/t/{token}").json()
+    assert body["assignment"]["live_lat"] == 40.7128
     assert body["guards"]["may_show_live_tracking"] is True
 
 

@@ -328,7 +328,7 @@ export default function TokenTrackingPage() {
       const guards = data.guards ?? {};
       if (TERMINAL[data.status]) {
         setScreen(TERMINAL[data.status]);
-      } else if (ACTIVE_LIVE.has(data.status) && guards.may_show_live_tracking) {
+      } else if (ACTIVE_LIVE.has(data.status)) {
         setScreen(data.status as Screen);
       } else if (data.assignment && guards.may_show_technician) {
         setScreen("matched");
@@ -795,6 +795,10 @@ export default function TokenTrackingPage() {
                 ? { lat: assignment.live_lat, lng: assignment.live_lng } : null}
               destination={destination}
               label={assignment?.technician_display_name}
+              liveExpected
+              unavailableLabel={locale === "es"
+                ? "Ubicación en vivo no disponible por el momento"
+                : "Live location temporarily unavailable"}
             />
             <div className="panel">
               <p className="panel-title">
@@ -861,6 +865,10 @@ export default function TokenTrackingPage() {
               ? { lat: assignment.live_lat, lng: assignment.live_lng } : null}
             destination={destination}
             label={assignment?.technician_display_name}
+            liveExpected
+            unavailableLabel={locale === "es"
+              ? "Ubicación en vivo no disponible por el momento"
+              : "Live location temporarily unavailable"}
           />
           {assignment && (
             <div className="panel">
@@ -889,6 +897,10 @@ export default function TokenTrackingPage() {
               ? { lat: assignment.live_lat, lng: assignment.live_lng } : null}
             destination={destination}
             label={assignment?.technician_display_name}
+            liveExpected
+            unavailableLabel={locale === "es"
+              ? "Ubicación en vivo no disponible por el momento"
+              : "Live location temporarily unavailable"}
           />
           <div className="panel">
             <p className="panel-title">

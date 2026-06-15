@@ -1530,11 +1530,20 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
     # itself (SPEC §"Guard helpers"). Derived from the operational status so both
     # store backends and legacy jobs carry the same contract — the page reads
     # `guards.may_show_technician` / `guards.may_show_live_tracking`.
-    has_assignment = status.get("assignment") is not None
+    assignment = status.get("assignment")
+    has_assignment = assignment is not None
+    # Live tracking requires BOTH a fulfillment status AND a fresh exposed location.
+    # The store nulls `live_lat`/`live_lng` when the position is missing or stale, so
+    # the guard follows the data: no fresh point -> UI shows "temporarily unavailable".
+    has_live_location = bool(
+        assignment
+        and assignment.get("live_lat") is not None
+        and assignment.get("live_lng") is not None
+    )
     status["guards"] = {
         "may_show_technician": has_assignment,
         "may_show_eta": has_assignment,
-        "may_show_live_tracking": may_show_live_tracking(status.get("status")),
+        "may_show_live_tracking": may_show_live_tracking(status.get("status")) and has_live_location,
     }
     return status
 

@@ -10,6 +10,7 @@ then by rating. Nothing here mutates state or reveals identity to the customer.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from math import acos, cos, radians, sin
 from typing import Any
 
@@ -216,6 +217,26 @@ def may_show_live_tracking(status: str | None) -> bool:
     """True if it is safe to expose the assigned technician's live location to the
     customer for a job in ``status`` (FULFILLMENT only — en_route/arrived/in_progress)."""
     return status in LIVE_TRACKING_STATUSES
+
+
+def location_is_fresh(
+    location_updated_at: Any, *, now: datetime, threshold_minutes: int
+) -> bool:
+    """True only if ``location_updated_at`` exists and is within ``threshold_minutes``
+    of ``now``. A missing or stale timestamp is NOT fresh — this prevents presenting a
+    technician's last-known point as a *live* location after their app goes quiet.
+    Accepts a ``datetime`` or an ISO-8601 string; naive timestamps are read as UTC."""
+    if not location_updated_at:
+        return False
+    ts = location_updated_at
+    if not isinstance(ts, datetime):
+        try:
+            ts = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts) <= timedelta(minutes=threshold_minutes)
 # Terminal operational states (no further automatic progress / closed to the customer).
 TERMINAL_STATUSES = frozenset(
     {

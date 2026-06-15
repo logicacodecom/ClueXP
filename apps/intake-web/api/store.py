@@ -40,6 +40,7 @@ from api.dispatch import (
     eta_range_from_km,
     haversine_km,
     is_terminal,
+    location_is_fresh,
     normalize_policy,
     resolve_dispatch_state,
 )
@@ -731,7 +732,16 @@ class InMemoryStore(Store):
         status = (self._job_status.get(jid) if hasattr(self, "_job_status") else None)
         tech_id = getattr(self, "_job_tech", {}).get(jid)
         loc = getattr(self, "_tech_location", {}).get(str(tech_id)) if tech_id else None
-        show_live = bool(may_show_live_tracking(status) and loc)
+        loc_at = loc[2] if (loc and len(loc) > 2) else None
+        show_live = bool(
+            may_show_live_tracking(status)
+            and loc
+            and location_is_fresh(
+                loc_at,
+                now=datetime.now(tz=timezone.utc),
+                threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
+            )
+        )
         assignment = None
         if tech_id:
             assignment = {
@@ -2160,9 +2170,19 @@ class PostgresStore(Store):
         assigned_at = ar[0] if ar else None
 
         # Safe live location: only the technician's coarse current position, and only
-        # while the job is in a FULFILLMENT status (en_route/arrived/in_progress). No
+        # while the job is in a FULFILLMENT status (en_route/arrived/in_progress) AND
+        # the position is fresh (else a stale last-known point reads as "live"). No
         # internal IDs, no roster, no service-area fallback — that is not "live".
-        show_live = may_show_live_tracking(job_status) and cur_lat is not None and cur_lng is not None
+        show_live = (
+            may_show_live_tracking(job_status)
+            and cur_lat is not None
+            and cur_lng is not None
+            and location_is_fresh(
+                loc_at,
+                now=datetime.now(tz=timezone.utc),
+                threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
+            )
+        )
         return {
             "customer_owner": customer_owner,
             "fulfillment_type": fulfillment_type,
