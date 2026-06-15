@@ -1493,6 +1493,12 @@ async def tracking(ticket_id: UUID) -> dict[str, Any]:
 # These routes grant only ticket-scoped, customer-safe reads/actions (no account
 # auth). They never expose candidates / rejected offers / scoring / internal IDs.
 
+# Live tracking is FULFILLMENT-only — the technician is en route or on site.
+# Kept in sync with the frontend `ACTIVE_LIVE` set in t/[token]/page.tsx.
+_LIVE_TRACKING_STATUSES = frozenset({"en_route", "arrived", "in_progress"})
+_NO_GUARDS = {"may_show_technician": False, "may_show_eta": False, "may_show_live_tracking": False}
+
+
 @app.get("/t/{token}")
 async def tracking_by_token(token: str) -> dict[str, Any]:
     """Token-resolved tracking read: the dispatch state + (once matched) the safe
@@ -1508,11 +1514,21 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
             total_timeout_seconds=config.TOTAL_TIMEOUT_SECONDS,
         )
     except Exception:
-        return {"state": "error", "terminal": False, "assignment": None}
+        return {"state": "error", "terminal": False, "assignment": None, "guards": _NO_GUARDS}
     if status is None:
         raise HTTPException(status_code=404, detail="Not found")
     for _f in ("attempts", "max_attempts", "offers_pending", "offer_expires_at"):
         status.pop(_f, None)
+    # Guard booleans the tracking UI consumes instead of re-deriving visibility
+    # itself (SPEC §"Guard helpers"). Derived from the operational status so both
+    # store backends and legacy jobs carry the same contract — the page reads
+    # `guards.may_show_technician` / `guards.may_show_live_tracking`.
+    has_assignment = status.get("assignment") is not None
+    status["guards"] = {
+        "may_show_technician": has_assignment,
+        "may_show_eta": has_assignment,
+        "may_show_live_tracking": status.get("status") in _LIVE_TRACKING_STATUSES,
+    }
     return status
 
 

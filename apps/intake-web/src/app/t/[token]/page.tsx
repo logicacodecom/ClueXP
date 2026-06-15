@@ -287,11 +287,12 @@ export default function TokenTrackingPage() {
       };
       const ACTIVE_LIVE = new Set(["en_route", "arrived", "in_progress"]);
 
+      const guards = data.guards ?? {};
       if (TERMINAL[data.status]) {
         setScreen(TERMINAL[data.status]);
-      } else if (ACTIVE_LIVE.has(data.status) && data.guards.may_show_live_tracking) {
+      } else if (ACTIVE_LIVE.has(data.status) && guards.may_show_live_tracking) {
         setScreen(data.status as Screen);
-      } else if (data.assignment && data.guards.may_show_technician) {
+      } else if (data.assignment && guards.may_show_technician) {
         setScreen("matched");
       } else {
         setScreen("waiting");
