@@ -13,7 +13,8 @@ Do not enable a company channel for real customers until all of these are true:
 - Gate 3 company recovery controls are merged and verified.
 - CI passes API tests, Alembic offline validation, shared typecheck, and all four
   application builds.
-- Production migration head is the expected release head.
+- Production migration head is **`0015_job_payments`** for the current release;
+  `job_notes` and `job_payment_reports` are present.
 - `ARRIVAL_PIN_SECRET`, `CRON_SECRET`, database credentials, and application
   authentication secrets are configured in the production secret manager.
 - The pilot company and approved technician roster are recorded outside this
@@ -28,7 +29,7 @@ Record the following in the private pilot evidence log:
 | Check | Required evidence |
 |---|---|
 | Release | Git commit deployed by each of the four Vercel projects |
-| Database | `alembic_version.version_num` and required tables present |
+| Database | `alembic_version.version_num = 0015_job_payments`; `job_notes` and `job_payment_reports` present |
 | Global switch | Current `DISPATCH_CUTOVER_GLOBAL_OFF` value |
 | Company channel | Channel ID, slug, owner organization, and `dispatch_cutover_enabled` |
 | Provider access | Provider dispatcher can sign in and sees only its organization |

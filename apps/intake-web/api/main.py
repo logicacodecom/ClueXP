@@ -36,9 +36,9 @@ from api.dispatch import (
     can_customer_cancel,
     can_report_collection,
     can_technician_transition,
-    customer_actions,
     eta_range_from_km,
     haversine_km,
+    may_show_live_tracking,
     normalize_payment_method,
     normalize_policy,
     select_candidates,
@@ -302,7 +302,8 @@ class CustomerReviewRequest(BaseModel):
 class PaymentReportRequest(BaseModel):
     amount: float
     method: str
-    currency: str = "USD"
+    # MVP is USD-only: advisory totals are summed/displayed as a single dollar figure.
+    # The field is fixed server-side; a client-supplied value is ignored.
 
 class CancelRequest(BaseModel):
     reason: str | None = None
@@ -1502,9 +1503,6 @@ async def tracking(ticket_id: UUID) -> dict[str, Any]:
 # These routes grant only ticket-scoped, customer-safe reads/actions (no account
 # auth). They never expose candidates / rejected offers / scoring / internal IDs.
 
-# Live tracking is FULFILLMENT-only — the technician is en route or on site.
-# Kept in sync with the frontend `ACTIVE_LIVE` set in t/[token]/page.tsx.
-_LIVE_TRACKING_STATUSES = frozenset({"en_route", "arrived", "in_progress"})
 _NO_GUARDS = {"may_show_technician": False, "may_show_eta": False, "may_show_live_tracking": False}
 
 
@@ -1532,11 +1530,20 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
     # itself (SPEC §"Guard helpers"). Derived from the operational status so both
     # store backends and legacy jobs carry the same contract — the page reads
     # `guards.may_show_technician` / `guards.may_show_live_tracking`.
-    has_assignment = status.get("assignment") is not None
+    assignment = status.get("assignment")
+    has_assignment = assignment is not None
+    # Live tracking requires BOTH a fulfillment status AND a fresh exposed location.
+    # The store nulls `live_lat`/`live_lng` when the position is missing or stale, so
+    # the guard follows the data: no fresh point -> UI shows "temporarily unavailable".
+    has_live_location = bool(
+        assignment
+        and assignment.get("live_lat") is not None
+        and assignment.get("live_lng") is not None
+    )
     status["guards"] = {
         "may_show_technician": has_assignment,
         "may_show_eta": has_assignment,
-        "may_show_live_tracking": status.get("status") in _LIVE_TRACKING_STATUSES,
+        "may_show_live_tracking": may_show_live_tracking(status.get("status")) and has_live_location,
     }
     return status
 
@@ -1620,27 +1627,6 @@ def _validate_payment(payload: PaymentReportRequest) -> tuple[float, str]:
     return round(float(payload.amount), 2), method
 
 
-@app.post("/t/{token}/payment")
-async def report_payment_by_token(token: str, payload: PaymentReportRequest) -> dict[str, Any]:
-    """Customer reports how much they paid and by what method for THIS ticket.
-    Token-gated (capability link only) and allowed in the same window as the review
-    (completion pending through the closed grace window). Advisory record for the
-    job history — no real charge is processed here."""
-    await latency()
-    amount, method = _validate_payment(payload)
-    job_id = await _require_token_job(token)
-    lifecycle = await store.get_job_lifecycle(job_id)
-    if lifecycle is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    if not customer_actions(lifecycle["status"]).get("can_review"):
-        raise HTTPException(status_code=409, detail="Payment can't be reported for this job yet")
-    report = await store.record_payment_report(
-        job_id=job_id, reported_by="customer", amount=amount, method=method,
-        currency=payload.currency,
-    )
-    return {"status": "recorded", "payment": report}
-
-
 @app.post("/t/{token}/dispute")
 async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any]:
     """Customer reports an issue: completed_pending_customer → disputed. A human
@@ -1660,9 +1646,13 @@ async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any
 @app.post("/t/{token}/cancel")
 async def cancel_by_token(token: str, payload: CancelRequest) -> dict[str, Any]:
     """Customer cancels the job. Allowed from pending_dispatch through en_route;
-    blocked (409) from arrived onward. Atomically revokes outstanding offers so
-    no technician can accept after cancellation."""
+    blocked (409) from arrived onward. A customer-provided reason is required and
+    recorded. Atomically revokes outstanding offers so no technician can accept
+    after cancellation."""
     await latency()
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A reason for cancelling is required.")
     job_id = await _require_token_job(token)
     lifecycle = await store.get_job_lifecycle(job_id)
     if lifecycle is None:
@@ -1671,7 +1661,7 @@ async def cancel_by_token(token: str, payload: CancelRequest) -> dict[str, Any]:
     if not can_customer_cancel(current_status):
         raise HTTPException(status_code=409, detail="Job cannot be cancelled at this stage")
     updated = await store.cancel_job(
-        job_id, current_status=current_status, reason=payload.reason
+        job_id, current_status=current_status, reason=reason
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Status changed concurrently")
@@ -1885,7 +1875,7 @@ async def report_collection(
         )
     report = await store.record_payment_report(
         job_id=job_id, reported_by="technician", amount=amount, method=method,
-        currency=payload.currency,
+        currency="USD",
     )
     return {"status": "recorded", "payment": report}
 

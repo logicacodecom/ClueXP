@@ -217,26 +217,28 @@ The customer holds a token link (`/t/{token}`). When the tech marks `completed_p
 - Customer taps → `POST /t/{token}/confirm` → sets `status = completed_confirmed`, `trust_state = fulfillment`
 - If customer doesn't confirm within `AUTO_CLOSE_WINDOW_SECONDS` (72h), cron auto-closes it to `completed_auto_closed`
 
-### 5.2a Payment Reconciliation (Two-Sided, Advisory)
-Both parties record what changed hands — surfaced later in the job history. These are
-**advisory records, not a payment ledger** (the MVP processes no real charge).
+### 5.2a Payment (Technician-Reported, Customer-Acknowledged)
+The **technician is the single source of truth** for the payment. The customer **views and
+acknowledges** it — they do not enter their own amount, and Ops never compares two values. These
+are advisory records (the MVP processes no real charge).
 
-- **Technician side:** once service is underway (`in_progress` / `completed_pending_customer`),
-  the tech reports amount + method via `POST /jobs/{id}/collection` (assigned-tech only).
-- **Customer side:** in the same window as the review (completion pending through the closed
-  grace window), the customer reports amount + method via `POST /t/{token}/payment` (token-gated).
+- **Technician reports** amount + method once service is underway (`in_progress` /
+  `completed_pending_customer`) via `POST /jobs/{id}/collection` (assigned-tech only). Stored as one
+  `job_payment_reports` row (`reported_by='technician'`, unique on `(job_id, reported_by)`).
+- **Customer views** the reported amount + method on the tracking page (`GET /t/{token}` exposes a
+  read-only `payment` object) and **acknowledges it by confirming completion** (`POST /t/{token}/confirm`).
+  The confirmation *is* the acknowledgment — there is no separate customer payment endpoint.
 - **Method** is one of `PAYMENT_METHODS` (`api/dispatch.py`): credit_card, debit_card, cash, check,
   zelle, cash_app, apple_pay, google_pay, venmo, paypal, other. Unknown → 422.
-- One row per side per job (`job_payment_reports`, unique on `(job_id, reported_by)`); a re-report overwrites.
 
 ### 5.2b Finished-Job History
 History covers `HISTORY_STATUSES` (`api/dispatch.py`): `completed_pending_customer` (so a job the
 tech just finished shows **immediately**, before the customer confirms) plus the terminal states
 `completed_confirmed`, `completed_auto_closed`, `cancelled`, `no_show`. (`disputed` stays in the
 live recovery workspace, not history.) Endpoints return jobs enriched with the customer review and
-**both** payment reports:
-- `GET /provider/jobs/history` — tenant-scoped; backs the provider **Completed** view, which also
-  totals **earned (tech collected)** + **customer reported** and flags a per-job amount **mismatch**.
+the technician's reported payment:
+- `GET /provider/jobs/history` — tenant-scoped; backs the provider **Completed** view (totals
+  **earned (tech collected)** + a job count; no two-value comparison).
 - `GET /technician/jobs/history` — the signed-in technician's finished jobs; backs the technician
   **Activity** view (with a **Total earned** summary).
 
@@ -252,10 +254,12 @@ All pages are Next.js App Router server/client components in `apps/technician-we
 | Service | `jobs/[id]/service/page.tsx` | En route → arrived → in_progress → completed_pending flow |
 | Approval | `jobs/[id]/approval/page.tsx` | Waiting screen — customer confirms externally |
 | Complete | `jobs/[id]/complete/page.tsx` | Summary screen after confirmed |
-| Activity | `activity/page.tsx` | Finished-job history: payments collected/paid + customer review |
+| Activity | `activity/page.tsx` | Finished-job history: payment collected + customer review + total earned |
 
 The in-service screen (`components/active-job-workflow.tsx`) also carries the **"Payment collected"**
-form (amount + method → `POST /api/jobs/{id}/collection`) while the job is `in_progress` / `completed_pending_customer`.
+form (amount + method → `POST /api/jobs/{id}/collection`) while the job is `in_progress` / `completed_pending_customer`,
+and pushes the technician's **location every 25s** while the job is `en_route` / `arrived` / `in_progress`
+so the customer's live map and the dispatcher's fleet map follow real movement.
 
 **BFF API routes** (Next.js serverless, in `src/app/api/`):
 - `GET /api/session` → proxies `GET /api/auth/me` (reads httpOnly cookie `cluexp_access_token`)
@@ -278,6 +282,20 @@ form (amount + method → `POST /api/jobs/{id}/collection`) while the job is `in
 - `GET /api/t/{token}` → resolves `tracking_token` column in `jobs` table → returns full tracking state
 - Token is set at job creation time, stored in `jobs.tracking_token` (unique index)
 - Customer never sees the job UUID — only the opaque token
+
+**Live map (`components/tracking-map.tsx`):** while the job is `en_route` / `arrived` / `in_progress`,
+the tracking read exposes the assigned technician's coarse **`assignment.live_lat/live_lng`** plus the
+customer's own **`destination`**, and the page plots both with Google Maps (`NEXT_PUBLIC_MAPS_BROWSER_KEY`),
+refreshing on the existing 5s poll. The live location is **gated** by `may_show_live_tracking(status)` in
+`dispatch.py` — never exposed before `en_route`, and only the position (no internal IDs / roster / scoring).
+Falls back to a static placeholder when the browser key is absent.
+
+**Payment view:** when the technician has reported a collection, the tracking read includes a read-only
+`payment` object; the customer sees the amount + method on the completion screen and acknowledges it by
+confirming completion (see §5.2a).
+
+**Cancellation:** `POST /t/{token}/cancel` requires a non-empty customer reason (422 otherwise); the
+reason is recorded as a `customer_cancel:{reason}` audit event. Allowed `pending_dispatch`→`en_route`.
 
 **Tracking state machine** (pure function in `dispatch.py:resolve_dispatch_state`):
 

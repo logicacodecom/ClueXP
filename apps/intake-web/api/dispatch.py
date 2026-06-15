@@ -10,6 +10,7 @@ then by rating. Nothing here mutates state or reveals identity to the customer.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from math import acos, cos, radians, sin
 from typing import Any
 
@@ -207,6 +208,35 @@ _FULFILLMENT_ORDER = [
 TECHNICIAN_SETTABLE = frozenset(
     {STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING}
 )
+# Live (FULFILLMENT) statuses — the technician is on the move / on site. Only while
+# the job is in one of these may the customer see the technician's live location.
+LIVE_TRACKING_STATUSES = frozenset({STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS})
+
+
+def may_show_live_tracking(status: str | None) -> bool:
+    """True if it is safe to expose the assigned technician's live location to the
+    customer for a job in ``status`` (FULFILLMENT only — en_route/arrived/in_progress)."""
+    return status in LIVE_TRACKING_STATUSES
+
+
+def location_is_fresh(
+    location_updated_at: Any, *, now: datetime, threshold_minutes: int
+) -> bool:
+    """True only if ``location_updated_at`` exists and is within ``threshold_minutes``
+    of ``now``. A missing or stale timestamp is NOT fresh — this prevents presenting a
+    technician's last-known point as a *live* location after their app goes quiet.
+    Accepts a ``datetime`` or an ISO-8601 string; naive timestamps are read as UTC."""
+    if not location_updated_at:
+        return False
+    ts = location_updated_at
+    if not isinstance(ts, datetime):
+        try:
+            ts = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts) <= timedelta(minutes=threshold_minutes)
 # Terminal operational states (no further automatic progress / closed to the customer).
 TERMINAL_STATUSES = frozenset(
     {
@@ -221,6 +251,11 @@ TERMINAL_STATUSES = frozenset(
 # finished appears immediately — before the customer confirms — alongside the truly
 # terminal states. `disputed` stays in the live recovery workspace, not history.
 HISTORY_STATUSES = frozenset(TERMINAL_STATUSES | {STATUS_COMPLETED_PENDING})
+# Technician history excludes `no_show`: provider recovery clears the job's
+# `fulfillment_technician_id` on a no-show, so the technician/job link is no longer
+# reliable — a no-show is not a job the technician fulfilled. The provider history
+# (org-scoped) still includes it.
+TECHNICIAN_HISTORY_STATUSES = frozenset(HISTORY_STATUSES - {STATUS_NO_SHOW})
 # nullable lifecycle timestamp column written when a status is reached.
 STATUS_TIMESTAMP_COLUMN = {
     STATUS_ASSIGNED: "assigned_at",

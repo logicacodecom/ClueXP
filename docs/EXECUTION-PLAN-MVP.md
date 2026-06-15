@@ -218,20 +218,27 @@ Still to decide for the pilot:
 - Which pilot company + which of its technicians form the approved roster.
 - Which checks are mandatory before real customers (vs. internal test users).
 
-## 12. Current code status (2026-06-14)
+## 12. Current code status (2026-06-15)
 
-- **All gates code-complete** (merged through PR #32): Gate 0 ✅ · Gate 1 ✅ ·
+- **Merged MVP implementation through PR #38:** Gate 0 ✅ · Gate 1 ✅ ·
   Gate 2 ✅ (secure arrival PIN + single-step transitions; technician failure
   reporting) · Gate 3 ✅ (cancel/release/no-show/reassign/recall/resolve + internal
   notes + per-job audit timeline, tenant-scoped + `/recovery` UI) · Gate 4 ✅ (CI for
   all four apps, demo-route gating, `/healthz` + `/ops/flags`, token rate-limit,
-  runbook). 95 tests pass.
-- Migrations: prod verified at `0013_arrival_verification` (2026-06-14). **Migration
-  `0014` (job_notes) — pending production application** (internal notes 500 without it).
+  runbook). Latest gate: **104 passed, 1 skipped**; shared typecheck and all four
+  production builds pass. Pilot promotion is still blocked by the items below.
+- Migrations: prod verified at **`0015_job_payments`** (2026-06-15) via
+  `select version_num from alembic_version` + `job_notes` and `job_payment_reports`
+  both present. `0014_job_notes` and `0015_job_payments` are applied — the notes and
+  advisory-payment code can be promoted.
 - Live pilot held OFF (`DISPATCH_CUTOVER_GLOBAL_OFF=true`); confirm at runtime via
   `GET /ops/flags` after redeploy.
-- Remaining is **operational, not code**: apply `0014`, redeploy the four Vercel
-  projects from `main`, observe CI green, then execute the pilot matrix
-  (`docs/MVP-PILOT-RUNBOOK.md`) with an approved roster before flipping the channel on.
+- PR #39 is approved at `cfb0b4d`: technician-reported/customer-acknowledged
+  payment, customer live tracking, required cancellation reasons, map-object reuse,
+  stale-location privacy gating, and the reviewed history/currency fixes are complete.
+- Remaining work is operational: merge PR #39, apply migrations
+  through `0015`, redeploy the four Vercel projects from the approved commit, observe
+  CI green, then execute the pilot matrix (`docs/MVP-PILOT-RUNBOOK.md`) before
+  flipping the company channel on.
 - Post-pilot follow-ups (non-blocking): DB-backed token limiter; `/healthz` DB-ping
   readiness variant.

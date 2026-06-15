@@ -122,6 +122,8 @@ Authoritative procedure: **`docs/MVP-PILOT-RUNBOOK.md` §5**. Quick reference:
 
 ## 6. Prerequisites (operational)
 
-- Production migration head must be current — internal notes require **migration `0014` (job_notes)** applied (see the runbook's release gate).
+- Production migration head must be **`0015_job_payments`**. Verify both
+  `job_notes` (`0014`) and `job_payment_reports` (`0015`) exist before the demo
+  (see the runbook's release gate).
 - Redeploy all four Vercel projects from `main` before the demo.
 - The pilot company's channel (`metro-key`) flag is enabled only when ready; otherwise the global switch keeps dispatch off.
