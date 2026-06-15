@@ -16,6 +16,22 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GoogleMapView, type MapPoint } from "./google-map";
 
+// Payment methods a technician may record collecting by. Mirrors the backend
+// PAYMENT_METHODS set; "other" is the catch-all.
+const PAYMENT_METHODS: Array<{ value: string; label: string }> = [
+  { value: "credit_card", label: "Credit card" },
+  { value: "debit_card", label: "Debit card" },
+  { value: "cash", label: "Cash" },
+  { value: "check", label: "Check" },
+  { value: "zelle", label: "Zelle" },
+  { value: "cash_app", label: "Cash App" },
+  { value: "apple_pay", label: "Apple Pay" },
+  { value: "google_pay", label: "Google Pay" },
+  { value: "venmo", label: "Venmo" },
+  { value: "paypal", label: "PayPal" },
+  { value: "other", label: "Other" }
+];
+
 export type TechnicianJob = {
   id: string;
   status: "assigned" | "en_route" | "arrived" | "in_progress" | "completed_pending_customer";
@@ -81,6 +97,9 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [issueKind, setIssueKind] = useState<string | null>(null);
   const [issueReason, setIssueReason] = useState("");
   const [issueDone, setIssueDone] = useState(false);
+  const [collectAmount, setCollectAmount] = useState("");
+  const [collectMethod, setCollectMethod] = useState("");
+  const [collectDone, setCollectDone] = useState(false);
   const copy = statusCopy(job.status);
   const currentIndex = stages.findIndex((stage) => stage.status === job.status);
 
@@ -209,6 +228,28 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       setIssueReason("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not report the problem");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reportCollection() {
+    const amount = Number.parseFloat(collectAmount);
+    if (!collectMethod || !Number.isFinite(amount) || amount < 0 || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/collection`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount, method: collectMethod })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) { window.location.assign("/signin"); return; }
+      if (!response.ok) throw new Error(body.detail || "Could not record the collection");
+      setCollectDone(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not record the collection");
     } finally {
       setBusy(false);
     }
@@ -384,6 +425,48 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
                     <button className="touch-target min-h-11 w-full bg-primary font-black text-primary-foreground disabled:opacity-50" disabled={busy} onClick={() => void reportIssue()} type="button">{busy ? "Reporting…" : "Report to dispatch"}</button>
                   </div>
                 ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {(job.status === "in_progress" || job.status === "completed_pending_customer") ? (
+          <div className="mt-5 border border-border p-4">
+            {collectDone ? (
+              <p className="text-sm font-semibold text-success">
+                Payment recorded — {PAYMENT_METHODS.find((m) => m.value === collectMethod)?.label}. It will appear in your job history.
+              </p>
+            ) : (
+              <>
+                <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Payment collected</p>
+                <p className="mt-1 text-sm leading-5 text-muted">Record how much you collected and how. Logged to the job history for reconciliation against what the customer reports.</p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <input
+                    inputMode="decimal"
+                    className="w-full border border-border bg-card px-3 py-2 text-sm"
+                    placeholder="Amount (USD)"
+                    value={collectAmount}
+                    onChange={(e) => setCollectAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                    aria-label="Amount collected"
+                  />
+                  <select
+                    className="w-full border border-border bg-card px-3 py-2 text-sm"
+                    value={collectMethod}
+                    onChange={(e) => setCollectMethod(e.target.value)}
+                    aria-label="Payment method"
+                  >
+                    <option value="">Method…</option>
+                    {PAYMENT_METHODS.map((m) => (<option key={m.value} value={m.value}>{m.label}</option>))}
+                  </select>
+                </div>
+                <button
+                  className="touch-target mt-2 min-h-11 w-full bg-primary font-black text-primary-foreground disabled:opacity-50"
+                  disabled={busy || !collectMethod || !collectAmount}
+                  onClick={() => void reportCollection()}
+                  type="button"
+                >
+                  {busy ? "Saving…" : "Record collection"}
+                </button>
               </>
             )}
           </div>

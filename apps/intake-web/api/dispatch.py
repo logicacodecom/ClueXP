@@ -272,6 +272,42 @@ def customer_actions(status: str | None) -> dict[str, bool]:
     }
 
 
+# --- payment reconciliation (job history) ---
+# Methods a technician may collect by / a customer may pay with. Stored as a stable
+# snake_case token; the UI maps to a display label. "other" is the catch-all so the
+# set never blocks a legitimate report.
+PAYMENT_METHODS = frozenset(
+    {
+        "credit_card",
+        "debit_card",
+        "cash",
+        "check",
+        "zelle",
+        "cash_app",
+        "apple_pay",
+        "google_pay",
+        "venmo",
+        "paypal",
+        "other",
+    }
+)
+
+
+def normalize_payment_method(value: str | None) -> str | None:
+    """Canonicalize a payment-method token (case/spacing/hyphen-insensitive).
+    Returns None for an unknown method so the caller can 422 — never guesses."""
+    if not value:
+        return None
+    token = value.strip().lower().replace(" ", "_").replace("-", "_")
+    return token if token in PAYMENT_METHODS else None
+
+
+def can_report_collection(status: str | None) -> bool:
+    """True if the assigned technician may report what they collected — only once
+    service is underway or completion is pending (not before arrival)."""
+    return status in {STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING}
+
+
 def eta_range_from_km(dist_km: float | None) -> tuple[int | None, int | None]:
     """Coarse, honest ETA estimate from straight-line distance (no live routing).
     ~8 min base + travel at ~30 km/h, widened to a range. None if distance unknown."""

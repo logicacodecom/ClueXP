@@ -22,6 +22,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const providerNav = [
     ...mappedNav,
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
+    { ...defaultNav[0], label: "Completed", href: "/completed" },
   ];
   return (
     <AppShell

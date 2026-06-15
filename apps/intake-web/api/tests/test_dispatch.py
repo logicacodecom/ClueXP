@@ -1768,3 +1768,122 @@ def test_provider_candidates_tenant_scoped():
     _seed_provider_job(app_store, org_b, foreign)
     r = client.get(f"/provider/queue/{foreign}/candidates", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 404
+
+# ---------------------------------------------------------------------------
+# Payment reconciliation + finished-job history (tech collection + customer pay)
+# ---------------------------------------------------------------------------
+
+def _tech_client(app_store, tech_uid):
+    """A TestClient + bearer token for a technician, with the session patched to
+    carry a technician profile (mirrors the arrival-PIN test setup)."""
+    from starlette.testclient import TestClient
+    from api.main import app
+    from api.auth import create_access_token
+    app_store.users[tech_uid] = {
+        "id": tech_uid, "email": f"pay_{tech_uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Pay Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    _orig = app_store.get_user_session
+
+    async def _patched(user_id):
+        s = await _orig(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    return TestClient(app), access, _orig
+
+
+def test_payment_reports_and_technician_history():
+    from api.main import store as app_store
+
+    tech_uid, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_IN_PROGRESS
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = token
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        # Technician reports what they collected.
+        c = client.post(
+            f"/jobs/{jid}/collection", json={"amount": 150, "method": "Cash App"},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert c.status_code == 200, c.text
+        assert c.json()["payment"]["method"] == "cash_app"
+
+        # Move to completion-pending so the customer side opens.
+        app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+
+        # Customer reports what they paid, then reviews (which confirms).
+        p = client.post(f"/t/{token}/payment", json={"amount": 150.0, "method": "zelle"})
+        assert p.status_code == 200, p.text
+        r = client.post(f"/t/{token}/review", json={"rating": 5, "comment": "great"})
+        assert r.status_code == 200, r.text
+        assert app_store._job_status[jid] == STATUS_COMPLETED_CONFIRMED
+
+        # History shows the finished job with both sides + the review.
+        h = client.get("/technician/jobs/history", headers={"Authorization": f"Bearer {access}"})
+        assert h.status_code == 200, h.text
+        rows = [row for row in h.json() if row["id"] == jid]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["payments"]["technician"]["amount"] == 150.0
+        assert row["payments"]["technician"]["method"] == "cash_app"
+        assert row["payments"]["customer"]["method"] == "zelle"
+        assert row["review"]["rating"] == 5
+    finally:
+        app_store.get_user_session = _orig
+
+
+def test_collection_validation_and_ownership():
+    from api.main import store as app_store
+
+    tech_uid, jid = str(uuid4()), str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_IN_PROGRESS
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        hdr = {"Authorization": f"Bearer {access}"}
+        # Unknown method -> 422.
+        assert client.post(f"/jobs/{jid}/collection", json={"amount": 10, "method": "bitcoin"}, headers=hdr).status_code == 422
+        # Negative amount -> 422.
+        assert client.post(f"/jobs/{jid}/collection", json={"amount": -5, "method": "cash"}, headers=hdr).status_code == 422
+        # Someone else's job -> 403.
+        other = str(uuid4())
+        app_store._job_status[other] = STATUS_IN_PROGRESS
+        app_store._job_tech[other] = str(uuid4())
+        assert client.post(f"/jobs/{other}/collection", json={"amount": 10, "method": "cash"}, headers=hdr).status_code == 403
+    finally:
+        app_store.get_user_session = _orig
+
+
+def test_provider_job_history_scoped_and_enriched():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid = str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+
+    asyncio.run(
+        app_store.record_payment_report(
+            job_id=UUID(jid), reported_by="technician", amount=80.0, method="check",
+        )
+    )
+
+    h = client.get("/provider/jobs/history", headers={"Authorization": f"Bearer {token}"})
+    assert h.status_code == 200, h.text
+    rows = [row for row in h.json() if row["id"] == jid]
+    assert len(rows) == 1
+    assert rows[0]["payments"]["technician"]["method"] == "check"
