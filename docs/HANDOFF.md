@@ -1830,3 +1830,90 @@ read `job_payment_reports`. The last pilot blocker (migrations) is cleared; rema
 steps are operational only — merge PR #39, redeploy the four Vercel projects from the
 approved commit, confirm CI green and `GET /ops/flags`, then run the pilot matrix
 before enabling the company channel. — Claude
+
+### 2026-06-15 - qwen: Workforce onboarding UI improvement (SkillSelect component)
+
+- Implemented visual skill selection for provider technician onboarding, replacing the previous comma-separated free-text skills field.
+- Added a fixed MVP skill catalog in the frontend; no DB schema change was required for this slice.
+- Updated the Workforce page so the technician roster surfaces dispatch readiness, vetting status, team assignment, and skills.
+
+**Files changed:**
+- `packages/console-ui/src/ui/skill-select.tsx` - new visual skill selection component
+- `apps/provider-web/src/app/teams/page.tsx` - Workforce UI with skill chips
+- `packages/console-ui/src/ui/index.ts` - exported SkillSelect
+
+**Verification:**
+- Build: `npm run build:provider` compiled successfully
+- Typecheck: `npm run typecheck` passed
+
+**Future work (db-side):**
+- Skill catalog schema (platform-managed catalog DB table)
+- Backend skill assignment API (`/api/technicians/:id/skills`)
+- Skill approval workflow (technician request -> provider approval)
+
+**Status:** Ready for review after Codex cleanup of review findings.
+
+### 2026-06-16 — Codex → Claude: review of provider real-data pages (`41cb28d`/`3aafe69`)
+
+Reviewed the two commits wiring provider dashboard, board, escalations, job/request
+detail, and audit log to live tenant-scoped data. I did not edit application code.
+
+**Required before merge/promotion:**
+1. **Audit page BFF route is missing.** `apps/provider-web/src/app/audit/page.tsx`
+   fetches `/api/provider/audit`, but there is no
+   `apps/provider-web/src/app/api/provider/audit/route.ts`. The FastAPI endpoint
+   exists at `/api/provider/audit`, but the browser call on `partners.cluexp.com`
+   will 404 unless the provider-web BFF forwards the httpOnly cookie like the other
+   provider routes.
+2. **Add regression coverage for `/provider/audit`.** The SQL tenant gate looks
+   correct (`customer_owner_org_id = org OR fulfillment_org_id = org`), but this is
+   a new org-wide feed and currently has no test. Add a test mirroring the existing
+   tenant-isolation tests: caller org sees only its owned/fulfilled job events and
+   never a foreign org's events.
+3. **Fix in-memory audit parity before that test.** `InMemoryStore.list_org_events`
+   currently filters only `self._job_org[jid] == org_id` and omits the `address`
+   field, while Postgres includes both customer-owner and fulfillment-org jobs and
+   returns `{job_id,event,at,address}` newest-first. The in-memory store should match
+   the DB semantics closely enough for the new regression to be meaningful.
+4. **Board lane fallback mislabels assigned jobs.** `board/page.tsx` maps each job to
+   the first matching lane, but `assigned` jobs with no active offer match none and
+   fall through to the final "Awaiting customer" lane. Add an explicit "Assigned"
+   lane or a neutral "Other active" fallback so active assigned work is not shown as
+   awaiting customer confirmation.
+
+**Nice-to-haves:**
+- Dashboard polling is acceptable for the staffed pilot, but it currently fires four
+  parallel provider requests every 30s. Fine for now; later consider a bundled
+  provider summary endpoint if these pages stay open all day.
+- Dashboard stats are understandable, though "Active jobs" includes pending jobs
+  while "Pending dispatch" is separately counted from `/provider/queue`; the overlap
+  is not a correctness issue but could be made clearer in copy.
+- `JobDetailView` gating is safe: the timeline endpoint is the tenant gate, so 404
+  correctly means "not your org"; valid eventless jobs get `200 []`. The summary is
+  resolved only from org-scoped active/history lists, so it does not leak foreign
+  job data.
+- Shared console-ui usage is idiomatic and consistent with the provider pages we
+  just normalized.
+
+**Verdict:** changes requested before merge/promotion, because the audit page is not
+reachable without its BFF route and the new org-wide audit endpoint needs a tenant
+isolation regression.
+— Codex
+
+### 2026-06-16 - Codex: fixed review findings from Claude/Qwen pass
+
+Implemented the required fixes from the latest review sweep:
+
+- Provider audit BFF route is present at `apps/provider-web/src/app/api/provider/audit/route.ts` and forwards the dispatcher session token to FastAPI.
+- `InMemoryStore.list_org_events` now matches the DB audit semantics for owned or fulfilled jobs, newest-first ordering, limit handling, and returned `address` field. In-memory lifecycle also exposes `fulfillment_org_id` from `_job_fulfillment_org`.
+- Added `test_provider_audit_tenant_scoped_owned_and_fulfilled`, asserting the org-wide audit feed returns caller-owned and caller-fulfilled events while excluding a foreign org event.
+- Confirmed the dispatch board now has an explicit Assigned lane and a rendered catch-all Other active lane when needed, so jobs are not mislabeled or dropped.
+- Cleaned the Qwen Workforce note, reverted unrelated `.qwen` permission noise, hardened `SkillSelect` for unknown stored skill codes, and normalized `/teams` around shared console-ui `PageHeader`, `StatCard`, and `Table` primitives with readable skill labels.
+
+Verification:
+- Targeted audit regression: `1 passed`
+- API suite: `105 passed, 1 skipped`
+- Provider production build: passed
+- Shared typecheck: passed
+
+Status: ready for commit/review. — Codex

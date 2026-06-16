@@ -799,7 +799,7 @@ class InMemoryStore(Store):
         return {
             "status": statuses.get(jid),
             "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
-            "fulfillment_org_id": None,
+            "fulfillment_org_id": getattr(self, "_job_fulfillment_org", {}).get(jid),
             "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
         }
 
@@ -913,17 +913,21 @@ class InMemoryStore(Store):
 
     async def list_org_events(self, org_id: str, *, limit: int = 200) -> list[dict]:
         job_org = getattr(self, "_job_org", {})
+        fulfillment_org = getattr(self, "_job_fulfillment_org", {})
+        addresses = getattr(self, "_job_address", {})
         out = []
-        for line in getattr(self, "events", []):
+        for idx, line in enumerate(getattr(self, "events", [])):
             parts = line.split(" ", 2)
             if len(parts) != 3:
                 continue
             at, jid, event = parts
-            if job_org.get(jid) != str(org_id):
+            if job_org.get(jid) != str(org_id) and fulfillment_org.get(jid) != str(org_id):
                 continue
-            out.append({"job_id": jid, "event": event, "at": at})
-        out.sort(key=lambda e: e["at"] or "", reverse=True)
-        return out[:limit]
+            # Keep the append index as a tiebreaker so equal/coarse timestamps fall
+            # back to insertion order — matching the DB's `order by at desc, id desc`.
+            out.append((at or "", idx, {"job_id": jid, "event": event, "at": at, "address": addresses.get(jid)}))
+        out.sort(key=lambda e: (e[0], e[1]), reverse=True)
+        return [e[2] for e in out][:limit]
 
     async def recover_job(
         self, job_id: UUID, *, target_status: str, expected_statuses: list[str],

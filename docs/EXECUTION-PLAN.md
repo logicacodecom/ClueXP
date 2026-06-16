@@ -321,6 +321,9 @@ pass before expansion.
 - Additional service verticals.
 - Custom provider domains and richer channel attribution.
 - Provider subscriptions and billing.
+- Provider SaaS workforce model: global technician profiles with provider-specific
+  affiliations, W-2/exclusive vs contractor/non-exclusive rules, company-managed
+  teams/dispatch permissions, and Ops-owned global suspension/skill catalog.
 - Advanced organization-managed routing/capacity.
 - Native technician app for dependable background GPS and push.
 - Languages beyond EN/ES.

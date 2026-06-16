@@ -1759,6 +1759,31 @@ def test_provider_timeline_tenant_scoped():
     assert r.status_code == 404
 
 
+def test_provider_audit_tenant_scoped_owned_and_fulfilled():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org_a)
+    owned, fulfilled, foreign = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org_a, owned)
+    _seed_provider_job(app_store, org_b, fulfilled)
+    _seed_provider_job(app_store, org_b, foreign)
+    app_store._job_fulfillment_org = getattr(app_store, "_job_fulfillment_org", {})
+    app_store._job_fulfillment_org[fulfilled] = org_a
+    app_store._job_address = getattr(app_store, "_job_address", {})
+    app_store._job_address[owned] = "100 Main St"
+    app_store._job_address[fulfilled] = "200 Oak St"
+
+    asyncio.run(app_store.log_event_raw(UUID(owned), "audit_test:owned"))
+    asyncio.run(app_store.log_event_raw(UUID(fulfilled), "audit_test:fulfilled"))
+    asyncio.run(app_store.log_event_raw(UUID(foreign), "audit_test:foreign"))
+
+    response = client.get("/provider/audit", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    rows = [row for row in response.json() if row["event"].startswith("audit_test:")]
+    assert [row["job_id"] for row in rows] == [fulfilled, owned]
+    assert {row["address"] for row in rows} == {"100 Main St", "200 Oak St"}
+    assert all(row["job_id"] != foreign for row in rows)
+
+
 def test_provider_candidates_tenant_scoped():
     # Closes the cross-tenant sweep: a dispatcher cannot view candidates for
     # another company's job.

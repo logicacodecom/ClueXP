@@ -38,13 +38,18 @@ const LANES: Lane[] = [
   { key: "attention", label: "Needs attention", variant: "danger", match: (j) => Boolean(j.last_issue) || j.status === "disputed" },
   { key: "pending", label: "Pending dispatch", variant: "outline", match: (j) => j.status === "pending_dispatch" && !j.offer_active },
   { key: "offered", label: "Offer sent", variant: "warn", match: (j) => j.offer_active },
+  { key: "assigned", label: "Assigned", variant: "outline", match: (j) => j.status === "assigned" },
   { key: "en_route", label: "En route", variant: "warn", match: (j) => j.status === "en_route" },
   { key: "on_site", label: "On site", variant: "warn", match: (j) => j.status === "arrived" || j.status === "in_progress" },
   { key: "awaiting", label: "Awaiting customer", variant: "success", match: (j) => j.status === "completed_pending_customer" },
 ];
 
+// Anything not matched by a specific lane (an unexpected/other active status) lands
+// here rather than being silently mislabeled as awaiting-customer.
+const OTHER_LANE: Lane = { key: "other", label: "Other active", variant: "outline", match: () => true };
+
 function laneFor(job: BoardJob): string {
-  return (LANES.find((lane) => lane.match(job)) ?? LANES[LANES.length - 1]).key;
+  return (LANES.find((lane) => lane.match(job)) ?? OTHER_LANE).key;
 }
 
 function DispatchBoard() {
@@ -74,6 +79,9 @@ function DispatchBoard() {
   }, [load]);
 
   const loading = state === "loading";
+  // Show the catch-all "Other active" column only when something actually lands in it.
+  const hasOther = jobs.some((job) => laneFor(job) === OTHER_LANE.key);
+  const renderedLanes = hasOther ? [...LANES, OTHER_LANE] : LANES;
 
   return (
     <div className="space-y-6">
@@ -94,8 +102,11 @@ function DispatchBoard() {
       ) : null}
 
       <div className="overflow-x-auto pb-2">
-        <div className="grid min-w-[1140px] grid-cols-6 gap-3">
-          {LANES.map((lane) => {
+        <div
+          className="grid gap-3"
+          style={{ minWidth: `${renderedLanes.length * 190}px`, gridTemplateColumns: `repeat(${renderedLanes.length}, minmax(0, 1fr))` }}
+        >
+          {renderedLanes.map((lane) => {
             const cards = jobs.filter((job) => laneFor(job) === lane.key);
             return (
               <Card className="min-h-[420px]" key={lane.key}>

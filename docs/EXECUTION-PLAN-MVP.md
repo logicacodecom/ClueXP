@@ -190,6 +190,13 @@ The MVP is isolated-tenant. The next version widens it:
 
 ### Other deferrals
 
+- Provider SaaS workforce model: global technician profiles with provider-specific
+  affiliation records. Companies may self-manage teams/technicians, but a
+  technician identity should not be duplicated per company. Affiliation records
+  should support W-2/exclusive vs contractor/non-exclusive relationships,
+  dispatch permission, company-scoped suspension/removal, and future subscription
+  limits; Ops/platform remains responsible for global technician suspension and
+  the eventual managed skills catalog.
 - Dispatch intelligence: weighted match scores, completion prediction, SLA alerts,
   scheduling, bulk actions, capacity planning.
 - Maps/field: continuous GPS, animated movement, frequent traffic-aware ETA, QR
