@@ -1917,3 +1917,63 @@ Verification:
 - Shared typecheck: passed
 
 Status: ready for commit/review. — Codex
+
+### 2026-06-16 - Codex: updated prompt/task for global technician affiliation history
+
+Product decision for later implementation: technicians should be global ClueXP
+profiles, and provider/company affiliation should be a historical relationship
+ledger. A technician can be affiliated with Company A for a period, move to
+Company B, and later re-affiliate with Company A without overwriting the earlier
+Company A period.
+
+Updated task prompt for the next model:
+
+```text
+Implement the Provider SaaS workforce model as a small, history-preserving model.
+
+Core decision:
+- Technician identity is global to ClueXP. Do not duplicate a technician profile
+  per provider/company.
+- Provider affiliation is a separate historical ledger. Do not overwrite old
+  affiliation records when a technician leaves, is suspended, or later rejoins.
+- Current provider dispatch eligibility is derived from active affiliation rows,
+  not from a single `technicians.primary_organization_id` field.
+
+Model shape:
+- Keep or introduce a global `technicians` profile linked to the user/account.
+- Add `provider_technician_affiliations` (or the repo's preferred naming) with:
+  `id`, `technician_id`, `provider_org_id`, `status`, `relationship_type`,
+  `exclusivity`, `starts_at`, `ended_at`, `ended_reason`,
+  `invited_by_user_id`, `approved_by_user_id`, `created_at`, `updated_at`.
+- Suggested statuses: `pending`, `active`, `suspended`, `ended`, `rejected`.
+- Suggested relationship/exclusivity values:
+  `contractor | employee | unknown` and
+  `non_exclusive | exclusive | unknown`.
+
+Rules:
+- A tech may have multiple historical affiliation rows with the same provider.
+- Rejoining a company creates a new row or reactivation event that preserves the
+  prior period. Prefer a new row if it keeps time periods/audit clearer.
+- Active dispatch eligibility: `status = active` and `ended_at is null`.
+- Company-scoped suspension/removal affects only that affiliation record.
+- Platform/Ops global suspension remains on the global technician profile and can
+  block all affiliations.
+- Later W-2/exclusive locking should be enforced from affiliation rules, not by
+  changing the global technician identity model.
+- Provider UI should show current workforce plus enough history to support
+  "worked with us before", reactivation, disputes, compliance, and performance
+  context.
+
+Keep style:
+- Preserve existing provider-web console-ui styling (`PageHeader`, `StatCard`,
+  `Card`, `Badge`, `Table`) and tenant isolation patterns.
+- Keep tests focused on tenant boundaries and history preservation.
+```
+
+Planning docs updated:
+- `docs/EXECUTION-PLAN-MVP.md` Other deferrals now calls out historical provider
+  affiliation records and leave/rejoin history.
+- `docs/EXECUTION-PLAN.md` Deferred Expansion now uses the same global technician
+  + historical affiliation ledger language.
+
+— Codex

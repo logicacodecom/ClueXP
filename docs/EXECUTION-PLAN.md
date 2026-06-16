@@ -321,9 +321,15 @@ pass before expansion.
 - Additional service verticals.
 - Custom provider domains and richer channel attribution.
 - Provider subscriptions and billing.
-- Provider SaaS workforce model: global technician profiles with provider-specific
-  affiliations, W-2/exclusive vs contractor/non-exclusive rules, company-managed
-  teams/dispatch permissions, and Ops-owned global suspension/skill catalog.
+- Provider SaaS workforce model: global technician profiles with historical
+  provider affiliation records. Affiliation is a time-bounded relationship
+  ledger, not a single mutable company field: a technician can work with Company
+  A, leave, work with Company B, then rejoin Company A while preserving every
+  prior affiliation period. Active dispatch eligibility comes from active
+  affiliation rows; ended/suspended/rejected rows remain for audit, reactivation,
+  disputes, compliance, and performance history. Include W-2/exclusive vs
+  contractor/non-exclusive rules, company-managed teams/dispatch permissions,
+  and Ops-owned global suspension/skill catalog.
 - Advanced organization-managed routing/capacity.
 - Native technician app for dependable background GPS and push.
 - Languages beyond EN/ES.
