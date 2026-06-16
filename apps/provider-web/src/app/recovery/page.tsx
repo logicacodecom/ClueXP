@@ -1,6 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Input,
+  PageHeader,
+  StatCard,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@cluexp/console-ui";
+import { AlertTriangle, FileText, History, RefreshCw } from "lucide-react";
 import { AppFrame } from "../frame";
 
 type RecoveryJob = {
@@ -19,12 +38,36 @@ type RecoveryJob = {
 
 type Note = { id: string; author_name: string | null; body: string; created_at: string | null };
 type TimelineEvent = { event: string; at: string | null };
-
 type Action = "cancel" | "release" | "no-show" | "recall-offer" | "resolve";
 
 const ASSIGNED = new Set(["assigned", "en_route", "arrived", "in_progress"]);
 const CANCELLABLE = new Set(["pending_dispatch", "assigned", "en_route", "arrived", "in_progress"]);
 const NO_SHOW_OK = new Set(["assigned", "en_route", "arrived"]);
+
+const ACTION_LABEL: Record<Action, string> = {
+  cancel: "Cancel job",
+  release: "Release technician",
+  "no-show": "Mark no-show",
+  "recall-offer": "Recall offer",
+  resolve: "Resolve dispute",
+};
+
+const ACTION_HELP: Record<Action, string> = {
+  cancel: "Cancels the job, revokes technician access, and supersedes any active offer.",
+  release: "Returns the job to the provider queue so another technician can be assigned.",
+  "no-show": "Closes the job as no-show and removes the technician from the active job.",
+  "recall-offer": "Pulls back an active offer before the technician accepts.",
+  resolve: "Closes a disputed job with an internal resolution note.",
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  pending_dispatch: "Pending dispatch",
+  assigned: "Assigned",
+  en_route: "En route",
+  arrived: "Arrived",
+  in_progress: "In progress",
+  disputed: "Disputed",
+};
 
 function availableActions(job: RecoveryJob): Action[] {
   const actions: Action[] = [];
@@ -36,13 +79,25 @@ function availableActions(job: RecoveryJob): Action[] {
   return actions;
 }
 
-const ACTION_LABEL: Record<Action, string> = {
-  cancel: "Cancel job",
-  release: "Release technician",
-  "no-show": "Mark no-show",
-  "recall-offer": "Recall offer",
-  resolve: "Resolve dispute",
-};
+function statusVariant(status: string): "success" | "warn" | "danger" | "info" | "outline" {
+  if (status === "disputed") return "danger";
+  if (status === "pending_dispatch") return "warn";
+  if (status === "assigned" || status === "en_route") return "info";
+  if (status === "arrived" || status === "in_progress") return "success";
+  return "outline";
+}
+
+function actionVariant(action: Action): "outline" | "destructive" {
+  return action === "cancel" || action === "no-show" ? "destructive" : "outline";
+}
+
+function shortId(id: string | null | undefined): string {
+  return id ? id.slice(0, 8) : "-";
+}
+
+function formatStatus(status: string): string {
+  return STATUS_LABELS[status] ?? status.replaceAll("_", " ");
+}
 
 function RecoveryWorkspace() {
   const [jobs, setJobs] = useState<RecoveryJob[] | null>(null);
@@ -78,8 +133,6 @@ function RecoveryWorkspace() {
     setBusy(true);
     setError(null);
     try {
-      // Dispute resolution forwards to the resolve endpoint with an action + note;
-      // every other action takes a reason.
       const path = pending.action === "resolve" ? "resolve" : pending.action;
       const payload = pending.action === "resolve"
         ? { action: "close", note: reason.trim() }
@@ -109,7 +162,9 @@ function RecoveryWorkspace() {
     try {
       const res = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/notes`, { cache: "no-store" });
       if (res.ok) setNotes(await res.json());
-    } catch { /* surfaced on add */ }
+    } catch {
+      setError("Could not load notes");
+    }
   }
 
   async function openTimeline(jobId: string) {
@@ -119,7 +174,9 @@ function RecoveryWorkspace() {
     try {
       const res = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/timeline`, { cache: "no-store" });
       if (res.ok) setTimeline(await res.json());
-    } catch { /* non-fatal */ }
+    } catch {
+      setError("Could not load timeline");
+    }
   }
 
   async function addNote(jobId: string) {
@@ -142,108 +199,186 @@ function RecoveryWorkspace() {
     }
   }
 
+  const loadedJobs = jobs ?? [];
+  const recoverableCount = loadedJobs.filter((job) => availableActions(job).length > 0).length;
+  const activeOffers = loadedJobs.filter((job) => job.offer_active).length;
+  const issueCount = loadedJobs.filter((job) => job.last_issue || job.status === "disputed").length;
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recovery workspace</p>
-          <h1 className="text-2xl font-bold">Active jobs</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Your company&apos;s active jobs. Recovery actions require a reason and are audited; releasing or cancelling revokes the technician&apos;s access. Notes are internal — never shown to customers or technicians.</p>
-        </div>
-        <button className="rounded-md border border-border px-3 py-2 text-sm font-semibold" onClick={() => void load()}>Refresh</button>
+    <div className="space-y-6">
+      <PageHeader
+        kicker="Operations"
+        title="Recovery Workspace"
+        description="Provider-scoped exception handling for active jobs. Every recovery action requires a reason and is written to the audit trail."
+        actions={
+          <Button variant="outline" onClick={() => void load()}>
+            <RefreshCw />
+            Refresh
+          </Button>
+        }
+      />
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <StatCard label="Active jobs" value={jobs ? String(jobs.length) : "-"} />
+        <StatCard label="Needs action" value={jobs ? String(recoverableCount) : "-"} intent={recoverableCount ? "warn" : "neutral"} />
+        <StatCard label="Active offers" value={jobs ? String(activeOffers) : "-"} intent={activeOffers ? "info" : "neutral"} />
+        <StatCard label="Issues / disputes" value={jobs ? String(issueCount) : "-"} intent={issueCount ? "danger" : "success"} />
       </div>
 
-      {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+      {error ? (
+        <Card className="border-destructive/35 bg-destructive/10">
+          <CardContent className="flex items-center gap-2 p-4 text-sm text-destructive">
+            <AlertTriangle className="size-4" />
+            {error}
+          </CardContent>
+        </Card>
+      ) : null}
 
-      {jobs === null ? (
-        <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">Loading…</div>
-      ) : jobs.length === 0 ? (
-        <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">No active jobs.</div>
-      ) : (
-        <div className="overflow-auto rounded-md border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-card text-left text-xs font-semibold uppercase text-muted-foreground">
-              <tr>
-                <th className="px-4 py-3">Job</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Address</th>
-                <th className="px-4 py-3">Technician</th>
-                <th className="px-4 py-3">Offer</th>
-                <th className="px-4 py-3">Recovery</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((job) => (
-                <tr key={job.id} className="border-t border-border align-top">
-                  <td className="px-4 py-3 font-mono text-xs">{job.id.slice(0, 8)}</td>
-                  <td className="px-4 py-3">
-                    <span className="rounded-full border border-border px-2 py-0.5 text-xs">{job.status.replaceAll("_", " ")}</span>
-                    {job.last_issue ? <span className="ml-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs text-warn" title={job.last_issue}>⚠ issue</span> : null}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{job.address ?? "—"}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{job.fulfillment_technician_id ? job.fulfillment_technician_id.slice(0, 8) : "—"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{job.offer_active ? "Offer active" : "—"}</td>
-                  <td className="px-4 py-3">
-                    {pending && pending.jobId === job.id ? (
-                      <div className="space-y-2">
-                        <p className="text-xs font-semibold">{ACTION_LABEL[pending.action]} — reason required</p>
-                        <input
-                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                          placeholder="Reason (required)"
-                          value={reason}
-                          onChange={(e) => setReason(e.target.value)}
-                        />
-                        <div className="flex gap-2">
-                          <button className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold" onClick={() => { setPending(null); setReason(""); }}>Cancel</button>
-                          <button className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50" disabled={busy || reason.trim().length < 3} onClick={() => void submit()}>{busy ? "Working…" : "Confirm"}</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {availableActions(job).map((action) => (
-                          <button key={action} className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold" onClick={() => { setPending({ jobId: job.id, action }); setReason(""); setError(null); }}>
-                            {ACTION_LABEL[action]}
-                          </button>
-                        ))}
-                        <button className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground" onClick={() => void openNotes(job.id)}>
-                          {notesFor === job.id ? "Hide notes" : "Notes"}
-                        </button>
-                        <button className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground" onClick={() => void openTimeline(job.id)}>
-                          {timelineFor === job.id ? "Hide timeline" : "Timeline"}
-                        </button>
-                      </div>
-                    )}
-                    {timelineFor === job.id ? (
-                      <div className="mt-3 rounded-md border border-border bg-card p-3">
-                        <p className="text-xs font-semibold uppercase text-muted-foreground">Audit timeline</p>
-                        <ul className="mt-2 space-y-1">
-                          {timeline.length === 0 ? <li className="text-xs text-muted-foreground">No events.</li> : timeline.map((e, i) => (
-                            <li key={i} className="text-xs"><span className="text-muted-foreground">{e.at ? new Date(e.at).toLocaleString() : ""}</span> — {e.event}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {notesFor === job.id ? (
-                      <div className="mt-3 rounded-md border border-border bg-card p-3">
-                        <p className="text-xs font-semibold uppercase text-muted-foreground">Internal notes</p>
-                        <ul className="mt-2 space-y-1">
-                          {notes.length === 0 ? <li className="text-xs text-muted-foreground">No notes yet.</li> : notes.map((n) => (
-                            <li key={n.id} className="text-xs"><span className="font-semibold">{n.author_name ?? "Dispatcher"}</span> <span className="text-muted-foreground">{n.created_at ? new Date(n.created_at).toLocaleString() : ""}</span><br />{n.body}</li>
-                          ))}
-                        </ul>
-                        <div className="mt-2 flex gap-2">
-                          <input className="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs" placeholder="Add an internal note" value={newNote} onChange={(e) => setNewNote(e.target.value)} />
-                          <button className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50" disabled={busy || newNote.trim().length < 1} onClick={() => void addNote(job.id)}>Add</button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Recoverable active jobs</CardTitle>
+            <CardDescription>Cancel, release, recall, mark no-show, resolve disputes, and record internal notes without database intervention.</CardDescription>
+          </div>
+          <Badge variant="outline">Refreshes every 30s</Badge>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[1120px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Address</TableHead>
+                  <TableHead>Technician</TableHead>
+                  <TableHead>Offer</TableHead>
+                  <TableHead>Recovery</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs === null ? (
+                  <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading active jobs...</TableCell></TableRow>
+                ) : jobs.length === 0 ? (
+                  <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No active jobs need recovery.</TableCell></TableRow>
+                ) : (
+                  jobs.map((job) => {
+                    const actions = availableActions(job);
+                    const isPending = pending?.jobId === job.id;
+                    return (
+                      <TableRow key={job.id} className="align-top">
+                        <TableCell>
+                          <div className="font-mono text-xs">{shortId(job.id)}</div>
+                          <div className="mt-1 text-xs capitalize text-muted-foreground">{job.situation?.replaceAll("_", " ") ?? "Service request"}</div>
+                          {job.urgency ? <Badge className="mt-2" variant={job.urgency === "critical" ? "critical" : "outline"}>{job.urgency}</Badge> : null}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant={statusVariant(job.status)}>{formatStatus(job.status)}</Badge>
+                            {job.last_issue ? <Badge variant="warn" title={job.last_issue}>Issue reported</Badge> : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className="max-w-[260px]">
+                          <div>{job.address ?? "-"}</div>
+                          {job.access_type ? <div className="mt-1 text-xs capitalize text-muted-foreground">{job.access_type.replaceAll("_", " ")}</div> : null}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">{shortId(job.fulfillment_technician_id)}</TableCell>
+                        <TableCell>
+                          {job.offer_active ? (
+                            <div className="space-y-1">
+                              <Badge variant="info">Offer active</Badge>
+                              {job.offer_expires_at ? <div className="text-xs text-muted-foreground">Expires {new Date(job.offer_expires_at).toLocaleTimeString()}</div> : null}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="min-w-[360px]">
+                          {isPending ? (
+                            <div className="rounded-md border border-border bg-card/80 p-3">
+                              <div className="font-medium">{ACTION_LABEL[pending.action]}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">{ACTION_HELP[pending.action]}</div>
+                              <Input
+                                className="mt-3"
+                                placeholder="Reason required for audit trail"
+                                value={reason}
+                                onChange={(event) => setReason(event.target.value)}
+                              />
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <Button size="sm" variant="ghost" onClick={() => { setPending(null); setReason(""); }}>Keep job unchanged</Button>
+                                <Button size="sm" disabled={busy || reason.trim().length < 3} onClick={() => void submit()}>
+                                  {busy ? "Working..." : "Confirm action"}
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              {actions.length === 0 ? <Badge variant="outline">No recovery action</Badge> : null}
+                              {actions.map((action) => (
+                                <Button
+                                  key={action}
+                                  size="sm"
+                                  variant={actionVariant(action)}
+                                  onClick={() => { setPending({ jobId: job.id, action }); setReason(""); setError(null); }}
+                                >
+                                  {ACTION_LABEL[action]}
+                                </Button>
+                              ))}
+                              <Button size="sm" variant="ghost" onClick={() => void openNotes(job.id)}>
+                                <FileText />
+                                {notesFor === job.id ? "Hide notes" : "Notes"}
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => void openTimeline(job.id)}>
+                                <History />
+                                {timelineFor === job.id ? "Hide timeline" : "Timeline"}
+                              </Button>
+                            </div>
+                          )}
+
+                          {timelineFor === job.id ? (
+                            <Card className="mt-3">
+                              <CardHeader className="px-3 py-2"><CardTitle>Audit timeline</CardTitle></CardHeader>
+                              <CardContent className="space-y-2 p-3">
+                                {timeline.length === 0 ? <p className="text-xs text-muted-foreground">No events.</p> : timeline.map((event, index) => (
+                                  <div key={`${event.event}-${index}`} className="text-xs">
+                                    <span className="text-muted-foreground">{event.at ? new Date(event.at).toLocaleString() : ""}</span>
+                                    <span className="mx-2 text-muted-foreground">-</span>
+                                    <span>{event.event}</span>
+                                  </div>
+                                ))}
+                              </CardContent>
+                            </Card>
+                          ) : null}
+
+                          {notesFor === job.id ? (
+                            <Card className="mt-3">
+                              <CardHeader className="px-3 py-2"><CardTitle>Internal notes</CardTitle></CardHeader>
+                              <CardContent className="space-y-3 p-3">
+                                <div className="space-y-2">
+                                  {notes.length === 0 ? <p className="text-xs text-muted-foreground">No notes yet.</p> : notes.map((note) => (
+                                    <div key={note.id} className="rounded-md border border-border p-2 text-xs">
+                                      <div className="font-medium">{note.author_name ?? "Dispatcher"}</div>
+                                      {note.created_at ? <div className="text-muted-foreground">{new Date(note.created_at).toLocaleString()}</div> : null}
+                                      <div className="mt-1">{note.body}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="flex gap-2">
+                                  <Input className="flex-1" placeholder="Add an internal note" value={newNote} onChange={(event) => setNewNote(event.target.value)} />
+                                  <Button size="sm" disabled={busy || newNote.trim().length < 1} onClick={() => void addNote(job.id)}>Add</Button>
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ) : null}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
