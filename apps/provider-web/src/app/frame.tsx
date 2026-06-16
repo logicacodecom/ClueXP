@@ -19,10 +19,11 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const mappedNav = defaultNav.map((item) =>
     item.label === "Technicians" ? { ...item, href: "/jobs/JOB-B-2248/assign" } : item
   );
+  const reportsNav = defaultNav.find((item) => item.href === "/reports") ?? defaultNav[0];
   const providerNav = [
     ...mappedNav,
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
-    { ...defaultNav[0], label: "Completed", href: "/completed" },
+    { ...reportsNav, label: "Completed", href: "/completed" },
   ];
   return (
     <AppShell

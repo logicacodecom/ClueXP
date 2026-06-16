@@ -1,6 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  PageHeader,
+  StatCard,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@cluexp/console-ui";
+import { RefreshCw, Star } from "lucide-react";
 import { AppFrame } from "../frame";
 
 const METHOD_LABELS: Record<string, string> = {
@@ -13,6 +31,14 @@ const STATUS_LABELS: Record<string, string> = {
   completed_pending_customer: "Awaiting confirmation",
   completed_confirmed: "Confirmed", completed_auto_closed: "Auto-closed",
   cancelled: "Cancelled", no_show: "No-show"
+};
+
+const STATUS_VARIANTS: Record<string, "success" | "warn" | "danger" | "outline"> = {
+  completed_pending_customer: "warn",
+  completed_confirmed: "success",
+  completed_auto_closed: "success",
+  cancelled: "danger",
+  no_show: "danger",
 };
 
 type PaymentReport = { amount: number; currency: string; method: string } | null;
@@ -33,7 +59,6 @@ function money(p: PaymentReport): string {
   return `${p.currency === "USD" ? "$" : `${p.currency} `}${p.amount.toFixed(2)} · ${METHOD_LABELS[p.method] ?? p.method}`;
 }
 
-// A mismatch worth a dispatcher's eye: both sides reported but amounts differ.
 function CompletedJobs() {
   const [jobs, setJobs] = useState<HistoryJob[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -56,73 +81,86 @@ function CompletedJobs() {
   useEffect(() => { void load(); }, [load]);
 
   const totalCollected = jobs.reduce((sum, j) => sum + (j.payments.technician?.amount ?? 0), 0);
+  const confirmedCount = jobs.filter((job) => job.status === "completed_confirmed").length;
+  const pendingCount = jobs.filter((job) => job.status === "completed_pending_customer").length;
+  const reviewedCount = jobs.filter((job) => job.review?.rating).length;
 
   return (
-    <section className="p-6">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="font-condensed text-3xl font-bold uppercase">Completed jobs</h1>
-          <p className="mt-1 text-sm text-muted">Finished work with the customer review and the payment the technician collected. The customer acknowledges this amount when they confirm completion.</p>
-        </div>
-        <button className="rounded-md border border-border bg-card px-3 py-2 text-sm font-bold" onClick={() => void load()}>
-          {state === "loading" ? "Refreshing…" : "Refresh"}
-        </button>
+    <div className="space-y-6">
+      <PageHeader
+        kicker="Reports"
+        title="Completed Jobs"
+        description="Finished work, customer confirmation state, reviews, and the technician-reported payment the customer acknowledged."
+        actions={
+          <Button variant="outline" onClick={() => void load()} disabled={state === "loading"}>
+            <RefreshCw className={state === "loading" ? "animate-spin" : undefined} />
+            {state === "loading" ? "Refreshing" : "Refresh"}
+          </Button>
+        }
+      />
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <StatCard label="Completed jobs" value={state === "loading" ? "—" : String(jobs.length)} />
+        <StatCard label="Confirmed" value={state === "loading" ? "—" : String(confirmedCount)} intent="success" />
+        <StatCard label="Awaiting customer" value={state === "loading" ? "—" : String(pendingCount)} intent="warn" />
+        <StatCard label="Tech collected" value={state === "loading" ? "—" : `$${totalCollected.toFixed(2)}`} />
       </div>
 
-      {state === "ready" && jobs.length > 0 ? (
-        <div className="mt-5 grid grid-cols-2 gap-3">
-          <div className="border border-border bg-card p-4">
-            <p className="text-[11px] font-black uppercase tracking-wide text-muted">Completed jobs</p>
-            <p className="mt-1 font-condensed text-3xl font-bold">{jobs.length}</p>
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Completed job history</CardTitle>
+            <CardDescription>{reviewedCount} customer review{reviewedCount === 1 ? "" : "s"} recorded.</CardDescription>
           </div>
-          <div className="border border-border bg-card p-4">
-            <p className="text-[11px] font-black uppercase tracking-wide text-muted">Earned (tech collected)</p>
-            <p className="mt-1 font-condensed text-3xl font-bold">${totalCollected.toFixed(2)}</p>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="mt-6 overflow-x-auto border border-border">
-        <table className="w-full min-w-[820px] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-border bg-card text-left text-[11px] font-black uppercase tracking-wide text-muted">
-              <th className="px-3 py-2">Job</th>
-              <th className="px-3 py-2">Status</th>
-              <th className="px-3 py-2">Technician</th>
-              <th className="px-3 py-2">Review</th>
-              <th className="px-3 py-2">Payment collected</th>
-            </tr>
-          </thead>
-          <tbody>
+          <Badge variant="outline">Provider scoped</Badge>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[920px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Technician</TableHead>
+                  <TableHead>Review</TableHead>
+                  <TableHead className="text-right">Payment collected</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
             {state === "error" ? (
-              <tr><td colSpan={5} className="px-3 py-8 text-center text-danger">{error}</td></tr>
+              <TableRow><TableCell colSpan={5} className="py-10 text-center text-destructive">{error}</TableCell></TableRow>
             ) : state === "loading" ? (
-              <tr><td colSpan={5} className="px-3 py-8 text-center text-muted">Loading…</td></tr>
+              <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Loading completed jobs...</TableCell></TableRow>
             ) : jobs.length === 0 ? (
-              <tr><td colSpan={5} className="px-3 py-8 text-center text-muted">No completed jobs yet.</td></tr>
+              <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">No completed jobs yet.</TableCell></TableRow>
             ) : (
               jobs.map((job) => (
-                <tr key={job.id} className="border-b border-border align-top">
-                  <td className="px-3 py-3">
-                    <p className="font-bold">{job.address || "Address unavailable"}</p>
-                    <p className="text-xs capitalize text-muted">{(job.situation || "Service request").replaceAll("_", " ")}</p>
-                  </td>
-                  <td className="px-3 py-3">{STATUS_LABELS[job.status] ?? job.status}</td>
-                  <td className="px-3 py-3">{job.technician_display_name || "—"}</td>
-                  <td className="px-3 py-3">
+                <TableRow key={job.id} className="align-top">
+                  <TableCell>
+                    <div className="font-medium">{job.address || "Address unavailable"}</div>
+                    <div className="mt-1 text-xs capitalize text-muted-foreground">{(job.situation || "Service request").replaceAll("_", " ")}</div>
+                    {job.finished_at ? <div className="mt-1 text-xs text-muted-foreground">{new Date(job.finished_at).toLocaleString()}</div> : null}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={STATUS_VARIANTS[job.status] ?? "outline"}>{STATUS_LABELS[job.status] ?? job.status}</Badge>
+                  </TableCell>
+                  <TableCell>{job.technician_display_name || "—"}</TableCell>
+                  <TableCell>
                     {job.review?.rating ? (
-                      <span className="font-bold">{job.review.rating}/5</span>
-                    ) : <span className="text-muted">—</span>}
-                    {job.review?.comment ? <p className="max-w-[180px] truncate text-xs text-muted">“{job.review.comment}”</p> : null}
-                  </td>
-                  <td className="px-3 py-3 font-medium">{money(job.payments.technician)}</td>
-                </tr>
+                      <span className="inline-flex items-center gap-1 font-medium"><Star className="size-4 text-warn" />{job.review.rating}/5</span>
+                    ) : <span className="text-muted-foreground">—</span>}
+                    {job.review?.comment ? <p className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">"{job.review.comment}"</p> : null}
+                  </TableCell>
+                  <TableCell className="text-right font-medium">{money(job.payments.technician)}</TableCell>
+                </TableRow>
               ))
             )}
-          </tbody>
-        </table>
-      </div>
-    </section>
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

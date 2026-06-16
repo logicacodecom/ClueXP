@@ -97,7 +97,7 @@ export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  group?: "Operations" | "Network" | "Finance" | "Admin";
+  group?: "Operations" | "Network" | "Reports" | "Admin";
   cluexpOnly?: boolean;
 }
 
@@ -112,7 +112,7 @@ export const defaultNav: NavItem[] = [
   { href: "/teams", label: "Teams", icon: Briefcase, group: "Network" },
   { href: "/documents", label: "Documents", icon: FileText, group: "Network" },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck, group: "Admin", cluexpOnly: true },
-  { href: "/reports", label: "Reports", icon: ClipboardCheck, group: "Finance" },
+  { href: "/reports", label: "Reports", icon: ClipboardCheck, group: "Reports" },
   { href: "/settings", label: "Settings", icon: Settings, group: "Admin" },
   { href: "/audit", label: "Audit Log", icon: History, group: "Admin" }
 ];
@@ -301,7 +301,7 @@ export function Sidebar({
   onToggle: () => void;
   surfaceLabel: string;
 }) {
-  const groups = ["Operations", "Network", "Finance", "Admin"] as const;
+  const groups = ["Operations", "Network", "Reports", "Admin"] as const;
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 flex flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200", collapsed ? "w-[76px]" : "w-[264px]")}>
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
