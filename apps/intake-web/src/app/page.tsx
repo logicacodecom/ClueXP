@@ -55,6 +55,11 @@ const emptyGuards: TicketGuards = {
 };
 
 const SESSION_KEY = "cluexp_session";
+// A saved intake session is only resumed if it is recent and not already finished.
+// Otherwise opening the browser would strand the customer on a stale/closed request
+// with no way to start a new one.
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+const TERMINAL_SCREENS: Screen[] = ["review", "handoff"];
 const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
 const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
@@ -280,6 +285,18 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     setGuards(envelope.guards);
   }
 
+  // Hard reset back to a clean intake: clears the persisted session and all
+  // ticket-derived state so the customer can always start a brand-new request.
+  function startNewRequest() {
+    if (typeof window !== "undefined") window.localStorage.removeItem(sessionKey);
+    setTicket(null);
+    setGuards(emptyGuards);
+    setDispatchStatus(null);
+    setArrivalCode("");
+    setError(null);
+    setScreen("opener");
+  }
+
   async function run<T>(work: () => Promise<T>) {
     setBusy(true);
     setError(null);
@@ -431,19 +448,27 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     );
   }
 
-  // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket.
+  // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket —
+  // but only for a recent, still-in-progress session. A stale (>12h) or already
+  // finished (review/handoff) session is cleared so the customer lands on a fresh
+  // request instead of being stranded on an old one.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
-    let saved: { ticketId?: string; screen?: Screen };
+    let saved: { ticketId?: string; screen?: Screen; savedAt?: number };
     try {
       saved = JSON.parse(raw);
     } catch {
       window.localStorage.removeItem(sessionKey);
       return;
     }
-    if (!saved.ticketId) return;
+    const isStale = !saved.savedAt || Date.now() - saved.savedAt > SESSION_MAX_AGE_MS;
+    const isFinished = saved.screen ? TERMINAL_SCREENS.includes(saved.screen) : false;
+    if (!saved.ticketId || isStale || isFinished) {
+      window.localStorage.removeItem(sessionKey); // stale/finished/empty — start fresh
+      return;
+    }
     (async () => {
       try {
         const envelope = await api<TicketEnvelope>(`/tickets/${saved.ticketId}`);
@@ -516,7 +541,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (ticket?.ticket_id) {
-      window.localStorage.setItem(sessionKey, JSON.stringify({ ticketId: ticket.ticket_id, screen }));
+      window.localStorage.setItem(sessionKey, JSON.stringify({ ticketId: ticket.ticket_id, screen, savedAt: Date.now() }));
     }
   }, [ticket?.ticket_id, screen, sessionKey]);
 
@@ -1204,6 +1229,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       <footer className="footer">
         <div className="footer-inner">
           <CallAPersonButton onClick={() => handoff("explicit")} />
+          {ticket && screen !== "opener" ? (
+            <button className="ghost" type="button" onClick={startNewRequest}>
+              Start a new request
+            </button>
+          ) : null}
         </div>
       </footer>
     </div>

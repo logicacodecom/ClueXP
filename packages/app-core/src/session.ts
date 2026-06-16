@@ -55,6 +55,9 @@ export function normalizeAuthSession(raw: BackendSession): AuthSession {
 
 export async function sessionRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
+    // Never serve auth state from cache — a stale /api/session read is what made a
+    // just-logged-in user bounce back to the sign-in screen.
+    cache: "no-store",
     ...init,
     headers: {
       "content-type": "application/json",

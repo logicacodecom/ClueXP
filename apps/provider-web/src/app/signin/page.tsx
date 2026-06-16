@@ -3,12 +3,10 @@
 import { providerSession } from "@cluexp/api-client";
 import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 export default function SignInPage() {
   const { t } = useLocale();
-  const router = useRouter();
   const [identifier, setIdentifier] = useState(providerSession.user.email ?? "");
   const [password, setPassword] = useState("123456");
   const [busy, setBusy] = useState(false);
@@ -22,7 +20,10 @@ export default function SignInPage() {
         method: "POST",
         body: JSON.stringify({ identifier, password })
       });
-      router.push("/dashboard");
+      // Hard navigation (not router.push) so the auth gate reads the freshly-set
+      // session cookie on a full load — a soft client transition can land on a
+      // stale session and bounce back here.
+      window.location.assign("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in");
     } finally {

@@ -2,12 +2,10 @@
 
 import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
 import { ShieldCheck } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AppFrame, Screen } from "@/components/mobile";
 
 export default function SignInPage() {
-  const router = useRouter();
   const { t } = useLocale();
   const [identifier, setIdentifier] = useState("jordan@cluexp.example");
   const [password, setPassword] = useState("123456");
@@ -23,7 +21,10 @@ export default function SignInPage() {
         method: "POST",
         body: JSON.stringify({ identifier, password })
       });
-      router.replace("/jobs");
+      // Hard navigation (not router.replace) so the auth gate reads the freshly-set
+      // session cookie on a full load — a soft client transition can land on a
+      // stale session and bounce back here.
+      window.location.assign("/jobs");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("unableToConnect"));
     } finally {
