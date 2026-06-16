@@ -476,7 +476,8 @@ Completion marking convention:
 
 Recommended owner: Claude/backend model.
 
-Status: `[ ]` not started.
+Status: ✅ completed as current increment — commit `90e8524`; reviewed by
+Codex. Remaining history/consent/photo work belongs to Slice B/D/E, not Slice A.
 
 Primary files:
 
@@ -492,20 +493,32 @@ Do not edit:
 
 Tasks:
 
-- [ ] Inspect existing migrations and current `organization_technicians` usage.
-- [ ] Add migration for missing affiliation fields: canonical status support,
-  affiliation type, exclusivity, dispatch permission, `starts_at`, `ended_at`,
-  reason fields, and timestamps as needed.
-- [ ] Add the partial unique index preventing more than one active exclusive
-  affiliation per technician.
-- [ ] Backfill `technicians.primary_organization_id` into active
-  `organization_technicians` rows.
-- [ ] Rewire provider roster/candidate eligibility from
-  `technicians.primary_organization_id` to active affiliation rows.
-- [ ] Decide and document whether `primary_organization_id` is deprecated or a
-  denormalized cache.
-- [ ] Add tests for backfill, active eligibility, ended/suspended non-eligibility,
-  exclusivity guard, tenant isolation, and global active-job lock.
+- ✅ <s style="color:#1a7f37">Inspect existing migrations and current
+  `organization_technicians` usage.</s> — completed in Slice A review,
+  commit `90e8524`.
+- ✅ <s style="color:#1a7f37">Add migration for missing affiliation fields:
+  canonical status support, affiliation type, exclusivity, dispatch permission,
+  `starts_at`, `ended_at`, reason fields, and timestamps as needed.</s> —
+  migration `0016_provider_affiliations.py`.
+- ✅ <s style="color:#1a7f37">Add the partial unique index preventing more than
+  one active exclusive affiliation per technician.</s> — reviewed index uses
+  `status='active'`, `exclusivity='exclusive'`, and `ended_at IS NULL`.
+- ✅ <s style="color:#1a7f37">Backfill `technicians.primary_organization_id`
+  into active `organization_technicians` rows.</s> — migration/store backfill
+  added.
+- ✅ <s style="color:#1a7f37">Rewire provider roster/candidate eligibility from
+  `technicians.primary_organization_id` to active affiliation rows.</s> —
+  provider workspace, candidate, fleet, and provider-scoped technician reads
+  now use active, dispatch-allowed, non-ended affiliations with legacy fallback
+  only when no affiliation rows exist.
+- ✅ <s style="color:#1a7f37">Decide and document whether
+  `primary_organization_id` is deprecated or a denormalized cache.</s> —
+  retained as a temporary denormalized compatibility cache, not an independent
+  membership source of truth.
+- ✅ <s style="color:#1a7f37">Add tests for backfill, active eligibility,
+  ended/suspended non-eligibility, exclusivity guard, tenant isolation, and
+  global active-job lock.</s> — `uv run pytest api/tests/test_dispatch.py -q`
+  from `apps/intake-web` passed: 113 passed, 1 skipped, 1 warning.
 
 Minimum verification:
 
@@ -515,10 +528,9 @@ uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
 
 ### Slice B — Backend Invite And Affiliation Behavior
 
-Recommended owner: Claude or another backend-focused model after Slice A, or in
-parallel only if the migration/API contract is agreed first.
+Recommended owner: Claude or another backend-focused model.
 
-Status: `[ ]` blocked on Slice A contract.
+Status: `[ ]` next priority — unblocked by Slice A/C commit `90e8524`.
 
 Primary files:
 
@@ -548,7 +560,9 @@ uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
 
 Recommended owner: Qwen/frontend model.
 
-Status: `[ ]` can start in parallel as UI shell, then integrate after Slice A/B.
+Status: `[~]` implemented as current UI increment — commit `90e8524`; complete
+for visible affiliation controls/roster states, still waiting on Slice B/D/E for
+existing-technician invite behavior and technician photo fields.
 
 Primary files:
 
@@ -564,17 +578,25 @@ Do not edit:
 
 Tasks:
 
-- [ ] Keep the existing shared console style: `PageHeader`, `StatCard`, `Card`,
-  `Badge`, `Table`, and visual skill chips.
-- [ ] Add affiliation type, exclusivity, dispatch allowed, and affiliation status
-  controls to the add/invite form.
-- [ ] Make temporary password required only for new login creation.
-- [ ] Render future affiliation fields defensively when backend fields are not
-  present yet.
-- [ ] Show pending invites distinctly from active dispatchable technicians.
+- ✅ <s style="color:#1a7f37">Keep the existing shared console style:
+  `PageHeader`, `StatCard`, `Card`, `Badge`, `Table`, and visual skill
+  chips.</s> — provider build passed in commit `90e8524`.
+- ✅ <s style="color:#1a7f37">Add affiliation type, exclusivity, dispatch
+  allowed, and affiliation status controls to the add/invite form.</s> —
+  `/teams` form and API contract reconciled.
+- [ ] Make temporary password required only for new login creation. Current UI
+  still requires it because Slice B existing-technician lookup/invite behavior is
+  not implemented yet.
+- ✅ <s style="color:#1a7f37">Render future affiliation fields defensively when
+  backend fields are not present yet.</s> — reviewed by Codex.
+- ✅ <s style="color:#1a7f37">Show pending invites distinctly from active
+  dispatchable technicians.</s> — UI supports pending-invite display; backend
+  invite creation remains Slice B.
 - [ ] Show global status/vetting, skills, teams, and technician photo/headshot
-  when authorized.
-- [ ] Show clear exclusivity conflict copy.
+  when authorized. Current UI shows global status/vetting/skills/teams; photo
+  awaits the profile/photo contract.
+- ✅ <s style="color:#1a7f37">Show clear exclusivity conflict copy.</s> —
+  `exclusive_conflict` maps to a user-facing message.
 
 Minimum verification:
 
@@ -647,8 +669,7 @@ npm.cmd run typecheck
 
 Recommended owner: Codex/reviewer.
 
-Status: `[~]` active — Codex owns coordination/review while Slice A and Slice C
-run in parallel.
+Status: `[~]` active — Codex owns coordination/review while Slice B/D/E continue.
 
 Primary files:
 
@@ -661,24 +682,33 @@ Tasks:
 
 - [ ] Keep this plan synchronized with implementation reality.
 - [ ] Mark completed slices using the green strike convention.
-- [ ] Review migration/source-of-truth changes before UI-only slices assume the
-  backend is ready.
+- ✅ <s style="color:#1a7f37">Review migration/source-of-truth changes before
+  UI-only slices assume the backend is ready.</s> — Slice A/C reviewed and
+  reconciled in commit `90e8524`.
 - [ ] Ensure each model records files changed, migrations, tests/builds, and
   follow-ups in `docs/HANDOFF.md`.
 
 Acceptance checklist:
 
-- [ ] Claude Slice A output reviewed for migration safety, tenant isolation,
-  `primary_organization_id` cutover, affiliation status enum, and DB exclusivity
-  guard.
-- [ ] Qwen Slice C output reviewed for defensive field rendering, shared
-  console-ui usage, `pending_invite` behavior, skill-code consistency, and no
-  backend contract drift.
+- ✅ <s style="color:#1a7f37">Claude Slice A output reviewed for migration
+  safety, tenant isolation, `primary_organization_id` cutover, affiliation
+  status enum, and DB exclusivity guard.</s> — Codex review fixes committed in
+  `90e8524`.
+- ✅ <s style="color:#1a7f37">Qwen Slice C output reviewed for defensive field
+  rendering, shared console-ui usage, `pending_invite` behavior,
+  skill-code consistency, and no backend contract drift.</s> — Codex review
+  fixes committed in `90e8524`.
 - [ ] Backend/frontend contract reconciled for affiliation status,
   `affiliation_type`, `exclusivity`, `dispatch_allowed`, profile photo fields,
-  and pending invite behavior.
-- [ ] Targeted tests/builds independently re-run where needed.
-- [ ] Completed slices marked with green strike and exact verification notes.
+  and pending invite behavior. Affiliation fields are reconciled; profile photo
+  and existing-technician pending-invite behavior remain open.
+- ✅ <s style="color:#1a7f37">Targeted tests/builds independently re-run where
+  needed.</s> — `uv run pytest api/tests/test_dispatch.py -q`,
+  `npm.cmd run build:provider`, `npm.cmd run typecheck`, and
+  `git diff --check` passed during Codex review.
+- ✅ <s style="color:#1a7f37">Completed slices marked with green strike and exact
+  verification notes.</s> — Slice A and current Slice C increment updated after
+  commit `90e8524`; remaining open tasks stay unchecked.
 
 ## Implementation Prompt
 

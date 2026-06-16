@@ -2238,3 +2238,25 @@ Verdict after fixes: Slice A/C are materially safer and build/test green, but th
 **changes requested for the full workforce model** until Slice B consent/history/photo
 contracts are implemented. Safe to commit these reviewed fixes as the current
 increment. — Codex
+
+### 2026-06-16 — Codex: provider workforce doc status cleanup
+
+Updated `docs/PROVIDER-WORKFORCE-MODEL.md` to match the committed implementation
+state after `90e8524 feat(provider): wire workforce affiliation model`.
+
+Changed:
+- Marked Slice A as completed for backend schema/eligibility with green strike
+  task notes and verification details.
+- Marked Slice B as the next priority, now unblocked by the Slice A/C contract.
+- Marked Slice C as implemented for the current provider Workforce UI increment,
+  while keeping the temporary-password/new-login and photo/headshot items open.
+- Updated Slice F checklist to show Codex review completed for Slice A/C,
+  targeted tests/builds rerun, and remaining open contract items.
+
+Still open:
+- Existing-technician lookup should create `pending_invite`, not duplicate or
+  silently activate.
+- True leave/rejoin history needs a fuller Slice B schema/history answer.
+- Technician photo/headshot contract remains for Slice D/E.
+
+Docs only; no verification commands run. — Codex
