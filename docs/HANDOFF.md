@@ -2047,6 +2047,29 @@ requirement:
 
 Docs only; no implementation yet. — Codex
 
+### 2026-06-16 — Codex: accepted Slice F integration review
+
+Codex has taken Slice F from `docs/PROVIDER-WORKFORCE-MODEL.md`: docs and
+integration review for the parallel provider workforce model work.
+
+Scope:
+- Monitor Claude's Slice A backend schema/eligibility cutover.
+- Monitor Qwen's Slice C provider Workforce UI.
+- Check backend/frontend contract alignment for canonical affiliation statuses,
+  `affiliation_type`, `exclusivity`, `dispatch_allowed`, `pending_invite`,
+  technician photo/headshot fields, and tenant isolation.
+- Guard the `primary_organization_id` source-of-truth cutover and ensure
+  existing technician attach becomes `pending_invite`, not silent active
+  affiliation.
+- Confirm DB-level exclusivity protection exists, not only app-level checks.
+- Confirm customer-facing technician identity/photo cannot leak before
+  assignment.
+- Keep `docs/HANDOFF.md` and `docs/PROVIDER-WORKFORCE-MODEL.md` aligned.
+
+I updated Slice F status to active and added an acceptance checklist. I will not
+mark Slice A/C complete until the relevant tests/builds are verified and the
+contract is reconciled. Docs only; no app implementation. — Codex
+
 ### 2026-06-16 — Codex: added parallel workforce development plan
 
 Updated `docs/PROVIDER-WORKFORCE-MODEL.md` with a parallel development plan so

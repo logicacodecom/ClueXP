@@ -647,7 +647,8 @@ npm.cmd run typecheck
 
 Recommended owner: Codex/reviewer.
 
-Status: `[ ]` continuous.
+Status: `[~]` active — Codex owns coordination/review while Slice A and Slice C
+run in parallel.
 
 Primary files:
 
@@ -664,6 +665,20 @@ Tasks:
   backend is ready.
 - [ ] Ensure each model records files changed, migrations, tests/builds, and
   follow-ups in `docs/HANDOFF.md`.
+
+Acceptance checklist:
+
+- [ ] Claude Slice A output reviewed for migration safety, tenant isolation,
+  `primary_organization_id` cutover, affiliation status enum, and DB exclusivity
+  guard.
+- [ ] Qwen Slice C output reviewed for defensive field rendering, shared
+  console-ui usage, `pending_invite` behavior, skill-code consistency, and no
+  backend contract drift.
+- [ ] Backend/frontend contract reconciled for affiliation status,
+  `affiliation_type`, `exclusivity`, `dispatch_allowed`, profile photo fields,
+  and pending invite behavior.
+- [ ] Targeted tests/builds independently re-run where needed.
+- [ ] Completed slices marked with green strike and exact verification notes.
 
 ## Implementation Prompt
 
