@@ -1,6 +1,11 @@
-import { JobDetail } from "@cluexp/console-ui";
+"use client";
+
+import { useParams } from "next/navigation";
 import { AppFrame } from "../../frame";
+import { JobDetailView } from "./job-detail";
 
 export default function JobPage() {
-  return <AppFrame><JobDetail mode="org" /></AppFrame>;
+  const params = useParams();
+  const id = String(params.id);
+  return <AppFrame><JobDetailView jobId={id} kicker="Job detail" /></AppFrame>;
 }

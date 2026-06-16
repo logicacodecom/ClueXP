@@ -352,6 +352,9 @@ class Store:
     async def list_job_events(self, job_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def list_org_events(self, org_id: str, *, limit: int = 200) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
     async def record_customer_review(
         self,
         *,
@@ -907,6 +910,20 @@ class InMemoryStore(Store):
 
     async def list_job_events(self, job_id: UUID) -> list[dict]:
         return self._events_for(str(job_id))
+
+    async def list_org_events(self, org_id: str, *, limit: int = 200) -> list[dict]:
+        job_org = getattr(self, "_job_org", {})
+        out = []
+        for line in getattr(self, "events", []):
+            parts = line.split(" ", 2)
+            if len(parts) != 3:
+                continue
+            at, jid, event = parts
+            if job_org.get(jid) != str(org_id):
+                continue
+            out.append({"job_id": jid, "event": event, "at": at})
+        out.sort(key=lambda e: e["at"] or "", reverse=True)
+        return out[:limit]
 
     async def recover_job(
         self, job_id: UUID, *, target_status: str, expected_statuses: list[str],
@@ -2688,6 +2705,25 @@ class PostgresStore(Store):
             )
             rows = await cur.fetchall()
         return [{"event": r[0], "at": r[1].isoformat() if r[1] else None} for r in rows]
+
+    async def list_org_events(self, org_id: str, *, limit: int = 200) -> list[dict]:
+        """Recent audit events across the org's jobs (owned or fulfilled), newest
+        first — backs the provider org-wide audit log. Tenant-scoped at the join."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select e.job_id, e.event, e.at, j.address"
+                " from events e"
+                " join jobs j on j.id = e.job_id"
+                " where j.customer_owner_org_id = %s or j.fulfillment_org_id = %s"
+                " order by e.at desc, e.id desc"
+                " limit %s",
+                (str(org_id), str(org_id), int(limit)),
+            )
+            rows = await cur.fetchall()
+        return [
+            {"job_id": str(r[0]), "event": r[1], "at": r[2].isoformat() if r[2] else None, "address": r[3]}
+            for r in rows
+        ]
 
     async def recover_job(
         self, job_id: UUID, *, target_status: str, expected_statuses: list[str],

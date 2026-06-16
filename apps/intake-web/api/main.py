@@ -2078,6 +2078,16 @@ async def provider_job_timeline(
     return await store.list_job_events(job_id)
 
 
+@app.get("/provider/audit")
+async def provider_audit(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Org-wide audit log: recent events across all of the company's jobs (owned or
+    fulfilled), newest first. Tenant-scoped — never exposes another company's events."""
+    org_id = _require_dispatch_org(session)
+    return await store.list_org_events(org_id, limit=200)
+
+
 # Demo payment/finalize chain — gated OFF the MVP path (no real payment in MVP).
 # The customer's real review path is the token-gated POST /t/{token}/review.
 _DEMO_GONE = "Removed from the MVP — no production payment/finalize flow. (Customer review: POST /t/{token}/review.)"
