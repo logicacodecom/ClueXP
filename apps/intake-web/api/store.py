@@ -215,6 +215,16 @@ class Store:
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
+    async def add_affiliation(
+        self, organization_id: UUID, technician_id: UUID, *,
+        status: str = "active", affiliation_type: str = "unknown",
+        exclusivity: str = "unknown", dispatch_allowed: bool = True,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def backfill_affiliations_from_primary_org(self) -> int:  # pragma: no cover
+        raise NotImplementedError
+
     async def create_provider_document(
         self, organization_id: UUID, data: dict
     ) -> dict:  # pragma: no cover
@@ -537,11 +547,43 @@ class InMemoryStore(Store):
         return {"id": str(team_id), "organization_id": str(organization_id), **data}
 
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
+        tid = str(uuid4())
+        techs = self._technicians = getattr(self, "_technicians", [])
+        techs.append({
+            "id": tid,
+            "display_name": data.get("display_name"),
+            "email": data.get("email"),
+            "phone": data.get("phone"),
+            "status": "pending_vetting",
+            "vetting_status": "unverified",
+            "skills": data.get("skills") or [],
+            "service_area_center_lat": data.get("service_area_center_lat"),
+            "service_area_center_lng": data.get("service_area_center_lng"),
+            "service_area_radius_km": data.get("service_area_radius_km"),
+            "is_available": False,
+            "provider_type": "affiliate",
+            "primary_organization_id": str(organization_id),  # denormalized cache
+        })
+        # Affiliation is the source of truth; the exclusive guard may reject this.
+        await self.add_affiliation(
+            organization_id, UUID(tid),
+            affiliation_type=data.get("affiliation_type") or "unknown",
+            exclusivity=data.get("exclusivity") or "unknown",
+            dispatch_allowed=bool(data.get("dispatch_allowed", True)),
+        )
         return {
-            "id": str(uuid4()),
+            "id": tid,
             "organization_id": str(organization_id),
             "status": "pending_vetting",
             "vetting_status": "unverified",
+            "global_status": "pending_vetting",
+            "affiliation": {
+                "status": "active",
+                "affiliation_type": data.get("affiliation_type") or "unknown",
+                "exclusivity": data.get("exclusivity") or "unknown",
+                "dispatch_allowed": bool(data.get("dispatch_allowed", True)),
+                "is_pending_invite": False,
+            },
             **{key: value for key, value in data.items() if key != "password"},
         }
 
@@ -705,11 +747,79 @@ class InMemoryStore(Store):
             })
         return result
 
+    def _tech_eligible_for_org(self, tech: dict, org_id: str) -> bool:
+        """Slice A eligibility: an active, dispatch-allowed, non-ended affiliation row
+        for this org — or, only when the technician has NO affiliation rows yet, the
+        legacy primary_organization_id denormalized cache."""
+        tid = str(tech.get("id"))
+        affs = [a for a in getattr(self, "_affiliations", []) if str(a.get("technician_id")) == tid]
+        active_here = any(
+            str(a.get("organization_id")) == str(org_id)
+            and a.get("status") == "active"
+            and a.get("dispatch_allowed", True)
+            and a.get("ended_at") is None
+            for a in affs
+        )
+        if active_here:
+            return True
+        if not affs:
+            return str(tech.get("primary_organization_id")) == str(org_id)
+        return False
+
     async def list_all_technicians_for_ops(self, org_id: str | None = None) -> list[dict]:
         techs = list(getattr(self, "_technicians", []))
         if org_id is not None:
-            techs = [t for t in techs if str(t.get("primary_organization_id")) == str(org_id)]
+            techs = [t for t in techs if self._tech_eligible_for_org(t, org_id)]
         return techs
+
+    async def add_affiliation(
+        self, organization_id: UUID, technician_id: UUID, *,
+        status: str = "active", affiliation_type: str = "unknown",
+        exclusivity: str = "unknown", dispatch_allowed: bool = True,
+    ) -> dict:
+        """Create/upsert a provider affiliation, enforcing the same guard as the DB
+        partial unique index: at most one active EXCLUSIVE affiliation per technician
+        (across orgs). Raises ValueError('exclusive_conflict') on violation."""
+        affs = self._affiliations = getattr(self, "_affiliations", [])
+        oid, tid = str(organization_id), str(technician_id)
+        if status == "active" and exclusivity == "exclusive":
+            for a in affs:
+                if (str(a.get("technician_id")) == tid and a.get("status") == "active"
+                        and a.get("exclusivity") == "exclusive"
+                        and str(a.get("organization_id")) != oid):
+                    raise ValueError("exclusive_conflict")
+        row = next((a for a in affs if str(a.get("organization_id")) == oid
+                    and str(a.get("technician_id")) == tid), None)
+        new = row is None
+        row = row or {"organization_id": oid, "technician_id": tid}
+        row.update({
+            "status": status, "affiliation_type": affiliation_type,
+            "exclusivity": exclusivity, "dispatch_allowed": dispatch_allowed,
+            "ended_at": None, "ended_reason": None,
+        })
+        if new:
+            affs.append(row)
+        return dict(row)
+
+    async def backfill_affiliations_from_primary_org(self) -> int:
+        """Active affiliation row for every technician with a primary_organization_id
+        but no affiliation row for that org. Idempotent; returns rows inserted."""
+        affs = self._affiliations = getattr(self, "_affiliations", [])
+        count = 0
+        for tech in getattr(self, "_technicians", []):
+            org = tech.get("primary_organization_id")
+            if not org:
+                continue
+            oid, tid = str(org), str(tech.get("id"))
+            if any(str(a.get("organization_id")) == oid and str(a.get("technician_id")) == tid for a in affs):
+                continue
+            affs.append({
+                "organization_id": oid, "technician_id": tid, "status": "active",
+                "affiliation_type": "unknown", "exclusivity": "unknown",
+                "dispatch_allowed": True, "ended_at": None, "ended_reason": None,
+            })
+            count += 1
+        return count
 
     async def get_fleet_state(self, org_id: str | None = None) -> list[dict]:
         return []
@@ -828,7 +938,7 @@ class InMemoryStore(Store):
         tid = str(technician_id)
         for t in getattr(self, "_technicians", []):
             if str(t.get("id")) == tid and t.get("status") == "active" and t.get("vetting_status") == "verified":
-                if org_id is not None and str(t.get("primary_organization_id")) != str(org_id):
+                if org_id is not None and not self._tech_eligible_for_org(t, org_id):
                     return None
                 return t
         return None
@@ -1873,7 +1983,9 @@ class PostgresStore(Store):
                 " t.service_area_center_lng, t.service_area_radius_km, t.rating,"
                 " t.is_available, t.provider_type, t.primary_organization_id,"
                 " coalesce(array_remove(array_agg(distinct ot.organization_id)"
-                "   filter (where ot.status = 'active'), null), '{}') as affiliated"
+                "   filter (where ot.status = 'active' and ot.dispatch_allowed"
+                "     and ot.ended_at is null), null), '{}') as affiliated,"
+                " count(ot.technician_id)::integer as affiliation_count"
                 " from technicians t"
                 " left join organization_technicians ot on ot.technician_id = t.id"
                 " where t.status = 'active' and t.vetting_status = 'verified'"
@@ -1885,7 +1997,9 @@ class PostgresStore(Store):
         for r in rows:
             primary = str(r[9]) if r[9] else None
             affiliated = [str(o) for o in (r[10] or [])]
-            org_ids = list({oid for oid in ([primary] + affiliated) if oid})
+            has_affiliations = (r[11] or 0) > 0
+            fallback_orgs = [primary] if primary and not has_affiliations else []
+            org_ids = list({oid for oid in (fallback_orgs + affiliated) if oid})
             result.append(
                 {
                     "id": str(r[0]),
@@ -2350,13 +2464,21 @@ class PostgresStore(Store):
 
     async def list_all_technicians_for_ops(self, org_id: str | None = None) -> list[dict]:
         """Active+verified technicians with location data — no availability filter.
-        With org_id set, restricted to the company's own W-2/affiliated technicians
-        (primary_organization_id = org); otherwise the full platform pool."""
+        With org_id set, restricted to the company's dispatch-eligible technicians:
+        an active, dispatch-allowed affiliation row (Slice A source of truth), or —
+        only when a technician has no affiliation rows yet — the legacy
+        primary_organization_id denormalized cache. Otherwise the full platform pool."""
         org_filter = ""
         params: tuple = ()
         if org_id is not None:
-            org_filter = " and primary_organization_id = %s"
-            params = (str(org_id),)
+            org_filter = (
+                " and (exists (select 1 from organization_technicians ot"
+                "   where ot.technician_id = technicians.id and ot.organization_id = %s"
+                "   and ot.status = 'active' and ot.dispatch_allowed and ot.ended_at is null)"
+                " or (primary_organization_id = %s and not exists"
+                "   (select 1 from organization_technicians ot2 where ot2.technician_id = technicians.id)))"
+            )
+            params = (str(org_id), str(org_id))
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, display_name, skills, current_lat, current_lng,"
@@ -2391,10 +2513,19 @@ class PostgresStore(Store):
     async def get_fleet_state(self, org_id: str | None = None) -> list[dict]:
         """All active+verified technicians with their current location and active
         job (if any). Single LEFT JOIN — one round trip for the fleet map. With
-        org_id set, restricted to the company's own technicians."""
-        org_filter = " and t.primary_organization_id = %s" if org_id is not None else ""
+        org_id set, restricted to the company's dispatch-eligible technicians."""
+        org_filter = ""
         active = ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]
-        params = (active,) + ((str(org_id),) if org_id is not None else ())
+        params: tuple = (active,)
+        if org_id is not None:
+            org_filter = (
+                " and (exists (select 1 from organization_technicians ot"
+                "   where ot.technician_id = t.id and ot.organization_id = %s"
+                "   and ot.status = 'active' and ot.dispatch_allowed and ot.ended_at is null)"
+                " or (t.primary_organization_id = %s and not exists"
+                "   (select 1 from organization_technicians ot2 where ot2.technician_id = t.id)))"
+            )
+            params = (active, str(org_id), str(org_id))
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select t.id, t.display_name, t.skills, t.is_available,"
@@ -2460,9 +2591,20 @@ class PostgresStore(Store):
 
     async def get_ops_technician(self, technician_id: UUID, org_id: str | None = None) -> dict | None:
         """Fetch one technician only if currently active and verified. With org_id
-        set, also require the technician belongs to that company (provider dispatch)."""
-        org_filter = " and primary_organization_id = %s" if org_id is not None else ""
-        params = (str(technician_id),) + ((str(org_id),) if org_id is not None else ())
+        set, also require a dispatch-eligible affiliation with that company (active,
+        dispatch-allowed, not ended) — falling back to the legacy
+        primary_organization_id cache only when no affiliation rows exist."""
+        org_filter = ""
+        params: tuple = (str(technician_id),)
+        if org_id is not None:
+            org_filter = (
+                " and (exists (select 1 from organization_technicians ot"
+                "   where ot.technician_id = technicians.id and ot.organization_id = %s"
+                "   and ot.status = 'active' and ot.dispatch_allowed and ot.ended_at is null)"
+                " or (primary_organization_id = %s and not exists"
+                "   (select 1 from organization_technicians ot2 where ot2.technician_id = technicians.id)))"
+            )
+            params = (str(technician_id), str(org_id), str(org_id))
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, display_name, skills, current_lat, current_lng,"
@@ -2488,6 +2630,56 @@ class PostgresStore(Store):
             "location_updated_at": row[9].isoformat() if row[9] else None,
             "primary_organization_id": str(row[10]) if row[10] else None,
         }
+
+    async def add_affiliation(
+        self, organization_id: UUID, technician_id: UUID, *,
+        status: str = "active", affiliation_type: str = "unknown",
+        exclusivity: str = "unknown", dispatch_allowed: bool = True,
+    ) -> dict:
+        """Create (or upsert) a provider affiliation row. The DB partial unique index
+        `uq_org_tech_active_exclusive` enforces at most one active EXCLUSIVE affiliation
+        per technician; a violation surfaces as ValueError('exclusive_conflict')."""
+        try:
+            async with await self._connect() as conn:
+                await conn.execute(
+                    "insert into organization_technicians"
+                    " (organization_id, technician_id, role, status, affiliation_type,"
+                    "  exclusivity, dispatch_allowed, starts_at, activated_at)"
+                    " values (%s, %s, 'affiliate_technician', %s, %s, %s, %s, now(),"
+                    "  case when %s = 'active' then now() else null end)"
+                    " on conflict (organization_id, technician_id) do update set"
+                    "  status = excluded.status, affiliation_type = excluded.affiliation_type,"
+                    "  exclusivity = excluded.exclusivity, dispatch_allowed = excluded.dispatch_allowed,"
+                    "  ended_at = null, ended_reason = null, updated_at = now()",
+                    (str(organization_id), str(technician_id), status, affiliation_type,
+                     exclusivity, dispatch_allowed, status),
+                )
+        except Exception as exc:  # unique-violation on the active-exclusive guard
+            if "uq_org_tech_active_exclusive" in str(exc):
+                raise ValueError("exclusive_conflict") from exc
+            raise
+        return {
+            "organization_id": str(organization_id), "technician_id": str(technician_id),
+            "status": status, "affiliation_type": affiliation_type,
+            "exclusivity": exclusivity, "dispatch_allowed": dispatch_allowed,
+        }
+
+    async def backfill_affiliations_from_primary_org(self) -> int:
+        """Create an active, dispatch-allowed affiliation for every technician that has
+        a primary_organization_id but no affiliation row for that org yet. Idempotent;
+        returns the number of rows inserted. Mirrors migration 0016's backfill."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into organization_technicians"
+                " (organization_id, technician_id, role, status, dispatch_allowed,"
+                "  exclusivity, affiliation_type, starts_at, activated_at)"
+                " select t.primary_organization_id, t.id, 'affiliate_technician', 'active', true,"
+                "  'unknown', 'unknown', now(), now()"
+                " from technicians t where t.primary_organization_id is not null"
+                " on conflict (organization_id, technician_id) do nothing",
+                (),
+            )
+            return cur.rowcount or 0
 
     async def create_arrival_pin(
         self, job_id: UUID, technician_id: UUID, pin_hash: str,
@@ -3312,12 +3504,15 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
                 " t.skills, t.provider_type, t.is_available,"
+                " ot.status, ot.affiliation_type, ot.exclusivity, ot.dispatch_allowed,"
+                " ot.ended_at,"
                 " coalesce(array_remove(array_agg(distinct ott.team_id), null), '{}')"
                 " from technicians t"
                 " join organization_technicians ot on ot.technician_id = t.id"
                 " left join organization_team_technicians ott on ott.technician_id = t.id"
                 " where ot.organization_id = %s"
-                " group by t.id order by t.display_name",
+                " group by t.id, ot.status, ot.affiliation_type, ot.exclusivity,"
+                " ot.dispatch_allowed, ot.ended_at order by t.display_name",
                 (str(organization_id),),
             )
             technician_rows = await cur.fetchall()
@@ -3370,11 +3565,20 @@ class PostgresStore(Store):
                     "email": row[2],
                     "phone": row[3],
                     "status": row[4],
+                    "global_status": row[4],
                     "vetting_status": row[5],
                     "skills": row[6] or [],
                     "provider_type": row[7],
                     "is_available": row[8],
-                    "team_ids": [str(team_id) for team_id in (row[9] or [])],
+                    "affiliation": {
+                        "status": row[9],
+                        "affiliation_type": row[10],
+                        "exclusivity": row[11],
+                        "dispatch_allowed": bool(row[12]),
+                        "ended_at": row[13].isoformat() if row[13] else None,
+                        "is_pending_invite": row[9] == "pending_invite",
+                    },
+                    "team_ids": [str(team_id) for team_id in (row[14] or [])],
                 }
                 for row in technician_rows
             ],
@@ -3480,63 +3684,82 @@ class PostgresStore(Store):
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
         email = (data.get("email") or "").strip() or None
         phone = (data.get("phone") or "").strip() or None
-        async with await self._connect() as conn:
-            if email:
-                cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
-                if await cur.fetchone():
-                    raise ValueError("email_taken")
-            password_hash = hash_password(data["password"])
-            cur = await conn.execute(
-                "insert into users (email, phone, password_hash, display_name, status, locale)"
-                " values (%s, %s, %s, %s, 'active', %s) returning id",
-                (email, phone, password_hash, data["display_name"], data.get("locale")),
-            )
-            technician_id = (await cur.fetchone())[0]
-            await conn.execute(
-                "insert into user_roles (user_id, role) values (%s, 'technician') on conflict do nothing",
-                (technician_id,),
-            )
-            await conn.execute(
-                "insert into technicians"
-                " (id, display_name, email, phone, status, vetting_status, skills,"
-                " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
-                " is_available, provider_type, primary_organization_id)"
-                " values (%s, %s, %s, %s, 'pending_vetting', 'unverified', %s, %s, %s, %s,"
-                " false, 'affiliate', %s)",
-                (
-                    technician_id, data["display_name"], email, phone, data.get("skills") or [],
-                    data.get("service_area_center_lat"), data.get("service_area_center_lng"),
-                    data.get("service_area_radius_km"), str(organization_id),
-                ),
-            )
-            await conn.execute(
-                "insert into organization_technicians"
-                " (organization_id, technician_id, role, status, activated_at)"
-                " values (%s, %s, 'affiliate_technician', 'active', now())",
-                (str(organization_id), technician_id),
-            )
-            await conn.execute(
-                "insert into user_organization_memberships"
-                " (user_id, organization_id, role, status)"
-                " values (%s, %s, 'technician', 'active')"
-                " on conflict (user_id, organization_id) do nothing",
-                (technician_id, str(organization_id)),
-            )
-            for team_id in data.get("team_ids") or []:
+        try:
+            async with await self._connect() as conn:
+                if email:
+                    cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
+                    if await cur.fetchone():
+                        raise ValueError("email_taken")
+                password_hash = hash_password(data["password"])
                 cur = await conn.execute(
-                    "select 1 from organization_teams where id = %s and organization_id = %s",
-                    (team_id, str(organization_id)),
+                    "insert into users (email, phone, password_hash, display_name, status, locale)"
+                    " values (%s, %s, %s, %s, 'active', %s) returning id",
+                    (email, phone, password_hash, data["display_name"], data.get("locale")),
                 )
-                if await cur.fetchone():
-                    await conn.execute(
-                        "insert into organization_team_technicians (team_id, technician_id)"
-                        " values (%s, %s) on conflict do nothing",
-                        (team_id, technician_id),
+                technician_id = (await cur.fetchone())[0]
+                await conn.execute(
+                    "insert into user_roles (user_id, role) values (%s, 'technician') on conflict do nothing",
+                    (technician_id,),
+                )
+                await conn.execute(
+                    "insert into technicians"
+                    " (id, display_name, email, phone, status, vetting_status, skills,"
+                    " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                    " is_available, provider_type, primary_organization_id)"
+                    " values (%s, %s, %s, %s, 'pending_vetting', 'unverified', %s, %s, %s, %s,"
+                    " false, 'affiliate', %s)",
+                    (
+                        technician_id, data["display_name"], email, phone, data.get("skills") or [],
+                        data.get("service_area_center_lat"), data.get("service_area_center_lng"),
+                        data.get("service_area_radius_km"), str(organization_id),
+                    ),
+                )
+                await conn.execute(
+                    "insert into organization_technicians"
+                    " (organization_id, technician_id, role, status, activated_at,"
+                    "  affiliation_type, exclusivity, dispatch_allowed, starts_at)"
+                    " values (%s, %s, 'affiliate_technician', 'active', now(), %s, %s, %s, now())",
+                    (
+                        str(organization_id), technician_id,
+                        data.get("affiliation_type") or "unknown",
+                        data.get("exclusivity") or "unknown",
+                        bool(data.get("dispatch_allowed", True)),
+                    ),
+                )
+                await conn.execute(
+                    "insert into user_organization_memberships"
+                    " (user_id, organization_id, role, status)"
+                    " values (%s, %s, 'technician', 'active')"
+                    " on conflict (user_id, organization_id) do nothing",
+                    (technician_id, str(organization_id)),
+                )
+                for team_id in data.get("team_ids") or []:
+                    cur = await conn.execute(
+                        "select 1 from organization_teams where id = %s and organization_id = %s",
+                        (team_id, str(organization_id)),
                     )
+                    if await cur.fetchone():
+                        await conn.execute(
+                            "insert into organization_team_technicians (team_id, technician_id)"
+                            " values (%s, %s) on conflict do nothing",
+                            (team_id, technician_id),
+                        )
+        except Exception as exc:
+            if "uq_org_tech_active_exclusive" in str(exc):
+                raise ValueError("exclusive_conflict") from exc
+            raise
         return {
             "id": str(technician_id), "display_name": data["display_name"],
             "email": email, "phone": phone, "status": "pending_vetting",
+            "global_status": "pending_vetting",
             "vetting_status": "unverified", "provider_type": "affiliate",
+            "affiliation": {
+                "status": "active",
+                "affiliation_type": data.get("affiliation_type") or "unknown",
+                "exclusivity": data.get("exclusivity") or "unknown",
+                "dispatch_allowed": bool(data.get("dispatch_allowed", True)),
+                "is_pending_invite": False,
+            },
             "team_ids": data.get("team_ids") or [],
         }
 

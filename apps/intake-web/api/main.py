@@ -229,6 +229,9 @@ class AffiliatedTechnicianRequest(BaseModel):
     password: str
     skills: list[str] = []
     team_ids: list[UUID] = []
+    affiliation_type: str = "unknown"
+    exclusivity: str = "unknown"
+    dispatch_allowed: bool = True
     service_area_center_lat: float | None = None
     service_area_center_lng: float | None = None
     service_area_radius_km: float | None = None
@@ -719,6 +722,12 @@ async def create_provider_technician(
         raise HTTPException(status_code=422, detail="Email or phone is required")
     if len(payload.password) < 8:
         raise HTTPException(status_code=422, detail="Temporary password must be at least 8 characters")
+    if payload.affiliation_type not in {
+        "employee_w2", "contractor", "subcontractor", "owner_operator", "unknown"
+    }:
+        raise HTTPException(status_code=422, detail="Invalid affiliation type")
+    if payload.exclusivity not in {"exclusive", "non_exclusive", "unknown"}:
+        raise HTTPException(status_code=422, detail="Invalid exclusivity")
     try:
         return await store.create_affiliated_technician(
             organization_id, payload.model_dump(mode="json")

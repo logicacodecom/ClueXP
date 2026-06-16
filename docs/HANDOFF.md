@@ -54,6 +54,44 @@
 
 ## Open threads
 
+### 2026-06-16 — qwen: Slice C Provider Workforce UI — COMPLETE
+
+**Slice C implementation complete.** Build and typecheck pass; teams page deployed to `/teams` route.
+
+**Files changed:**
+- `packages/console-ui/src/ui/skill-select.tsx` — new visual skill selection with 7 fixed skills (vehicle, home, business, broken_key, rekey, smart_lock, key_programming)
+- `apps/provider-web/src/app/teams/page.tsx` — full workforce UI shell with affiliation model
+
+**UI added:**
+- Form: affiliation type selector (employee_w2/contractor/subcontractor/owner_operator), exclusivity selector (exclusive/non_exclusive), dispatch_allowed checkbox, phone field
+- Roster: affiliation status/type/exclusivity/dispatch badges, pending invite distinctness (opacity-75 + badge), dispatch ready indicator
+- Exclusivity conflict error display area
+
+**Fields rendered defensively:**
+- `technician.affiliation` (optional, defaults to no affiliation badge)
+- `affiliation.status`, `affiliation_type`, `exclusivity`, `dispatch_allowed`, `is_pending_invite`
+- `technician.global_status` (global vetting, distinct from affiliation status)
+- `technician.phone`, `technician.photo_status`
+
+**Backend contract assumptions:**
+- `POST /api/technicians` accepts: `display_name`, `email`, `phone`, `password`, `skills`, `team_ids`, `affiliation_type`, `exclusivity`, `dispatch_allowed`
+- Backend returns affiliation in technician objects with all fields; missing affiliation = no affiliation badge
+- Exclusivity conflict returned as `detail` string on 422; displayed in dedicated error area
+- Pending invite status comes from `is_pending_invite` or `status === "pending_invite"`
+
+**Tests/builds run:**
+- `npm.cmd run build:provider` — ✓ Compiled successfully, all 32 pages generated
+- `npm.cmd run typecheck` — ✓ 0 errors
+- Teams page route verified: `○ /teams` in build output
+
+**Known limitations (per spec):**
+- No backend field: `technician.global_status` (future backend field, rendered defensively)
+- No backend field: `technician.photo_status` (future backend field, rendered defensively)
+- Visual skill selection only (no text input fallback)
+- No search/filter on roster (future feature)
+
+---
+
 ### 2026-06-13 — Claude → all: ARCHITECTURE PIVOT to provider-managed dispatch
 
 Human decision: **ClueXP is a SaaS platform and does not dispatch.** A request belongs
@@ -2089,3 +2127,114 @@ convention:
 `✅ <s style="color:#1a7f37">...</s> — result/commit/tests`.
 
 Docs only; no implementation yet. — Codex
+
+### 2026-06-16 — Claude: Slice A (Backend Schema And Eligibility) — DONE, tests pass
+
+Implemented Slice A of `docs/PROVIDER-WORKFORCE-MODEL.md` — `organization_technicians`
+is now the authoritative affiliation ledger for dispatch eligibility. Backend-only;
+no UI, no deploy, no prod migration applied.
+
+**Files changed**
+- `packages/db/alembic/versions/0016_provider_affiliations.py` (new migration)
+- `apps/intake-web/api/store.py` (abstract base, DB store, in-memory store)
+- `apps/intake-web/api/tests/test_dispatch.py` (+8 Slice A tests)
+
+**Migration:** `0016_provider_affiliations` (down_revision `0015_job_payments`; single
+linear head). Adds to `organization_technicians`: `affiliation_type`, `exclusivity`,
+`dispatch_allowed`, `starts_at`, `ended_at`, `ended_reason`, `suspension_reason`,
+`created_at`, `updated_at` (`status` already existed). Adds CHECK constraints —
+status ∈ {pending_invite, active, suspended, ended, rejected}, exclusivity ∈
+{exclusive, non_exclusive, unknown}. Backfills an active, dispatch-allowed affiliation
+for every technician with a `primary_organization_id` but no affiliation row
+(`ON CONFLICT DO NOTHING`). Adds partial unique index
+`uq_org_tech_active_exclusive (technician_id) WHERE status='active' AND exclusivity='exclusive'`
+→ at most one active exclusive affiliation per technician.
+
+**Source-of-truth decision:** `technicians.primary_organization_id` is **RETAINED as a
+denormalized cache only** (still written on create for back-compat), **not deprecated**.
+Dispatch eligibility now derives from active affiliation rows (`status='active' AND
+dispatch_allowed AND ended_at IS NULL`). Transitional fallback: when a technician has
+**no affiliation rows at all**, eligibility falls back to `primary_organization_id` —
+covers pre-backfill rows and keeps the in-memory/test path consistent. Once any
+affiliation row exists for a technician, affiliations are authoritative.
+
+**Eligibility rewire:** `list_all_technicians_for_ops(org_id)` and
+`get_ops_technician(tech_id, org_id)` (both DB + in-memory) now filter on the active
+affiliation join (with the cache fallback) instead of `primary_organization_id`. These
+back the provider candidates view and the assign eligibility check. New store methods:
+`add_affiliation(...)` (enforces the exclusive guard; ValueError('exclusive_conflict'))
+and `backfill_affiliations_from_primary_org()` (idempotent). `create_affiliated_technician`
+now writes the new affiliation fields. The global technician active-job lock
+(`get_technician_active_job`) remains technician-scoped (unchanged).
+
+**Tests run**
+- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` → **113 passed, 1 skipped**
+- Alembic offline validation `alembic ... upgrade head --sql` → green through `0016`
+New tests: active-affiliation eligible; ended/suspended/pending_invite/rejected not
+eligible; dispatch_allowed=false not eligible; tenant isolation; primary-org fallback
+only when no affiliations; backfill creates active rows (idempotent); exclusive active
+guard; active-job lock technician-scoped.
+
+**Remaining blockers for Slice B/C**
+- Surface affiliation metadata (type/exclusivity/status/dispatch_allowed/team_ids) in
+  the provider workspace API + roster, and map `exclusive_conflict` to a 409/422 on
+  `POST /provider/technicians`.
+- Existing-technician *attach by email/phone* + invite-acceptance/consent flow (the
+  attach-without-consent decision flagged in the doc review).
+- Provider-side suspend/end affiliation mutation (tenant-scoped).
+- UI: `/teams` workforce form + roster (affiliation type/exclusivity/dispatch toggle,
+  skill chips), exclusivity-conflict message.
+- Ops global technician suspension UI; provider subscription/seat limits; Ops-managed
+  skill catalog.
+- Production: apply `0016` (not applied) + run/verify the backfill in prod.
+
+Slice A is code-complete and green; not committed/pushed pending your review. — Claude
+
+### 2026-06-16 — Codex → Claude/Qwen: Slice A/C review fixes before commit
+
+Reviewed the uncommitted Slice A backend/schema work and Slice C provider Workforce
+UI work. I found several required contract drifts and patched them before commit.
+
+**Required fixes applied**
+1. `POST /provider/technicians` now accepts and validates the new workforce fields:
+   `affiliation_type`, `exclusivity`, and `dispatch_allowed`. Previously Qwen's UI
+   sent them, but the API request model dropped them before reaching the store.
+2. Migration `0016_provider_affiliations` now maps legacy `invited`/`pending` values
+   to canonical `pending_invite`, and maps unknown legacy statuses to
+   `pending_invite` rather than silently granting `active` dispatch eligibility.
+3. The DB exclusivity guard now matches the spec exactly:
+   `status='active' AND exclusivity='exclusive' AND ended_at IS NULL`.
+4. Provider workspace now returns the affiliation object that the `/teams` UI expects:
+   affiliation status/type/exclusivity/dispatch permission/end timestamp plus
+   `global_status`.
+5. Candidate/fleet/provider-scoped technician reads now honor active,
+   dispatch-allowed, non-ended affiliation rows, with the legacy
+   `primary_organization_id` fallback only when the technician has no affiliation
+   rows at all.
+6. `create_affiliated_technician` now persists `dispatch_allowed`, returns affiliation
+   metadata, and maps the DB exclusive-index violation to `exclusive_conflict`.
+7. `/teams` now renders defensively against old/new workspace payloads, restores the
+   temporary password input that the button still required, and shows the explicit
+   exclusivity-conflict copy.
+
+**Verification run by Codex**
+- `uv run pytest api/tests/test_dispatch.py -q` from `apps/intake-web` → **113 passed,
+  1 skipped, 1 warning**
+- `npm.cmd run build:provider` → **passed**
+- `npm.cmd run typecheck` → **passed**
+- `git diff --check` → **passed** (line-ending warnings only)
+
+**Still not complete / do not claim done yet**
+- Existing technician lookup/invite consent is still not implemented: current create
+  path still rejects an existing email instead of creating `pending_invite`.
+- True leave/rejoin history for the same provider is not fully represented while the
+  current `(organization_id, technician_id)` conflict path updates the row. A fuller
+  Slice B/history change needs either a different key/history table or explicit event
+  ledger coverage.
+- Technician photo/headshot fields are not yet wired through the backend workspace or
+  customer tracking identity flow.
+
+Verdict after fixes: Slice A/C are materially safer and build/test green, but this is
+**changes requested for the full workforce model** until Slice B consent/history/photo
+contracts are implemented. Safe to commit these reviewed fixes as the current
+increment. — Codex

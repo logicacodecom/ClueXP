@@ -2063,3 +2063,92 @@ def test_no_show_in_provider_history_not_technician_history():
         assert all(row["id"] != jid for row in th.json())
     finally:
         app_store.get_user_session = _orig
+
+
+# --- Slice A: provider workforce affiliation source of truth ------------------
+
+def test_active_affiliation_makes_tech_dispatch_eligible():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+    asyncio.run(store.add_affiliation(UUID(org), UUID(tid)))  # active / dispatch_allowed by default
+    assert [t["id"] for t in asyncio.run(store.list_all_technicians_for_ops(org))] == [tid]
+    assert asyncio.run(store.get_ops_technician(UUID(tid), org)) is not None
+
+
+def test_ended_suspended_pending_affiliations_not_eligible():
+    org, tid = str(uuid4()), str(uuid4())
+    for state in ("ended", "suspended", "pending_invite", "rejected"):
+        store = InMemoryStore()
+        store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+        asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status=state))
+        assert asyncio.run(store.list_all_technicians_for_ops(org)) == []
+        assert asyncio.run(store.get_ops_technician(UUID(tid), org)) is None
+
+
+def test_dispatch_not_allowed_affiliation_not_eligible():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+    asyncio.run(store.add_affiliation(UUID(org), UUID(tid), dispatch_allowed=False))
+    assert asyncio.run(store.list_all_technicians_for_ops(org)) == []
+    assert asyncio.run(store.get_ops_technician(UUID(tid), org)) is None
+
+
+def test_affiliation_tenant_isolation():
+    store = InMemoryStore()
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+    asyncio.run(store.add_affiliation(UUID(org_a), UUID(tid)))
+    assert [t["id"] for t in asyncio.run(store.list_all_technicians_for_ops(org_a))] == [tid]
+    assert asyncio.run(store.list_all_technicians_for_ops(org_b)) == []
+    assert asyncio.run(store.get_ops_technician(UUID(tid), org_b)) is None
+
+
+def test_primary_org_fallback_only_when_no_affiliations():
+    # Legacy tech (primary_organization_id, no affiliation rows) stays eligible via the
+    # denormalized cache until backfilled; once any affiliation row exists, the cache
+    # fallback no longer applies and eligibility is authoritative.
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified",
+                           "display_name": "T", "primary_organization_id": org}]
+    assert [t["id"] for t in asyncio.run(store.list_all_technicians_for_ops(org))] == [tid]
+    asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="ended"))
+    assert asyncio.run(store.list_all_technicians_for_ops(org)) == []
+
+
+def test_backfill_creates_active_affiliation_from_primary_org():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified",
+                           "display_name": "T", "primary_organization_id": org}]
+    inserted = asyncio.run(store.backfill_affiliations_from_primary_org())
+    assert inserted == 1
+    assert any(a["organization_id"] == org and a["technician_id"] == tid
+               and a["status"] == "active" and a["dispatch_allowed"] for a in store._affiliations)
+    assert asyncio.run(store.backfill_affiliations_from_primary_org()) == 0  # idempotent
+    assert [t["id"] for t in asyncio.run(store.list_all_technicians_for_ops(org))] == [tid]
+
+
+def test_exclusive_active_affiliation_guard():
+    store = InMemoryStore()
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    asyncio.run(store.add_affiliation(UUID(org_a), UUID(tid), exclusivity="exclusive"))
+    raised = False
+    try:
+        asyncio.run(store.add_affiliation(UUID(org_b), UUID(tid), exclusivity="exclusive"))
+    except ValueError as exc:
+        raised = "exclusive_conflict" in str(exc)
+    assert raised, "second active exclusive affiliation should be rejected"
+    # A non-exclusive second affiliation is allowed.
+    asyncio.run(store.add_affiliation(UUID(org_b), UUID(tid), exclusivity="non_exclusive"))
+
+
+def test_active_job_lock_is_technician_scoped():
+    store = InMemoryStore()
+    tid, jid = str(uuid4()), str(uuid4())
+    store._job_tech = {jid: tid}
+    store._job_status = {jid: "in_progress"}
+    active = asyncio.run(store.get_technician_active_job(UUID(tid)))
+    assert active is not None and active["id"] == jid

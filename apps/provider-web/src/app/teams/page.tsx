@@ -32,23 +32,35 @@ interface Team {
   status: string;
   member_count: number;
 }
+interface Affiliation {
+  status?: string;
+  affiliation_type?: string;
+  exclusivity?: string;
+  dispatch_allowed?: boolean;
+  is_pending_invite?: boolean;
+}
 interface Technician {
   id: string;
   display_name: string;
   email?: string | null;
-  status: string;
+  phone?: string | null;
+  status?: string;
+  global_status?: string;
   vetting_status: string;
   team_ids: string[];
   skills: string[];
+  affiliation?: Affiliation;
+  photo_status?: string;
 }
 interface Workspace { teams: Team[]; technicians: Technician[]; }
 
 export default function TeamsPage() {
   const [workspace, setWorkspace] = useState<Workspace>({ teams: [], technicians: [] });
   const [teamForm, setTeamForm] = useState({ name: "", description: "", parent_team_id: "" });
-  const [techForm, setTechForm] = useState({ display_name: "", email: "", password: "", skills: [] as string[], team_id: "" });
+  const [techForm, setTechForm] = useState({ display_name: "", email: "", phone: "", password: "", skills: [] as string[], team_id: "", affiliation_type: "employee_w2", exclusivity: "non_exclusive", dispatch_allowed: true });
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [exclusivityConflict, setExclusivityConflict] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/workspace", { cache: "no-store" });
@@ -62,15 +74,26 @@ export default function TeamsPage() {
   async function submit(path: string, payload: unknown, done: () => void) {
     setBusy(true);
     setMessage(null);
+    setExclusivityConflict(null);
     try {
       const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || "Unable to save");
+      if (!response.ok) {
+        const detail = String(body.detail || "Unable to save");
+        if (detail === "exclusive_conflict" || detail.includes("exclusive")) {
+          throw new Error("Technician already has an exclusive active affiliation with another provider.");
+        }
+        throw new Error(detail);
+      }
       done();
       await refresh();
       setMessage("Saved.");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save");
+      const errorMessage = cause instanceof Error ? cause.message : "Unable to save";
+      if (errorMessage.toLowerCase().includes("exclusive")) {
+        setExclusivityConflict(errorMessage);
+      }
+      setMessage(errorMessage);
     } finally {
       setBusy(false);
     }
@@ -79,7 +102,11 @@ export default function TeamsPage() {
   const activeTeams = workspace.teams.filter((team) => team.status === "active");
   const verifiedTechnicians = workspace.technicians.filter((technician) => technician.vetting_status === "verified");
   const dispatchReadyTechnicians = workspace.technicians.filter(
-    (technician) => technician.status === "active" && technician.vetting_status === "verified"
+    (technician) => {
+      const affiliation = technician.affiliation;
+      const globalStatus = technician.global_status ?? technician.status ?? "unknown";
+      return globalStatus === "active" && technician.vetting_status === "verified" && affiliation?.dispatch_allowed === true;
+    }
   );
 
   return (
@@ -125,7 +152,43 @@ export default function TeamsPage() {
             <CardContent className="space-y-3">
               <Input placeholder="Full name" value={techForm.display_name} onChange={(event) => setTechForm({ ...techForm, display_name: event.target.value })} />
               <Input placeholder="Email" type="email" value={techForm.email} onChange={(event) => setTechForm({ ...techForm, email: event.target.value })} />
+              <Input placeholder="Phone (optional)" type="tel" value={techForm.phone} onChange={(event) => setTechForm({ ...techForm, phone: event.target.value })} />
               <Input placeholder="Temporary password" type="password" value={techForm.password} onChange={(event) => setTechForm({ ...techForm, password: event.target.value })} />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase text-muted-foreground">Affiliation type</label>
+                  <select className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={techForm.affiliation_type} onChange={(event) => setTechForm({ ...techForm, affiliation_type: event.target.value })}>
+                    <option value="employee_w2">W-2 Employee</option>
+                    <option value="contractor">Contractor</option>
+                    <option value="subcontractor">Subcontractor</option>
+                    <option value="owner_operator">Owner-Operator</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase text-muted-foreground">Exclusivity</label>
+                  <select className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={techForm.exclusivity} onChange={(event) => setTechForm({ ...techForm, exclusivity: event.target.value })}>
+                    <option value="exclusive">Exclusive</option>
+                    <option value="non_exclusive">Non-Exclusive</option>
+                  </select>
+                </div>
+              </div>
+              {exclusivityConflict && (
+                <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">
+                  <span className="font-semibold">Exclusivity conflict:</span> {exclusivityConflict}
+                </div>
+              )}
+              <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2">
+                <input
+                  id="dispatch_allowed"
+                  type="checkbox"
+                  checked={techForm.dispatch_allowed}
+                  onChange={(event) => setTechForm({ ...techForm, dispatch_allowed: event.target.checked })}
+                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                />
+                <label htmlFor="dispatch_allowed" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                  Allow dispatch
+                </label>
+              </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase text-muted-foreground">Skills</label>
                 <SkillSelect selected={techForm.skills} onChange={(skills) => setTechForm({ ...techForm, skills })} />
@@ -134,7 +197,7 @@ export default function TeamsPage() {
                 <option value="">No team yet</option>
                 {workspace.teams.filter((team) => team.status === "active").map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
               </select>
-              <Button disabled={busy || !techForm.display_name || !techForm.email || techForm.password.length < 8} onClick={() => void submit("/api/technicians", { display_name: techForm.display_name, email: techForm.email, password: techForm.password, skills: techForm.skills, team_ids: techForm.team_id ? [techForm.team_id] : [] }, () => setTechForm({ display_name: "", email: "", password: "", skills: [], team_id: "" }))}><UserPlus className="size-4" />Add technician</Button>
+              <Button disabled={busy || !techForm.display_name || (!techForm.email && !techForm.phone) || techForm.password.length < 8} onClick={() => void submit("/api/technicians", { display_name: techForm.display_name, email: techForm.email, phone: techForm.phone, password: techForm.password, skills: techForm.skills, team_ids: techForm.team_id ? [techForm.team_id] : [], affiliation_type: techForm.affiliation_type, exclusivity: techForm.exclusivity, dispatch_allowed: techForm.dispatch_allowed }, () => { setTechForm({ display_name: "", email: "", phone: "", password: "", skills: [], team_id: "", affiliation_type: "employee_w2" as const, exclusivity: "non_exclusive" as const, dispatch_allowed: true }); setExclusivityConflict(null); })}><UserPlus className="size-4" />Add technician</Button>
             </CardContent>
           </Card>
         </div>
@@ -183,7 +246,7 @@ export default function TeamsPage() {
             <CardHeader>
               <div>
                 <CardTitle>Technicians</CardTitle>
-                <CardDescription>Dispatch-ready workforce with vetting status and skills.</CardDescription>
+                <CardDescription>Workforce with affiliation status, vetting, and dispatch readiness.</CardDescription>
               </div>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -192,7 +255,7 @@ export default function TeamsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Technician</TableHead>
-                      <TableHead>Status</TableHead>
+                      <TableHead>Work Status</TableHead>
                       <TableHead>Teams</TableHead>
                       <TableHead>Skills</TableHead>
                     </TableRow>
@@ -200,38 +263,67 @@ export default function TeamsPage() {
                   <TableBody>
                     {workspace.technicians.length === 0 ? (
                       <TableRow><TableCell className="py-8 text-center text-muted-foreground" colSpan={4}>No affiliated technicians.</TableCell></TableRow>
-                    ) : workspace.technicians.map((technician) => (
-                      <TableRow key={technician.id}>
-                        <TableCell>
-                          <div className="font-medium">{technician.display_name}</div>
-                          <div className="mt-1 truncate text-xs text-muted-foreground">{technician.email || technician.id}</div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-1.5">
-                            <Badge variant={technician.status === "active" ? "success" : "neutral"}>{technician.status}</Badge>
-                            <Badge variant={technician.vetting_status === "verified" ? "success" : "warn"}>{technician.vetting_status}</Badge>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-1">
-                            {technician.team_ids.length > 0 ? technician.team_ids.map((teamId) => {
-                              const team = workspace.teams.find((candidate) => candidate.id === teamId);
-                              return <Badge key={teamId} variant="outline">{team?.name ?? "Team"}</Badge>;
-                            }) : <Badge variant="outline" className="text-muted-foreground">No team</Badge>}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {technician.skills.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {technician.skills.slice(0, 3).map((skill) => <Badge key={skill} variant="outline">{skillLabel(skill)}</Badge>)}
-                              {technician.skills.length > 3 ? <Badge variant="outline">+{technician.skills.length - 3}</Badge> : null}
+                    ) : workspace.technicians.map((technician) => {
+                      const affiliation = technician.affiliation;
+                      const isPendingInvite = affiliation?.is_pending_invite || affiliation?.status === "pending_invite";
+                      const globalStatus = technician.global_status ?? technician.status ?? "unknown";
+                      const isDispatchable = affiliation?.dispatch_allowed === true && !isPendingInvite && globalStatus === "active";
+                      return (
+                        <TableRow key={technician.id} className={isPendingInvite ? "opacity-75" : undefined}>
+                          <TableCell>
+                            <div className="flex items-start gap-3">
+                              <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
+                                {technician.display_name.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-medium">{technician.display_name}</div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="truncate text-xs text-muted-foreground">{technician.email || technician.phone || technician.id}</span>
+                                  {isPendingInvite && <Badge variant="outline" className="h-4 text-[10px]">Pending invite</Badge>}
+                                </div>
+                              </div>
                             </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">No skills</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {affiliation ? (
+                                <>
+                                  <Badge variant={affiliation.status === "active" ? "success" : "warn"}>{affiliation.status ?? "unknown"}</Badge>
+                                  <Badge variant="outline" className="text-[10px]">{affiliation.affiliation_type ?? "unknown"}</Badge>
+                                  <Badge variant="outline" className="text-[10px]">{affiliation.exclusivity ?? "unknown"}</Badge>
+                                  <Badge variant={affiliation.dispatch_allowed ? "success" : "neutral"} className="text-[10px]">{affiliation.dispatch_allowed ? "Dispatch allowed" : "Not allowed"}</Badge>
+                                </>
+                              ) : (
+                                <Badge variant="neutral">No affiliation</Badge>
+                              )}
+                              {isDispatchable && <Badge variant="success" className="gap-1"><CheckCircle2 className="size-3" />Dispatch ready</Badge>}
+                              {!isDispatchable && !isPendingInvite && (
+                                <Badge variant="neutral" className="text-[10px] text-muted-foreground">Not dispatchable</Badge>
+                              )}
+                              <Badge variant={technician.vetting_status === "verified" ? "success" : "warn"}>{technician.vetting_status}</Badge>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap gap-1">
+                              {technician.team_ids.length > 0 ? technician.team_ids.map((teamId) => {
+                                const team = workspace.teams.find((candidate) => candidate.id === teamId);
+                                return <Badge key={teamId} variant="outline">{team?.name ?? "Team"}</Badge>;
+                              }) : <Badge variant="outline" className="text-muted-foreground">No team</Badge>}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {technician.skills.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {technician.skills.slice(0, 3).map((skill) => <Badge key={skill} variant="outline">{skillLabel(skill)}</Badge>)}
+                                {technician.skills.length > 3 ? <Badge variant="outline">+{technician.skills.length - 3}</Badge> : null}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">No skills</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
