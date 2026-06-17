@@ -101,7 +101,10 @@ Add fields/datasets to support the new UI (keep existing intact): SLA target/dea
 
 ## 6. Docs to update when done
 - Add a short note to `docs/DESIGN-SYSTEM.md` (or a new `adr/0004`) recording that **consoles use shadcn/ui + Tailwind v4 themed to the same tokens**, while intake/technician remain hand-written CSS. Not drift — intentional per this migration.
-- Update `docs/DISPATCH-CONSOLE-BUILD-PLAN.md` stack note (was "hand-written CSS, no Tailwind/shadcn" for consoles).
+- ~~Update `docs/DISPATCH-CONSOLE-BUILD-PLAN.md` stack note~~ — moot: that build
+  plan was removed 2026-06-17 as delivered (the console shell is built and wired
+  to live `/ops/*` + `/provider/*` data; canonical design lives in
+  `ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`, `adr/0003`, `DESIGN-SYSTEM.md`).
 
 ## 7. Acceptance
 - `npm run typecheck`, `npm run build:ops`, `npm run build:provider` all pass.
