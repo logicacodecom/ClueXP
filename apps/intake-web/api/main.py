@@ -1080,9 +1080,9 @@ async def upload_my_document(
         "application/pdf": "pdf",
     }
     ext = ext_map.get(content_type, "pdf")
-    # Compliance documents are PII → the PRIVATE bucket; never a public URL. The client
-    # gets a short-lived signed download URL (here + via the download endpoint).
-    bucket = storage.PRIVATE_BUCKET
+    # Compliance documents are PII → a dedicated PRIVATE bucket; never a public URL. The
+    # client gets a short-lived signed download URL (here + via the download endpoint).
+    bucket = storage.TECHNICIAN_DOCS_BUCKET
     path = f"technicians/{tid}/documents/{uuid4()}.{ext}"
 
     try:
