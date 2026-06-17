@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { AppFrame, EmptyState, Screen, Section, icons } from "@/components/mobile";
-import { SignOutButton } from "@/components/client-widgets";
+import { AvailabilityToggle, SignOutButton } from "@/components/client-widgets";
 import { ProfileEditor } from "@/components/profile-editor";
 import { PhotoUploadWrapper } from "@/components/photo-upload-wrapper";
 import Link from "next/link";
@@ -13,12 +13,6 @@ interface TechnicianAffiliation {
   affiliation_type?: string;
   exclusivity?: string;
   dispatch_allowed?: boolean;
-}
-
-interface Organization {
-  id: string;
-  name: string;
-  status: string;
 }
 
 async function getSession(): Promise<Record<string, unknown> | null> {
@@ -70,6 +64,22 @@ export default async function ProfilePage() {
             </div>
           </div>
         </div>
+
+        <Section title="Dispatch status">
+          <div className="flex items-center justify-between rounded-xl border border-border bg-card p-3">
+            <div className="flex items-center gap-3">
+              <icons.BellRing className="size-5 text-muted" />
+              <div>
+                <div className="text-sm font-bold">Availability</div>
+                <div className="text-xs text-muted">Show/hide from dispatch</div>
+              </div>
+            </div>
+            <AvailabilityToggle />
+          </div>
+          <p className="mt-3 text-xs text-muted">
+            Go online to receive job offers. You can update GPS below.
+          </p>
+        </Section>
 
         <Section title="Photo">
           <div className="rounded-xl border border-border bg-card p-4">
@@ -165,7 +175,7 @@ export default async function ProfilePage() {
                 <icons.Headphones className="size-5 text-muted" />
                 <span className="font-bold">App settings</span>
               </div>
-              <span className="text-sm text-muted">Language, availability and location</span>
+              <span className="text-sm text-muted">Language, GPS update, device controls</span>
             </Link>
           </div>
         </Section>

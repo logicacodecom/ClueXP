@@ -359,26 +359,23 @@ npm.cmd run typecheck
 
 ### Slice T7 — Settings/Profile Consolidation
 
-Status: `[ ]` small UX cleanup.
+Status: `[✓]` completed — availability control moved to `/profile`, `/settings` now focused on language and GPS update.
 
-Recommended owner: frontend model.
+**Changes:**
+- `/profile` - Now shows availability toggle directly (AvailabilityToggle component) with "Dispatch status" section
+- `/settings` - Removed availability toggle; now focuses on language and location update only
+- Removed duplicate availability state: availability controlled in one place only
+- Clear distinction preserved: Profile shows identity/team/availability, Settings shows device controls
 
-Tasks:
+**Verification:**
+- `npm.cmd run build:tech` — ✓ passed
+- `npx tsc --noEmit --project apps/technician-web/tsconfig.json` — ✓ 0 errors
 
-- [ ] Decide whether online/offline should be controllable directly from
-  `/profile`/Account, not only displayed there.
-- [ ] Keep `/settings` focused on language, GPS update, and device/app controls.
-- [ ] Avoid duplicate or contradictory availability states between Profile and
-  Settings.
-- [ ] Preserve the clear distinction between global technician profile fields
-  and provider affiliation settings.
-
-Minimum verification:
-
-```powershell
-npm.cmd run build:tech
-npm.cmd run typecheck
-```
+Tasks completed:
+- [x] Availability toggle moved to `/profile`/Account screen
+- [x] `/settings` focused on language, GPS update only
+- [x] No duplicate or contradictory availability states
+- [x] Global profile distinct from provider affiliation settings
 
 ### Slice T8 — Voice / Masked Call
 
@@ -553,3 +550,29 @@ Remaining:
 - Ops photo-review screen/list is complete in ops-web.
 - Production still needs migrations `0016`, `0017`, `0018` and
   `python-multipart` deployed.
+
+---
+
+### 2026-06-16 — Qwen: Slice T7 Settings/Profile Consolidation
+
+Status: `[✓]` completed — availability control moved to `/profile`, `/settings` focused on language and GPS update.
+
+**Changes:**
+- `/profile` - Now shows availability toggle directly with "Dispatch status" section
+- `/settings` - Removed availability toggle; now focuses on language and location update only
+- Removed duplicate availability state: availability controlled in one place only
+- Clear distinction preserved: Profile shows identity/team/availability, Settings shows device controls
+
+**Verification:**
+- `npm.cmd run build:tech` — ✓ passed
+- `npx tsc --noEmit --project apps/technician-web/tsconfig.json` — ✓ 0 errors
+
+**Tasks completed:**
+- [x] Availability toggle moved to `/profile`/Account screen
+- [x] `/settings` focused on language, GPS update only
+- [x] No duplicate or contradictory availability states
+- [x] Global profile distinct from provider affiliation settings
+
+**Please review:**
+- `apps/technician-web/src/app/profile/page.tsx` — availability toggle now inline
+- `apps/technician-web/src/app/settings/page.tsx` — simplified to language + GPS only
