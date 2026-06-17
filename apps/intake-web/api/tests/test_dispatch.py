@@ -2482,6 +2482,11 @@ def test_technician_documents_flow_and_self_scope():
     assert asyncio.run(store.get_technician_document(UUID(d["id"]), UUID(t1)))["id"] == d["id"]
     # pending list includes it; review → approved removes it from pending.
     assert any(x["id"] == d["id"] for x in asyncio.run(store.list_pending_technician_documents()))
+    # admin getter resolves by id alone (not self-scoped) for the Ops download path.
+    admin_doc = asyncio.run(store.get_technician_document_admin(UUID(d["id"])))
+    assert admin_doc["storage_bucket"] == "private-verification"
+    assert admin_doc["storage_path"] == "technicians/x/documents/a.pdf"
+    assert asyncio.run(store.get_technician_document_admin(uuid4())) is None
     asyncio.run(store.review_technician_document(UUID(d["id"]), status="approved", reviewer_id=None))
     assert asyncio.run(store.list_pending_technician_documents()) == []
     assert asyncio.run(store.list_technician_documents(UUID(t1)))[0]["status"] == "approved"

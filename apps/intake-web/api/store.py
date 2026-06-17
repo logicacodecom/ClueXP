@@ -288,6 +288,9 @@ class Store:
     async def list_pending_technician_documents(self) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_technician_document_admin(self, document_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def update_technician_location(
         self, technician_id: UUID, *, lat: float, lng: float
     ) -> dict | None:  # pragma: no cover
@@ -1558,6 +1561,12 @@ class InMemoryStore(Store):
 
     async def list_pending_technician_documents(self) -> list[dict]:
         return [dict(d) for d in self.technician_documents if d.get("status") == "pending_review"]
+
+    async def get_technician_document_admin(self, document_id: UUID) -> dict | None:
+        for doc in self.technician_documents:
+            if str(doc["id"]) == str(document_id):
+                return dict(doc)
+        return None
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         return []
@@ -4579,6 +4588,17 @@ class PostgresStore(Store):
             }
             for r in rows
         ]
+
+    async def get_technician_document_admin(self, document_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select storage_bucket, storage_path from technician_documents where id = %s",
+                (str(document_id),),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"storage_bucket": row[0], "storage_path": row[1]}
 
 
 def make_store() -> Store:

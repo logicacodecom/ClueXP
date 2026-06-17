@@ -3,7 +3,16 @@
 import { AppFrame, EmptyState, Screen, Section, icons } from "@/components/mobile";
 import { Upload } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+
+// Required compliance document types a technician can submit. Until a backend
+// policy endpoint exists, this is the canonical list the upload form offers.
+const DOCUMENT_TYPES = [
+  { value: "driver_license", label: "Driver's License" },
+  { value: "proof_of_insurance", label: "Proof of Insurance" },
+  { value: "business_license", label: "Business License" },
+  { value: "locksmith_certification", label: "Locksmith Certification" },
+  { value: "background_check", label: "Background Check" },
+] as const;
 
 type TechnicianDocument = {
   id: string;
@@ -33,7 +42,8 @@ export default function DocumentsPage() {
   const [documents, setDocuments] = useState<TechnicianDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const router = useRouter();
+  const [docType, setDocType] = useState<string>(DOCUMENT_TYPES[0].value);
+  const [viewing, setViewing] = useState<string | null>(null);
 
   useEffect(() => {
     fetchDocuments();
@@ -76,7 +86,7 @@ export default function DocumentsPage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("document_type", "driver_license"); // Simplified - in production, prompt user to select type
+      formData.append("document_type", docType);
 
       const response = await fetch("/api/documents", {
         method: "POST",
@@ -97,6 +107,23 @@ export default function DocumentsPage() {
       alert((error as Error).message || "Failed to upload document");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleView(id: string) {
+    setViewing(id);
+    try {
+      const response = await fetch(`/api/documents/${id}/download`);
+      const data = await response.json();
+      if (!response.ok || !data.download_url) {
+        throw new Error(data.detail || "Could not open document");
+      }
+      window.open(data.download_url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error("View failed:", error);
+      alert((error as Error).message || "Could not open document");
+    } finally {
+      setViewing(null);
     }
   }
 
@@ -162,8 +189,13 @@ export default function DocumentsPage() {
                       >
                         {doc.status === "pending_review" ? "Pending" : doc.status}
                       </div>
-                      <button type="button" className="text-xs font-bold text-primary">
-                        View
+                      <button
+                        type="button"
+                        onClick={() => handleView(doc.id)}
+                        disabled={viewing === doc.id}
+                        className="text-xs font-bold text-primary disabled:opacity-50"
+                      >
+                        {viewing === doc.id ? "Opening…" : "View"}
                       </button>
                     </div>
                   </div>
@@ -175,6 +207,24 @@ export default function DocumentsPage() {
 
         <Section title="Add document">
           <div className="rounded-xl border border-border bg-card p-4">
+            <div className="mb-3">
+              <label htmlFor="docType" className="mb-1 block text-xs font-bold text-muted">
+                Document type
+              </label>
+              <select
+                id="docType"
+                value={docType}
+                onChange={(event) => setDocType(event.target.value)}
+                disabled={uploading}
+                className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm disabled:opacity-50"
+              >
+                {DOCUMENT_TYPES.map((type) => (
+                  <option key={type.value} value={type.value}>
+                    {type.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-card py-8">
               <Upload className={`mb-3 size-8 ${uploading ? "animate-spin text-muted" : "text-muted"}`} />
               <p className="text-sm font-bold text-muted">

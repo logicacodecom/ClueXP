@@ -27,22 +27,38 @@ interface TechnicianPhoto {
   vetting_status?: string | null;
 }
 
+interface TechnicianDocument {
+  id: string;
+  technician_id: string;
+  technician_name?: string | null;
+  document_type: string;
+  document_number?: string | null;
+  status: string;
+  expiration_date?: string | null;
+  uploaded_at?: string | null;
+}
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [photos, setPhotos] = useState<TechnicianPhoto[]>([]);
+  const [techDocs, setTechDocs] = useState<TechnicianDocument[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    const [documentsResponse, photosResponse] = await Promise.all([
+    const [documentsResponse, photosResponse, techDocsResponse] = await Promise.all([
       fetch("/api/documents", { cache: "no-store" }),
-      fetch("/api/technician-photos", { cache: "no-store" })
+      fetch("/api/technician-photos", { cache: "no-store" }),
+      fetch("/api/technician-documents", { cache: "no-store" })
     ]);
     const documentsBody = await documentsResponse.json().catch(() => ({}));
     const photosBody = await photosResponse.json().catch(() => ({}));
+    const techDocsBody = await techDocsResponse.json().catch(() => ({}));
     if (!documentsResponse.ok) throw new Error(documentsBody.detail || "Unable to load documents");
     if (!photosResponse.ok) throw new Error(photosBody.detail || "Unable to load technician photos");
+    if (!techDocsResponse.ok) throw new Error(techDocsBody.detail || "Unable to load technician documents");
     setDocuments(documentsBody.documents ?? []);
     setPhotos(photosBody.photos ?? []);
+    setTechDocs(techDocsBody.documents ?? []);
   }, []);
   useEffect(() => { void refresh().catch((error) => setMessage(error.message)); }, [refresh]);
 
@@ -93,6 +109,37 @@ export default function DocumentsPage() {
     window.open(body.download_url, "_blank", "noopener,noreferrer");
   }
 
+  async function decideTechDoc(doc: TechnicianDocument, status: "approved" | "rejected") {
+    setBusy(`techdoc:${doc.id}`);
+    setMessage(null);
+    try {
+      const rejected_reason =
+        status === "rejected" ? window.prompt("Reason for rejection (optional):") || undefined : undefined;
+      const response = await fetch(`/api/technician-documents/${encodeURIComponent(doc.id)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, rejected_reason })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to review technician document");
+      await refresh();
+      setMessage(status === "approved" ? "Technician document approved." : "Technician document rejected.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to review technician document");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openTechDoc(doc: TechnicianDocument) {
+    setMessage(null);
+    const response = await fetch(`/api/technician-documents/${encodeURIComponent(doc.id)}/download`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to open document");
+      return;
+    }
+    window.open(body.download_url, "_blank", "noopener,noreferrer");
+  }
+
   return (
     <AppFrame>
       <div className="space-y-6">
@@ -120,6 +167,24 @@ export default function DocumentsPage() {
                   <Badge variant="warn">pending photo</Badge>
                   <Button disabled={isBusy} variant="outline" onClick={() => void decidePhoto(photo, "rejected")}><X className="size-4" />Reject</Button>
                   <Button disabled={isBusy} onClick={() => void decidePhoto(photo, "approved")}><Check className="size-4" />Approve</Button>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Pending technician documents</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {techDocs.length === 0 ? <p className="text-sm text-muted-foreground">No technician documents awaiting review.</p> : techDocs.map((doc) => {
+              const isBusy = busy === `techdoc:${doc.id}`;
+              return (
+                <div className="flex flex-wrap items-center gap-4 rounded-md border border-border p-4" key={doc.id}>
+                  <FileCheck2 className="size-5 text-primary" />
+                  <div className="min-w-0 flex-1"><div className="font-medium">{doc.technician_name || doc.technician_id}</div><div className="text-sm text-muted-foreground">{doc.document_type.replaceAll("_", " ")}{doc.document_number ? ` · ${doc.document_number}` : ""}{doc.expiration_date ? ` · expires ${doc.expiration_date}` : ""}</div></div>
+                  <Badge variant="warn">pending review</Badge>
+                  <Button disabled={isBusy} variant="outline" onClick={() => void openTechDoc(doc)}>Open file</Button>
+                  <Button disabled={isBusy} variant="outline" onClick={() => void decideTechDoc(doc, "rejected")}><X className="size-4" />Reject</Button>
+                  <Button disabled={isBusy} onClick={() => void decideTechDoc(doc, "approved")}><Check className="size-4" />Approve</Button>
                 </div>
               );
             })}

@@ -724,6 +724,25 @@ async def review_technician_document(
     return result
 
 
+@app.get("/admin/technician-documents/{document_id}/download")
+async def admin_download_technician_document(
+    document_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Issue a short-lived signed download URL for a technician compliance
+    document so Ops can review the file. Platform-admin only."""
+    require_any_role(session, {"platform_admin"})
+    doc = await store.get_technician_document_admin(document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not storage.storage_configured():
+        raise HTTPException(status_code=503, detail="Document storage is not configured")
+    try:
+        url = await storage.create_signed_download_url(doc["storage_bucket"], doc["storage_path"])
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not issue a download URL")
+    return {"download_url": url}
+
+
 @app.get("/admin/documents/{document_id}/download")
 async def download_document(
     document_id: UUID,
