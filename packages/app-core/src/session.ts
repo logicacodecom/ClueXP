@@ -18,6 +18,7 @@ interface BackendSession {
   roles?: AuthSession["active_role"][];
   active_organization_id?: string | null;
   organization_name?: string | null;
+  organization_status?: string | null;
   technician?: AuthSession["technician"];
 }
 
@@ -37,6 +38,7 @@ export function normalizeAuthSession(raw: BackendSession): AuthSession {
     active_role: activeRole,
     active_organization_id: raw.active_organization_id ?? undefined,
     organization_name: raw.organization_name ?? undefined,
+    organization_status: raw.organization_status ?? undefined,
     surface,
     technician: raw.technician,
     user: {

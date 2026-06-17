@@ -605,6 +605,30 @@ async def reject_organization(
     return result
 
 
+@app.post("/admin/organizations/{organization_id}/suspend")
+async def suspend_organization(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Ops suspends an active company (company-wide; distinct from a provider
+    suspending one technician affiliation)."""
+    require_any_role(session, {"platform_admin"})
+    result = await store.set_organization_status(organization_id, "suspended")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
+@app.post("/admin/organizations/{organization_id}/reactivate")
+async def reactivate_organization(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.set_organization_status(organization_id, "active")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
 @app.get("/admin/registrations")
 async def pending_registrations(
     session: dict[str, Any] = Depends(require_session),

@@ -110,6 +110,7 @@ export interface AuthSession {
   active_organization_id?: string;
   surface: "platform" | "provider" | "technician" | "customer";
   organization_name?: string;
+  organization_status?: string;
   technician?: {
     id: string;
     status: string;

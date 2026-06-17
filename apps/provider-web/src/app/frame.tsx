@@ -10,12 +10,21 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { error, loading, session, signOut } = useSession();
+  // A company that is not yet `active` (pending review / suspended / rejected / closed)
+  // cannot use the console — it is sent to the onboarding/status screen instead.
+  // A non-active company (pending review / suspended / rejected / closed) cannot use
+  // the console — it is sent to /onboarding. /documents stays reachable so a pending
+  // company can upload required docs while it waits for Ops review.
+  const orgGated = Boolean(session?.organization_status && session.organization_status !== "active");
+  const gatedHere = orgGated && pathname !== "/documents";
   useEffect(() => {
-    if (!loading && !session) router.replace("/signin");
-  }, [loading, router, session]);
+    if (loading) return;
+    if (!session) { router.replace("/signin"); return; }
+    if (gatedHere) router.replace("/onboarding");
+  }, [loading, session, gatedHere, router]);
   if (loading) return <div className="min-h-screen bg-background" aria-busy="true" />;
   if (error) return <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">{error}</main>;
-  if (!session) return null;
+  if (!session || gatedHere) return null;
   const mappedNav = defaultNav.map((item) =>
     item.label === "Technicians" ? { ...item, href: "/jobs/JOB-B-2248/assign" } : item
   );

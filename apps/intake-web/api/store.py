@@ -171,6 +171,9 @@ class Store:
     async def approve_organization(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def set_organization_status(self, organization_id: UUID, status: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def reject_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -262,6 +265,20 @@ class Store:
 
     async def review_provider_document(
         self, document_id: UUID, *, status: str, reviewer_id: UUID | None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    # --- technician documents (Slice T6) ---
+    async def list_technician_documents(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_technician_document(
+        self, technician_id: UUID, data: dict
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def review_technician_document(
+        self, document_id: UUID, *, status: str, reviewer_id: UUID | None, reason: str | None = None
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -485,6 +502,8 @@ class InMemoryStore(Store):
         }
         self.reviews: list[dict] = []
         self.login_attempts: list[dict] = []
+        # Technician documents for Slice T6
+        self.technician_documents: list[dict] = []
 
     async def get(self, ticket_id: UUID) -> Ticket | None:
         return self._tickets.get(ticket_id)
@@ -1461,6 +1480,9 @@ class InMemoryStore(Store):
     async def approve_organization(self, organization_id: UUID) -> dict | None:
         return None
 
+    async def set_organization_status(self, organization_id: UUID, status: str) -> dict | None:
+        return None
+
     async def reject_technician(self, technician_id: UUID) -> dict | None:
         return None
 
@@ -1483,6 +1505,44 @@ class InMemoryStore(Store):
             if data.get("phone"):
                 user["phone"] = data["phone"]
         return {"id": tid, **data}
+
+    async def list_technician_documents(self, technician_id: UUID) -> list[dict]:
+        docs = [
+            d for d in self.technician_documents
+            if str(d["technician_id"]) == str(technician_id)
+        ]
+        return sorted(docs, key=lambda x: x["uploaded_at"], reverse=True)
+
+    async def create_technician_document(
+        self, technician_id: UUID, data: dict
+    ) -> dict:
+        doc_id = str(uuid4())
+        doc = {
+            "id": doc_id,
+            "technician_id": str(technician_id),
+            "document_type": data["document_type"],
+            "document_number": data.get("document_number"),
+            "storage_bucket": data.get("storage_bucket", "private-technician-docs"),
+            "storage_path": data.get("storage_path"),
+            "status": "pending_review",
+            "rejected_reason": None,
+            "expiration_date": data.get("expiration_date"),
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "reviewed_at": None,
+        }
+        self.technician_documents.append(doc)
+        return doc
+
+    async def review_technician_document(
+        self, document_id: UUID, *, status: str, reviewer_id: UUID | None, reason: str | None = None
+    ) -> dict | None:
+        for doc in self.technician_documents:
+            if str(doc["id"]) == str(document_id):
+                doc["status"] = status
+                doc["rejected_reason"] = reason
+                doc["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+                return doc
+        return None
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         return []
@@ -2068,7 +2128,7 @@ class PostgresStore(Store):
         )
         roles = [row[0] for row in await cur.fetchall()]
         cur = await conn.execute(
-            "select m.organization_id, o.display_name"
+            "select m.organization_id, o.display_name, o.status"
             " from user_organization_memberships m"
             " left join organizations o on o.id = m.organization_id"
             " where m.user_id = %s and m.status = 'active'"
@@ -2115,6 +2175,7 @@ class PostgresStore(Store):
             "roles": roles,
             "active_organization_id": str(org_row[0]) if org_row else None,
             "organization_name": org_row[1] if org_row else None,
+            "organization_status": org_row[2] if org_row else None,
             "technician": {
                 "id": str(tech_row[0]),
                 "status": tech_row[1],
@@ -3698,12 +3759,13 @@ class PostgresStore(Store):
                 slug = f"{base}-{n}"
             cur = await conn.execute(
                 "insert into organizations (display_name, legal_name, slug, status, subscription_status,"
-                " email, service_area_center_lat, service_area_center_lng, service_area_radius_km,"
+                " email, phone, service_area_center_lat, service_area_center_lng, service_area_radius_km,"
                 " dispatch_mode, organization_type)"
-                " values (%s, %s, %s, 'pending_vetting', 'none', %s, %s, %s, %s,"
+                " values (%s, %s, %s, 'pending_review', 'none', %s, %s, %s, %s, %s,"
                 " 'organization_managed', 'company') returning id",
                 (
                     org_name, data.get("legal_name") or org_name, slug, email,
+                    data.get("phone"),
                     data.get("service_area_center_lat"), data.get("service_area_center_lng"),
                     data.get("service_area_radius_km"),
                 ),
@@ -3775,6 +3837,20 @@ class PostgresStore(Store):
             return None
         return {"id": str(row[0]), "display_name": row[1], "status": row[2]}
 
+    async def set_organization_status(self, organization_id: UUID, status: str) -> dict | None:
+        """Ops transition of a company between active/suspended (and closed). Canonical
+        org lifecycle: pending_review | active | suspended | rejected | closed."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set status = %s, updated_at = now()"
+                " where id = %s returning id, display_name, status",
+                (status, str(organization_id)),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2]}
+
     async def update_user_locale(self, user_id: str, locale: str) -> None:
         async with await self._connect() as conn:
             await conn.execute(
@@ -3833,7 +3909,7 @@ class PostgresStore(Store):
                 " union all"
                 " select 'organization' as kind, o.id, o.display_name, o.email, o.phone,"
                 " o.status, null, o.created_at"
-                " from organizations o where o.status in ('pending', 'pending_vetting')"
+                " from organizations o where o.status in ('pending', 'pending_vetting', 'pending_review')"
                 " order by created_at"
             )
             rows = await cur.fetchall()
@@ -4357,6 +4433,99 @@ class PostgresStore(Store):
             }
             for r in rows
         ]
+
+    async def list_technician_documents(self, technician_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, document_type, document_number, storage_bucket,"
+                " storage_path, status, rejected_reason, expiration_date,"
+                " uploaded_at, reviewed_at"
+                " from technician_documents"
+                " where technician_id = %s"
+                " order by uploaded_at desc",
+                (str(technician_id),),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "document_type": r[1],
+                "document_number": r[2],
+                "storage_bucket": r[3],
+                "storage_path": r[4],
+                "status": r[5],
+                "rejected_reason": r[6],
+                "expiration_date": r[7].isoformat() if r[7] else None,
+                "uploaded_at": r[8].isoformat() if r[8] else None,
+                "reviewed_at": r[9].isoformat() if r[9] else None,
+            }
+            for r in rows
+        ]
+
+    async def create_technician_document(
+        self, technician_id: UUID, data: dict
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_documents"
+                " (technician_id, document_type, document_number, storage_bucket,"
+                " storage_path, status, rejected_reason, expiration_date)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s)"
+                " returning id, uploaded_at, reviewed_at",
+                (
+                    str(technician_id),
+                    data["document_type"],
+                    data.get("document_number"),
+                    data.get("storage_bucket", "private-technician-docs"),
+                    data.get("storage_path"),
+                    "pending_review",
+                    None,
+                    data.get("expiration_date"),
+                ),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]),
+            "technician_id": str(technician_id),
+            "document_type": data["document_type"],
+            "document_number": data.get("document_number"),
+            "storage_bucket": data.get("storage_bucket", "private-technician-docs"),
+            "storage_path": data.get("storage_path"),
+            "status": "pending_review",
+            "rejected_reason": None,
+            "expiration_date": data.get("expiration_date"),
+            "uploaded_at": row[1].isoformat() if row[1] else None,
+            "reviewed_at": row[2].isoformat() if row[2] else None,
+        }
+
+    async def review_technician_document(
+        self, document_id: UUID, *, status: str, reviewer_id: UUID | None, reason: str | None = None
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technician_documents set status = %s,"
+                " rejected_reason = %s, reviewed_at = now()"
+                " where id = %s returning id, technician_id, document_type,"
+                " document_number, storage_bucket, storage_path, expiration_date,"
+                " uploaded_at, reviewed_at",
+                (status, reason, str(document_id)),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]),
+            "technician_id": str(row[1]),
+            "document_type": row[2],
+            "document_number": row[3],
+            "storage_bucket": row[4],
+            "storage_path": row[5],
+            "status": status,
+            "rejected_reason": reason,
+            "expiration_date": row[6].isoformat() if row[6] else None,
+            "uploaded_at": row[7].isoformat() if row[7] else None,
+            "reviewed_at": row[8].isoformat() if row[8] else None,
+        }
 
 
 def make_store() -> Store:

@@ -988,40 +988,37 @@ Before final response, update docs/HANDOFF.md with:
 
 ### Slice G — Provider Company Signup / Onboarding UI
 
-Status: `[ ]` planned. Mostly provider-web UI; most backend already exists.
+Status: `[x]` built (Claude). provider-web signup/onboarding + the backend reconcile.
 
-**Already built (do not rebuild):**
-- Backend: `POST /auth/register/organization` (creates a `pending_review` org +
-  provider_admin), `PATCH /provider/organization`, document upload
-  (`/provider/documents/upload-intent` + `/provider/documents`), `GET /provider/workspace`
-  (returns org `status`), Ops approve/reject (`POST /admin/organizations/{id}/approve|reject`,
-  `GET /admin/registrations`).
-- Frontend: a bare `/signup` (4 fields → `/api/register`), a wired `/documents` page,
-  and ops-web `/approvals` already handling org approve/reject (**Ops approval stays in
-  ops-web** — unchanged).
+**Built this slice:**
+- ✅ <s style="color:#1a7f37">Restyled `/signup` (console-ui): company section (name, legal
+  name, phone) + admin section, pending-approval explanation; on success the
+  `/api/register` BFF now sets the session cookie and routes to `/onboarding`.</s>
+- ✅ <s style="color:#1a7f37">Company profile fields persisted — `register_organization`
+  stores `legal_name`/`phone` and inserts `status='pending_review'`.</s>
+- ✅ <s style="color:#1a7f37">`/onboarding` status screen — shows pending_review / active /
+  suspended / rejected / closed with copy + an "Upload documents" link (pending/
+  suspended) and "Enter console" (active).</s>
+- ✅ <s style="color:#1a7f37">Org-status gating in the provider frame — a non-`active`
+  company is routed to `/onboarding`; `/documents` stays reachable so a pending
+  company can upload docs while it waits. Session now carries `organization_status`.</s>
+- ✅ <s style="color:#1a7f37">Migration `0019_organization_status_enum`: normalizes
+  `organizations.status` to the canonical lifecycle (pending_review | active |
+  suspended | rejected | closed), maps legacy values (pending_vetting→pending_review,
+  verified→active, expired→suspended), sets default `pending_review`, adds the CHECK.</s>
+- ✅ <s style="color:#1a7f37">Ops suspend/reactivate backend: `POST /admin/organizations/{id}/suspend`
+  + `/reactivate` (platform_admin) → `set_organization_status`. Ops approve/reject
+  unchanged in ops-web.</s>
 
-**To build (provider-web UI + one backend reconcile):**
-- [ ] Restyle `/signup` with `@cluexp/console-ui` into a real onboarding entry.
-- [ ] Collect company profile fields at signup (legal name, phone, address/region) —
-  extend the `register/organization` payload + org write, or capture post-signup via
-  `PATCH /provider/organization`.
-- [ ] Explain the **pending Ops approval** step in copy.
-- [ ] After signup, route the provider to an onboarding/documents flow (`/onboarding`
-  or `/documents`) to upload required docs.
-- [ ] Show org **status** state — `pending review / active / rejected / suspended` —
-  from `GET /provider/workspace`, gating the console until approved.
+Company lifecycle stays distinct from the technician lifecycle even where labels overlap.
 
-**Backend reconcile (required):** the org `status` CHECK is currently
-`pending_review | verified | rejected | expired` (migration `0003`). The product
-lifecycle is `pending_review | active | suspended | rejected | closed`. Decide: either
-a migration to the canonical enum (map `verified`→`active`, add `suspended`/`closed`),
-or map `verified`↔`active` in the UI only. Company lifecycle stays distinct from the
-technician lifecycle even where labels overlap.
+Verified: `uv run pytest` → 134 passed/1 skipped; shared typecheck + all four app
+builds pass; alembic offline green through `0019`.
 
-Owner: TBD (provider-web frontend — Qwen's usual lane; backend reconcile is small).
-
-Minimum verification: `npm.cmd run build:provider` + `npm.cmd run typecheck`
-(+ `uv run pytest` if the register payload / status enum changes).
+**Remaining (small):**
+- [ ] Ops **suspend/reactivate UI** in ops-web (backend endpoints exist; needs a control
+  on active companies — the `/approvals` screen only covers pending approve/reject).
+- [ ] Operational: apply `0019` to prod (prod at `0018`) + deploy.
 
 ## Open Follow-Ups
 
