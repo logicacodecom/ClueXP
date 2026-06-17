@@ -28,14 +28,16 @@
 | Notifications | `[ ]` | No production SMS/email/push delivery |
 | CI | `[x]` | Local gate on 2026-06-15: API `104 passed, 1 skipped`; shared typecheck and all four production builds pass |
 
-Current production migration head: **`0018_technician_photo_status`** (applied
-2026-06-16 via the Supabase SQL Editor). `0011`–`0015` plus `0016` (affiliation
-fields + exclusive guard + backfill), `0017` (affiliation history: surrogate PK +
-open-period unique) and `0018` (technician photo status) are live. The workforce
-**code** that uses the new affiliation eligibility/invite/photo behaviour is
-committed locally but **not yet deployed** — prod runs the prior code against the
-(additive, backward-compatible) new schema until it ships, and the deployed image
-must include `python-multipart`.
+Current production migration head: **`0021_tech_doc_defaults`** (applied 2026-06-17).
+`0011`–`0018` plus `0016` (affiliation fields + exclusive guard + backfill), `0017`
+(affiliation history), `0018` (technician photo status), `0019` (organization status
+enum), `0020` (technician documents) and `0021` (technician_documents defaults repair)
+are live. **Deploy note:** the workforce + company-signup + technician-documents
+**code** (affiliation eligibility/invite/photo, org onboarding, the technician-documents
+bug fixes) is committed locally but **not yet deployed** — prod still runs the prior
+code against the (additive, backward-compatible) schema, so the technician-documents
+endpoints stay broken (the `UUID(tid)` 500 + public-URL bugs are code fixes) until the
+deploy ships. The deployed image must include `python-multipart`.
 
 ## 2. Completed Foundation
 
