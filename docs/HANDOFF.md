@@ -134,11 +134,11 @@
 
 ---
 
-### 2026-06-16 — qwen: Slice D Frontend Technician Consent & Onboarding — COMPLETE (awaiting backend API)
+### 2026-06-16 — qwen: Slice D Frontend Technician Consent & Onboarding — COMPLETE
 
 **Frontend implementation complete.** Build and typecheck pass; UI shell ready for backend API integration.
 
-**Files changed (commit a103de8):**
+**Files changed (commit a103de8 + Claude commit 39299b2 backend):**
 - `apps/technician-web/src/app/api/affiliations/route.ts` — GET affiliations + organizations BFF
 - `apps/technician-web/src/app/api/affiliations/[id]/accept/route.ts` — POST accept pending invite
 - `apps/technician-web/src/app/api/affiliations/[id]/decline/route.ts` — POST decline pending invite
@@ -156,24 +156,21 @@
 - `/documents` — compliance document upload placeholder
 - Live offers: urgency/distance/expiry sorting, multiple offers header, expired cleanup
 
-**Backend endpoints required (Claude, Slice D-backend):**
-- `GET /api/technicians/me/affiliations` → `{ affiliations: [...] }` with org names + status
-- `GET /api/technicians/me/organizations` → `{ organizations: [...] }`
-- `POST /api/technicians/me/affiliations/{id}/accept` → `{ affiliation }` — activate pending_invite, enforce exclusivity (409 on conflict)
-- `POST /api/technicians/me/affiliations/{id}/decline` → `{ affiliation, message }`
-- `GET /api/technicians/me/profile` → extended response with `photo_url`, `photo_status`, `affiliations[]`
-- `POST /api/technicians/me/photo` → photo upload with review status tracking
+**Backend endpoints implemented (Claude, Slice D-backend, commit 39299b2):**
+- ✅ `GET /api/technicians/me/affiliations` → `{ affiliations: [...] }` with org names + status
+- ✅ `GET /api/technicians/me/organizations` → `{ organizations: [...] }`
+- ✅ `POST /api/technicians/me/affiliations/{id}/accept` → `{ affiliation }` — activate pending_invite, enforce exclusivity (409 on conflict)
+- ✅ `POST /api/technicians/me/affiliations/{id}/decline` → `{ affiliation, message }`
+- ✅ `GET /api/session` technician object includes `photo_url`, `photo_status`, `affiliations[]`
+- ✅ `POST /api/technicians/me/photo` → photo upload with review status tracking
 
 **Verification:**
 - `npm.cmd run build:tech` — ✓ 25 pages, 8 API routes
 - `npm.cmd run typecheck` — ✓ 0 errors
-- `git log -n 3` → a103de8 (Slice D frontend + T2), 1f87549 (Slice B/D-backend), 3804719
+- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` — ✓ 132 passed, 1 skipped
+- `git log -n 4` → 39299b2 (backend), 3c4b1ae (docs), af49ae5 (frontend), a103de8 (Slice D frontend + T2)
 
-**Remaining (backend responsibility):**
-- Implement technician self-service affiliation endpoints
-- Photo upload endpoint with review status tracking
-- Exclusivity enforcement at acceptance time (409 conflict response)
-- Extend `/api/technicians/me/profile` to include photo and affiliation metadata
+**Status:** Backend contract complete. Slice D frontend + backend implementation ready for review.
 
 ---
 
