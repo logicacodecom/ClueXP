@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -295,6 +295,18 @@ class RecoveryRequest(BaseModel):
 
 class NoteRequest(BaseModel):
     body: str
+
+
+class DeclineAffiliationRequest(BaseModel):
+    decline_reason: str | None = None
+
+
+class AffiliationEndRequest(BaseModel):
+    reason: str | None = None
+
+
+class PhotoReviewRequest(BaseModel):
+    status: str  # approved | rejected
 
 
 class CustomerReviewRequest(BaseModel):
@@ -628,6 +640,24 @@ async def pending_documents(
     return {"documents": await store.list_pending_documents()}
 
 
+@app.patch("/admin/technicians/{technician_id}/photo")
+async def review_technician_photo(
+    technician_id: UUID,
+    payload: PhotoReviewRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Ops/platform approves or rejects a technician's profile photo. Only an
+    `approved` photo is exposed to customers (Slice E). Providers may view a
+    technician's photo but cannot approve/replace it (global profile is Ops-owned)."""
+    require_any_role(session, {"platform_admin"})
+    if payload.status not in {"approved", "rejected"}:
+        raise HTTPException(status_code=422, detail="Photo status must be 'approved' or 'rejected'")
+    result = await store.set_technician_photo_status(technician_id, payload.status)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
 @app.get("/admin/documents/{document_id}/download")
 async def download_document(
     document_id: UUID,
@@ -736,6 +766,40 @@ async def create_provider_technician(
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+@app.post("/provider/technicians/{technician_id}/affiliation/end")
+async def provider_end_affiliation(
+    technician_id: UUID,
+    payload: AffiliationEndRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """End this company's affiliation with one of its technicians (leave/remove).
+    Tenant-scoped: only touches the open affiliation period for the caller's org, so a
+    provider can never end another company's affiliation. Closing the period preserves
+    history and allows a later rejoin."""
+    organization_id = _provider_organization_id(session)
+    reason = (payload.reason if payload else None) or None
+    result = await store.end_affiliation(organization_id, technician_id, reason=reason, status="ended")
+    if result is None:
+        raise HTTPException(status_code=404, detail="No active affiliation with this technician")
+    return result
+
+
+@app.post("/provider/technicians/{technician_id}/affiliation/suspend")
+async def provider_suspend_affiliation(
+    technician_id: UUID,
+    payload: AffiliationEndRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Temporarily suspend this company's affiliation with a technician (dispatch-
+    ineligible, period stays open so it can be reactivated). Tenant-scoped."""
+    organization_id = _provider_organization_id(session)
+    reason = (payload.reason if payload else None) or None
+    result = await store.end_affiliation(organization_id, technician_id, reason=reason, status="suspended")
+    if result is None:
+        raise HTTPException(status_code=404, detail="No active affiliation with this technician")
+    return result
+
+
 @app.post("/provider/documents/upload-intent", response_model=PhotoIntentResponse)
 async def provider_document_upload_intent(
     payload: PhotoIntentRequest,
@@ -814,6 +878,91 @@ async def update_my_availability(
     if result is None:
         raise HTTPException(status_code=409, detail="Technician is not eligible for dispatch")
     return result
+
+
+# --- technician self-service: affiliations + profile photo (Slice D backend) ---
+def _me_technician_id(session: dict[str, Any]) -> UUID:
+    require_any_role(session, {"technician"})
+    technician = session.get("technician")
+    if not technician or not technician.get("id"):
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    return UUID(technician["id"])
+
+
+@app.get("/technicians/me/affiliations")
+async def my_affiliations(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    """The signed-in technician's own provider affiliations (invites + active +
+    history). Self-scoped: only ever this technician's rows."""
+    tid = _me_technician_id(session)
+    return {"affiliations": await store.list_technician_affiliations(tid)}
+
+
+@app.get("/technicians/me/organizations")
+async def my_organizations(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    tid = _me_technician_id(session)
+    return {"organizations": await store.list_technician_organizations(tid)}
+
+
+@app.post("/technicians/me/affiliations/{affiliation_id}/accept")
+async def accept_my_affiliation(
+    affiliation_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Accept a pending invite → activate it, enforcing exclusivity at activation."""
+    tid = _me_technician_id(session)
+    try:
+        result = await store.accept_affiliation(affiliation_id, tid)
+    except ValueError as exc:
+        if str(exc) == "exclusive_conflict":
+            raise HTTPException(
+                status_code=409,
+                detail="You already have an active exclusive affiliation with another provider.",
+            )
+        raise HTTPException(status_code=409, detail="This invite can no longer be accepted.")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    return {"affiliation": result, "message": "Affiliation accepted"}
+
+
+@app.post("/technicians/me/affiliations/{affiliation_id}/decline")
+async def decline_my_affiliation(
+    affiliation_id: UUID, payload: DeclineAffiliationRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    tid = _me_technician_id(session)
+    reason = (payload.decline_reason if payload else None) or None
+    try:
+        result = await store.decline_affiliation(affiliation_id, tid, reason=reason)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="This invite can no longer be declined.")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    return {"affiliation": result, "message": "Affiliation declined"}
+
+
+@app.post("/technicians/me/photo")
+async def upload_my_photo(
+    file: UploadFile = File(...), session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload a profile headshot to the public technician-media bucket and mark it
+    `pending` review. Customer exposure stays gated on approval (Slice E)."""
+    tid = _me_technician_id(session)
+    content = await file.read()
+    try:
+        storage.validate_upload_claim(file.content_type or "", len(content))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not storage.storage_configured():
+        raise HTTPException(status_code=503, detail="Photo storage is not configured")
+    ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(file.content_type or "", "jpg")
+    path = f"technicians/{tid}/headshot-{uuid4()}.{ext}"
+    try:
+        url = await storage.upload_object(storage.PUBLIC_TECH_BUCKET, path, content, file.content_type or "image/jpeg")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Photo upload failed")
+    result = await store.set_technician_photo(tid, url)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return {"photo_url": result["photo_url"], "photo_status": result["photo_status"], "message": "Photo uploaded"}
 
 
 @app.patch("/technicians/me/profile")

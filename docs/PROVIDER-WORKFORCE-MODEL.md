@@ -477,7 +477,8 @@ Completion marking convention:
 Recommended owner: Claude/backend model.
 
 Status: ✅ completed as current increment — commit `90e8524`; reviewed by
-Codex. Remaining history/consent/photo work belongs to Slice B/D/E, not Slice A.
+Codex. Remaining consent/photo work belongs to Slice D/E and backend follow-ups,
+not Slice A.
 
 Primary files:
 
@@ -530,7 +531,10 @@ uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
 
 Recommended owner: Claude or another backend-focused model.
 
-Status: `[ ]` next priority — unblocked by Slice A/C commit `90e8524`.
+Status: ✅ completed as current backend increment — Claude Slice B output
+verified by Codex; migration `0017_affiliation_history.py` adds true
+leave/rejoin affiliation history. Technician-side invite acceptance remains a
+Slice D/backend follow-up.
 
 Primary files:
 
@@ -540,15 +544,26 @@ Primary files:
 
 Tasks:
 
-- [ ] Update `create_affiliated_technician` or equivalent behavior.
-- [ ] For a new email/phone: create global user/technician profile plus provider
-  affiliation.
-- [ ] For an existing technician: create `pending_invite`, not active
-  affiliation.
-- [ ] Enforce exclusivity before creating or activating affiliation.
-- [ ] Preserve leave/rejoin history by creating new affiliation rows when needed.
-- [ ] Return clear 409/422 errors for exclusivity conflicts.
-- [ ] Keep provider mutations tenant-scoped and company-affiliation-only.
+- ✅ <s style="color:#1a7f37">Update `create_affiliated_technician` or
+  equivalent behavior.</s> — existing technician lookup now matches by email or
+  phone.
+- ✅ <s style="color:#1a7f37">For a new email/phone: create global
+  user/technician profile plus provider affiliation.</s> — new technician path
+  remains active affiliation creation.
+- ✅ <s style="color:#1a7f37">For an existing technician: create
+  `pending_invite`, not active affiliation.</s> — existing technician path no
+  longer duplicates or silently activates.
+- ✅ <s style="color:#1a7f37">Enforce exclusivity before creating or activating
+  affiliation.</s> — active exclusivity guard remains; activation enforcement
+  still belongs to the future technician acceptance flow.
+- ✅ <s style="color:#1a7f37">Preserve leave/rejoin history by creating new
+  affiliation rows when needed.</s> — migration `0017_affiliation_history.py`
+  moves to surrogate `id` plus open-period uniqueness.
+- ✅ <s style="color:#1a7f37">Return clear 409/422 errors for exclusivity
+  conflicts.</s> — `exclusive_conflict` remains mapped through provider create.
+- ✅ <s style="color:#1a7f37">Keep provider mutations tenant-scoped and
+  company-affiliation-only.</s> — existing create path remains provider-org
+  scoped; provider suspend/end endpoint is still a separate follow-up.
 
 Minimum verification:
 
@@ -561,8 +576,9 @@ uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
 Recommended owner: Qwen/frontend model.
 
 Status: `[~]` implemented as current UI increment — commit `90e8524`; complete
-for visible affiliation controls/roster states, still waiting on Slice B/D/E for
-existing-technician invite behavior and technician photo fields.
+for visible affiliation controls/roster states, with existing-technician
+`pending_invite` creation now backed by Slice B. Still waiting on technician
+accept/decline, provider-side suspend/end controls, and technician photo fields.
 
 Primary files:
 
@@ -585,13 +601,13 @@ Tasks:
   allowed, and affiliation status controls to the add/invite form.</s> —
   `/teams` form and API contract reconciled.
 - [ ] Make temporary password required only for new login creation. Current UI
-  still requires it because Slice B existing-technician lookup/invite behavior is
-  not implemented yet.
+  still requires it because the provider UI cannot yet distinguish existing
+  technician invite from new login creation before submit.
 - ✅ <s style="color:#1a7f37">Render future affiliation fields defensively when
   backend fields are not present yet.</s> — reviewed by Codex.
 - ✅ <s style="color:#1a7f37">Show pending invites distinctly from active
   dispatchable technicians.</s> — UI supports pending-invite display; backend
-  invite creation remains Slice B.
+  invite creation is now implemented by Slice B.
 - [ ] Show global status/vetting, skills, teams, and technician photo/headshot
   when authorized. Current UI shows global status/vetting/skills/teams; photo
   awaits the profile/photo contract.
@@ -607,25 +623,72 @@ npm.cmd run typecheck
 
 ### Slice D — Technician Consent, Profile, And Photo Onboarding
 
-Recommended owner: Qwen/frontend model or technician-app model after Slice B has
-the invite contract.
+Split into a backend contract (Claude) and the technician-web UI (Qwen/Codex), so
+the two land in separate trees. The frontend BFF routes already exist and call the
+`/technicians/me/*` backend contract below.
 
-Status: `[ ]` blocked on pending-invite API contract for full implementation.
+#### Slice D-backend — technician self-service affiliation + photo API (Claude)
 
-Primary files:
+Status: ✅ <s style="color:#1a7f37">completed</s> — implements the contract the
+technician-web BFF routes (`apps/technician-web/src/app/api/affiliations*`,
+`.../api/photo`) forward to, plus the provider suspend/end and Ops photo-review
+mutations that complete the model. Verified **132 passed, 1 skipped**.
 
-- technician-web profile/onboarding pages
-- technician-web invite acceptance UI
-- API/BFF routes only after backend contract exists
+Technician self-service (signed-in tech via `session["technician"]`; self-scoped):
+
+- `GET /technicians/me/affiliations` → `{ affiliations: [...] }` — the tech's
+  affiliation rows (pending invites + active + ended/history) with org name + status.
+- `GET /technicians/me/organizations` → `{ organizations: [...] }` — orgs the tech is
+  actively affiliated with (BFF degrades gracefully if absent).
+- `POST /technicians/me/affiliations/{id}/accept` → `{ affiliation }` — activate a
+  `pending_invite` (→ `active`), enforcing exclusivity at activation (`409` on
+  `exclusive_conflict`). `{id}` is the affiliation surrogate id (Slice B).
+- `POST /technicians/me/affiliations/{id}/decline` → `{ affiliation }` — body
+  `{ decline_reason? }`; set the `pending_invite` → `rejected` (closes the period).
+- `POST /technicians/me/photo` (multipart `file`) → `{ photo_url, photo_status }` —
+  upload to the public-tech-media bucket, set `profile_photo_url` +
+  `profile_photo_status='pending'` (Slice E gates customer exposure on `approved`).
+  Adds dependency **`python-multipart`**.
+
+Provider workforce mutations (tenant-scoped to the caller's org):
+
+- `POST /provider/technicians/{id}/affiliation/end` → ends the company's affiliation
+  (`status='ended'` + closes the period → history preserved, rejoin allowed).
+- `POST /provider/technicians/{id}/affiliation/suspend` → suspends it (dispatch-
+  ineligible, period stays open so it can be reactivated). Both 404 for a technician
+  the caller's org is not affiliated with (no cross-tenant mutation).
+
+Ops/platform photo review (`platform_admin`; global profile is Ops-owned):
+
+- `PATCH /admin/technicians/{id}/photo` body `{ status: approved|rejected }` →
+  sets `profile_photo_status`. Only `approved` is ever customer-visible (Slice E).
+
+Tasks:
+
+- ✅ <s style="color:#1a7f37">Store + endpoints for the contract above (DB + in-memory).</s>
+- ✅ <s style="color:#1a7f37">Enforce exclusivity at **activation** (accept), not just create.</s>
+- ✅ <s style="color:#1a7f37">Keep self-scoped; never expose another provider's private data across affiliations.</s>
+- ✅ <s style="color:#1a7f37">Provider suspend/end affiliation (tenant-scoped) + Ops photo approve/reject.</s>
+- ✅ <s style="color:#1a7f37">Backend tests: accept activates + exclusivity 409; decline → rejected;
+  self-scope isolation; photo pending→approved exposure; suspend/end + tenant scope.</s>
+
+Minimum verification:
+
+```powershell
+uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
+```
+
+#### Slice D-frontend — technician onboarding/consent/photo UI (Qwen/Codex)
+
+Status: `[~]` in progress — BFF routes exist (accept/decline/photo) and degrade
+honestly while the backend contract is absent.
 
 Tasks:
 
 - [ ] Show provider affiliation invites to the technician.
-- [ ] Let technician accept or decline `pending_invite` affiliations.
-- [ ] Add profile photo/headshot upload UX.
-- [ ] Show photo review status: pending, approved, rejected/replacement needed.
+- [ ] Accept/decline `pending_invite` from the technician app.
+- [ ] Profile photo/headshot upload UX + review status (pending/approved/rejected).
 - [ ] Keep global technician profile separate from provider affiliation settings.
-- [ ] Do not expose provider-private data across affiliations.
 
 Minimum verification:
 
@@ -669,7 +732,8 @@ npm.cmd run typecheck
 
 Recommended owner: Codex/reviewer.
 
-Status: `[~]` active — Codex owns coordination/review while Slice B/D/E continue.
+Status: `[~]` active — Codex owns coordination/review while Slice D/E and the
+remaining backend invite/profile-photo follow-ups continue.
 
 Primary files:
 
@@ -700,8 +764,9 @@ Acceptance checklist:
   fixes committed in `90e8524`.
 - [ ] Backend/frontend contract reconciled for affiliation status,
   `affiliation_type`, `exclusivity`, `dispatch_allowed`, profile photo fields,
-  and pending invite behavior. Affiliation fields are reconciled; profile photo
-  and existing-technician pending-invite behavior remain open.
+  and pending invite behavior. Affiliation fields and provider-created
+  existing-technician `pending_invite` behavior are reconciled; technician-side
+  accept/decline and profile photo fields remain open.
 - ✅ <s style="color:#1a7f37">Targeted tests/builds independently re-run where
   needed.</s> — `uv run pytest api/tests/test_dispatch.py -q`,
   `npm.cmd run build:provider`, `npm.cmd run typecheck`, and
@@ -911,10 +976,22 @@ Before final response, update docs/HANDOFF.md with:
 
 ## Open Follow-Ups
 
-- Full Ops-managed skill catalog.
+Backend for the model is complete (Slices A, B, C, D-backend, E + the provider
+suspend/end and Ops photo-review mutations). Remaining items are **frontend** or
+**deferred/operational**, not model-backend:
+
+Frontend (Qwen/Codex):
+- Slice D-frontend: technician invite list + accept/decline UI, photo upload UX,
+  photo review-status display.
+- Provider `/teams`: temporary-password UI, suspend/end + rejoin/history controls,
+  Ops photo approve/reject screen.
+
+Operational:
+- Apply migrations `0016`, `0017`, `0018` to production (none applied; prod at `0015`)
+  and run/verify the backfill; ensure `python-multipart` is in the deployed image.
+
+Deferred (post-MVP):
+- Full Ops-managed skill catalog (currently a frontend fixed list).
 - Provider subscription limits for max technicians/seats.
-- Global technician suspension UI.
-- Provider affiliation invite acceptance flow.
-- Technician profile photo upload and Ops/platform review flow.
-- Company document approval and suspension reason taxonomy.
-- Provider workforce history screen or drawer.
+- Company document approval and suspension-reason taxonomy.
+- Provider workforce history screen or drawer; invite-acceptance notifications.

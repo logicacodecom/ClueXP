@@ -17,6 +17,7 @@ SUPABASE_SERVICE_KEY = (
 )
 
 PRIVATE_BUCKET = "private-verification"
+PUBLIC_TECH_BUCKET = "public-tech-media"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 UPLOAD_TTL_SECONDS = 60
 DOWNLOAD_TTL_SECONDS = 300
@@ -77,6 +78,41 @@ async def create_signed_download_url(bucket: str, path: str) -> str:
     if not raw_url:
         raise RuntimeError("Supabase did not return a signed download URL")
     return _absolute_storage_url(str(raw_url))
+
+
+async def upload_object(bucket: str, path: str, content: bytes, content_type: str) -> str:
+    """Upload raw bytes to a Supabase Storage bucket (server-side) and return the
+    object's public URL. Used for technician profile photos in the public bucket."""
+    await asyncio.to_thread(_storage_upload, bucket, path, content, content_type)
+    return public_object_url(bucket, path)
+
+
+def public_object_url(bucket: str, path: str) -> str:
+    quoted = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))
+    return f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{quoted}"
+
+
+def _storage_upload(bucket: str, path: str, content: bytes, content_type: str) -> None:
+    if not storage_configured():
+        raise RuntimeError("Supabase Storage is not configured")
+    quoted_path = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/storage/v1/object/{bucket}/{quoted_path}",
+        data=content,
+        method="POST",
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "content-type": content_type,
+            "x-upsert": "true",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise RuntimeError(f"Supabase Storage error {exc.code}: {detail}") from exc
 
 
 def _storage_json(method: str, endpoint: str, payload: dict) -> dict:

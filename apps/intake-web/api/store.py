@@ -225,6 +225,33 @@ class Store:
     async def backfill_affiliations_from_primary_org(self) -> int:  # pragma: no cover
         raise NotImplementedError
 
+    async def end_affiliation(
+        self, organization_id: UUID, technician_id: UUID, *,
+        reason: str | None = None, status: str = "ended",
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    # --- technician self-service (Slice D backend) ---
+    async def list_technician_affiliations(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_organizations(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def accept_affiliation(self, affiliation_id: UUID, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def decline_affiliation(
+        self, affiliation_id: UUID, technician_id: UUID, *, reason: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def set_technician_photo(self, technician_id: UUID, url: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def set_technician_photo_status(self, technician_id: UUID, status: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def create_provider_document(
         self, organization_id: UUID, data: dict
     ) -> dict:  # pragma: no cover
@@ -530,10 +557,43 @@ class InMemoryStore(Store):
         return None
 
     async def get_provider_workspace(self, organization_id: UUID) -> dict | None:
+        oid = str(organization_id)
+        techs = getattr(self, "_technicians", [])
+        affs = getattr(self, "_affiliations", [])
+        open_rows = [
+            a for a in affs
+            if str(a.get("organization_id")) == oid and a.get("ended_at") is None
+        ]
+        technicians = []
+        for aff in open_rows:
+            tech = next((t for t in techs if str(t.get("id")) == str(aff.get("technician_id"))), None)
+            if tech is None:
+                continue
+            technicians.append({
+                "id": str(tech.get("id")),
+                "display_name": tech.get("display_name"),
+                "email": tech.get("email"),
+                "phone": tech.get("phone"),
+                "status": tech.get("status", "active"),
+                "global_status": tech.get("status", "active"),
+                "vetting_status": tech.get("vetting_status"),
+                "skills": tech.get("skills") or [],
+                "provider_type": tech.get("provider_type"),
+                "is_available": tech.get("is_available"),
+                "affiliation": {
+                    "status": aff.get("status"),
+                    "affiliation_type": aff.get("affiliation_type"),
+                    "exclusivity": aff.get("exclusivity"),
+                    "dispatch_allowed": bool(aff.get("dispatch_allowed")),
+                    "ended_at": aff.get("ended_at"),
+                    "is_pending_invite": aff.get("status") == "pending_invite",
+                },
+                "team_ids": [],
+            })
         return {
             "organization": {"id": str(organization_id), "display_name": "Local provider"},
             "teams": [],
-            "technicians": [],
+            "technicians": technicians,
             "documents": [],
         }
 
@@ -547,8 +607,40 @@ class InMemoryStore(Store):
         return {"id": str(team_id), "organization_id": str(organization_id), **data}
 
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
-        tid = str(uuid4())
         techs = self._technicians = getattr(self, "_technicians", [])
+        email = (data.get("email") or "").strip().lower() or None
+        phone = (data.get("phone") or "").strip() or None
+        # Existing global technician (by email/phone) → attach as a PENDING INVITE,
+        # never a duplicate profile or a silent activation (consent required).
+        existing = next(
+            (t for t in techs
+             if (email and str(t.get("email") or "").strip().lower() == email)
+             or (phone and str(t.get("phone") or "").strip() == phone)),
+            None,
+        )
+        if existing is not None:
+            await self.add_affiliation(
+                organization_id, existing["id"], status="pending_invite",
+                affiliation_type=data.get("affiliation_type") or "unknown",
+                exclusivity=data.get("exclusivity") or "unknown",
+                dispatch_allowed=bool(data.get("dispatch_allowed", True)),
+            )
+            return {
+                "id": str(existing["id"]),
+                "organization_id": str(organization_id),
+                "display_name": existing.get("display_name"),
+                "existing": True,
+                "status": existing.get("status", "active"),
+                "global_status": existing.get("status", "active"),
+                "affiliation": {
+                    "status": "pending_invite",
+                    "affiliation_type": data.get("affiliation_type") or "unknown",
+                    "exclusivity": data.get("exclusivity") or "unknown",
+                    "dispatch_allowed": bool(data.get("dispatch_allowed", True)),
+                    "is_pending_invite": True,
+                },
+            }
+        tid = str(uuid4())
         techs.append({
             "id": tid,
             "display_name": data.get("display_name"),
@@ -785,13 +877,15 @@ class InMemoryStore(Store):
         if status == "active" and exclusivity == "exclusive":
             for a in affs:
                 if (str(a.get("technician_id")) == tid and a.get("status") == "active"
-                        and a.get("exclusivity") == "exclusive"
+                        and a.get("exclusivity") == "exclusive" and a.get("ended_at") is None
                         and str(a.get("organization_id")) != oid):
                     raise ValueError("exclusive_conflict")
+        # Upsert the OPEN period for (org, tech); if none is open (e.g. the prior
+        # period was ended), start a NEW period row so history is preserved.
         row = next((a for a in affs if str(a.get("organization_id")) == oid
-                    and str(a.get("technician_id")) == tid), None)
+                    and str(a.get("technician_id")) == tid and a.get("ended_at") is None), None)
         new = row is None
-        row = row or {"organization_id": oid, "technician_id": tid}
+        row = row or {"id": str(uuid4()), "organization_id": oid, "technician_id": tid}
         row.update({
             "status": status, "affiliation_type": affiliation_type,
             "exclusivity": exclusivity, "dispatch_allowed": dispatch_allowed,
@@ -800,6 +894,122 @@ class InMemoryStore(Store):
         if new:
             affs.append(row)
         return dict(row)
+
+    async def end_affiliation(
+        self, organization_id: UUID, technician_id: UUID, *,
+        reason: str | None = None, status: str = "ended",
+    ) -> dict | None:
+        """Close the OPEN affiliation period for (org, tech). `status='ended'` sets
+        `ended_at` (so a later rejoin starts a new period); `status='suspended'` keeps
+        the period open but dispatch-ineligible. Returns None if no open period."""
+        affs = getattr(self, "_affiliations", [])
+        oid, tid = str(organization_id), str(technician_id)
+        row = next((a for a in affs if str(a.get("organization_id")) == oid
+                    and str(a.get("technician_id")) == tid and a.get("ended_at") is None), None)
+        if row is None:
+            return None
+        row["status"] = status
+        if status == "ended":
+            row["ended_at"] = datetime.now(timezone.utc).isoformat()
+            row["ended_reason"] = reason
+        else:
+            row["suspension_reason"] = reason
+        return dict(row)
+
+    # --- technician self-service (Slice D backend) ---
+    def _org_names(self) -> dict:
+        return {str(o.get("id")): o.get("display_name") for o in getattr(self, "_organizations", [])}
+
+    def _activation_exclusive_conflict(self, tid: str, target_org: str, target_exclusivity: str) -> bool:
+        """Activation rule: a technician with an active EXCLUSIVE affiliation elsewhere
+        gets no new active affiliation, and an exclusive affiliation cannot activate
+        while any other active affiliation exists."""
+        actives = [
+            a for a in getattr(self, "_affiliations", [])
+            if str(a.get("technician_id")) == str(tid) and a.get("status") == "active"
+            and a.get("ended_at") is None and str(a.get("organization_id")) != str(target_org)
+        ]
+        if any(a.get("exclusivity") == "exclusive" for a in actives):
+            return True
+        if target_exclusivity == "exclusive" and actives:
+            return True
+        return False
+
+    async def list_technician_affiliations(self, technician_id: UUID) -> list[dict]:
+        tid = str(technician_id)
+        names = self._org_names()
+        return [
+            {
+                "id": a.get("id"), "organization_id": a.get("organization_id"),
+                "organization_name": names.get(str(a.get("organization_id"))),
+                "status": a.get("status"), "affiliation_type": a.get("affiliation_type"),
+                "exclusivity": a.get("exclusivity"), "dispatch_allowed": a.get("dispatch_allowed"),
+                "ended_at": a.get("ended_at"),
+            }
+            for a in getattr(self, "_affiliations", []) if str(a.get("technician_id")) == tid
+        ]
+
+    async def list_technician_organizations(self, technician_id: UUID) -> list[dict]:
+        tid, names, seen = str(technician_id), self._org_names(), {}
+        for a in getattr(self, "_affiliations", []):
+            if (str(a.get("technician_id")) == tid and a.get("status") == "active"
+                    and a.get("ended_at") is None):
+                oid = str(a.get("organization_id"))
+                seen[oid] = {"id": oid, "name": names.get(oid)}
+        return list(seen.values())
+
+    def _find_self_affiliation(self, affiliation_id: UUID, technician_id: UUID) -> dict | None:
+        return next(
+            (a for a in getattr(self, "_affiliations", [])
+             if str(a.get("id")) == str(affiliation_id)
+             and str(a.get("technician_id")) == str(technician_id)),
+            None,
+        )
+
+    async def accept_affiliation(self, affiliation_id: UUID, technician_id: UUID) -> dict | None:
+        aff = self._find_self_affiliation(affiliation_id, technician_id)
+        if aff is None:
+            return None
+        if aff.get("status") != "pending_invite":
+            raise ValueError("not_pending")
+        if self._activation_exclusive_conflict(
+            str(technician_id), aff.get("organization_id"), aff.get("exclusivity")
+        ):
+            raise ValueError("exclusive_conflict")
+        aff["status"] = "active"
+        aff["ended_at"] = None
+        aff["ended_reason"] = None
+        return dict(aff)
+
+    async def decline_affiliation(
+        self, affiliation_id: UUID, technician_id: UUID, *, reason: str | None = None
+    ) -> dict | None:
+        aff = self._find_self_affiliation(affiliation_id, technician_id)
+        if aff is None:
+            return None
+        if aff.get("status") != "pending_invite":
+            raise ValueError("not_pending")
+        aff["status"] = "rejected"
+        aff["ended_at"] = datetime.now(timezone.utc).isoformat()  # close the period → re-invite allowed
+        aff["ended_reason"] = reason
+        return dict(aff)
+
+    async def set_technician_photo(self, technician_id: UUID, url: str) -> dict | None:
+        tid = str(technician_id)
+        tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == tid), None)
+        if tech is None:
+            return None
+        tech["profile_photo_url"] = url
+        tech["profile_photo_status"] = "pending"
+        return {"photo_url": url, "photo_status": "pending"}
+
+    async def set_technician_photo_status(self, technician_id: UUID, status: str) -> dict | None:
+        tid = str(technician_id)
+        tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == tid), None)
+        if tech is None:
+            return None
+        tech["profile_photo_status"] = status
+        return {"id": tid, "photo_status": status, "photo_url": tech.get("profile_photo_url")}
 
     async def backfill_affiliations_from_primary_org(self) -> int:
         """Active affiliation row for every technician with a primary_organization_id
@@ -857,9 +1067,16 @@ class InMemoryStore(Store):
         )
         assignment = None
         if tech_id:
+            tech = next((t for t in getattr(self, "_technicians", [])
+                         if str(t.get("id")) == str(tech_id)), None)
+            # Photo is customer-visible only when approved (else UI shows the fallback).
+            photo_url = (tech.get("profile_photo_url")
+                         if tech and tech.get("profile_photo_status") == "approved" else None)
             assignment = {
                 "customer_owner": None, "fulfillment_type": "independent_technician",
-                "provider_company": None, "technician_display_name": "Technician",
+                "provider_company": None,
+                "technician_display_name": (tech.get("display_name") if tech else None) or "Technician",
+                "technician_photo_url": photo_url,
                 "role": "Verified Technician", "rating": None,
                 "eta_min": None, "eta_max": None, "eta_is_estimate": True,
                 "assigned_at": None, "job_status": status or "assigned",
@@ -1583,7 +1800,8 @@ class PostgresStore(Store):
                     "insert into organization_technicians"
                     " (organization_id, technician_id, role, status, activated_at)"
                     " values (%s, %s, 'affiliate_technician', 'active', now())"
-                    " on conflict (organization_id, technician_id) do update set status = 'active'",
+                    " on conflict (organization_id, technician_id) where ended_at is null"
+                    " do update set status = 'active'",
                     (provider_org_id, technician_id),
                 )
                 if team_id:
@@ -2264,14 +2482,20 @@ class PostgresStore(Store):
     ) -> dict | None:
         cur = await conn.execute(
             "select display_name, rating, provider_type, current_lat, current_lng,"
-            " service_area_center_lat, service_area_center_lng, location_updated_at"
+            " service_area_center_lat, service_area_center_lng, location_updated_at,"
+            " profile_photo_url, profile_photo_status"
             " from technicians where id = %s",
             (str(tech_id),),
         )
         t = await cur.fetchone()
         if not t:
             return None
-        display_name, rating, _provider_type, cur_lat, cur_lng, sa_lat, sa_lng, loc_at = t
+        (display_name, rating, _provider_type, cur_lat, cur_lng, sa_lat, sa_lng, loc_at,
+         photo_url, photo_status) = t
+        # Customer-safe identity: expose the photo only when it is approved; otherwise
+        # the UI shows a "Photo pending verification" fallback. Only ever reached after
+        # assignment (this method runs for a matched job), so no pre-assignment leak.
+        technician_photo_url = photo_url if (photo_status == "approved" and photo_url) else None
 
         async def _org_name(oid):
             if not oid:
@@ -2323,6 +2547,7 @@ class PostgresStore(Store):
             "fulfillment_type": fulfillment_type,
             "provider_company": provider_company,
             "technician_display_name": display_name,
+            "technician_photo_url": technician_photo_url,
             "role": "Verified Technician",
             "rating": float(rating) if rating is not None else None,
             "eta_min": eta_min,
@@ -2647,10 +2872,11 @@ class PostgresStore(Store):
                     "  exclusivity, dispatch_allowed, starts_at, activated_at)"
                     " values (%s, %s, 'affiliate_technician', %s, %s, %s, %s, now(),"
                     "  case when %s = 'active' then now() else null end)"
-                    " on conflict (organization_id, technician_id) do update set"
+                    " on conflict (organization_id, technician_id) where ended_at is null"
+                    " do update set"
                     "  status = excluded.status, affiliation_type = excluded.affiliation_type,"
                     "  exclusivity = excluded.exclusivity, dispatch_allowed = excluded.dispatch_allowed,"
-                    "  ended_at = null, ended_reason = null, updated_at = now()",
+                    "  ended_reason = null, updated_at = now()",
                     (str(organization_id), str(technician_id), status, affiliation_type,
                      exclusivity, dispatch_allowed, status),
                 )
@@ -2676,10 +2902,153 @@ class PostgresStore(Store):
                 " select t.primary_organization_id, t.id, 'affiliate_technician', 'active', true,"
                 "  'unknown', 'unknown', now(), now()"
                 " from technicians t where t.primary_organization_id is not null"
-                " on conflict (organization_id, technician_id) do nothing",
+                " on conflict (organization_id, technician_id) where ended_at is null do nothing",
                 (),
             )
             return cur.rowcount or 0
+
+    async def end_affiliation(
+        self, organization_id: UUID, technician_id: UUID, *,
+        reason: str | None = None, status: str = "ended",
+    ) -> dict | None:
+        """Close the technician's OPEN affiliation period with this org (leave/remove
+        or suspend). `status='ended'` sets `ended_at` so a later rejoin starts a new
+        period; `status='suspended'` keeps the period open but dispatch-ineligible."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organization_technicians set status = %s,"
+                "  ended_at = case when %s = 'ended' then now() else ended_at end,"
+                "  ended_reason = case when %s = 'ended' then %s else ended_reason end,"
+                "  suspension_reason = case when %s = 'suspended' then %s else suspension_reason end,"
+                "  updated_at = now()"
+                " where organization_id = %s and technician_id = %s and ended_at is null"
+                " returning id, status, ended_at",
+                (status, status, status, reason, status, reason,
+                 str(organization_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "status": row[1], "ended_at": row[2].isoformat() if row[2] else None}
+
+    # --- technician self-service (Slice D backend) ---
+    async def list_technician_affiliations(self, technician_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select ot.id, ot.organization_id, o.display_name, ot.status,"
+                " ot.affiliation_type, ot.exclusivity, ot.dispatch_allowed, ot.ended_at"
+                " from organization_technicians ot"
+                " join organizations o on o.id = ot.organization_id"
+                " where ot.technician_id = %s"
+                " order by ot.ended_at is null desc, ot.starts_at desc",
+                (str(technician_id),),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "organization_id": str(r[1]), "organization_name": r[2],
+                "status": r[3], "affiliation_type": r[4], "exclusivity": r[5],
+                "dispatch_allowed": r[6], "ended_at": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+        ]
+
+    async def list_technician_organizations(self, technician_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select distinct o.id, o.display_name from organization_technicians ot"
+                " join organizations o on o.id = ot.organization_id"
+                " where ot.technician_id = %s and ot.status = 'active' and ot.ended_at is null"
+                " order by o.display_name",
+                (str(technician_id),),
+            )
+            rows = await cur.fetchall()
+        return [{"id": str(r[0]), "name": r[1]} for r in rows]
+
+    async def accept_affiliation(self, affiliation_id: UUID, technician_id: UUID) -> dict | None:
+        """Activate a self-owned pending invite, enforcing exclusivity at activation:
+        no new active affiliation while another provider holds an active exclusive one,
+        and an exclusive affiliation cannot activate while other actives exist."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select organization_id, status, exclusivity from organization_technicians"
+                " where id = %s and technician_id = %s",
+                (str(affiliation_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            org_id, status, exclusivity = row
+            if status != "pending_invite":
+                raise ValueError("not_pending")
+            cur = await conn.execute(
+                "select count(*) filter (where exclusivity = 'exclusive'), count(*)"
+                " from organization_technicians"
+                " where technician_id = %s and status = 'active' and ended_at is null"
+                "   and organization_id <> %s",
+                (str(technician_id), str(org_id)),
+            )
+            other_exclusive, other_active = await cur.fetchone()
+            if other_exclusive or (exclusivity == "exclusive" and other_active):
+                raise ValueError("exclusive_conflict")
+            try:
+                cur = await conn.execute(
+                    "update organization_technicians set status = 'active', activated_at = now(),"
+                    "  ended_at = null, ended_reason = null, updated_at = now()"
+                    " where id = %s and technician_id = %s"
+                    " returning id, organization_id, status, affiliation_type, exclusivity, dispatch_allowed",
+                    (str(affiliation_id), str(technician_id)),
+                )
+                r = await cur.fetchone()
+            except Exception as exc:
+                if "uq_org_tech_active_exclusive" in str(exc):
+                    raise ValueError("exclusive_conflict") from exc
+                raise
+        return {
+            "id": str(r[0]), "organization_id": str(r[1]), "status": r[2],
+            "affiliation_type": r[3], "exclusivity": r[4], "dispatch_allowed": r[5],
+        }
+
+    async def decline_affiliation(
+        self, affiliation_id: UUID, technician_id: UUID, *, reason: str | None = None
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organization_technicians set status = 'rejected', ended_at = now(),"
+                "  ended_reason = %s, updated_at = now()"
+                " where id = %s and technician_id = %s and status = 'pending_invite'"
+                " returning id, organization_id, status, ended_at",
+                (reason, str(affiliation_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "organization_id": str(row[1]), "status": row[2],
+                "ended_at": row[3].isoformat() if row[3] else None}
+
+    async def set_technician_photo(self, technician_id: UUID, url: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set profile_photo_url = %s, profile_photo_status = 'pending'"
+                " where id = %s returning id",
+                (url, str(technician_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"photo_url": url, "photo_status": "pending"}
+
+    async def set_technician_photo_status(self, technician_id: UUID, status: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set profile_photo_status = %s where id = %s"
+                " returning id, profile_photo_url, profile_photo_status",
+                (status, str(technician_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "photo_url": row[1], "photo_status": row[2]}
 
     async def create_arrival_pin(
         self, job_id: UUID, technician_id: UUID, pin_hash: str,
@@ -3511,6 +3880,7 @@ class PostgresStore(Store):
                 " join organization_technicians ot on ot.technician_id = t.id"
                 " left join organization_team_technicians ott on ott.technician_id = t.id"
                 " where ot.organization_id = %s"
+                " and ot.ended_at is null"
                 " group by t.id, ot.status, ot.affiliation_type, ot.exclusivity,"
                 " ot.dispatch_allowed, ot.ended_at order by t.display_name",
                 (str(organization_id),),
@@ -3686,6 +4056,49 @@ class PostgresStore(Store):
         phone = (data.get("phone") or "").strip() or None
         try:
             async with await self._connect() as conn:
+                # Existing global technician (by email or phone) → attach as a PENDING
+                # INVITE, never a duplicate profile or a silent activation. Consent is
+                # required to activate (technician-side acceptance flow is follow-up).
+                existing_tid = None
+                if email:
+                    cur = await conn.execute(
+                        "select t.id from technicians t join users u on u.id = t.id"
+                        " where lower(u.email) = lower(%s)", (email,))
+                    r = await cur.fetchone()
+                    existing_tid = r[0] if r else None
+                if existing_tid is None and phone:
+                    cur = await conn.execute("select id from technicians where phone = %s", (phone,))
+                    r = await cur.fetchone()
+                    existing_tid = r[0] if r else None
+                if existing_tid is not None:
+                    await conn.execute(
+                        "insert into organization_technicians"
+                        " (organization_id, technician_id, role, status,"
+                        "  affiliation_type, exclusivity, dispatch_allowed, starts_at)"
+                        " values (%s, %s, 'affiliate_technician', 'pending_invite', %s, %s, %s, now())"
+                        " on conflict (organization_id, technician_id) where ended_at is null"
+                        " do update set status = 'pending_invite', updated_at = now()",
+                        (str(organization_id), existing_tid,
+                         data.get("affiliation_type") or "unknown",
+                         data.get("exclusivity") or "unknown",
+                         bool(data.get("dispatch_allowed", True))))
+                    await conn.execute(
+                        "insert into user_organization_memberships (user_id, organization_id, role, status)"
+                        " values (%s, %s, 'technician', 'pending') on conflict (user_id, organization_id) do nothing",
+                        (existing_tid, str(organization_id)))
+                    return {
+                        "id": str(existing_tid), "display_name": data.get("display_name"),
+                        "email": email, "phone": phone, "existing": True, "global_status": "existing",
+                        "affiliation": {
+                            "status": "pending_invite",
+                            "affiliation_type": data.get("affiliation_type") or "unknown",
+                            "exclusivity": data.get("exclusivity") or "unknown",
+                            "dispatch_allowed": bool(data.get("dispatch_allowed", True)),
+                            "is_pending_invite": True,
+                        },
+                        "team_ids": data.get("team_ids") or [],
+                    }
+                # Email belongs to a non-technician user → cannot create or attach.
                 if email:
                     cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
                     if await cur.fetchone():

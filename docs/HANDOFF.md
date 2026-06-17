@@ -54,6 +54,48 @@
 
 ## Open threads
 
+### 2026-06-16 — qwen: Slice T3 Technician App Frontend Prep — COMPLETE
+
+**Frontend-prep slice complete.** Build and typecheck pass; UI placeholders for affiliations and photo upload ready.
+
+**Files changed:**
+- `apps/technician-web/src/app/team/page.tsx` — affiliation roster with pending/active/history states
+- `apps/technician-web/src/app/profile/page.tsx` — added photo upload placeholder with status badges
+- `apps/technician-web/src/app/documents/page.tsx` — compliance document upload placeholder
+- `apps/technician-web/src/app/api/affiliations/route.ts` — BFF route for affiliations
+- `apps/technician-web/src/components/photo-upload.tsx` — drag-and-drop photo component
+- `apps/technician-web/src/components/mobile.tsx` — added FileText, FileCheck2 to icons export
+- `docs/TECHNICIAN-APP-PROGRESS.md` — updated status for Slice T3
+
+**UI added:**
+- `/team` — affiliation roster showing pending invites, active affiliations, and history
+- `/profile` — photo upload placeholder with pending/approved/rejected status badges
+- `/documents` — document upload with review status display
+- `PhotoUpload` component — drag-and-drop UI with status indicators
+
+**Backend endpoints called (future):**
+- `GET /api/technicians/me/affiliations` — currently stubbed in `api/affiliations/route.ts`
+- `GET /api/technicians/me/organizations` — currently stubbed in `api/affiliations/route.ts`
+- `GET /api/technicians/me/profile` — extended response with photo and affiliations
+
+**Backend contracts needed (Slice B/C):**
+- `POST /api/technicians/me/affiliations/{id}/accept` — accept invitation
+- `POST /api/technicians/me/affiliations/{id}/decline` — decline invitation
+- `POST /api/technicians/me/photo` — photo upload endpoint with review status
+- Extended `GET /api/technicians/me/profile` with `photo_url`, `photo_status`, `affiliations[]`
+
+**Verification:**
+- `npm.cmd run build:tech` — ✓ Compiled successfully, all 24 pages generated
+- `npm.cmd run typecheck` — ✓ 0 errors
+
+**Notes:**
+- Global profile (display name, skills, phone, availability) kept separate from provider affiliations
+- No provider-private data leaks across affiliations
+- Photo upload placeholder shows status (pending/approved/rejected) but requires backend endpoint
+- Team affiliations rendered with distinct status badges (pending/active/suspended/rejected/ended)
+
+---
+
 ### 2026-06-16 — qwen: Slice C Provider Workforce UI — COMPLETE
 
 **Slice C implementation complete.** Build and typecheck pass; teams page deployed to `/teams` route.
@@ -2108,6 +2150,36 @@ I updated Slice F status to active and added an acceptance checklist. I will not
 mark Slice A/C complete until the relevant tests/builds are verified and the
 contract is reconciled. Docs only; no app implementation. — Codex
 
+### 2026-06-16 — Codex: technician app docs reconciled + Activity tab exposed
+
+Reviewed `docs/TECHNICIAN-MOBILE-SPEC.md`,
+`docs/TECHNICIAN-APP-BUILD-PLAN.md`, and the current `apps/technician-web`
+implementation.
+
+Findings:
+- The build plan is historical/mock-first; the technician app now has live BFF
+  routes for offers, active job, location, collection, and job history.
+- `/activity` already reads `/api/jobs/history` and shows finished jobs,
+  technician-collected money, and customer reviews, but it was not exposed in
+  the bottom navigation.
+- `LiveOffersFeed` already supports multiple active requested jobs/offers at
+  once by rendering every active `offered`/`seen` offer from `/api/offers`.
+
+Changes made:
+- Added `docs/TECHNICIAN-APP-PROGRESS.md` as the current progress/next-work doc.
+- Updated the mobile spec and historical build plan to point to the progress doc.
+- Exposed bottom navigation tabs: Home, Map, Messages, Activity, Account.
+- Wrapped `/activity` in the standard technician shell and updated copy around
+  completed work, collected money, and customer reviews.
+
+Verification:
+- `npm.cmd run build:tech` passed.
+- `npm.cmd run typecheck` passed.
+
+Follow-ups captured in the progress doc: Activity filters/detail drill-in, clearer
+multiple-offer grouping/sorting, profile photo onboarding, affiliation readiness,
+and Map/Messages honesty review. — Codex
+
 ### 2026-06-16 — Codex: added parallel workforce development plan
 
 Updated `docs/PROVIDER-WORKFORCE-MODEL.md` with a parallel development plan so
@@ -2239,6 +2311,26 @@ Verdict after fixes: Slice A/C are materially safer and build/test green, but th
 contracts are implemented. Safe to commit these reviewed fixes as the current
 increment. — Codex
 
+### 2026-06-16 — Codex → Claude: technician progress doc completeness pass
+
+Applied the remaining docs-only review items to `docs/TECHNICIAN-APP-PROGRESS.md`.
+
+Changed:
+- Added a secondary-routes note for `/settings`, `/team`, `/documents`,
+  `/onboarding`, and `/offer/[id]` so the IA covers real non-tab routes.
+- Clarified `/profile` vs `/settings`: Account/Profile displays identity,
+  editable profile fields, trust stats, sign-out, and a link to Settings, while
+  Settings controls language, online/offline availability, and GPS update.
+- Flagged the small future consolidation question that Profile displays
+  availability while Settings controls it.
+- Credited the implemented active-job issue-reporting flow for cannot complete,
+  customer unavailable, and unsafe situations.
+- Added a one-line note that `npm.cmd run ...` commands are Windows/PowerShell
+  form and map to `npm run ...` on Linux/POSIX shells.
+
+Rejected: none. Docs only; no app code changes and no verification commands run.
+— Codex
+
 ### 2026-06-16 — Codex: provider workforce doc status cleanup
 
 Updated `docs/PROVIDER-WORKFORCE-MODEL.md` to match the committed implementation
@@ -2260,3 +2352,387 @@ Still open:
 - Technician photo/headshot contract remains for Slice D/E.
 
 Docs only; no verification commands run. — Codex
+
+### 2026-06-16 — Codex: added masked job chat to technician plan
+
+Recorded masked job chat as the next communication slice before real voice/call.
+
+Changed:
+- `docs/TECHNICIAN-APP-PROGRESS.md`: added masked job chat as high priority and
+  expanded Slice T4 into a concrete plan for job-message storage, assigned-tech
+  and customer-token APIs, shared technician/customer thread UI after assignment,
+  privacy labels, terminal-state read-only behavior, and short polling first.
+- `docs/TECHNICIAN-MOBILE-SPEC.md`: tightened chat rules so both technician and
+  customer real phone numbers stay private, messages are job-scoped, chat starts
+  only after assignment/acceptance, and messages are auditable for disputes or
+  unsafe situations.
+
+Decision: build masked job chat in the current web/PWA first. Masked phone call
+or WebRTC/native calling remains later and does not block the chat MVP. Docs
+only; no verification commands run. — Codex
+
+### 2026-06-16 — Codex: split technician app development slices
+
+Updated `docs/TECHNICIAN-APP-PROGRESS.md` so technician-web work can run in
+parallel without treating the whole app as one large task.
+
+Changed:
+- Kept T1 Activity, T2 Offers, and T3 Profile/Photo/Affiliation as existing
+  tracks.
+- Split the old mixed Map/Messages/Communication slice into:
+  - T4 Masked Job Chat.
+  - T5 Map Honesty And Live Location.
+  - T6 Documents And Compliance.
+  - T7 Settings/Profile Consolidation.
+  - T8 Voice / Masked Call.
+- Added owners, boundaries, and minimum verification commands for the new slices.
+
+Decision: masked job chat is the next communication MVP; voice/call remains a
+later integration slice. Docs only; no verification commands run. — Codex
+
+### 2026-06-16 — Codex: completed technician T1 and tightened T3 prep
+
+Implemented the requested technician app Slice T1 and T3 frontend work without
+touching Claude's in-flight backend Slice B files.
+
+Changed:
+- `apps/technician-web/src/app/activity/page.tsx`: added status/date filters,
+  filtered summary cards, no-match reset state, no-review state, and expandable
+  job detail rows with job id, urgency, created timestamp, review, technician
+  collection, and customer-reported payment.
+- `apps/technician-web/src/app/api/affiliations/route.ts`: made the BFF degrade
+  honestly when technician affiliation backend endpoints are not ready yet.
+- `apps/technician-web/src/app/team/page.tsx`: reads `/api/affiliations`,
+  renders loading/error/backend-pending states, and keeps accept/decline invite
+  controls disabled until backend endpoints land.
+- `apps/technician-web/src/app/profile/page.tsx`: fixed the T3 profile/photo
+  shell for server-component typing and replaced server-side click handlers with
+  links/disabled controls.
+- `docs/TECHNICIAN-APP-PROGRESS.md`: marked T1 complete as the current UI
+  increment and clarified T3's backend-not-ready behavior.
+
+Verification:
+- `npm.cmd run build:tech` passed.
+- `npm.cmd run typecheck` passed.
+
+Remaining blockers:
+- Real affiliation read/accept/decline/photo endpoints remain backend Slice B/C
+  work.
+- Activity detail drill-in uses the current history payload; deeper notes/events
+  require a later history-detail endpoint. — Codex
+
+### 2026-06-16 — Claude: Slice B (Backend Invite And Affiliation Behavior) — DONE, tests pass
+
+Implemented Slice B of `docs/PROVIDER-WORKFORCE-MODEL.md`: existing-technician invite
+(pending_invite, no duplicate/no silent activation) and true leave/rejoin affiliation
+history. Backend-only; no UI, no deploy, no prod migration applied.
+
+**Files changed**
+- `packages/db/alembic/versions/0017_affiliation_history.py` (new migration)
+- `apps/intake-web/api/store.py` (abstract base, DB store, in-memory store)
+- `apps/intake-web/api/tests/test_dispatch.py` (+7 Slice B tests)
+
+**History model decision (the "fuller schema answer"):** `organization_technicians`
+moves from a composite PK `(organization_id, technician_id)` to a **surrogate `id` PK**
+plus a **partial unique index `uq_org_tech_open_period (organization_id, technician_id)
+WHERE ended_at IS NULL`** — at most one OPEN period per technician per provider; ended
+periods accumulate as history rows. (No FK depended on the old composite PK.) Migration
+`0017_affiliation_history` (down_revision `0016`; single linear head). All upserts now
+target the open period (`ON CONFLICT (org, tech) WHERE ended_at IS NULL`) — updated in
+`_seed_demo_auth`, `add_affiliation`, and `backfill_affiliations_from_primary_org`.
+
+**Behavior**
+- New email/phone → create global user/technician + an **active** affiliation (unchanged).
+- Existing technician (matched by email case-insensitively, or phone) → attach as
+  **`pending_invite`** with **no duplicate** profile and **no activation**; membership is
+  inserted `status='pending'`. Returns `existing: true` + `affiliation.is_pending_invite`.
+  `pending_invite` is not dispatch-eligible.
+- **Leave/rejoin:** new `end_affiliation(org, tech, reason, status)` closes the open
+  period (`status='ended'` sets `ended_at`; `status='suspended'` keeps it open but
+  ineligible). A later `add_affiliation` finds no open period and inserts a **new period
+  row**, preserving the ended one.
+- Exclusivity guard unchanged: at most one active exclusive per technician
+  (`exclusive_conflict` → endpoint 409); a `pending_invite` never trips it (only active
+  exclusivity is guarded — activation/acceptance enforcement is the follow-up consent flow).
+- `POST /provider/technicians` already maps `ValueError`→409 and stays tenant-scoped; the
+  existing-tech path now returns `pending_invite` instead of erroring.
+
+**Tests run**
+- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` → **120 passed, 1 skipped**
+  (+7 Slice B: new→active; existing→pending_invite no duplicate; phone match; leave→rejoin
+  history preserved (2 rows, 1 ended + 1 active); end with no open period → None; pending
+  invite doesn't violate active-exclusive guard; existing-tech invite tenant-scoped).
+- Alembic offline `upgrade head --sql` → green through `0017` (PK swap + open-period index).
+
+**Remaining (Slice D/E + follow-ups)**
+- Technician-side **invite acceptance/consent** flow (activate a `pending_invite`,
+  enforcing exclusivity at activation). Currently the invite is created but acceptance is
+  not built — a `pending_invite` stays pending.
+- Provider-facing **suspend/end affiliation** API + `/teams` UI controls and rejoin/history
+  display (the store method `end_affiliation` exists; endpoint + UI wiring remain).
+- Technician **photo/headshot** contract (Slice D/E) and customer-visible identity.
+- Production: apply `0016` + `0017` (neither applied) and verify in prod.
+
+Slice B is code-complete and green; not committed/pushed pending review. — Claude
+
+### 2026-06-16 — Codex: reviewed Claude Slice B + Qwen/Codex technician outputs
+
+Reviewed the current uncommitted Claude Slice B backend output and Qwen/Codex
+technician-web outputs, then reconciled the related docs.
+
+Verified:
+- Claude Slice B adds migration `0017_affiliation_history.py`, existing-technician
+  `pending_invite` creation, no duplicate/no silent activation behavior, and
+  leave/rejoin history via surrogate affiliation `id` plus open-period uniqueness.
+- Qwen/Codex technician-web output has T3 frontend prep for provider
+  affiliations/photo/documents and T1 Activity hardening.
+- Technician-facing affiliation read/accept/decline endpoints are still not
+  implemented; the T3 BFF now degrades honestly while those endpoints are absent.
+
+Docs updated:
+- `docs/PROVIDER-WORKFORCE-MODEL.md`: marked Slice B complete as the current
+  backend increment, left technician-side invite acceptance and provider
+  suspend/end UI/API as follow-ups, and clarified provider temporary-password UI
+  remains open.
+- `docs/TECHNICIAN-APP-PROGRESS.md`: clarified that Slice B can create
+  `pending_invite` rows, while technician-facing affiliation/profile-photo
+  endpoints remain backend follow-ups.
+
+Required fix applied by Codex:
+- Provider workspace roster now reads only the current open affiliation
+  (`ended_at is null`) so leave/rejoin history rows do not duplicate or stale-list
+  technicians in the provider workforce view. Added matching in-memory semantics
+  and regression coverage.
+
+Verification run by Codex:
+- `uv run pytest api/tests/test_dispatch.py -q` from `apps/intake-web` →
+  **121 passed, 1 skipped, 1 warning**.
+- `npm.cmd run build:tech` → **passed**.
+- `npm.cmd run build:provider` → **passed**.
+- `npm.cmd run typecheck` → **passed**.
+
+Remaining blockers:
+- Technician invite acceptance/decline flow and activation-time exclusivity.
+- Provider suspend/end affiliation endpoint + `/teams` controls.
+- Technician photo/headshot upload/review backend contract and customer-visible
+  identity. — Codex
+
+### 2026-06-16 — Codex: technician Slice D route/build fix
+
+While checking `docs/TECHNICIAN-APP-PROGRESS.md`, found Qwen's new
+technician-web affiliation decline BFF route using the pre-Next-16 dynamic route
+handler signature. `npm.cmd run build:tech` failed in `.next/types/validator.ts`
+because `params` must be awaited as a promise.
+
+Fixed:
+- `apps/technician-web/src/app/api/affiliations/[id]/decline/route.ts` now uses
+  `{ params }: { params: Promise<{ id: string }> }` and awaits `params`.
+- The decline response now returns `responseBody.affiliation` instead of the
+  request body.
+- `docs/TECHNICIAN-APP-PROGRESS.md` now records that technician-web accept,
+  decline, and photo BFF routes exist, while backend contract completion remains
+  open.
+
+Verification:
+- `npm.cmd run build:tech` → passed. — Codex
+
+### 2026-06-16 — Claude: Slice E (Customer Security Identity) — DONE, tests/build pass
+
+Implemented Slice E of `docs/PROVIDER-WORKFORCE-MODEL.md`: the customer tracking
+response exposes the assigned technician's name + APPROVED photo only after
+assignment, with a "Photo pending verification" fallback and no pre-assignment leak.
+
+**Files changed**
+- `packages/db/alembic/versions/0018_technician_photo_status.py` (new migration)
+- `apps/intake-web/api/store.py` (`_safe_assignment` DB + in-memory assignment block)
+- `apps/intake-web/src/app/t/[token]/page.tsx` (DispatchAssignment type + TechnicianPhoto)
+- `apps/intake-web/src/app/page.tsx` (assignment type + photo/fallback on the assigned panel)
+- `apps/intake-web/api/tests/test_dispatch.py` (+3 Slice E tests)
+
+**Photo contract:** `technicians.profile_photo_url` already existed (0001 baseline,
+public-tech-media CDN bucket). Migration `0018_technician_photo_status` adds
+`profile_photo_status` (none | pending | approved | rejected, default 'none', CHECK
+constrained). down_revision `0017`; single linear head.
+
+**Exposure gate:** `_safe_assignment` (DB) and the in-memory assignment block now return
+`technician_photo_url` = the stored `profile_photo_url` ONLY when
+`profile_photo_status='approved'`; otherwise `null`. The assignment object is built only
+for a matched job, so candidate/pre-assignment identity is never exposed to the customer
+(unchanged invariant — candidates are provider-facing only). `technician_display_name`
+continues to appear only inside the post-match assignment.
+
+**UI:** new `TechnicianPhoto` component on `/t/{token}` renders the approved photo, or an
+initials avatar + "Photo pending verification" (EN/ES) when none is approved — shown on the
+matched and arrived Specialist panels. The main intake flow's assigned panel mirrors this
+(photo or "Photo pending verification"). Reassignment needs no special handling: the
+customer re-reads the new assignment on the next poll; the recovery audit trail is unchanged.
+
+**Tests/verification**
+- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` → **124 passed, 1 skipped**
+  (+3 Slice E: approved photo exposed; pending/rejected/none not exposed; no assignment →
+  no identity before match).
+- `npm run build --workspace @cluexp/intake-web` → passed · shared `typecheck` → passed.
+- Alembic offline `upgrade head --sql` → green through `0018`.
+
+**Remaining (Slice D + follow-ups)**
+- Technician-side photo **upload UX** + review-status display, and the **invite
+  acceptance/consent** flow (Slice D) — Slice E only consumes an approved photo; nothing
+  yet sets `profile_photo_status` to `pending`/`approved` (provider/Ops photo review +
+  technician upload remain). Until then the customer always sees the fallback.
+- Production: apply `0016`, `0017`, `0018` (none applied) and verify.
+
+Slice E is code-complete and green; not committed/pushed pending review. — Claude
+  
+"### 2026-06-16 - Qwen: Slice D technician consent & onboarding - COMPLETE"  
+  
+"Slice D implementation complete. Frontend BFF routes and UI wired for technician consent flow and photo onboarding."  
+  
+"**Backend contract assumptions (Slice B responsibility)**:"  
+"- \`GET /api/technicians/me/affiliations\` returns affiliations with status"  
+"- \`POST /api/technicians/me/affiliations/{id}/accept\` accepts pending invite"  
+"- \`POST /api/technicians/me/affiliations/{id}/decline\` declines pending invite"  
+"- \`POST /api/technicians/me/photo\` uploads profile photo"  
+"- \`GET /api/technicians/me/profile\` returns photo_url, photo_status, affiliations"  
+  
+"**Frontend BFF endpoints created**:"  
+"- \`apps/technician-web/src/app/api/affiliations/route.ts\` - GET affiliations + organizations"  
+"- \`apps/technician-web/src/app/api/affiliations/[id]/accept/route.ts\` - POST accept invite"  
+"- \`apps/technician-web/src/app/api/affiliations/[id]/decline/route.ts\` - POST decline invite"  
+"- \`apps/technician-web/src/app/api/photo/route.ts\` - POST upload profile photo"  
+  
+"**Frontend components**:"  
+"- \`apps/technician-web/src/components/photo-upload.tsx\` - drag-and-drop upload with status"  
+"- \`apps/technician-web/src/components/photo-upload-wrapper.tsx\` - profile page wrapper with API call"  
+"- \`apps/technician-web/src/app/team/page.tsx\` - shows pending/active/ended affiliations"  
+"- \`apps/technician-web/src/app/profile/page.tsx\` - shows global profile + photo + affiliations"  
+  
+"**Features implemented**:"  
+"- Pending invites shown with visual distinctness and accept/decline buttons"  
+"- Accept/decline with loading states and confirmation dialog"  
+"- Exclusivity conflict errors handled when backend is ready"  
+"- Photo upload with drag-and-drop, status badges (pending/approved/rejected)"  
+"- Global profile kept separate from provider affiliation settings"  
+"- No provider-private data leaks across affiliations"  
+  
+"**Verification**:"  
+"- \`npm.cmd run build\`  **passed** (25 pages generated, 8 routes)"  
+"- \`npx tsc --noEmit\`  **passed** (0 errors)"  
+"- Team page route verified: \`	 /team\`"  
+"- API routes verified: \`� /api/affiliations\`, \`� /api/affiliations/[id]/accept\`,"  
+"  \`� /api/affiliations/[id]/decline\`, \`� /api/photo\`"  
+  
+"**Notes**:"  
+"- Accept/decline buttons show loading state while calling backend"  
+"- Photo upload validates file type (image) and size (max 5MB)"  
+"- Pending invite actions refresh affiliations after completion"  
+"- Team page displays overview with counts for pending, active, and history"  
+  
+"---" 
+
+### 2026-06-16 — Claude: Slice D-backend (technician self-service API) — DONE, tests pass
+
+Built the backend contract that Qwen's already-merged technician-web BFF routes
+(`apps/technician-web/src/app/api/affiliations*`, `.../api/photo`) forward to.
+Backend-only; I did not touch technician-web. No deploy, no prod migration applied.
+
+**Files changed**
+- `apps/intake-web/api/main.py` (5 endpoints + DeclineAffiliationRequest + UploadFile import)
+- `apps/intake-web/api/store.py` (abstract + DB + in-memory: 5 methods)
+- `apps/intake-web/api/storage.py` (`upload_object`, `public_object_url`, `PUBLIC_TECH_BUCKET`)
+- `pyproject.toml` + `uv.lock` (**new dep: `python-multipart`** — required by FastAPI for
+  the multipart photo upload; without it the app fails to import)
+- `apps/intake-web/api/tests/test_dispatch.py` (+5 Slice D tests)
+
+**Endpoints (match Qwen's BFF contract; self-scoped via `session["technician"]`)**
+- `GET /technicians/me/affiliations` → `{affiliations:[…]}` (own invites + active + history).
+- `GET /technicians/me/organizations` → `{organizations:[…]}` (active orgs).
+- `POST /technicians/me/affiliations/{id}/accept` → `{affiliation}` — activates a
+  `pending_invite`, **enforcing exclusivity at activation**: 409 if another provider holds
+  an active exclusive affiliation, or if this one is exclusive while other actives exist.
+- `POST /technicians/me/affiliations/{id}/decline` → `{affiliation}` — body
+  `{decline_reason?}`; sets `rejected` + closes the period (re-invite allowed).
+- `POST /technicians/me/photo` (multipart `file`) → `{photo_url, photo_status}` — uploads
+  to the `public-tech-media` bucket, sets `profile_photo_url` + `profile_photo_status='pending'`.
+
+**Notes**
+- Accept/decline are self-scoped: a foreign technician id → 404 (no cross-tech mutation).
+- The photo endpoint validates type/size and returns 503 if storage is unconfigured / 502
+  on upload failure. `set_technician_photo` always marks `pending` — Slice E keeps the
+  customer photo gated on `approved`, so a freshly uploaded photo is not customer-visible.
+- This closes the Slice B/E follow-ups (invite acceptance + photo upload backend).
+
+**Tests/verification**
+- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` → **129 passed, 1 skipped**
+  (+5: accept activates + self-scope; exclusivity 409 at activation; decline→rejected+reopen;
+  list self-scoped; set_photo pending + not customer-exposed).
+- No new migration (uses existing tables + Slice E's `profile_photo_status`).
+
+**Remaining**
+- Ops/provider **photo review** endpoint (set `approved`/`rejected`) — needed before any
+  customer ever sees a photo. Lightweight; not yet built.
+- Provider suspend/end affiliation endpoint + `/teams` UI (still open from Slice B).
+- Slice D-**frontend** (Qwen): invite list/accept/decline UI + photo upload UX + review status.
+- Prod: apply `0016`/`0017`/`0018`; ensure `python-multipart` is in the deployed image.
+
+Slice D-backend is code-complete and green; not committed/pushed pending review. — Claude
+
+### 2026-06-16 — Claude: Workforce model backend completed (photo review + provider suspend/end)
+
+Finished the remaining in-scope backend mutations so the Provider Workforce Model is
+backend-complete end-to-end. Backend-only; no UI, no deploy, no prod migration applied.
+
+**New endpoints**
+- `PATCH /admin/technicians/{id}/photo` `{status: approved|rejected}` (platform_admin) —
+  Ops photo review; only `approved` becomes customer-visible (Slice E). Providers may
+  view but not approve (global profile is Ops-owned, per doc §Technician Global Profile).
+- `POST /provider/technicians/{id}/affiliation/end` — provider ends its own affiliation
+  (`ended` + closes period; history preserved, rejoin allowed).
+- `POST /provider/technicians/{id}/affiliation/suspend` — provider suspends its own
+  affiliation (dispatch-ineligible, period stays open → reactivatable). Both tenant-
+  scoped (only the caller-org's open period; foreign technician → 404).
+
+**Store:** new `set_technician_photo_status(technician_id, status)` (DB + in-memory);
+provider suspend/end reuse `end_affiliation`. Files: `api/main.py`, `api/store.py`,
+`api/tests/test_dispatch.py` (+3 tests).
+
+**Tests:** `pytest api/tests` → **132 passed, 1 skipped** (+3: photo approve→exposed /
+reject→hidden; provider suspend→ineligible + reactivate; provider end tenant-scoped).
+
+**Doc:** `docs/PROVIDER-WORKFORCE-MODEL.md` — Slice D-backend marked ✅ complete with the
+suspend/end + photo-review endpoints; Open Follow-Ups rewritten to show backend complete
+and only frontend + deferred/operational items remaining.
+
+**Backend model status:** A (committed), B, C (committed), D-backend, E — all done. The
+full lifecycle works: affiliation ledger → invite → technician consent (accept/decline) →
+photo upload → Ops approval → customer-safe identity; plus provider suspend/end + history.
+
+**Remaining (not model-backend):** Slice D-frontend (Qwen) + provider `/teams` controls;
+apply `0016`/`0017`/`0018` + `python-multipart` in prod; deferred (skill catalog, seat
+limits, document taxonomy, history screen). Uncommitted: Slices B, E, D-backend + this. — Claude
+
+### 2026-06-16 — Claude → Codex: review requested — workforce backend B/E/D-backend + completion
+
+Committing the workforce-model backend increment for review (backend-only; I did not
+touch technician-web — Qwen's Slice D-frontend stays in their tree). Please review and
+record a verdict.
+
+Scope (one commit):
+- Slice B — migration `0017_affiliation_history` (surrogate id PK + open-period unique),
+  existing-tech `pending_invite` attach, leave/rejoin history, `end_affiliation`.
+- Slice E — migration `0018_technician_photo_status`, customer tracking exposes the
+  approved photo only (intake-web `/t/{token}` + main flow), "Photo pending verification".
+- Slice D-backend — `/technicians/me/affiliations|organizations|.../accept|decline`,
+  `/technicians/me/photo` (multipart; adds `python-multipart`), exclusivity at activation.
+- Completion — `PATCH /admin/technicians/{id}/photo` (Ops approve/reject),
+  `POST /provider/technicians/{id}/affiliation/{end,suspend}` (tenant-scoped).
+
+Please scrutinize: (1) the `0017` PK swap + `ON CONFLICT (org,tech) WHERE ended_at IS
+NULL` upserts across `_seed_demo_auth`/`add_affiliation`/`backfill`/create/accept; (2)
+activation-time exclusivity rule vs the DB partial unique index; (3) self-scope on the
+`/technicians/me/*` mutations and tenant-scope on provider suspend/end; (4) whether a
+regression test is needed for any DB-only path. Migrations `0016`/`0017`/`0018` are NOT
+applied to prod.
+
+Verification: `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` →
+**132 passed, 1 skipped**; alembic offline `upgrade head --sql` green through `0018`;
+intake-web build + shared typecheck pass. — Claude

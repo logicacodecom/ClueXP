@@ -27,6 +27,7 @@ interface DispatchAssignment {
   fulfillment_type: "company_technician" | "independent_technician" | "network_provider";
   provider_company: string | null;
   technician_display_name: string;
+  technician_photo_url: string | null;
   role: string;
   rating: number | null;
   eta_min: number;
@@ -143,6 +144,40 @@ function AgentMessage({ children, support }: { children: React.ReactNode; suppor
       <h1 className="message">{children}</h1>
       {support ? <p className="support">{support}</p> : null}
     </>
+  );
+}
+
+// Customer-safe assigned-technician identity: the approved photo when available,
+// otherwise an initials avatar + "Photo pending verification" so we never imply a
+// verified headshot that does not exist. Only rendered after assignment.
+function TechnicianPhoto({ name, photoUrl, locale }: { name: string; photoUrl: string | null; locale: string }) {
+  const initials = (name || "")
+    .split(/\s+/)
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  const size = { width: 56, height: 56, borderRadius: "50%", flex: "0 0 auto" } as const;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      {photoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={photoUrl} alt={name} style={{ ...size, objectFit: "cover" }} />
+      ) : (
+        <div
+          aria-hidden="true"
+          style={{ ...size, display: "grid", placeItems: "center", background: "#1b1f26", color: "#8b94a0", fontWeight: 700 }}
+        >
+          {initials || "★"}
+        </div>
+      )}
+      {!photoUrl ? (
+        <span className="fine">
+          {locale === "es" ? "Foto pendiente de verificación" : "Photo pending verification"}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -748,6 +783,7 @@ export default function TokenTrackingPage() {
               <p className="panel-title">
                 {locale === "es" ? "Especialista" : "Specialist"}
               </p>
+              <TechnicianPhoto name={assignment.technician_display_name} photoUrl={assignment.technician_photo_url} locale={locale} />
               <div className="big-number">
                 {assignment.technician_display_name}
               </div>
@@ -875,6 +911,7 @@ export default function TokenTrackingPage() {
               <p className="panel-title">
                 {locale === "es" ? "Especialista" : "Specialist"}
               </p>
+              <TechnicianPhoto name={assignment.technician_display_name} photoUrl={assignment.technician_photo_url} locale={locale} />
               <div className="big-number">{assignment.technician_display_name}</div>
               <p className="fine">{assignment.role}</p>
             </div>

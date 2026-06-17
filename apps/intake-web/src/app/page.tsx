@@ -71,6 +71,7 @@ interface DispatchAssignment {
   fulfillment_type: "company_technician" | "independent_technician" | "network_provider";
   provider_company: string | null;
   technician_display_name: string;
+  technician_photo_url: string | null;
   role: string;
   rating: number | null;
   eta_min: number;
@@ -1012,6 +1013,13 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           </AgentMessage>
           <div className="panel">
             <p className="panel-title">Specialist</p>
+            {assignment?.technician_photo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={assignment.technician_photo_url} alt={assignment.technician_display_name}
+                style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover" }} />
+            ) : assignment ? (
+              <p className="fine">Photo pending verification</p>
+            ) : null}
             <div className="big-number">{assignment?.technician_display_name ?? "Verified technician"}</div>
             <p className="fine">
               {assignment?.role ?? "Verified Technician"}
