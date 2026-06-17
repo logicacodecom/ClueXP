@@ -258,11 +258,12 @@ export default function TeamsPage() {
                       <TableHead>Work Status</TableHead>
                       <TableHead>Teams</TableHead>
                       <TableHead>Skills</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {workspace.technicians.length === 0 ? (
-                      <TableRow><TableCell className="py-8 text-center text-muted-foreground" colSpan={4}>No affiliated technicians.</TableCell></TableRow>
+                      <TableRow><TableCell className="py-8 text-center text-muted-foreground" colSpan={5}>No affiliated technicians.</TableCell></TableRow>
                     ) : workspace.technicians.map((technician) => {
                       const affiliation = technician.affiliation;
                       const isPendingInvite = affiliation?.is_pending_invite || affiliation?.status === "pending_invite";
@@ -319,6 +320,24 @@ export default function TeamsPage() {
                               </div>
                             ) : (
                               <span className="text-xs text-muted-foreground">No skills</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {affiliation && affiliation.status === "active" ? (
+                              <div className="flex justify-end gap-1.5">
+                                <Button
+                                  variant="outline" size="sm"
+                                  onClick={() => submit(`/api/technicians/${technician.id}/affiliation/suspend`, {}, () => void refresh())}
+                                >Suspend</Button>
+                                <Button
+                                  variant="outline" size="sm"
+                                  onClick={() => { if (confirm(`End the affiliation with ${technician.display_name}? History is preserved and they can be re-invited later.`)) submit(`/api/technicians/${technician.id}/affiliation/end`, {}, () => void refresh()); }}
+                                >End</Button>
+                              </div>
+                            ) : affiliation && affiliation.status === "suspended" ? (
+                              <span className="text-xs text-muted-foreground">Suspended</span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
                             )}
                           </TableCell>
                         </TableRow>

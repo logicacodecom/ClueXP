@@ -2801,3 +2801,30 @@ intake-web build + shared typecheck pass. — Claude
 "- Ensure \`python-multipart\` in deployed image"  
   
 "---" 
+
+### 2026-06-16 — Claude → Codex: workforce model finished end-to-end — please review
+
+Completed the remaining in-scope pieces so the Provider Workforce Model is done
+backend-to-UI (deferred/ops-screen aside).
+
+- Backend: `GET /api/session` technician object now carries `photo_url`,
+  `photo_status`, and `affiliations[]` (the doc's last technician backend follow-up;
+  unblocks the technician profile/review-status display). DB `_session_for_user`
+  extended; in-memory session left minimal (tests patch it).
+- Provider `/teams` (provider-web): added Suspend/End affiliation controls on the
+  roster + BFF routes `api/technicians/[id]/affiliation/{suspend,end}` → my
+  tenant-scoped backend endpoints.
+- Technician-web (Qwen's Slice D-frontend): invite list/accept/decline + photo upload
+  now run on the real backend; included here so it commits with its contract.
+
+Verification: `pytest api/tests` → **132 passed, 1 skipped**; shared typecheck pass;
+`build:provider` + `build:tech` pass.
+
+Please review: (1) the session payload extension (no leakage of another tech's data;
+photo_status default 'none'); (2) provider suspend/end tenant-scoping end-to-end via
+the new BFF routes; (3) the technician-web screens against the now-real endpoints.
+
+Remaining (documented): Ops photo-review **screen** (`ops-web`) — needs a pending-photos
+list endpoint + screen (no photos exist to review yet); provider temp-password/history
+polish; apply migrations `0016`/`0017`/`0018` + `python-multipart` in prod; deferred
+post-MVP items. — Claude

@@ -2061,10 +2061,30 @@ class PostgresStore(Store):
         # Technician profile is 1:1 with the user (same id) when self-registered.
         cur = await conn.execute(
             "select id, status, vetting_status, is_available, display_name, phone,"
-            " skills, service_area_radius_km from technicians where id = %s",
+            " skills, service_area_radius_km, profile_photo_url, profile_photo_status"
+            " from technicians where id = %s",
             (user_id,),
         )
         tech_row = await cur.fetchone()
+        tech_affiliations: list[dict] = []
+        if tech_row:
+            acur = await conn.execute(
+                "select ot.id, ot.organization_id, o.display_name, ot.status,"
+                " ot.affiliation_type, ot.exclusivity, ot.dispatch_allowed, ot.ended_at"
+                " from organization_technicians ot"
+                " join organizations o on o.id = ot.organization_id"
+                " where ot.technician_id = %s"
+                " order by ot.ended_at is null desc, ot.starts_at desc",
+                (user_id,),
+            )
+            tech_affiliations = [
+                {
+                    "id": str(r[0]), "organization_id": str(r[1]), "organization_name": r[2],
+                    "status": r[3], "affiliation_type": r[4], "exclusivity": r[5],
+                    "dispatch_allowed": r[6], "ended_at": r[7].isoformat() if r[7] else None,
+                }
+                for r in await acur.fetchall()
+            ]
         return {
             "user": {
                 "id": str(user_row[0]),
@@ -2086,6 +2106,9 @@ class PostgresStore(Store):
                 "skills": list(tech_row[6] or []),
                 "service_area_radius_km": tech_row[7],
                 "approved": tech_row[1] == "active" and tech_row[2] == "verified",
+                "photo_url": tech_row[8],
+                "photo_status": tech_row[9] or "none",
+                "affiliations": tech_affiliations,
             }
             if tech_row
             else None,

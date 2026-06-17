@@ -980,11 +980,15 @@ Backend for the model is complete (Slices A, B, C, D-backend, E + the provider
 suspend/end and Ops photo-review mutations). Remaining items are **frontend** or
 **deferred/operational**, not model-backend:
 
-Frontend (Qwen/Codex):
-- Slice D-frontend: technician invite list + accept/decline UI, photo upload UX,
-  photo review-status display.
-- Provider `/teams`: temporary-password UI, suspend/end + rejoin/history controls,
-  Ops photo approve/reject screen.
+Frontend:
+- ✅ <s style="color:#1a7f37">Technician invite list + accept/decline UI + photo upload (technician-web,
+  Qwen) now run on the real backend; the session exposes `photo_url`/`photo_status`/
+  `affiliations[]`.</s>
+- ✅ <s style="color:#1a7f37">Provider `/teams` suspend/end affiliation controls wired to
+  `/api/technicians/{id}/affiliation/{suspend,end}`.</s>
+- [ ] Ops photo approve/reject **screen** (`ops-web`) — backend
+  `PATCH /admin/technicians/{id}/photo` exists; needs a pending-photos list + screen.
+- [ ] Provider `/teams` temporary-password affordance + rejoin/history drawer (polish).
 
 Operational:
 - Apply migrations `0016`, `0017`, `0018` to production (none applied; prod at `0015`)
