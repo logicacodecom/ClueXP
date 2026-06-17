@@ -12,6 +12,28 @@ Use this file for near-term technician app progress and next development. The
 technician app is no longer a pure mock prototype; it has real app-server BFF
 routes that forward the signed-in technician session to the intake API.
 
+## 2026-06-17 — T7 Settings/Profile Consolidation — COMPLETE ✅
+
+**Status:** Slice T7 complete. Availability toggle moved to `/profile`, `/settings` simplified.
+
+**Changes:**
+- `/profile` (Account tab) now shows availability control directly ("Dispatch status" section)
+- `/settings` now only contains Language and Location update (no availability toggle)
+- No duplicate availability state between Profile and Settings
+
+**Verification:**
+- Build: `npm.cmd run build:tech` ✅ passed
+- TypeScript: 0 errors ✅
+
+**Reviewed by Codex:**
+- Verified availability toggle works correctly in Profile screen
+- Confirmed GPS copy updated: "GPS updates live in App settings"
+- `af6452a` - T7 copy fix commit
+
+**Next:**
+- Masked job chat (T4) remains the next high-priority slice
+- Documents/compliance (T6) needs backend endpoints before frontend can be live
+
 ## Current Reality
 
 Implemented or present:
