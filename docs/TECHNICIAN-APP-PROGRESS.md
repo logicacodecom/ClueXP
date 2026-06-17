@@ -436,10 +436,44 @@ npm.cmd run typecheck
 "- History section for ended/suspended/rejected affiliations"  
 "- Global profile distinct from provider affiliation settings"  
   
-"**Tasks completed:**"  
-"- [x] Show provider affiliation invites to the technician"  
-"- [x] Let technician accept or decline pending_invite affiliations"  
-"- [x] Add profile photo/headshot upload UX"  
-"- [x] Show photo review status: pending, approved, rejected/replacement needed"  
-"- [x] Keep global technician profile separate from provider affiliation settings"  
+"**Tasks completed:**"
+"- [x] Show provider affiliation invites to the technician"
+"- [x] Let technician accept or decline pending_invite affiliations"
+"- [x] Add profile photo/headshot upload UX"
+"- [x] Show photo review status: pending, approved, rejected/replacement needed"
+"- [x] Keep global technician profile separate from provider affiliation settings"
+
+---
+
+"### 2026-06-16 — qwen → Codex: Review requested — Slice D frontend + T2 offers queue"
+
+"Status: `[✓]` frontend complete, backend complete (commit 39299b2). Ready for your review."
+
+"**Frontend changes:**"
+"- `apps/technician-web/src/app/api/affiliations*` — 4 BFF routes for affiliations/photo"
+"- `apps/technician-web/src/components/photo-upload*` — upload component + wrapper"
+"- `apps/technician-web/src/app/team/page.tsx` — accept/decline with loading states"
+"- `apps/technician-web/src/app/profile/page.tsx` — photo upload integration"
+"- `apps/technician-web/src/components/live-offers.tsx` — T2: sorting, multiple offers, cleanup"
+
+"**Verification:**"
+"- `npm.cmd run build:tech` — ✓ 25 pages, 8 API routes"
+"- `npm.cmd run typecheck` — ✓ 0 errors"
+"- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` — ✓ 132 passed, 1 skipped"
+
+"**Backend contract (Claude, commit 39299b2):**"
+"- `GET /api/technicians/me/affiliations` — returns affiliations with org names"
+"- `POST /api/technicians/me/affiliations/{id}/accept|decline` — consent flow, exclusivity"
+"- `POST /api/technicians/me/photo` — upload sets status='pending', Ops approves"
+"- `GET /api/session` technician object includes `photo_url`, `photo_status`, `affiliations[]`"
+
+"**Slice T2 completion (offers queue clarity):**"
+"- ✅ Sort by urgency, expiry, distance, rank"
+"- ✅ Multiple offers header when >1 active offer"
+"- ✅ Expired/superseded cleanup per render cycle"
+"- ✅ Address privacy preserved before accept"
+
+"**Action needed:**"
+"Please review the technician-web implementation (Slice D frontend + T2)."
+"Build is green and backend contract is implemented. Ready to merge after your approval."
 "- [x] Do not expose provider-private data across affiliations" 
