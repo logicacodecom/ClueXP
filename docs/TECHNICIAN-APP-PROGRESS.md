@@ -252,6 +252,14 @@ applied; **prod code deploy pending**.
 - ✅ <s style="color:#1a7f37">Frontend `/documents` page uses real API with upload flow.</s>
 - ✅ <s style="color:#1a7f37">File validation: 10MB limit, types: PNG, JPEG, WebP, PDF.</s>
 - ✅ <s style="color:#1a7f37">Document status tracking: pending_review, approved, rejected.</s>
+- ✅ <s style="color:#1a7f37">Document-type selection on upload (driver license, insurance,
+  business license, locksmith certification, background check).</s>
+- ✅ <s style="color:#1a7f37">View/download of own documents via signed URL
+  (`GET /api/technicians/me/documents/{id}/download`).</s>
+- ✅ <s style="color:#1a7f37">Ops review surface: "Pending technician documents" card
+  on Ops → Documents with approve/reject + file open, backed by
+  `GET/PATCH /admin/technician-documents` and
+  `GET /admin/technician-documents/{id}/download`.</s>
 
 **Database Schema (migration 0020; `0021_tech_doc_defaults` repaired missing
 `id`/`uploaded_at`/`status` defaults):**

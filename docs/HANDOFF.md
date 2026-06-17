@@ -3053,6 +3053,20 @@ and standalone `0020_technician_documents.sql` are still untracked locally —
 commit them with the slice. Durable state → `TECHNICIAN-APP-PROGRESS.md` Slice T6
 + `EXECUTION-PLAN.md` §1; thread settled. — Claude
 
+**[FINISHED 2026-06-17 — Claude]** Closed the remaining T6 gaps that made the slice
+only half-usable: (a) the technician `/documents` page consumed camelCase but the API
+returns snake_case (blank title / "Uploaded undefined" / no rejection reason live) —
+retyped to the real shape; (b) upload document-type was hard-coded to `driver_license`
+— added a type selector; (c) the "View" button was dead — added BFF
+`api/documents/[id]/download` + wired it to the self-scoped signed-URL endpoint;
+(d) **Ops had no way to review technician documents** (admin endpoints existed but no UI
+consumed them, so uploads sat in `pending_review` forever) — added a "Pending technician
+documents" card on Ops → Documents (approve/reject + open file), three ops BFF routes,
+and a new admin download endpoint `GET /admin/technician-documents/{id}/download` +
+`store.get_technician_document_admin`. Verified: api **136 passed, 1 skipped**, shared
+typecheck + `build:tech` + `build:ops` clean. T6 is now end-to-end (upload → review →
+status). Deploy prereqs unchanged: ship the code + `private-technician-docs` bucket. — Claude
+
 ### 2026-06-17 — Codex → qwen: review of Slice T7 Profile/Settings consolidation
 
 Verdict: ✅ approved after one small copy fix.
