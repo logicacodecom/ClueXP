@@ -140,31 +140,98 @@ Common document types include `business_registration`, `business_license`,
 | Use | Endpoint | Why |
 |---|---|---|
 | **App / serverless** | **Transaction pooler** — `aws-1-us-east-2.pooler.supabase.com:6543`, user `postgres.gzgrkzvhotjolvcbqiku` | pgbouncer handles many short-lived serverless connections; **IPv4** |
-| **Migrations / admin** | **Direct** `db.gzgrkzvhotjolvcbqiku.supabase.co:5432` preferred when reachable; **pooler** is the verified fallback (CI / IPv6-unreachable networks) | full session features |
+| **Migrations / admin** | **Session pooler** — `aws-1-us-east-2.pooler.supabase.com:5432`, user `postgres.gzgrkzvhotjolvcbqiku` (IPv4, full session features). Direct `db.gzgrkzvhotjolvcbqiku.supabase.co:5432` (IPv6) is an optional alternative. | full session features for DDL |
 
 Gotchas we hit and handle:
 - **Disable prepared statements** behind the pooler — psycopg `prepare_threshold=None`
   (app store and Alembic `env.py` both set this).
-- **Direct host is IPv6-flaky** from some networks (`getaddrinfo failed`); the
-  pooler is IPv4-proxied and reliable — use it if direct won't resolve.
+- **Use the session pooler (5432) for migrations**, the **transaction pooler (6543)**
+  for the app runtime — same password, different host/port. The direct host is IPv6;
+  IPv6 egress works from the dev box as of 2026-06-17, but the session pooler (IPv4) is
+  the reliable path. See §4.1 for what to update on a password rotation.
 - **Percent-encode `@`** in the password (`%40`) in any URL.
 - **Windows local + async psycopg** needs `WindowsSelectorEventLoopPolicy`
   (Linux/Vercel unaffected).
 
 ## 4. Environment variables
 
-| Var | Where | Value |
+| Var | Where it's set | Value |
 |---|---|---|
-| `DATABASE_URL` | API runtime (Vercel) | pooler URL (6543). Unset → in-memory fallback (local) |
-| `MIGRATION_DATABASE_URL` | migrations (local/CI) | pooler or direct; falls back to `DATABASE_URL` |
+| `DATABASE_URL` | **Vercel → `cluexp-intake` project → Environment Variables** (API runtime) | Transaction pooler URL (`:6543`). Unset → in-memory fallback (local tests) |
+| `MIGRATION_DATABASE_URL` | **Dev machine — Windows *User* env var** (migrations); CI uses a dummy localhost value for the offline check | Session pooler URL (`:5432`); falls back to `DATABASE_URL` |
 
-Never commit real values; `.env.example` carries placeholders.
+Never commit real values; `.env.example` carries placeholders. To rotate the password,
+see **§4.1** for every location to update.
+
+### 4.1 Rotating the database password — what to update, where, and how
+
+Resetting the Supabase **database password** invalidates **every place that embeds it
+in a connection string**. There are **two** such strings (same password, different
+host/port) plus the local migration variable. The Supabase **service role key** and
+**project URL** are a separate concern and are **not** affected.
+
+**Where the password lives — update all that apply:**
+
+| # | Location | Variable | Connection string | If left stale |
+|---|---|---|---|---|
+| 1 | **Vercel → `cluexp-intake` project → Settings → Environment Variables** | `DATABASE_URL` | **Transaction pooler**, port `6543` | 🔴 prod API can't reach Postgres → every `/api/*` returns 500 |
+| 2 | **Dev machine — Windows *User* environment variable** | `MIGRATION_DATABASE_URL` | **Session pooler**, port `5432` | can't run `alembic upgrade` from the dev box |
+| 3 | Local `.env` (gitignored), if you run a real DB locally | `DATABASE_URL` | your choice | local dev DB calls fail |
+
+**Not affected by a DB-password reset:** `SUPABASE_SERVICE_ROLE_KEY` (a separate JWT —
+Storage/photo signing keeps working), `SUPABASE_URL`. CI uses a dummy
+`postgresql://postgres:postgres@localhost:5432/postgres` for the *offline* (`--sql`)
+migration check only — no real credential there.
+
+**Where to get the new values:** Supabase Dashboard → **Connect** (or **Settings →
+Database**). Copy the **Transaction pooler** string (`:6543`) for #1 and the **Session
+pooler** string (`:5432`) for #2. The password is the **database password** — if you
+don't have it, **Settings → Database → Reset database password**. URL-encode specials
+(`@` → `%40`).
+
+**Steps (this order minimizes the prod-outage window):**
+1. Reset the DB password in Supabase.
+2. **Vercel `cluexp-intake`:** edit `DATABASE_URL` (transaction pooler, `:6543`) →
+   **Redeploy** the project (env changes only take effect on a new deploy). Only
+   `cluexp-intake` connects to Postgres; the provider/ops/technician projects proxy to
+   it and have no `DATABASE_URL`.
+3. **Windows User variable** `MIGRATION_DATABASE_URL` (session pooler, `:5432`): press
+   `Win` → "Edit environment variables for your account" → **User variables** → edit it.
+   Or PowerShell (handles URL specials better than `setx`):
+   ```powershell
+   [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL",
+     "postgresql://postgres.<ref>:<url-encoded-pw>@aws-<region>.pooler.supabase.com:5432/postgres",
+     "User")
+   ```
+   Then **restart the shell** — env vars are read at process start, so the running
+   session keeps the old value.
+4. Update any local `.env`.
+5. Verify + apply pending migrations from the dev box:
+   ```powershell
+   uv run --with alembic --with "sqlalchemy>=2" --with psycopg `
+     alembic -c packages/db/alembic.ini current      # read-only: shows prod head
+   # then, to apply:
+   uv run --with alembic --with "sqlalchemy>=2" --with psycopg `
+     alembic -c packages/db/alembic.ini upgrade head
+   ```
+
+**No-credential alternative (single migration):** the Supabase **SQL Editor** can run a
+migration's DDL plus the `UPDATE alembic_version` stamp by hand — no password needed.
+This is how `0014`–`0019` were applied. Migrations do **not** apply automatically on a
+Vercel deploy.
+
+**Connectivity note (2026-06-17):** IPv6 egress now works from the dev box, but the
+**session pooler is IPv4 and is the reliable path** for migrations; the direct
+`db.<ref>.supabase.co` host (IPv6) is optional. A `password authentication failed for
+user "postgres"` error means the password in the string is wrong/stale, **not** a
+network problem.
 
 ## 5. Migrations (Alembic, raw SQL — `packages/db`)
 
 ```powershell
-$env:MIGRATION_DATABASE_URL = "postgresql://postgres.<ref>:<pw>@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
-uv run --with alembic --with "sqlalchemy>=2" alembic -c packages/db/alembic.ini upgrade head
+# Session pooler (port 5432) for migrations — full session features; IPv4. See §4.1.
+$env:MIGRATION_DATABASE_URL = "postgresql://postgres.<ref>:<pw>@aws-1-us-east-2.pooler.supabase.com:5432/postgres"
+uv run --with alembic --with "sqlalchemy>=2" --with psycopg alembic -c packages/db/alembic.ini upgrade head
 ```
 
 - `upgrade head` apply · `downgrade -1` roll back · `current` / `history` inspect.
