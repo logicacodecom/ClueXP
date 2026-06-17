@@ -640,6 +640,14 @@ async def pending_documents(
     return {"documents": await store.list_pending_documents()}
 
 
+@app.get("/admin/technicians/photos")
+async def pending_technician_photos(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return {"photos": await store.list_pending_technician_photos()}
+
+
 @app.patch("/admin/technicians/{technician_id}/photo")
 async def review_technician_photo(
     technician_id: UUID,

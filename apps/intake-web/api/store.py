@@ -191,6 +191,9 @@ class Store:
     async def list_pending_documents(self) -> list[dict]:  # pragma: no cover
         return []
 
+    async def list_pending_technician_photos(self) -> list[dict]:  # pragma: no cover
+        return []
+
     async def get_provider_document(self, document_id: UUID) -> dict | None:  # pragma: no cover
         return None
 
@@ -552,6 +555,22 @@ class InMemoryStore(Store):
 
     async def list_pending_documents(self) -> list[dict]:
         return []
+
+    async def list_pending_technician_photos(self) -> list[dict]:
+        return [
+            {
+                "technician_id": str(tech.get("id")),
+                "display_name": tech.get("display_name"),
+                "email": tech.get("email"),
+                "phone": tech.get("phone"),
+                "photo_url": tech.get("profile_photo_url"),
+                "photo_status": tech.get("profile_photo_status") or "none",
+                "status": tech.get("status"),
+                "vetting_status": tech.get("vetting_status"),
+            }
+            for tech in getattr(self, "_technicians", [])
+            if tech.get("profile_photo_url") and tech.get("profile_photo_status") == "pending"
+        ]
 
     async def get_provider_document(self, document_id: UUID) -> dict | None:
         return None
@@ -3852,6 +3871,31 @@ class PostgresStore(Store):
                 "expires_at": row[7].isoformat() if row[7] else None,
                 "status": row[8], "submitted_at": row[9].isoformat() if row[9] else None,
                 "owner_name": row[10],
+            }
+            for row in rows
+        ]
+
+    async def list_pending_technician_photos(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, email, phone, profile_photo_url,"
+                " profile_photo_status, status, vetting_status, updated_at"
+                " from technicians"
+                " where profile_photo_url is not null and profile_photo_status = 'pending'"
+                " order by updated_at"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "technician_id": str(row[0]),
+                "display_name": row[1],
+                "email": row[2],
+                "phone": row[3],
+                "photo_url": row[4],
+                "photo_status": row[5],
+                "status": row[6],
+                "vetting_status": row[7],
+                "updated_at": row[8].isoformat() if row[8] else None,
             }
             for row in rows
         ]

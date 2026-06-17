@@ -2,6 +2,20 @@
 
 Status: current reconciliation note for the live `apps/technician-web` PWA.
 
+---
+
+### 2026-06-16 - Qwen: Slice T5/T6 review - Map live, Documents mock
+
+**Findings:**
+- **T5 (Map)**: Uses live data. `/map` redirects to `/jobs`. `GoogleMapView` uses real `job.lat`/`job.lng` coordinates. No mock/demo data. Technician location pushes via `/api/location` every 25s during active job. **Status: LIVE**.
+- **T6 (Documents)**: Fully mock. `/documents` has hardcoded array, no upload API, no document retrieval. Requires backend: `GET /api/technicians/me/documents`, `POST /api/technicians/me/documents`. **Status: NEEDS BACKEND**.
+
+**Actions:**
+- T5 marked complete — ready for production.
+- T6 requires backend endpoints before frontend can be made live. Next priority after T4 (masked chat).
+
+---
+
 This document reconciles:
 
 - `docs/TECHNICIAN-MOBILE-SPEC.md` — product/UI flow specification.
@@ -44,7 +58,7 @@ Canonical bottom tabs:
 | Tab | Current route | Purpose | Status |
 |---|---|---|---|
 | Jobs | `/jobs` | Offers, active job, active assignment restore | Live |
-| Map | `/map` | Field location/map context | Present, needs live-depth review |
+| Map | `/map` | Field location/map context | Present, live — uses real coordinates |
 | Messages | `/messages` | Customer/dispatcher communication placeholder | Present, needs live-depth review |
 | Activity | `/activity` | Completed jobs, collected money, customer reviews | Live history read |
 | Account | `/profile` | Profile, availability/account settings | Present |
@@ -231,8 +245,9 @@ the real technician-facing endpoints.
   exclusivity enforced at activation.</s>
 
 Technician-facing backend contract is complete; the invite/photo screens run on real
-data. Remaining frontend: an Ops photo-review screen (`ops-web`) to drive approve/reject
-(backend `PATCH /admin/technicians/{id}/photo` exists).
+data. Ops photo review is also wired through the Ops compliance review screen:
+`GET /admin/technicians/photos` lists pending headshots and
+`PATCH /admin/technicians/{id}/photo` approves/rejects them.
 
 ### Slice T4 — Masked Job Chat
 
@@ -306,20 +321,34 @@ npm.cmd run typecheck
 
 ### Slice T6 — Documents And Compliance
 
-Status: `[ ]` needs backend-contract review.
+Status: `[ ]` **needs backend endpoints** — currently mock implementation.
 
-Recommended owner: frontend model for UI shell; backend model only if live
-document/compliance endpoints are missing.
+**Current state:**
+- `/documents` route (`apps/technician-web/src/app/documents/page.tsx`) is fully mock
+- Hardcoded `documents` array with 2 example documents
+- Status badges (`approved`, `pending`, `rejected`) are hardcoded, not API-driven
+- No file upload integration
+- No document retrieval from backend
+- Upload UI has no `onChange` handler, no file validation, no API call
 
-Tasks:
+**Required backend endpoints:**
+- `GET /api/technicians/me/documents` — list technician documents with status
+- `POST /api/technicians/me/documents` — upload new document (multipart/form-data)
+- Document response should include: `id`, `name`, `type`, `status`, `uploaded_at`, `reviewed_at`, `rejection_reason` (optional)
 
-- [ ] Review `/documents` for live vs placeholder honesty.
-- [ ] Show required, pending, verified, rejected, and expiring document states.
-- [ ] Keep upload placeholders honest until real upload/review endpoints exist.
-- [ ] Connect compliance status to dispatch/availability blocking only after the
-  backend policy is explicit.
-- [ ] Keep provider/company document requirements separate from global technician
-  profile documents.
+**Required frontend changes:**
+- Replace hardcoded `documents` array with API fetch
+- Implement file upload with progress indicator
+- Add status refresh after upload
+- Show required document types from backend (don't hardcode requirements)
+- Connect compliance status to dispatch/availability blocking when backend policy exists
+
+**Backend verification needed:**
+- Check if document endpoints exist in intake API (`apps/intake-web/api/endpoints/technicians/`)
+- If not, create document CRUD endpoints mirroring profile photo flow
+- Ensure document status workflow: `pending` → `approved`/`rejected` with admin review
+
+**Status:** T6 requires backend implementation before frontend can be made live.
 
 Minimum verification:
 
@@ -400,93 +429,94 @@ npm.cmd run typecheck
 - Technician statuses are not customer `trust_state`.
 - Activity money is collected/reported money, not final payout/settlement unless
   a payout ledger contract says so.
-  
-"---"  
-  
-"### 2026-06-16 - Qwen: Slice D technician consent & onboarding - COMPLETE"  
-  
-"Status: \`[�]\` frontend BFF routes and UI complete for technician consent flow and photo onboarding."  
-  
-"**Frontend implementation complete:**"  
-"- \`/team\` - pending invites shown with accept/decline buttons and loading states"  
-"- \`/profile\` - photo upload wrapper with API integration"  
-"- \`/documents\` - compliance document upload placeholder with status display"  
-  
-"**BFF endpoints created:**"  
-"- \`api/affiliations\` - GET affiliations + organizations"  
-"- \`api/affiliations/[id]/accept\` - POST accept pending invite"  
-"- \`api/affiliations/[id]/decline\` - POST decline pending invite"  
-"- \`api/photo\` - POST upload profile photo"  
-  
-"**Components created:**"  
-"- \`PhotoUpload\` - drag-and-drop upload component with status badges"  
-"- \`PhotoUploadWrapper\` - profile page wrapper that calls \`/api/photo\`"  
-  
-"**Features:**"  
-"- Accept/decline buttons show loading state during API calls"  
-"- Confirmation dialog for decline actions"  
-"- Exclusivity conflict errors handled when backend is ready"  
-"- Photo upload validates file type (image) and size (max 5MB)"  
-"- Pending invite actions refresh affiliations after completion"  
-  
-"**Verification:**"  
-"- \`npm.cmd run build\`  **passed** (25 pages, 8 API routes)"  
-"- \`npx tsc --noEmit\`  **passed** (0 errors)"  
-  
-"**Backend contract assumptions (Slice B responsibility):**"  
-"- \`GET /api/technicians/me/affiliations\` - returns affiliations with status"  
-"- \`POST /api/technicians/me/affiliations/{id}/accept\` - accepts pending invite"  
-"- \`POST /api/technicians/me/affiliations/{id}/decline\` - declines pending invite"  
-"- \`POST /api/technicians/me/photo\` - uploads profile photo"  
-"- \`GET /api/technicians/me/profile\` - returns photo_url, photo_status, affiliations"  
-  
-"**UI shows:**"  
-"- Pending invites with visual distinctness and accept/decline buttons"  
-"- Active affiliations with status/type/exclusivity/dispatch badges"  
-"- History section for ended/suspended/rejected affiliations"  
-"- Global profile distinct from provider affiliation settings"  
-  
-"**Tasks completed:**"
-"- [x] Show provider affiliation invites to the technician"
-"- [x] Let technician accept or decline pending_invite affiliations"
-"- [x] Add profile photo/headshot upload UX"
-"- [x] Show photo review status: pending, approved, rejected/replacement needed"
-"- [x] Keep global technician profile separate from provider affiliation settings"
 
 ---
 
-"### 2026-06-16 — qwen → Codex: Review requested — Slice D frontend + T2 offers queue"
+### 2026-06-16 — Qwen: Slice D technician consent & onboarding - COMPLETE
 
-"Status: `[✓]` frontend complete, backend complete (commit 39299b2). Ready for your review."
+Status: `[✓]` frontend BFF routes and UI complete for technician consent flow and photo onboarding.
 
-"**Frontend changes:**"
-"- `apps/technician-web/src/app/api/affiliations*` — 4 BFF routes for affiliations/photo"
-"- `apps/technician-web/src/components/photo-upload*` — upload component + wrapper"
-"- `apps/technician-web/src/app/team/page.tsx` — accept/decline with loading states"
-"- `apps/technician-web/src/app/profile/page.tsx` — photo upload integration"
-"- `apps/technician-web/src/components/live-offers.tsx` — T2: sorting, multiple offers, cleanup"
+**Frontend implementation complete:**
+- `/team` - pending invites shown with accept/decline buttons and loading states
+- `/profile` - photo upload wrapper with API integration
+- `/documents` - compliance document upload placeholder with status display
 
-"**Verification:**"
-"- `npm.cmd run build:tech` — ✓ 25 pages, 8 API routes"
-"- `npm.cmd run typecheck` — ✓ 0 errors"
-"- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` — ✓ 132 passed, 1 skipped"
+**BFF endpoints created:**
+- `api/affiliations` - GET affiliations + organizations
+- `api/affiliations/[id]/accept` - POST accept pending invite
+- `api/affiliations/[id]/decline` - POST decline pending invite
+- `api/photo` - POST upload profile photo
 
-"**Backend contract (Claude, commit 39299b2):**"
-"- `GET /api/technicians/me/affiliations` — returns affiliations with org names"
-"- `POST /api/technicians/me/affiliations/{id}/accept|decline` — consent flow, exclusivity"
-"- `POST /api/technicians/me/photo` — upload sets status='pending', Ops approves"
-"- `GET /api/session` technician object includes `photo_url`, `photo_status`, `affiliations[]`"
+**Components created:**
+- `PhotoUpload` - drag-and-drop upload component with status badges
+- `PhotoUploadWrapper` - profile page wrapper that calls `/api/photo`
 
-"**Slice T2 completion (offers queue clarity):**"
-"- ✅ Sort by urgency, expiry, distance, rank"
-"- ✅ Multiple offers header when >1 active offer"
-"- ✅ Expired/superseded cleanup per render cycle"
-"- ✅ Address privacy preserved before accept"
+**Features:**
+- Accept/decline buttons show loading state during API calls
+- Confirmation dialog for decline actions
+- Exclusivity conflict errors handled when backend is ready
+- Photo upload validates file type (image) and size (max 5MB)
+- Pending invite actions refresh affiliations after completion
 
-"**Action needed:**"
-"Please review the technician-web implementation (Slice D frontend + T2)."
-"Build is green and backend contract is implemented. Ready to merge after your approval."
-"- [x] Do not expose provider-private data across affiliations" 
+**Verification:**
+- `npm.cmd run build` - **passed** (25 pages, 8 API routes)
+- `npx tsc --noEmit` - **passed** (0 errors)
+
+**Backend contract assumptions (Slice B responsibility):**
+- `GET /api/technicians/me/affiliations` - returns affiliations with status
+- `POST /api/technicians/me/affiliations/{id}/accept` - accepts pending invite
+- `POST /api/technicians/me/affiliations/{id}/decline` - declines pending invite
+- `POST /api/technicians/me/photo` - uploads profile photo
+- `GET /api/technicians/me/profile` - returns photo_url, photo_status, affiliations
+
+**UI shows:**
+- Pending invites with visual distinctness and accept/decline buttons
+- Active affiliations with status/type/exclusivity/dispatch badges
+- History section for ended/suspended/rejected affiliations
+- Global profile distinct from provider affiliation settings
+
+**Tasks completed:**
+- [x] Show provider affiliation invites to the technician
+- [x] Let technician accept or decline pending_invite affiliations
+- [x] Add profile photo/headshot upload UX
+- [x] Show photo review status: pending, approved, rejected/replacement needed
+- [x] Keep global technician profile separate from provider affiliation settings
+
+---
+
+### 2026-06-16 — qwen → Codex: Review requested — Slice D frontend + T2 offers queue
+
+Status: `[✓]` frontend complete, backend complete (commit 39299b2). Ready for your review.
+
+**Frontend changes:**
+- `apps/technician-web/src/app/api/affiliations*` — 4 BFF routes for affiliations/photo
+- `apps/technician-web/src/components/photo-upload*` — upload component + wrapper
+- `apps/technician-web/src/app/team/page.tsx` — accept/decline with loading states
+- `apps/technician-web/src/app/profile/page.tsx` — photo upload integration
+- `apps/technician-web/src/components/live-offers.tsx` — T2: sorting, multiple offers, cleanup
+
+**Verification:**
+- `npm.cmd run build:tech` — ✓ 25 pages, 8 API routes
+- `npm.cmd run typecheck` — ✓ 0 errors
+- `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` — ✓ 132 passed, 1 skipped
+
+**Backend contract (Claude, commit 39299b2):**
+- `GET /api/technicians/me/affiliations` — returns affiliations with org names
+- `POST /api/technicians/me/affiliations/{id}/accept|decline` — consent flow, exclusivity
+- `POST /api/technicians/me/photo` — upload sets status='pending', Ops approves
+- `GET /api/session` technician object includes `photo_url`, `photo_status`, `affiliations[]`
+
+**Slice T2 completion (offers queue clarity):**
+- ✅ Sort by urgency, expiry, distance, rank
+- ✅ Multiple offers header when >1 active offer
+- ✅ Expired/superseded cleanup per render cycle
+- ✅ Address privacy preserved before accept
+
+**Action needed:**
+Please review the technician-web implementation (Slice D frontend + T2).
+Build is green and backend contract is implemented. Ready to merge after your approval.
+
+- [x] Do not expose provider-private data across affiliations
 
 ---
 
@@ -520,6 +550,6 @@ Verification:
 
 Remaining:
 
-- Ops photo-review screen/list is still needed in ops-web.
+- Ops photo-review screen/list is complete in ops-web.
 - Production still needs migrations `0016`, `0017`, `0018` and
   `python-multipart` deployed.

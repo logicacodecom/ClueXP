@@ -2883,3 +2883,34 @@ Remaining:
   `python-multipart` dependency deployed before enabling this flow.
 - Provider temp-password/new-login polish and workforce history display remain
   product/UI follow-ups. — Codex
+
+### 2026-06-17 — Codex: Ops photo-review screen/list completed
+
+Closed the remaining Ops photo-review UI gap for the workforce model.
+
+Changed:
+- `apps/intake-web/api/store.py`: added `list_pending_technician_photos()`
+  to the abstract store, in-memory store, and Postgres store.
+- `apps/intake-web/api/main.py`: added platform-admin
+  `GET /admin/technicians/photos`.
+- `apps/ops-web/src/app/api/technician-photos/route.ts`: Ops BFF list route.
+- `apps/ops-web/src/app/api/technician-photos/[id]/route.ts`: Ops BFF
+  approve/reject route forwarding to `PATCH /admin/technicians/{id}/photo`.
+- `apps/ops-web/src/app/documents/page.tsx`: added a "Pending technician
+  photos" review card with approve/reject actions beside document review.
+- `apps/intake-web/api/tests/test_dispatch.py`: added pending-photo list and
+  admin route coverage.
+- `docs/PROVIDER-WORKFORCE-MODEL.md` and `docs/TECHNICIAN-APP-PROGRESS.md`:
+  marked Ops photo review complete.
+
+Verification:
+- `uv run pytest api/tests/test_dispatch.py -q` from `apps/intake-web` →
+  **134 passed, 1 skipped, 1 warning**.
+- `npm.cmd run build:ops` → **passed**.
+- `npm.cmd run typecheck` → **passed**.
+
+Remaining:
+- Production still needs migrations `0016`, `0017`, `0018` and
+  `python-multipart` deployed before enabling the full workforce/photo flow.
+- Provider `/teams` temporary-password affordance and rejoin/history drawer remain
+  polish follow-ups. — Codex

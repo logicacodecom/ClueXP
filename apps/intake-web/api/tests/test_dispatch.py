@@ -2389,6 +2389,59 @@ def test_photo_review_approve_exposes_to_customer_reject_does_not():
     assert _status_for(store, str(uuid4()), tid)["assignment"]["technician_photo_url"] == "https://cdn.example/x.jpg"
 
 
+def test_pending_technician_photos_list_only_pending_with_photo():
+    store = InMemoryStore()
+    pending, approved, no_photo = str(uuid4()), str(uuid4()), str(uuid4())
+    store._technicians = [
+        {
+            "id": pending, "display_name": "Pending Photo", "email": "pending@example.test",
+            "profile_photo_url": "https://cdn.example/pending.jpg",
+            "profile_photo_status": "pending", "status": "active", "vetting_status": "verified",
+        },
+        {
+            "id": approved, "display_name": "Approved Photo",
+            "profile_photo_url": "https://cdn.example/approved.jpg",
+            "profile_photo_status": "approved",
+        },
+        {
+            "id": no_photo, "display_name": "No Photo",
+            "profile_photo_status": "pending",
+        },
+    ]
+
+    rows = asyncio.run(store.list_pending_technician_photos())
+    assert [row["technician_id"] for row in rows] == [pending]
+    assert rows[0]["photo_url"] == "https://cdn.example/pending.jpg"
+
+
+def test_admin_pending_technician_photos_requires_platform_admin():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin_id = f"admin-photo-{uuid4()}"
+    tech_id = str(uuid4())
+    app_store.users[admin_id] = {
+        "id": admin_id, "email": "admin-photo@example.test", "phone": None,
+        "display_name": "Photo Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tech_id, "display_name": "Pending Headshot",
+        "profile_photo_url": "https://cdn.example/headshot.jpg",
+        "profile_photo_status": "pending",
+    })
+    token = create_access_token({"sub": admin_id, "id": admin_id, "roles": ["platform_admin"]})
+    client = TestClient(app)
+
+    unauth = client.get("/admin/technicians/photos")
+    assert unauth.status_code in {401, 403}
+    resp = client.get("/admin/technicians/photos", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert any(row["technician_id"] == tech_id for row in resp.json()["photos"])
+
+
 def test_provider_suspend_makes_ineligible_and_can_reactivate():
     store = InMemoryStore()
     org, tid = str(uuid4()), str(uuid4())

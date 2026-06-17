@@ -16,15 +16,33 @@ interface Document {
   status: string;
 }
 
+interface TechnicianPhoto {
+  technician_id: string;
+  display_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  photo_url: string;
+  photo_status: "pending" | "approved" | "rejected" | "none";
+  status?: string | null;
+  vetting_status?: string | null;
+}
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [photos, setPhotos] = useState<TechnicianPhoto[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/documents", { cache: "no-store" });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.detail || "Unable to load documents");
-    setDocuments(body.documents ?? []);
+    const [documentsResponse, photosResponse] = await Promise.all([
+      fetch("/api/documents", { cache: "no-store" }),
+      fetch("/api/technician-photos", { cache: "no-store" })
+    ]);
+    const documentsBody = await documentsResponse.json().catch(() => ({}));
+    const photosBody = await photosResponse.json().catch(() => ({}));
+    if (!documentsResponse.ok) throw new Error(documentsBody.detail || "Unable to load documents");
+    if (!photosResponse.ok) throw new Error(photosBody.detail || "Unable to load technician photos");
+    setDocuments(documentsBody.documents ?? []);
+    setPhotos(photosBody.photos ?? []);
   }, []);
   useEffect(() => { void refresh().catch((error) => setMessage(error.message)); }, [refresh]);
 
@@ -46,6 +64,24 @@ export default function DocumentsPage() {
     }
   }
 
+  async function decidePhoto(photo: TechnicianPhoto, status: "approved" | "rejected") {
+    setBusy(`photo:${photo.technician_id}`);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/technician-photos/${encodeURIComponent(photo.technician_id)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to review technician photo");
+      await refresh();
+      setMessage(status === "approved" ? "Technician photo approved." : "Technician photo rejected.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to review technician photo");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function openDocument(document: Document) {
     setMessage(null);
     const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/download`, { cache: "no-store" });
@@ -62,6 +98,33 @@ export default function DocumentsPage() {
       <div className="space-y-6">
         <header><div className="text-xs font-semibold uppercase text-muted-foreground">Network governance</div><h1 className="mt-2 text-3xl font-semibold">Compliance review</h1><p className="mt-2 text-sm text-muted-foreground">Verify organization and technician documents before dispatch eligibility changes.</p></header>
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
+        <Card>
+          <CardHeader><CardTitle>Pending technician photos</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {photos.length === 0 ? <p className="text-sm text-muted-foreground">No technician headshots awaiting review.</p> : photos.map((photo) => {
+              const isBusy = busy === `photo:${photo.technician_id}`;
+              return (
+                <div className="flex flex-wrap items-center gap-4 rounded-md border border-border p-4" key={photo.technician_id}>
+                  <img
+                    alt={`${photo.display_name || "Technician"} headshot`}
+                    className="size-16 rounded-full border border-border object-cover"
+                    src={photo.photo_url}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{photo.display_name || "Technician"}</div>
+                    <div className="text-sm text-muted-foreground">{photo.email || photo.phone || photo.technician_id}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Global: {photo.status || "unknown"} · Vetting: {photo.vetting_status || "unknown"}
+                    </div>
+                  </div>
+                  <Badge variant="warn">pending photo</Badge>
+                  <Button disabled={isBusy} variant="outline" onClick={() => void decidePhoto(photo, "rejected")}><X className="size-4" />Reject</Button>
+                  <Button disabled={isBusy} onClick={() => void decidePhoto(photo, "approved")}><Check className="size-4" />Approve</Button>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle>Pending documents</CardTitle></CardHeader>
           <CardContent className="space-y-3">
