@@ -986,6 +986,43 @@ Before final response, update docs/HANDOFF.md with:
   - technician photo review/moderation flow
 ```
 
+### Slice G — Provider Company Signup / Onboarding UI
+
+Status: `[ ]` planned. Mostly provider-web UI; most backend already exists.
+
+**Already built (do not rebuild):**
+- Backend: `POST /auth/register/organization` (creates a `pending_review` org +
+  provider_admin), `PATCH /provider/organization`, document upload
+  (`/provider/documents/upload-intent` + `/provider/documents`), `GET /provider/workspace`
+  (returns org `status`), Ops approve/reject (`POST /admin/organizations/{id}/approve|reject`,
+  `GET /admin/registrations`).
+- Frontend: a bare `/signup` (4 fields → `/api/register`), a wired `/documents` page,
+  and ops-web `/approvals` already handling org approve/reject (**Ops approval stays in
+  ops-web** — unchanged).
+
+**To build (provider-web UI + one backend reconcile):**
+- [ ] Restyle `/signup` with `@cluexp/console-ui` into a real onboarding entry.
+- [ ] Collect company profile fields at signup (legal name, phone, address/region) —
+  extend the `register/organization` payload + org write, or capture post-signup via
+  `PATCH /provider/organization`.
+- [ ] Explain the **pending Ops approval** step in copy.
+- [ ] After signup, route the provider to an onboarding/documents flow (`/onboarding`
+  or `/documents`) to upload required docs.
+- [ ] Show org **status** state — `pending review / active / rejected / suspended` —
+  from `GET /provider/workspace`, gating the console until approved.
+
+**Backend reconcile (required):** the org `status` CHECK is currently
+`pending_review | verified | rejected | expired` (migration `0003`). The product
+lifecycle is `pending_review | active | suspended | rejected | closed`. Decide: either
+a migration to the canonical enum (map `verified`→`active`, add `suspended`/`closed`),
+or map `verified`↔`active` in the UI only. Company lifecycle stays distinct from the
+technician lifecycle even where labels overlap.
+
+Owner: TBD (provider-web frontend — Qwen's usual lane; backend reconcile is small).
+
+Minimum verification: `npm.cmd run build:provider` + `npm.cmd run typecheck`
+(+ `uv run pytest` if the register payload / status enum changes).
+
 ## Open Follow-Ups
 
 Backend for the model is complete (Slices A, B, C, D-backend, E + the provider
