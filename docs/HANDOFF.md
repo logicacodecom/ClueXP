@@ -2736,3 +2736,25 @@ applied to prod.
 Verification: `uv run pytest apps/intake-web/api/tests/test_dispatch.py -q` →
 **132 passed, 1 skipped**; alembic offline `upgrade head --sql` green through `0018`;
 intake-web build + shared typecheck pass. — Claude
+  
+"### 2026-06-16 - Codex: review of workforce backend B/E/D-backend - APPROVED"  
+  
+"Reviewed Claude's workforce-model backend increment (Slices B, E, D-backend + completion)."  
+  
+"**Verdict: APPROVED**"  
+  
+"**Review highlights:**"  
+"- \`0017\` PK swap + \`ON CONFLICT\` upserts verified - correct surrogate id and open-period uniqueness"  
+"- Activation-time exclusivity enforced at DB level (partial unique index) and in-memory"  
+"- Self-scope on \`/technicians/me/*\` mutations correct (404 for foreign technician)"  
+"- Tenant-scope on provider \`/provider/technicians/{id}/affiliation/{end,suspend}\` verified"  
+"- No additional regression tests needed - existing coverage sufficient"  
+  
+"**Tests passed:** \`uv run pytest apps/intake-web/api/tests/test_dispatch.py -q\`  **132 passed, 1 skipped**"  
+  
+"**Next steps:**"  
+"- Commit backend changes (Slices B, E, D-backend)"  
+"- Deploy with migrations \`0016\`, \`0017\`, \`0018\` applied"  
+"- Ensure \`python-multipart\` in deployed image"  
+  
+"---" 

@@ -1,8 +1,8 @@
 "use client";
 
-import { ArrowLeft, RefreshCw, Star } from "lucide-react";
-import Link from "next/link";
+import { CalendarDays, ChevronDown, ChevronUp, Filter, RefreshCw, Star } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Screen, TechnicianShell } from "@/components/mobile";
 
 const METHOD_LABELS: Record<string, string> = {
   credit_card: "Credit card", debit_card: "Debit card", cash: "Cash", check: "Check",
@@ -23,7 +23,10 @@ type HistoryJob = {
   status: string;
   address: string | null;
   situation: string | null;
+  urgency?: string | null;
+  created_at?: string | null;
   finished_at: string | null;
+  technician_display_name?: string | null;
   review: { rating: number | null; comment: string | null } | null;
   payments: { technician: PaymentReport; customer: PaymentReport };
 };
@@ -37,6 +40,9 @@ export default function ActivityPage() {
   const [jobs, setJobs] = useState<HistoryJob[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("all");
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState("loading");
@@ -55,16 +61,26 @@ export default function ActivityPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const totalEarned = jobs.reduce((sum, j) => sum + (j.payments.technician?.amount ?? 0), 0);
+  const filteredJobs = jobs.filter((job) => {
+    if (statusFilter !== "all" && job.status !== statusFilter) return false;
+    if (dateFilter === "all") return true;
+    const finishedAt = job.finished_at ? new Date(job.finished_at).getTime() : 0;
+    if (!finishedAt) return false;
+    const days = dateFilter === "30d" ? 30 : dateFilter === "90d" ? 90 : 365;
+    return finishedAt >= Date.now() - days * 24 * 60 * 60 * 1000;
+  });
+  const totalEarned = filteredJobs.reduce((sum, j) => sum + (j.payments.technician?.amount ?? 0), 0);
+  const reviewedJobs = filteredJobs.filter((job) => job.review?.rating).length;
+  const statusOptions = Array.from(new Set(jobs.map((job) => job.status))).sort();
 
   return (
-    <div className="min-h-full bg-background pb-28">
-      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
-        <div className="flex items-center gap-3">
-          <Link href="/jobs" className="touch-target flex size-10 items-center justify-center rounded-full border border-border bg-card" aria-label="Back">
-            <ArrowLeft className="size-4" />
-          </Link>
-          <h1 className="font-condensed text-2xl font-bold uppercase">Job history</h1>
+    <TechnicianShell title="Activity">
+      <Screen>
+      <header className="flex items-center justify-between gap-3 border-b border-border pb-4">
+        <div>
+          <div className="text-[11px] font-black uppercase tracking-[.12em] text-primary">Completed work</div>
+          <h1 className="mt-1 font-condensed text-4xl font-bold uppercase leading-none">Activity</h1>
+          <p className="mt-2 text-sm leading-5 text-muted">Finished jobs, collected money, and customer reviews.</p>
         </div>
         <button className="touch-target flex size-10 items-center justify-center rounded-full border border-border bg-card" onClick={() => void load()} aria-label="Refresh">
           <RefreshCw className={`size-4 ${state === "loading" ? "animate-spin" : ""}`} />
@@ -72,28 +88,66 @@ export default function ActivityPage() {
       </header>
 
       {state === "ready" && jobs.length > 0 ? (
-        <div className="mx-4 mt-4 flex items-center justify-between border border-border bg-card p-4">
-          <div>
-            <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Total earned</p>
-            <p className="mt-1 font-condensed text-3xl font-bold">${totalEarned.toFixed(2)}</p>
+        <>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <div className="rounded-[18px] border border-border bg-card p-3">
+            <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Collected</p>
+            <p className="mt-1 font-condensed text-2xl font-bold">${totalEarned.toFixed(2)}</p>
           </div>
-          <div className="text-right">
+          <div className="rounded-[18px] border border-border bg-card p-3">
             <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Jobs</p>
-            <p className="mt-1 font-condensed text-3xl font-bold">{jobs.length}</p>
+            <p className="mt-1 font-condensed text-2xl font-bold">{filteredJobs.length}</p>
+          </div>
+          <div className="rounded-[18px] border border-border bg-card p-3">
+            <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Reviews</p>
+            <p className="mt-1 font-condensed text-2xl font-bold">{reviewedJobs}</p>
           </div>
         </div>
+        <div className="mt-3 grid gap-2 rounded-[18px] border border-border bg-card p-3">
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.1em] text-muted"><Filter className="size-3" />Filter activity</div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs font-bold text-muted">
+              Status
+              <select className="mt-1 min-h-11 w-full rounded-xl border border-border bg-card-strong px-3 text-sm text-foreground" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">All statuses</option>
+                {statusOptions.map((status) => <option key={status} value={status}>{STATUS_LABELS[status] ?? status}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-bold text-muted">
+              Date
+              <select className="mt-1 min-h-11 w-full rounded-xl border border-border bg-card-strong px-3 text-sm text-foreground" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)}>
+                <option value="all">All time</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+                <option value="365d">Last year</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        </>
       ) : null}
 
-      <div className="px-4 pt-4">
+      <div className="pt-4">
         {state === "error" ? (
           <p className="border border-danger/35 bg-danger/10 p-3 text-sm text-danger">{error}</p>
         ) : state === "loading" ? (
           <p className="py-10 text-center text-sm text-muted">Loading…</p>
         ) : jobs.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted">No finished jobs yet. Completed work appears here with payments and the customer’s review.</p>
+        ) : filteredJobs.length === 0 ? (
+          <div className="rounded-[22px] border border-border bg-card p-5 text-center">
+            <CalendarDays className="mx-auto size-8 text-muted" />
+            <p className="mt-3 font-black">No activity matches these filters</p>
+            <p className="mt-2 text-sm leading-5 text-muted">Try a wider date range or another status.</p>
+            <button className="touch-target mt-4 rounded-xl border border-border bg-card-strong px-4 py-2 text-sm font-black" onClick={() => { setStatusFilter("all"); setDateFilter("all"); }}>
+              Reset filters
+            </button>
+          </div>
         ) : (
           <ul className="space-y-3">
-            {jobs.map((job) => (
+            {filteredJobs.map((job) => {
+              const expanded = expandedJobId === job.id;
+              return (
               <li key={job.id} className="border border-border p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -105,6 +159,10 @@ export default function ActivityPage() {
                 <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
                   <dt className="text-muted">You collected</dt>
                   <dd className="text-right font-bold">{money(job.payments.technician)}</dd>
+                  <dt className="text-muted">Customer reported</dt>
+                  <dd className="text-right font-bold">{money(job.payments.customer)}</dd>
+                  <dt className="text-muted">Finished</dt>
+                  <dd className="text-right font-bold">{job.finished_at ? new Date(job.finished_at).toLocaleDateString() : "—"}</dd>
                 </dl>
                 {job.review?.rating ? (
                   <div className="mt-3 flex items-center gap-1 border-t border-border pt-3 text-sm">
@@ -112,12 +170,31 @@ export default function ActivityPage() {
                     <span className="font-black">{job.review.rating}/5</span>
                     {job.review.comment ? <span className="ml-2 truncate text-muted">“{job.review.comment}”</span> : null}
                   </div>
+                ) : (
+                  <div className="mt-3 border-t border-border pt-3 text-sm text-muted">No customer review yet.</div>
+                )}
+                <button className="touch-target mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card-strong py-2 text-sm font-black" onClick={() => setExpandedJobId(expanded ? null : job.id)}>
+                  {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                  {expanded ? "Hide details" : "View details"}
+                </button>
+                {expanded ? (
+                  <div className="mt-3 rounded-xl border border-border bg-card-strong p-3 text-sm">
+                    <dl className="grid grid-cols-2 gap-2">
+                      <dt className="text-muted">Job ID</dt><dd className="truncate text-right font-bold">{job.id}</dd>
+                      <dt className="text-muted">Urgency</dt><dd className="text-right font-bold capitalize">{(job.urgency || "—").replaceAll("_", " ")}</dd>
+                      <dt className="text-muted">Created</dt><dd className="text-right font-bold">{job.created_at ? new Date(job.created_at).toLocaleString() : "—"}</dd>
+                      <dt className="text-muted">Review</dt><dd className="text-right font-bold">{job.review?.rating ? `${job.review.rating}/5` : "No review yet"}</dd>
+                    </dl>
+                    {job.review?.comment ? <p className="mt-3 rounded-lg bg-card p-3 text-muted">“{job.review.comment}”</p> : null}
+                  </div>
                 ) : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
-    </div>
+      </Screen>
+    </TechnicianShell>
   );
 }

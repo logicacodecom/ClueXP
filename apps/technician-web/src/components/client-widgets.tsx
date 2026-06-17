@@ -2,7 +2,7 @@
 
 import { technicianAppProfile } from "@cluexp/api-client";
 import type { TechnicianAppProfile } from "@cluexp/api-client";
-import { BriefcaseBusiness, LogOut, Timer, UserRound } from "lucide-react";
+import { BriefcaseBusiness, LogOut, Map, MessageCircle, Timer, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -10,6 +10,9 @@ import { useEffect, useMemo, useState } from "react";
 
 const navItems: Array<{ href: string; label: string; icon: LucideIcon }> = [
   { href: "/jobs", label: "Home", icon: BriefcaseBusiness },
+  { href: "/map", label: "Map", icon: Map },
+  { href: "/messages", label: "Messages", icon: MessageCircle },
+  { href: "/activity", label: "Activity", icon: Timer },
   { href: "/profile", label: "Account", icon: UserRound }
 ];
 
@@ -21,7 +24,7 @@ export function TechnicianBottomNav() {
   const pathname = usePathname();
   return (
     <nav className="safe-bottom fixed bottom-0 left-1/2 z-40 w-full max-w-[480px] -translate-x-1/2 border-t border-border/80 bg-background/96 px-2 pt-2 backdrop-blur-xl md:bottom-6 md:rounded-b-[28px]">
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-5 gap-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href || pathname.startsWith(`${item.href}/`);

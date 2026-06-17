@@ -84,10 +84,61 @@ export function LiveOffersFeed() {
     };
   }, [load]);
 
+  // Cleanup expired/superseded offers
+  useEffect(() => {
+    const now = new Date();
+    const expiredIds = offers
+      .filter((offer) => {
+        const status = offer.status;
+        return (
+          status === "expired" ||
+          status === "superseded" ||
+          status === "accepted" ||
+          status === "declined" ||
+          status === "failed_delivery"
+        );
+      })
+      .map((o) => o.id || o.offer_id);
+    
+    if (expiredIds.length > 0) {
+      setOffers((current) => current.filter((o) => !expiredIds.includes(o.id || o.offer_id)));
+    }
+  }, [offers]);
+
   const activeOffers = useMemo(
     () => offers.filter((offer) => offer.status === "offered" || offer.status === "seen"),
     [offers]
   );
+
+  const sortedOffers = useMemo(() => {
+    const now = new Date();
+    return [...activeOffers].sort((a, b) => {
+      // Priority 1: Urgency (critical > high > medium > low)
+      const urgencyOrder = { critical: 4, high: 3, medium: 2, low: 1 };
+      const urgencyDiff = (urgencyOrder[b.urgency ?? "medium"] ?? 2) - (urgencyOrder[a.urgency ?? "medium"] ?? 2);
+      if (urgencyDiff !== 0) return urgencyDiff;
+
+      // Priority 2: Expiry (soonest first)
+      const aExpires = new Date(a.expires_at).getTime();
+      const bExpires = new Date(b.expires_at).getTime();
+      if (aExpires !== bExpires) return aExpires - bExpires;
+
+      // Priority 3: Distance (closest first, if available)
+      if (a.dist_km != null && b.dist_km != null) {
+        return a.dist_km - b.dist_km;
+      }
+      if (a.distance_mi != null && b.distance_mi != null) {
+        return a.distance_mi - b.distance_mi;
+      }
+
+      // Priority 4: Rank (lower is better, if available)
+      if (a.rank != null && b.rank != null) {
+        return a.rank - b.rank;
+      }
+
+      return 0;
+    });
+  }, [activeOffers]);
 
   async function decline(offer: LiveOffer, reason?: string) {
     const id = offer.id || offer.offer_id;
@@ -157,10 +208,20 @@ export function LiveOffersFeed() {
       </div>
     );
   }
+
+  const multipleOffers = activeOffers.length > 1;
+
   return (
     <div className="space-y-3" aria-live="polite">
       {error ? <p className="rounded-xl border border-danger/30 bg-danger/10 p-3 text-sm font-semibold text-danger">{error}</p> : null}
-      {activeOffers.map((offer) => (
+      {multipleOffers && (
+        <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2">
+          <p className="text-[11px] font-black uppercase text-primary">
+            {activeOffers.length} offers available
+          </p>
+        </div>
+      )}
+      {sortedOffers.map((offer) => (
         <article className="rounded-[22px] border border-primary/45 bg-card p-4" key={offer.id || offer.offer_id}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">

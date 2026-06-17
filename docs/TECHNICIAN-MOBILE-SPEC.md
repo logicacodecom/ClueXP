@@ -3,6 +3,8 @@
 > **Status:** Product/UI specification for a mobile Technician App.
 > **Audience:** UI builder, designer, or another coding model.
 > **Important:** This is a mobile app specification, not an implementation task. Build screens and flows from this document; do not assume database or API contracts beyond what is stated here.
+> **Current progress:** see `docs/TECHNICIAN-APP-PROGRESS.md` for what the
+> PWA has already implemented and the next development slices.
 
 ---
 
@@ -390,6 +392,17 @@ Recommended quick replies:
 
 Rules:
 - Chat should keep technician phone number private.
+- Chat should also keep the customer's real phone number private. ClueXP is the
+  communication layer; messages are tied to the job, not to direct personal
+  contact.
+- MVP masked job chat should be available only after assignment/acceptance and
+  should be visible to the assigned technician and the customer tracking token
+  holder.
+- Store chat messages against the job with sender role, sender id where
+  available, body, timestamps, and moderation/audit hooks for dispute or unsafe
+  situations.
+- The thread should become read-only or closed when the job reaches a terminal
+  state unless a dispute/recovery workflow explicitly keeps it open.
 - Unsafe or dispute messages should allow dispatcher escalation.
 
 ---

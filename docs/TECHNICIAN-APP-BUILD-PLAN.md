@@ -1,8 +1,9 @@
 # Technician App — Build Plan (historical)
 
-> **Status:** The PWA is built and deployed. This file remains an implementation
-> and design reference; use `EXECUTION-PLAN.md` for current production wiring
-> priorities.
+> **Status:** Historical mock-first build plan. The PWA is built and now has
+> live BFF routes for offers, active job, location, collection, and history.
+> Use `docs/TECHNICIAN-APP-PROGRESS.md` for current progress and next
+> development.
 
 > **Author:** Claude · **Date:** 2026-06-03 · **Executor:** Codex
 > **Goal:** Build the **ClueXP Technician mobile app** as a new PWA — an *Uber-grade,
