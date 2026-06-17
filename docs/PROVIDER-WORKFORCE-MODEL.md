@@ -680,15 +680,20 @@ uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
 
 #### Slice D-frontend — technician onboarding/consent/photo UI (Qwen/Codex)
 
-Status: `[~]` in progress — BFF routes exist (accept/decline/photo) and degrade
-honestly while the backend contract is absent.
+Status: ✅ <s style="color:#1a7f37">completed for current model scope</s> —
+technician-web BFF routes and UI run on the real Slice D-backend contract.
+Codex review fixed photo-upload false-success handling, aligned BFF image types
+with the backend, and ensured pending invites display provider names from the
+affiliation payload. Verified by `npm.cmd run build:tech`.
 
 Tasks:
 
-- [ ] Show provider affiliation invites to the technician.
-- [ ] Accept/decline `pending_invite` from the technician app.
-- [ ] Profile photo/headshot upload UX + review status (pending/approved/rejected).
-- [ ] Keep global technician profile separate from provider affiliation settings.
+- ✅ <s style="color:#1a7f37">Show provider affiliation invites to the technician.</s>
+- ✅ <s style="color:#1a7f37">Accept/decline `pending_invite` from the technician app.</s>
+- ✅ <s style="color:#1a7f37">Profile photo/headshot upload UX + review status
+  (pending/approved/rejected).</s>
+- ✅ <s style="color:#1a7f37">Keep global technician profile separate from
+  provider affiliation settings.</s>
 
 Minimum verification:
 
@@ -702,7 +707,10 @@ npm.cmd run typecheck
 Recommended owner: intake/customer frontend model after profile photo fields are
 available.
 
-Status: `[ ]` blocked on assigned-technician profile photo contract.
+Status: ✅ <s style="color:#1a7f37">completed for current model scope</s> —
+customer tracking exposes assigned technician name and approved photo only after
+assignment; pending/rejected/no photo falls back to "Photo pending verification".
+Codex review verified the privacy gate and intake build.
 
 Primary files:
 
@@ -711,14 +719,18 @@ Primary files:
 
 Tasks:
 
-- [ ] Add assigned technician display name and approved profile photo to the
-  customer tracking response after assignment/acceptance only.
-- [ ] Prevent candidate technician identity leaks before assignment.
-- [ ] Show fallback copy such as "Photo pending verification" when no approved
-  photo is available.
-- [ ] Update customer tracking screens for assigned, en route, arrived,
-  in-service, and reassignment states.
-- [ ] Preserve internal audit trail for reassignment.
+- ✅ <s style="color:#1a7f37">Add assigned technician display name and approved
+  profile photo to the customer tracking response after assignment/acceptance
+  only.</s>
+- ✅ <s style="color:#1a7f37">Prevent candidate technician identity leaks before
+  assignment.</s>
+- ✅ <s style="color:#1a7f37">Show fallback copy such as "Photo pending
+  verification" when no approved photo is available.</s>
+- ✅ <s style="color:#1a7f37">Update customer tracking screens for assigned,
+  arrived, in-service, and reassignment states.</s> — en-route focuses on live
+  map/ETA; matched and arrived show the assigned specialist identity.
+- ✅ <s style="color:#1a7f37">Preserve internal audit trail for
+  reassignment.</s> — no recovery/audit behavior changed.
 
 Minimum verification:
 

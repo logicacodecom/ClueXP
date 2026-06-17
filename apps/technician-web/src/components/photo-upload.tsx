@@ -6,7 +6,7 @@ import { useState } from "react";
 interface PhotoUploadProps {
   currentPhotoUrl?: string | null;
   photoStatus?: "pending" | "approved" | "rejected" | null;
-  onUpload?: (file: File) => void;
+  onUpload?: (file: File) => void | Promise<void>;
   onRemove?: () => void;
   disabled?: boolean;
 }
@@ -55,11 +55,10 @@ export function PhotoUpload({
     setUploading(true);
     setMessage(null);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate upload
-      onUpload(file);
+      await onUpload(file);
       setMessage("Photo uploaded successfully. Pending review.");
-    } catch {
-      setMessage("Failed to upload photo.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Failed to upload photo.");
     } finally {
       setUploading(false);
     }

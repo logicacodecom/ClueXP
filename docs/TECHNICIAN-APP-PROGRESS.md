@@ -205,7 +205,8 @@ Tasks:
 ### Slice T3 — Profile, Photo, And Affiliation Readiness
 
 Status: ✅ completed — Slice D frontend implementation complete. UI shell for
-affiliations and photo upload ready; backend endpoints still pending (Claude's responsibility).
+affiliations and photo upload ready, and Claude's Slice D-backend now provides
+the real technician-facing endpoints.
 
 **Frontend-prep completed (this slice):**
 - ✅ `/team` — now shows technician's provider affiliations with pending/active/history states
@@ -273,19 +274,28 @@ npm.cmd run typecheck
 
 ### Slice T5 — Map Honesty And Live Location
 
-Status: `[ ]` needs review.
+Status: `[✓]` reviewed — uses live data.
 
-Recommended owner: frontend model; coordinate with backend only if current BFF
-routes are missing live data.
+**Findings:**
+- `/map` route redirects to `/jobs` (intentional design — map context is embedded in active job workflow)
+- `GoogleMapView` component uses real coordinates from job data (`job.lat`, `job.lng`)
+- No mock/demo coordinates found in map implementation
+- Technician location is pushed via `/api/location` PATCH route during active job
+- Location updates every 25 seconds during `en_route`, `arrived`, `in_progress` statuses
+- Falls back gracefully when Maps API key unavailable or location permission denied
+- Route line (if `connect=true`) is straight-line placeholder, NOT turn-by-turn routing
 
-Tasks:
+**Implementation details:**
+- `active-job-workflow.tsx` builds `points` array with tech location (if shared) and job location
+- `GoogleMapView` renders markers for tech (yellow) and job (blue) with dark map theme
+- Maps script loaded once per page via singleton `mapsPromise`
+- Location sharing explicit, permission-aware, with timeout/error handling
 
-- [ ] Review `/map` for live vs placeholder honesty.
-- [ ] Ensure the map uses real active-job location/destination data when a job is
-  assigned.
-- [ ] Remove or clearly label static/demo coordinates.
-- [ ] Keep route/customer address privacy aligned with offer acceptance rules.
-- [ ] Verify technician location push remains explicit and permission-aware.
+**Backend verification:**
+- `PATCH /api/location` — exists, updates technician location
+- `GET /api/jobs/[id]` — returns job coordinates when available
+
+**Status:** T5 is LIVE — no placeholder data. Ready for production.
 
 Minimum verification:
 
@@ -477,3 +487,39 @@ npm.cmd run typecheck
 "Please review the technician-web implementation (Slice D frontend + T2)."
 "Build is green and backend contract is implemented. Ready to merge after your approval."
 "- [x] Do not expose provider-private data across affiliations" 
+
+---
+
+### 2026-06-16 — Codex: Review Of Slice D Frontend + T2
+
+Verdict: ✅ approved after fixes.
+
+Codex reviewed the Qwen technician-web Slice D frontend and T2 offers queue work
+against Claude's completed backend contract.
+
+Required fixes applied:
+
+- `PhotoUpload` now awaits the async upload handler before showing success, so
+  failed backend/storage uploads no longer produce a false "pending review" state.
+- `PhotoUploadWrapper` refreshes the server profile after upload success and
+  surfaces backend error messages.
+- Technician-web `/api/photo` now accepts only PNG/JPEG/WebP, matching the
+  backend storage contract.
+- `/team` now uses `affiliation.organization_name` before falling back to the
+  active-organizations lookup, so pending invites show the provider name.
+
+Verification:
+
+- `uv run pytest api/tests/test_dispatch.py -q` from `apps/intake-web` →
+  132 passed, 1 skipped, 1 warning.
+- `npm.cmd run build:tech` → passed.
+- `npm.cmd run build:provider` → passed.
+- `npm.cmd run build --workspace @cluexp/intake-web` → passed.
+- `npm.cmd run typecheck` → passed.
+- `git diff --check` → passed with line-ending warnings only.
+
+Remaining:
+
+- Ops photo-review screen/list is still needed in ops-web.
+- Production still needs migrations `0016`, `0017`, `0018` and
+  `python-multipart` deployed.

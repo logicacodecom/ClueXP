@@ -2825,3 +2825,61 @@ Remaining (documented): Ops photo-review **screen** (`ops-web`) — needs a pend
 list endpoint + screen (no photos exist to review yet); provider temp-password/history
 polish; apply migrations `0016`/`0017`/`0018` + `python-multipart` in prod; deferred
 post-MVP items. — Claude
+
+### 2026-06-16 — Codex: review of Claude/Qwen workforce outputs since last review
+
+Reviewed the committed outputs after Codex's earlier Slice B/T1/T3 pass:
+
+- `1f87549 feat(workforce): affiliation history, invite consent, customer identity (Slices B/E/D-backend)`
+- `a103de8 Slice D frontend: technician consent & onboarding + Slice T2: offers queue clarity`
+- `39299b2 feat(workforce): technician session photo/affiliations + provider suspend/end UI`
+- follow-up docs commits `af49ae5`, `3c4b1ae`, `77fccc9`, `e732258`
+
+Findings:
+
+1. **Required fix applied — technician photo upload false success.**
+   `PhotoUpload` called the async upload handler without awaiting it and showed
+   success even if `/api/photo` or the backend upload failed. Fixed by allowing
+   async `onUpload`, awaiting it, surfacing backend errors, and refreshing the
+   server profile after success.
+2. **Required fix applied — photo type mismatch.**
+   Technician-web `/api/photo` accepted GIF even though the backend storage
+   contract accepts PNG/JPEG/WebP only. Removed GIF from the BFF allow-list and
+   error copy.
+3. **UX/contract fix applied — pending invite organization names.**
+   `/team` now uses `affiliation.organization_name` before falling back to the
+   organizations lookup, so pending invites display the provider name even when
+   `/technicians/me/organizations` only returns active orgs.
+
+Review verdict after fixes: **APPROVED for current model scope**, with
+operational follow-ups below.
+
+Verified:
+
+- Backend tenant/self-scope: `/technicians/me/*` is self-scoped; provider
+  suspend/end calls are caller-org scoped; customer tracking only exposes
+  assigned technician photo when `profile_photo_status='approved'`.
+- `0017`/`0018` migrations form a linear head after `0016`; open-period
+  affiliation uniqueness plus customer-safe photo status are present.
+- Provider `/teams` suspend/end UI routes through tenant-scoped BFF routes.
+- Technician Slice D frontend now calls the real BFF/backend routes for
+  affiliations and photo upload.
+
+Verification run by Codex:
+
+- `uv run pytest api/tests/test_dispatch.py -q` from `apps/intake-web` →
+  **132 passed, 1 skipped, 1 warning**.
+- `npm.cmd run build:tech` → **passed**.
+- `npm.cmd run build:provider` → **passed**.
+- `npm.cmd run build --workspace @cluexp/intake-web` → **passed**.
+- `npm.cmd run typecheck` → **passed**.
+- `git diff --check` → **passed** with line-ending warnings only.
+
+Remaining:
+
+- Ops photo-review screen/list is still not built, although the backend approval
+  endpoint exists.
+- Production still needs migrations `0016`, `0017`, `0018` and the
+  `python-multipart` dependency deployed before enabling this flow.
+- Provider temp-password/new-login polish and workforce history display remain
+  product/UI follow-ups. — Codex

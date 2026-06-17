@@ -102,7 +102,8 @@ export default function TeamPage() {
   const activeAffiliations = affiliations.filter((a) => a.status === "active");
   const endedAffiliations = affiliations.filter((a) => a.status === "ended" || a.status === "suspended" || a.status === "rejected");
 
-  const getOrganizationName = (orgId: string) => {
+  const getOrganizationName = (orgId: string, fallbackName?: string) => {
+    if (fallbackName) return fallbackName;
     const org = organizations.find((o) => o.id === orgId);
     return org?.name || `Organization ${orgId.slice(0, 8)}...`;
   };
@@ -177,7 +178,7 @@ export default function TeamPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <h3 className="font-bold">{getOrganizationName(affiliation.organization_id)}</h3>
+                          <h3 className="font-bold">{getOrganizationName(affiliation.organization_id, affiliation.organization_name)}</h3>
                           {getStatusBadge(affiliation.status)}
                         </div>
                         {affiliation.affiliation_type && (
@@ -221,7 +222,7 @@ export default function TeamPage() {
                 <div key={affiliation.id} className="rounded-xl border border-border bg-card p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <h3 className="font-bold">{getOrganizationName(affiliation.organization_id)}</h3>
+                      <h3 className="font-bold">{getOrganizationName(affiliation.organization_id, affiliation.organization_name)}</h3>
                       <div className="mt-1 flex flex-wrap gap-2">
                         {getStatusBadge(affiliation.status)}
                         {affiliation.affiliation_type && (
@@ -256,7 +257,7 @@ export default function TeamPage() {
                 <div key={affiliation.id} className="rounded-xl border border-border bg-card p-4 opacity-75">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <h3 className="font-bold">{getOrganizationName(affiliation.organization_id)}</h3>
+                      <h3 className="font-bold">{getOrganizationName(affiliation.organization_id, affiliation.organization_name)}</h3>
                       <div className="mt-1 flex flex-wrap gap-2">
                         {getStatusBadge(affiliation.status)}
                         {affiliation.ended_reason && (

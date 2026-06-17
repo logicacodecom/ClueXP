@@ -16,9 +16,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate file type
-    const allowedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
     if (!allowedTypes.includes(file.type)) {
-      return NextResponse.json({ detail: "Invalid file type. Use JPG, PNG, GIF, or WebP." }, { status: 400 });
+      return NextResponse.json({ detail: "Invalid file type. Use JPG, PNG, or WebP." }, { status: 400 });
     }
 
     // Validate file size (max 5MB)

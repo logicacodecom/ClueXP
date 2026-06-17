@@ -1,6 +1,7 @@
 "use client";
 
 import { PhotoUpload } from "@/components/photo-upload";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 interface PhotoUploadWrapperProps {
@@ -9,6 +10,7 @@ interface PhotoUploadWrapperProps {
 }
 
 export function PhotoUploadWrapper({ currentPhotoUrl, photoStatus }: PhotoUploadWrapperProps) {
+  const router = useRouter();
   const [isUploading, setIsUploading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -32,10 +34,10 @@ export function PhotoUploadWrapper({ currentPhotoUrl, photoStatus }: PhotoUpload
       }
 
       setMessage(body.message || "Photo uploaded successfully. Pending review.");
-      
-      // In a real app, we'd refresh the profile data here
+      router.refresh();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Failed to upload photo");
+      throw cause;
     } finally {
       setIsUploading(false);
     }
@@ -49,12 +51,15 @@ export function PhotoUploadWrapper({ currentPhotoUrl, photoStatus }: PhotoUpload
   };
 
   return (
-    <PhotoUpload
-      currentPhotoUrl={currentPhotoUrl || undefined}
-      photoStatus={photoStatus || undefined}
-      onUpload={handleUpload}
-      onRemove={handleRemove}
-      disabled={isUploading}
-    />
+    <div className="space-y-2">
+      <PhotoUpload
+        currentPhotoUrl={currentPhotoUrl || undefined}
+        photoStatus={photoStatus || undefined}
+        onUpload={handleUpload}
+        onRemove={handleRemove}
+        disabled={isUploading}
+      />
+      {message ? <p className="text-sm text-muted" role="status">{message}</p> : null}
+    </div>
   );
 }
