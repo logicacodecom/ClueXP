@@ -306,16 +306,19 @@ CREATE INDEX idx_technician_documents_status ON technician_documents (status);
 - ✅ `npm.cmd run typecheck` — No type errors
 - ✅ `uv run pytest apps/intake-web/api/tests/test_dispatch.py` — 136 passed, 1 skipped
 
-**Production status:**
+**Production status — live (2026-06-17):**
 - ✅ Schema live — migration head `0021_tech_doc_defaults` applied to prod
   2026-06-17 (`0020` created the table; `0021` repaired the missing column
   defaults). Canonical: `EXECUTION-PLAN.md` §1.
-- ⏳ Code deploy pending — the technician-documents endpoints + BFF route are
-  committed locally but the prod image has not shipped, so `/documents` stays
-  non-functional in prod until the deploy lands. The deployed image must include
-  `python-multipart`.
-- ⏳ Ops action — ensure the Supabase Storage bucket `private-technician-docs`
-  exists (backend uses `storage.py:TECHNICIAN_DOCS_BUCKET`).
+- ✅ Code deployed — Vercel `cluexp-intake` auto-deploys to production on push to
+  `main`; tip commit `882664f` is READY in production and includes the
+  technician-documents endpoints + BFF routes + Ops review. `python-multipart` is
+  in the deployed image.
+- ✅ Storage bucket `private-technician-docs` exists in prod (private; backend uses
+  `storage.py:TECHNICIAN_DOCS_BUCKET` with the service-role key, so no Storage RLS
+  policies are required).
+- ☑️ Recommended: one authenticated end-to-end smoke (technician upload → Ops
+  approve/reject → status flip), since the build sandbox can't reach prod to verify.
 
 ### Slice T7 — Settings/Profile Consolidation
 

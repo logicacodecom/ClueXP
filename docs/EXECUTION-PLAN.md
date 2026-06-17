@@ -34,10 +34,11 @@ Current production migration head: **`0021_tech_doc_defaults`** (applied 2026-06
 enum), `0020` (technician documents) and `0021` (technician_documents defaults repair)
 are live. **Deploy note:** the workforce + company-signup + technician-documents
 **code** (affiliation eligibility/invite/photo, org onboarding, the technician-documents
-bug fixes) is committed locally but **not yet deployed** — prod still runs the prior
-code against the (additive, backward-compatible) schema, so the technician-documents
-endpoints stay broken (the `UUID(tid)` 500 + public-URL bugs are code fixes) until the
-deploy ships. The deployed image must include `python-multipart`.
+bug fixes, type selection, view/download, and Ops review) is **deployed** — Vercel
+`cluexp-intake` auto-deploys to production on push to `main`; tip commit `882664f` is
+READY in production, and `python-multipart` is in the deployed image. The
+`private-technician-docs` Storage bucket exists. An authenticated end-to-end runtime
+smoke is still recommended (the build sandbox can't reach prod to verify).
 
 ## 2. Completed Foundation
 
