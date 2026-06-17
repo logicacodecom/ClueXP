@@ -6,15 +6,17 @@
 table every insert fails with a NOT NULL violation. This adds the missing defaults so
 the existing prod table works. Idempotent (SET DEFAULT is safe to re-run).
 
-Revision ID: 0021_technician_documents_defaults
+Revision ID: 0021_tech_doc_defaults
 Revises: 0020_technician_documents
 Create Date: 2026-06-17
+
+(Revision id kept <= 32 chars for alembic_version varchar(32).)
 """
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0021_technician_documents_defaults"
+revision = "0021_tech_doc_defaults"
 down_revision = "0020_technician_documents"
 branch_labels = None
 depends_on = None
