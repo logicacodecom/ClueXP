@@ -2914,3 +2914,19 @@ Remaining:
   `python-multipart` deployed before enabling the full workforce/photo flow.
 - Provider `/teams` temporary-password affordance and rejoin/history drawer remain
   polish follow-ups. — Codex
+
+### 2026-06-16 — Claude: prod migrated to 0018 (workforce schema) — code deploy pending
+
+Operator applied migrations `0016`/`0017`/`0018` to production via the Supabase SQL
+Editor. Prod head is now **`0018_technician_photo_status`**; the `0016` backfill of
+`primary_organization_id` → active affiliation rows ran.
+
+State: new schema is live and **additive/backward-compatible**, so the
+currently-deployed prior code keeps working (it still reads `primary_organization_id`,
+which `0016` retained as a denormalized cache). The workforce **code** (affiliation
+eligibility, invite/consent, photo flow) is committed locally across the recent
+`feat(workforce)` commits but **not yet pushed/deployed**; once it ships (with
+`python-multipart` in the image), the new behaviour goes live.
+
+Docs updated: `EXECUTION-PLAN.md` head → `0018`; `PROVIDER-WORKFORCE-MODEL.md`
+operational follow-up marked migrations done, deploy remaining. — Claude

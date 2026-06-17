@@ -8,10 +8,6 @@
 > Legend: `[x]` complete/live, `[~]` partial or in progress, `[ ]` planned,
 > `[!]` decision/risk. Production database changes and release flips remain
 > explicitly controlled.
->
-> Redline: done items are shown struck in green —
-> ✅ <s style="color:#1a7f37">done in merged code/tests</s>. `[~]`/`[ ]`/`[!]`
-> items are left unstruck.
 
 ## 1. Canonical Status
 
@@ -32,44 +28,48 @@
 | Notifications | `[ ]` | No production SMS/email/push delivery |
 | CI | `[x]` | Local gate on 2026-06-15: API `104 passed, 1 skipped`; shared typecheck and all four production builds pass |
 
-Current production migration head: **`0015_job_payments`** (verified 2026-06-15
-via `select version_num from alembic_version` + `job_notes` and `job_payment_reports`
-present). `0011` (single-offer index), `0012` (decline_reason), `0013` (arrival PINs),
-`0014` (job_notes), `0015` (job_payment_reports) are live.
+Current production migration head: **`0018_technician_photo_status`** (applied
+2026-06-16 via the Supabase SQL Editor). `0011`–`0015` plus `0016` (affiliation
+fields + exclusive guard + backfill), `0017` (affiliation history: surrogate PK +
+open-period unique) and `0018` (technician photo status) are live. The workforce
+**code** that uses the new affiliation eligibility/invite/photo behaviour is
+committed locally but **not yet deployed** — prod runs the prior code against the
+(additive, backward-compatible) new schema until it ships, and the deployed image
+must include `python-multipart`.
 
 ## 2. Completed Foundation
 
 ### Sprint 0 - Platform foundation `[x]`
 
-- ✅ <s style="color:#1a7f37">Monorepo with separate intake, technician, provider and ops deployables.</s>
-- ✅ <s style="color:#1a7f37">Shared packages for API-facing types and console UI.</s>
-- ✅ <s style="color:#1a7f37">Supabase Postgres and Storage, Alembic migrations, restricted CORS, protected
-  server-owned fields, ticket restoration, human handoff, and CI foundation.</s>
-- ✅ <s style="color:#1a7f37">Google geocoding and browser map keys separated by use.</s>
+- Monorepo with separate intake, technician, provider and ops deployables.
+- Shared packages for API-facing types and console UI.
+- Supabase Postgres and Storage, Alembic migrations, restricted CORS, protected
+  server-owned fields, ticket restoration, human handoff, and CI foundation.
+- Google geocoding and browser map keys separated by use.
 
 ### Sprint 1 - Real intake `[x]`
 
-- ✅ <s style="color:#1a7f37">Relational `customers`/`jobs` persistence with JSONB detail.</s>
-- ✅ <s style="color:#1a7f37">Real geocoding and promoted dispatch columns.</s>
-- ✅ <s style="color:#1a7f37">Signed private job-photo upload.</s>
-- ✅ <s style="color:#1a7f37">Price/cancellation consent path and production/demo separation.</s>
+- Relational `customers`/`jobs` persistence with JSONB detail.
+- Real geocoding and promoted dispatch columns.
+- Signed private job-photo upload.
+- Price/cancellation consent path and production/demo separation.
 
 ### Sprint 2A - Neutral multi-tenant network `[x]`
 
-- ✅ <s style="color:#1a7f37">ADR 0004 origin/customer-owner/fulfillment model.</s>
-- ✅ <s style="color:#1a7f37">Trusted organization intake channels.</s>
-- ✅ <s style="color:#1a7f37">Private-by-default fulfillment policies and policy-aware dispatch.</s>
-- ✅ <s style="color:#1a7f37">Neutral network terminology across product surfaces.</s>
+- ADR 0004 origin/customer-owner/fulfillment model.
+- Trusted organization intake channels.
+- Private-by-default fulfillment policies and policy-aware dispatch.
+- Neutral network terminology across product surfaces.
 
 ### Sprint 2B - Identity, provider operations and dispatch v1 `[x]`
 
-- ✅ <s style="color:#1a7f37">First-party authentication, registration, approval/rejection and role/session mapping.</s>
-- ✅ <s style="color:#1a7f37">EN/ES localization foundation.</s>
-- ✅ <s style="color:#1a7f37">Provider organization profile, teams, affiliated technicians and compliance documents.</s>
-- ✅ <s style="color:#1a7f37">Technician availability and location updates.</s>
-- ✅ <s style="color:#1a7f37">Deterministic dispatch, technician offers, expiry sweep and acceptance.</s>
-- ✅ <s style="color:#1a7f37">Customer waiting/matched tracking read contract.</s>
-- ✅ <s style="color:#1a7f37">Login brute-force rate limiting.</s>
+- First-party authentication, registration, approval/rejection and role/session mapping.
+- EN/ES localization foundation.
+- Provider organization profile, teams, affiliated technicians and compliance documents.
+- Technician availability and location updates.
+- Deterministic dispatch, technician offers, expiry sweep and acceptance.
+- Customer waiting/matched tracking read contract.
+- Login brute-force rate limiting.
 
 The old 2B checklist is closed. Remaining end-to-end work is intentionally
 renumbered below rather than hidden inside 2B.
@@ -88,41 +88,49 @@ this execution plan treats it as Sprint 3).
 > PRs #17–#19; tracking-token fixes in #17 were verified against prod. Exact
 > endpoint contracts are posted in `docs/HANDOFF.md`.
 
-- ✅ <s style="color:#1a7f37">Add migration `0010` (applied to prod 2026-06-09):</s>
+- [x] Add migration `0010` (applied to prod 2026-06-09):
   - secure unique `jobs.tracking_token`;
   - full operational status domain and lifecycle timestamps;
   - `intake_channels.dispatch_cutover_enabled default false`;
   - ticket-scoped review/issue fields.
-- ✅ <s style="color:#1a7f37">Generate secure tokens at job creation and avoid token values in logs.</s>
-- ✅ <s style="color:#1a7f37">Add token-gated customer read: `GET /api/t/{token}`.</s>
-- ✅ <s style="color:#1a7f37">Add customer actions: `POST /api/t/{token}/confirm`, `/review`, and `/dispute`.</s>
-- ✅ <s style="color:#1a7f37">Add assigned-technician-only forward transitions for `en_route`, `arrived`, `in_progress`, and `completed_pending_customer`.</s>
-- ✅ <s style="color:#1a7f37">Explicitly reject technician attempts to set `completed_confirmed`.</s>
-- ✅ <s style="color:#1a7f37">Add role-gated dispatcher resolve/manual-close behavior.</s>
-- ✅ <s style="color:#1a7f37">Extend the scheduled sweep to auto-close `completed_pending_customer` after 72 hours.</s>
-- ✅ <s style="color:#1a7f37">Add per-channel cutover and emergency global-off behavior (`DISPATCH_CUTOVER_GLOBAL_OFF`).</s>
-- ✅ <s style="color:#1a7f37">~~Keep the legacy `/dispatch` route as rollback during the pilot (untouched).~~ **[Superseded by Sprint 3.4]** The rollback mechanism is now `DISPATCH_CUTOVER_GLOBAL_OFF=true` (env var flip, no code path needed). The `/dispatch` stub will be gated/removed in §3.4.</s>
+- [x] Generate secure tokens at job creation and avoid token values in logs.
+- [x] Add token-gated customer read:
+  `GET /api/t/{token}`.
+- [x] Add customer actions:
+  `POST /api/t/{token}/confirm`,
+  `/review`, and `/dispute`.
+- [x] Add assigned-technician-only forward transitions for
+  `en_route`, `arrived`, `in_progress`, and
+  `completed_pending_customer`.
+- [x] Explicitly reject technician attempts to set
+  `completed_confirmed`.
+- [x] Add role-gated dispatcher resolve/manual-close behavior.
+- [x] Extend the scheduled sweep to auto-close
+  `completed_pending_customer` after 72 hours.
+- [x] Add per-channel cutover and emergency global-off behavior
+  (`DISPATCH_CUTOVER_GLOBAL_OFF`).
+- [x] ~~Keep the legacy `/dispatch` route as rollback during the pilot (untouched).~~ **[Superseded by Sprint 3.4]** The rollback mechanism is now `DISPATCH_CUTOVER_GLOBAL_OFF=true` (env var flip, no code path needed). The `/dispatch` stub will be gated/removed in §3.4.
 - [!] Isolate demo `/charge`, `/finalize`, and `/review` from the real path —
   deferred: the cutover create path never invokes them (the legacy stub does);
   hard removal/gating tracked as cleanup before widening.
 
 ### 3.2 Customer and technician application integration
 
-- ✅ <s style="color:#1a7f37">Return and persist the token tracking link after cutover-enabled intake.</s>
+- [x] Return and persist the token tracking link after cutover-enabled intake.
   _(`router.push(committed.tracking_path)` if backend returns tracking_path; legacy path retained as fallback. `2f3f334`.)_
-- ✅ <s style="color:#1a7f37">Extend customer tracking from waiting/matched through:
-  active status, completion confirmation, review, dispute and closed states.</s>
+- [x] Extend customer tracking from waiting/matched through:
+  active status, completion confirmation, review, dispute and closed states.
   _(All statuses implemented incl. `no_show` as own screen; each with EN/ES. `87f6c4e`. `/api` prefix bug fixed `8ba6b62`.)_
-- ✅ <s style="color:#1a7f37">Connect technician active-job state restoration to the assigned real job.</s>
+- [x] Connect technician active-job state restoration to the assigned real job.
   _(Discriminated union `ActiveJobRead`, server-side cookie forwarding, empty/unauthorized/error states all handled. `2f3f334`.)_
-- ✅ <s style="color:#1a7f37">Connect primary technician actions to real forward status mutations.</s>
+- [x] Connect primary technician actions to real forward status mutations.
   _(arrival → `arrived`, service → `in_progress`/`completed_pending_customer`, approval → `completed_pending_customer` all wired `54d324d`.)_
-- ✅ <s style="color:#1a7f37">Implement production loading, stale-session, unauthorized, conflict,
-  offline/retry and terminal states.</s>
+- [x] Implement production loading, stale-session, unauthorized, conflict,
+  offline/retry and terminal states.
   _(401/403/409/network errors handled on all five customer actions with EN/ES; 409 auto-refreshes. `87f6c4e`.)_
-- ✅ <s style="color:#1a7f37">Keep customer and technician localization complete for every new state.</s>
+- [x] Keep customer and technician localization complete for every new state.
   _(All lifecycle screens EN/ES; cancel reason, no_show, error messages all localized. `87f6c4e`.)_
-- ✅ <s style="color:#1a7f37">Remove mock completion controls from the cutover-enabled real path.</s>
+- [x] Remove mock completion controls from the cutover-enabled real path.
   _(Verified by qwen: all technician job status pages use real `updateTechnicianJobStatus`; complete page is summary-only. `87f6c4e`.)_
 
 **PO decisions (2026-06-10):** ~~dispatch stays fully automatic (no human-in-loop
@@ -131,25 +139,25 @@ The customer search window stays backend-owned with no customer-facing countdown
 
 **PO scope additions (2026-06-10) — pre-pilot:**
 
-- ✅ <s style="color:#1a7f37">Backend: customer cancel `POST /api/t/{token}/cancel` — allowed from
+- [x] Backend: customer cancel `POST /api/t/{token}/cancel` — allowed from
   `pending_dispatch` through `en_route`, rejected (409) from `arrived` onward;
   optional reason persisted; atomically revokes outstanding offers (no
   accept-after-cancel race); the assigned technician sees the job as cancelled.
-  Exposed to the UI via `customer_actions.can_cancel` on the token read.</s>
+  Exposed to the UI via `customer_actions.can_cancel` on the token read.
   _(Committed `032cf98`; 34 tests pass.)_
-- ✅ <s style="color:#1a7f37">Backend: blind customer tracking — removes `attempts`, `max_attempts`,
+- [x] Backend: blind customer tracking — removes `attempts`, `max_attempts`,
   `offers_pending`, and `offer_expires_at` from the token read; the customer
-  sees only searching / matched / failed (Uber-style, no dispatch internals).</s>
+  sees only searching / matched / failed (Uber-style, no dispatch internals).
   _(Committed `032cf98`.)_
-- ✅ <s style="color:#1a7f37">Frontend: cancel UI — cancel button shows during search (no reason); reason textarea
-  + keep/confirm flow shows after assignment; EN/ES. `customer_actions` nesting resolved.</s>
+- [x] Frontend: cancel UI — cancel button shows during search (no reason); reason textarea
+  + keep/confirm flow shows after assignment; EN/ES. `customer_actions` nesting resolved.
   _(Committed `2f3f334`.)_
-- ✅ <s style="color:#1a7f37">Frontend: searching screen shows no dispatch process internals.</s>
+- [x] Frontend: searching screen shows no dispatch process internals.
   _(Backend strips `attempts`/`max_attempts`/`offers_pending`/`offer_expires_at` at source `032cf98`; frontend never receives them.)_
-- ✅ <s style="color:#1a7f37">Google Places Autocomplete — backend proxy live (`fb02e57`); frontend wired with 350ms
+- [x] Google Places Autocomplete — backend proxy live (`fb02e57`); frontend wired with 350ms
   debounce, up to 5 predictions, `selectPlace()` geocodes selection (`2f3f334`).
-  Places API (New) enabled in GCP (confirmed 2026-06-11).
-  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` confirmed in Vercel (confirmed 2026-06-11).</s>
+  ✅ Places API (New) enabled in GCP (confirmed 2026-06-11).
+  ✅ `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` confirmed in Vercel (confirmed 2026-06-11).
 
 **PO-reported intake issues (reported pre-#17; status as of 2026-06-11):**
 
@@ -157,7 +165,7 @@ The customer search window stays backend-owned with no customer-facing countdown
 - [~] GPS "Something went wrong" — #17 maps geolocation errors to clear messages
   (denied/unavailable/timeout); **PO re-test pending**. If "unavailable" appears
   with device location ON, reopen as a new bug.
-- ✅ <s style="color:#1a7f37">Address autocomplete — Places Autocomplete wired (`2f3f334`); GCP key confirmed.</s>
+- [x] Address autocomplete — Places Autocomplete wired (`2f3f334`); GCP key confirmed.
 - [~] Photo upload "Supabase Storage is not configured" — ✅ `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`
   confirmed in Vercel (2026-06-11); **PO re-test upload after next deploy to confirm end-to-end.**
 - [~] Cannot delete a selected file — fixed in #17 (per-file ×); **PO re-test pending**.
@@ -221,13 +229,7 @@ Dispatching is exclusively a human action. The system orders the candidate list 
 
 **Tests and docs:**
 - [ ] `test_dispatch.py`: ticket creation no longer creates offers; cron no longer re-dispatches; ops endpoints correct; decline/expiry returns job to queue.
-- ✅ <s style="color:#1a7f37">`SYSTEM-DESIGN.md`: update dispatch section.</s> _(Done 2026-06-13)_
-
-> **Note (2026-06-15):** §3.3/§3.4 above describe the earlier **ClueXP-Ops
-> global-pool** dispatch model. That model was superseded by the **provider-managed,
-> isolated-tenant** model — the shipped equivalent (Gate 1 single-targeted-offer
-> dispatch + Gate 3 recovery) is tracked as done in `docs/EXECUTION-PLAN-MVP.md`.
-> The `[ ]` items here are retained for history, not as open ClueXP-Ops work.
+- [x] `SYSTEM-DESIGN.md`: update dispatch section. _(Done 2026-06-13)_
 
 ## 4. Sprint 4 - Field Fulfillment Integrity
 
@@ -321,15 +323,6 @@ pass before expansion.
 - Additional service verticals.
 - Custom provider domains and richer channel attribution.
 - Provider subscriptions and billing.
-- Provider SaaS workforce model: global technician profiles with historical
-  provider affiliation records. Affiliation is a time-bounded relationship
-  ledger, not a single mutable company field: a technician can work with Company
-  A, leave, work with Company B, then rejoin Company A while preserving every
-  prior affiliation period. Active dispatch eligibility comes from active
-  affiliation rows; ended/suspended/rejected rows remain for audit, reactivation,
-  disputes, compliance, and performance history. Include W-2/exclusive vs
-  contractor/non-exclusive rules, company-managed teams/dispatch permissions,
-  and Ops-owned global suspension/skill catalog.
 - Advanced organization-managed routing/capacity.
 - Native technician app for dependable background GPS and push.
 - Languages beyond EN/ES.
@@ -353,11 +346,6 @@ Sprint 3 backend + technician UI is live (migration `0010`, PR #16, tracking/sta
    - Enable `metro-key` channel; dispatcher-in-the-loop acceptance matrix
    - Fix failures; then widen channel by channel
 4. **Sprint 4** begins after the pilot passes.
-
-> **Reconciliation note (2026-06-15):** this work order reflects the earlier
-> ClueXP-Ops sequencing. The shipped product is the provider-managed MVP — its
-> gate status and current operational steps live in `docs/EXECUTION-PLAN-MVP.md`
-> and the go-live procedure in `docs/PILOT-CUTOVER-PLAYBOOK.md`.
 
 ## 10. Active Decisions and Risks
 

@@ -1004,8 +1004,12 @@ Frontend:
 - [ ] Provider `/teams` temporary-password affordance + rejoin/history drawer (polish).
 
 Operational:
-- Apply migrations `0016`, `0017`, `0018` to production (none applied; prod at `0015`)
-  and run/verify the backfill; ensure `python-multipart` is in the deployed image.
+- ✅ <s style="color:#1a7f37">Migrations `0016`, `0017`, `0018` applied to production
+  (2026-06-16, Supabase SQL Editor; prod head `0018_technician_photo_status`, backfill ran).</s>
+- [ ] **Deploy the workforce code** (committed locally, currently unpushed) with
+  `python-multipart` in the image, so the affiliation eligibility/invite/photo
+  behaviour goes live. The applied migrations are additive/backward-compatible, so
+  the currently-deployed prior code keeps working until then.
 
 Deferred (post-MVP):
 - Full Ops-managed skill catalog (currently a frontend fixed list).
