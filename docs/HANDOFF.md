@@ -134,6 +134,49 @@
 
 ---
 
+### 2026-06-16 — qwen: Slice D Frontend Technician Consent & Onboarding — COMPLETE (awaiting backend API)
+
+**Frontend implementation complete.** Build and typecheck pass; UI shell ready for backend API integration.
+
+**Files changed (commit a103de8):**
+- `apps/technician-web/src/app/api/affiliations/route.ts` — GET affiliations + organizations BFF
+- `apps/technician-web/src/app/api/affiliations/[id]/accept/route.ts` — POST accept pending invite
+- `apps/technician-web/src/app/api/affiliations/[id]/decline/route.ts` — POST decline pending invite
+- `apps/technician-web/src/app/api/photo/route.ts` — POST upload profile photo
+- `apps/technician-web/src/components/photo-upload.tsx` — drag-and-drop upload component
+- `apps/technician-web/src/components/photo-upload-wrapper.tsx` — profile page wrapper
+- `apps/technician-web/src/app/team/page.tsx` — wired accept/decline with loading states
+- `apps/technician-web/src/app/profile/page.tsx` — integrated photo upload
+- `apps/technician-web/src/components/live-offers.tsx` — T2: sorting, multiple offers header, cleanup
+- `docs/HANDOFF.md`, `docs/TECHNICIAN-APP-PROGRESS.md`, `docs/TECHNICIAN-APP-BUILD-PLAN.md`
+
+**UI features:**
+- `/team` — affiliation roster with pending/active/history states, accept/decline buttons
+- `/profile` — photo upload wrapper with pending/approved/rejected status badges
+- `/documents` — compliance document upload placeholder
+- Live offers: urgency/distance/expiry sorting, multiple offers header, expired cleanup
+
+**Backend endpoints required (Claude, Slice D-backend):**
+- `GET /api/technicians/me/affiliations` → `{ affiliations: [...] }` with org names + status
+- `GET /api/technicians/me/organizations` → `{ organizations: [...] }`
+- `POST /api/technicians/me/affiliations/{id}/accept` → `{ affiliation }` — activate pending_invite, enforce exclusivity (409 on conflict)
+- `POST /api/technicians/me/affiliations/{id}/decline` → `{ affiliation, message }`
+- `GET /api/technicians/me/profile` → extended response with `photo_url`, `photo_status`, `affiliations[]`
+- `POST /api/technicians/me/photo` → photo upload with review status tracking
+
+**Verification:**
+- `npm.cmd run build:tech` — ✓ 25 pages, 8 API routes
+- `npm.cmd run typecheck` — ✓ 0 errors
+- `git log -n 3` → a103de8 (Slice D frontend + T2), 1f87549 (Slice B/D-backend), 3804719
+
+**Remaining (backend responsibility):**
+- Implement technician self-service affiliation endpoints
+- Photo upload endpoint with review status tracking
+- Exclusivity enforcement at acceptance time (409 conflict response)
+- Extend `/api/technicians/me/profile` to include photo and affiliation metadata
+
+---
+
 ### 2026-06-13 — Claude → all: ARCHITECTURE PIVOT to provider-managed dispatch
 
 Human decision: **ClueXP is a SaaS platform and does not dispatch.** A request belongs
@@ -2618,8 +2661,8 @@ Slice E is code-complete and green; not committed/pushed pending review. — Cla
 "- \`npm.cmd run build\`  **passed** (25 pages generated, 8 routes)"  
 "- \`npx tsc --noEmit\`  **passed** (0 errors)"  
 "- Team page route verified: \`	 /team\`"  
-"- API routes verified: \`� /api/affiliations\`, \`� /api/affiliations/[id]/accept\`,"  
-"  \`� /api/affiliations/[id]/decline\`, \`� /api/photo\`"  
+"- API routes verified: \`� /api/affiliations\`, \`� /api/affiliations/[id]/accept\`,"  
+"  \`� /api/affiliations/[id]/decline\`, \`� /api/photo\`"  
   
 "**Notes**:"  
 "- Accept/decline buttons show loading state while calling backend"  
