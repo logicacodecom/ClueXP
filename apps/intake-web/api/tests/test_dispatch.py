@@ -2463,3 +2463,25 @@ def test_provider_end_affiliation_is_tenant_scoped():
     assert asyncio.run(store.end_affiliation(UUID(org_b), UUID(tid), status="ended")) is None
     a = next(x for x in store._affiliations if x["organization_id"] == org_a)
     assert a["status"] == "active" and a["ended_at"] is None
+
+
+# --- Technician documents (0020/0021 fixes): flow + self-scope ----------------
+
+def test_technician_documents_flow_and_self_scope():
+    store = InMemoryStore()
+    store.technician_documents = []
+    t1, t2 = str(uuid4()), str(uuid4())
+    d = asyncio.run(store.create_technician_document(UUID(t1), {
+        "document_type": "locksmith_license",
+        "storage_bucket": "private-verification",
+        "storage_path": "technicians/x/documents/a.pdf",
+    }))
+    assert d["id"] and d["status"] == "pending_review"
+    # self-scoped: another technician cannot fetch it; the owner can.
+    assert asyncio.run(store.get_technician_document(UUID(d["id"]), UUID(t2))) is None
+    assert asyncio.run(store.get_technician_document(UUID(d["id"]), UUID(t1)))["id"] == d["id"]
+    # pending list includes it; review → approved removes it from pending.
+    assert any(x["id"] == d["id"] for x in asyncio.run(store.list_pending_technician_documents()))
+    asyncio.run(store.review_technician_document(UUID(d["id"]), status="approved", reviewer_id=None))
+    assert asyncio.run(store.list_pending_technician_documents()) == []
+    assert asyncio.run(store.list_technician_documents(UUID(t1)))[0]["status"] == "approved"

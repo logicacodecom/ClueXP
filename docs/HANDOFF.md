@@ -3043,3 +3043,32 @@ Please review: (1) migration `0019` mapping + the additive `organization_status`
 field; (2) the frame gate (no console access until active; /documents exemption; no
 redirect loop with /onboarding which is standalone); (3) the register BFF cookie set.
 Remaining: ops suspend/reactivate UI; apply `0019` to prod (prod at `0018`) + deploy. — Claude
+
+### 2026-06-17 — Claude: review + fix of Qwen's technician-documents (0020) — 3 bugs fixed
+
+Reviewed Qwen's `0020_technician_documents` migration + backend. It was applied to prod
+(`upgrade head`) but the feature was **non-functional**. Fixed:
+
+1. **Migration .py ≠ .sql → inserts fail.** `0020_technician_documents.py` created
+   `id`/`uploaded_at`/`status` as NOT NULL with **no defaults** (the `.sql` sidecar had
+   them); `create_technician_document` omits id/uploaded_at, so every insert hit a
+   NOT NULL violation. Fixed `0020.py` (added `server_default`s to match the `.sql`) and
+   added **`0021_technician_documents_defaults`** (`ALTER … SET DEFAULT`) to repair the
+   already-applied prod table. Prod must apply `0021` (it's at `0020`).
+2. **`UUID(tid)` TypeError.** `_me_technician_id` returns a `UUID`; the doc list/upload
+   endpoints did `UUID(tid)` → `TypeError` → 500. Now pass `tid` directly.
+3. **Private docs served via a public URL.** Compliance docs are PII but were uploaded to
+   a non-existent `private-technician-docs` bucket and returned a **public** URL. Now
+   upload to the existing **private-verification** bucket and return a **signed download
+   URL**; added `GET /technicians/me/documents/{id}/download` (self-scoped signed URL).
+
+Also completed the loop (was missing): **Ops review** — `GET /admin/technician-documents`
+(pending) + `PATCH /admin/technician-documents/{id}` (approve/reject + reason), with
+store `get_technician_document` (self-scoped) + `list_pending_technician_documents`.
+
+Verify: `pytest` → **135 passed, 1 skipped** (+1 doc flow/self-scope test); alembic
+offline green through `0021`; app imports clean. Note: the `.py`/`.sql` divergence pattern
+is a process risk — keep them in lockstep.
+
+Remaining: apply `0021` to prod; technician-web documents UI (Qwen) consumes
+`download_url` from upload + the download endpoint. — Claude

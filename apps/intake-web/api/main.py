@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -307,6 +307,11 @@ class AffiliationEndRequest(BaseModel):
 
 class PhotoReviewRequest(BaseModel):
     status: str  # approved | rejected
+
+
+class TechDocReviewRequest(BaseModel):
+    status: str  # approved | rejected
+    rejected_reason: str | None = None
 
 
 class CustomerReviewRequest(BaseModel):
@@ -690,6 +695,35 @@ async def review_technician_photo(
     return result
 
 
+@app.get("/admin/technician-documents")
+async def pending_technician_documents(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Technician compliance documents awaiting Ops review."""
+    require_any_role(session, {"platform_admin"})
+    return {"documents": await store.list_pending_technician_documents()}
+
+
+@app.patch("/admin/technician-documents/{document_id}")
+async def review_technician_document(
+    document_id: UUID,
+    payload: TechDocReviewRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Ops approves or rejects a technician compliance document."""
+    require_any_role(session, {"platform_admin"})
+    if payload.status not in {"approved", "rejected"}:
+        raise HTTPException(status_code=422, detail="Status must be 'approved' or 'rejected'")
+    result = await store.review_technician_document(
+        document_id, status=payload.status,
+        reviewer_id=UUID(session["user"]["id"]),
+        reason=payload.rejected_reason if payload.status == "rejected" else None,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return result
+
+
 @app.get("/admin/documents/{document_id}/download")
 async def download_document(
     document_id: UUID,
@@ -995,6 +1029,99 @@ async def upload_my_photo(
     if result is None:
         raise HTTPException(status_code=404, detail="Technician not found")
     return {"photo_url": result["photo_url"], "photo_status": result["photo_status"], "message": "Photo uploaded"}
+
+
+@app.get("/technicians/me/documents")
+async def list_my_documents(session: dict[str, Any] = Depends(require_session)) -> list[dict]:
+    """List current user's compliance documents."""
+    tid = _me_technician_id(session)
+    return await store.list_technician_documents(tid)
+
+
+@app.post("/technicians/me/documents")
+async def upload_my_document(
+    file: UploadFile = File(...),
+    document_type: str = Form(...),
+    document_number: str | None = Form(None),
+    expiration_date: str | None = Form(None),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload a compliance document for the current technician.
+    
+    Documents are stored in Supabase Storage and tracked with status 'pending_review'.
+    """
+    tid = _me_technician_id(session)
+    
+    # Validate file type
+    content_type = file.content_type or ""
+    allowed_types = {"image/png", "image/jpeg", "image/webp", "application/pdf"}
+    if content_type not in allowed_types:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid file type. Allowed: PNG, JPEG, WebP, PDF",
+        )
+    
+    # Validate file size (10MB limit)
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(
+            status_code=422,
+            detail="File size exceeds 10MB limit",
+        )
+    
+    if not storage.storage_configured():
+        raise HTTPException(status_code=503, detail="Document storage is not configured")
+    
+    # Determine file extension
+    ext_map = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+        "application/pdf": "pdf",
+    }
+    ext = ext_map.get(content_type, "pdf")
+    # Compliance documents are PII → the PRIVATE bucket; never a public URL. The client
+    # gets a short-lived signed download URL (here + via the download endpoint).
+    bucket = storage.PRIVATE_BUCKET
+    path = f"technicians/{tid}/documents/{uuid4()}.{ext}"
+
+    try:
+        await storage.upload_object(bucket, path, content, content_type)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Document upload failed: {str(exc)}")
+
+    data = {
+        "document_type": document_type,
+        "document_number": document_number,
+        "storage_bucket": bucket,
+        "storage_path": path,
+        "expiration_date": expiration_date,
+    }
+    result = await store.create_technician_document(tid, data)
+    try:
+        download_url = await storage.create_signed_download_url(bucket, path)
+    except Exception:
+        download_url = None
+    return {**result, "message": "Document uploaded", "download_url": download_url}
+
+
+@app.get("/technicians/me/documents/{document_id}/download")
+async def download_my_document(
+    document_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Issue a short-lived signed download URL for one of the technician's own
+    (private) compliance documents. Self-scoped."""
+    tid = _me_technician_id(session)
+    doc = await store.get_technician_document(document_id, tid)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not storage.storage_configured():
+        raise HTTPException(status_code=503, detail="Document storage is not configured")
+    try:
+        url = await storage.create_signed_download_url(doc["storage_bucket"], doc["storage_path"])
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not issue a download URL")
+    return {"download_url": url}
 
 
 @app.patch("/technicians/me/profile")

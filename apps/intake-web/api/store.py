@@ -282,6 +282,12 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_technician_document(self, document_id: UUID, technician_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_pending_technician_documents(self) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
     async def update_technician_location(
         self, technician_id: UUID, *, lat: float, lng: float
     ) -> dict | None:  # pragma: no cover
@@ -1543,6 +1549,15 @@ class InMemoryStore(Store):
                 doc["reviewed_at"] = datetime.now(timezone.utc).isoformat()
                 return doc
         return None
+
+    async def get_technician_document(self, document_id: UUID, technician_id: UUID) -> dict | None:
+        for doc in self.technician_documents:
+            if str(doc["id"]) == str(document_id) and str(doc["technician_id"]) == str(technician_id):
+                return dict(doc)
+        return None
+
+    async def list_pending_technician_documents(self) -> list[dict]:
+        return [dict(d) for d in self.technician_documents if d.get("status") == "pending_review"]
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         return []
@@ -4526,6 +4541,44 @@ class PostgresStore(Store):
             "uploaded_at": row[7].isoformat() if row[7] else None,
             "reviewed_at": row[8].isoformat() if row[8] else None,
         }
+
+    async def get_technician_document(self, document_id: UUID, technician_id: UUID) -> dict | None:
+        """Fetch one of the technician's own documents (self-scoped: technician_id must
+        match). Returns bucket/path for issuing a signed download URL."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, technician_id, document_type, storage_bucket, storage_path, status"
+                " from technician_documents where id = %s and technician_id = %s",
+                (str(document_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]), "technician_id": str(row[1]), "document_type": row[2],
+            "storage_bucket": row[3], "storage_path": row[4], "status": row[5],
+        }
+
+    async def list_pending_technician_documents(self) -> list[dict]:
+        """All technician documents awaiting Ops review (with technician name)."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select d.id, d.technician_id, t.display_name, d.document_type,"
+                " d.document_number, d.status, d.expiration_date, d.uploaded_at"
+                " from technician_documents d"
+                " join technicians t on t.id = d.technician_id"
+                " where d.status = 'pending_review' order by d.uploaded_at",
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "technician_id": str(r[1]), "technician_name": r[2],
+                "document_type": r[3], "document_number": r[4], "status": r[5],
+                "expiration_date": r[6].isoformat() if r[6] else None,
+                "uploaded_at": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+        ]
 
 
 def make_store() -> Store:
