@@ -77,7 +77,7 @@ export default async function ProfilePage() {
             <AvailabilityToggle />
           </div>
           <p className="mt-3 text-xs text-muted">
-            Go online to receive job offers. You can update GPS below.
+            Go online to receive job offers. GPS updates live in App settings.
           </p>
         </Section>
 
