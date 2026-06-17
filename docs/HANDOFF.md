@@ -2930,3 +2930,21 @@ eligibility, invite/consent, photo flow) is committed locally across the recent
 
 Docs updated: `EXECUTION-PLAN.md` head → `0018`; `PROVIDER-WORKFORCE-MODEL.md`
 operational follow-up marked migrations done, deploy remaining. — Claude
+
+### 2026-06-16 — Claude: workforce code DEPLOYED to prod (brief API 500 → fixed)
+
+Pushed `main` and the four Vercel production projects redeployed (all green). The
+workforce backend is now live: `GET /api/technicians/me/affiliations` → 401 (gated),
+`/api/t/{bogus}` → 404, `/api/ops/flags` → 401 — i.e., the FastAPI function boots and
+the new endpoints exist.
+
+Incident (self-inflicted, ~minutes): the first deploy 500'd on every `/api/*` route
+because `python-multipart` (needed by the `/technicians/me/photo` `File`/`UploadFile`
+endpoint) was only in `pyproject.toml`/`uv.lock`, but the Vercel Python function
+installs from **`apps/intake-web/requirements.txt`**. The Next build "succeeded" (it
+only builds the frontend); the Python function crashed at import. Fixed by adding
+`python-multipart>=0.0.9` to `requirements.txt` (commit `3b9ce4c`) + redeploy; API
+recovered. Lesson recorded.
+
+State: prod head `0018`; workforce code live; affiliation-based eligibility now active
+(backfill ran in `0016`). — Claude
