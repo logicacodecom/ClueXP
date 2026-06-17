@@ -185,29 +185,99 @@ Production note:
 
 ### Slice T4 — Masked Job Chat
 
-Status: `[ ]` next recommended communication slice.
+Status: `[ ]` next recommended communication slice. **Not started.** Assessment
+below (2026-06-17) — pick this up later.
 
 Recommended owner: backend-capable model for message storage/API, then frontend
-model for technician/customer thread UI.
+model for technician/customer thread UI. (One coder may do both; backend first.)
 
-Tasks:
+#### Current state (assessed 2026-06-17) — effectively greenfield
 
-- [ ] Add backend job-message storage tied to `job_id`, sender role, sender id
-  where available, body, timestamps, and moderation/audit hooks.
-- [ ] Add assigned-job message APIs for technician web and customer tracking
-  token users.
-- [ ] Show the same masked job thread on the assigned technician job screen and
-  the customer tracking page after assignment/acceptance only.
-- [ ] Keep technician/customer phone numbers private.
-- [ ] Make the thread read-only or closed after terminal job states unless a
-  dispute/recovery workflow keeps it open.
-- [ ] Start with short polling; upgrade to realtime/WebSocket later if needed.
+- **Backend: nothing exists.** No message/chat table, no endpoints, no migration.
+  Next migration would be **`0022`**.
+- **Frontend: all placeholders/dead.**
+  - `apps/technician-web/src/app/jobs/[id]/chat/page.tsx` only `redirect()`s to
+    `/jobs/{id}`.
+  - `/messages` (`apps/technician-web/src/app/messages/page.tsx`) redirects to
+    `/jobs`.
+  - `ChatPreview` in `apps/technician-web/src/components/mobile.tsx` is a hardcoded
+    mock and is **never rendered** anywhere — delete or replace it when building.
+  - The active-job "Message" secondary action points at the dead chat route.
+- **Customer side:** `apps/intake-web/src/app/t/[token]/page.tsx` has no chat
+  affordance.
+- **Masking baseline already correct:** the customer assignment payload exposes
+  `technician_display_name` but **never a phone**. T4 must preserve this and add
+  no phone anywhere.
+
+#### Scope of work (bigger than T6 — a new two-party subsystem)
+
+**1. Backend (migration + API — infra owner):**
+- Migration `0022`: `job_messages` table — `id`, `job_id` FK, `sender_role`
+  (`technician` | `customer`), `sender_id` (nullable for the no-account customer),
+  `body`, `created_at`, plus an audit/moderation flag column. Index on
+  `(job_id, created_at)`.
+- Store methods (InMemory + Postgres): `create_job_message`,
+  `list_job_messages(job_id, since?)`.
+- Endpoints (4):
+  - Technician (session-auth; **must be the assigned fulfillment technician** for
+    the job): `GET` + `POST /api/tickets/{id}/messages`.
+  - Customer (token-gated; **no account**): `GET` + `POST /api/t/{token}/messages`.
+- **Authorization/gating is the hard part:** thread exists **only after
+  assignment/acceptance**; **read-only after terminal states** unless a dispute
+  keeps it open; the token must resolve to exactly that job; never leak candidates,
+  rosters, internal IDs, PII, or phone numbers.
+
+**2. BFF routes:**
+- technician-web: `/api/jobs/[id]/messages` (cookie → Bearer).
+- intake-web (customer): `/api/t/[token]/messages` (token in path, no auth).
+
+**3. Frontend (two thread UIs, short polling ~5s):**
+- Real technician chat screen (replace the redirect; remove the dead `ChatPreview`).
+- Chat panel on the customer `/t/[token]` matched state.
+- Customer side must be **EN/ES** (intake-web is localized); technician-web is
+  English-only (no i18n infra there).
+
+**4. Tests (~6–8 pytest):** not-your-job 403, chat-before-assignment blocked,
+terminal-state read-only, token scoping to the right job, and no-leak of phone/PII.
+
+**5. Deploy:** apply migration `0022` to prod (Supabase SQL Editor or Session
+Pooler, then stamp `alembic_version`); code auto-deploys on push to `main`.
+
+#### Product decisions needed before building
+
+1. **Open/closed window** — open from `assigned` through
+   `completed_pending_customer`; read-only after `completed_confirmed` /
+   `cancelled` / `no_show`. Does a `disputed` job keep the thread open? (spec
+   implies yes). This decision shapes the endpoint gating.
+2. **Moderation depth** — MVP = store + audit only (recommended) vs. content
+   filtering now.
+3. **Unread badges** — doc lists these as *medium* priority; recommend deferring
+   to keep the slice shippable (see "Medium priority" gaps above).
+
+#### Suggested sequencing
+
+Backend-first: migration `0022` → store methods → 4 gated endpoints → pytest;
+then the two BFF route sets; then the two polling UIs (technician, then customer).
+
+Tasks (durable checklist):
+
+- [ ] Migration `0022` `job_messages` + store methods (InMemory + Postgres).
+- [ ] 4 gated endpoints (technician session-auth + customer token-gated).
+- [ ] Show the same masked thread on the technician job screen and the customer
+  tracking page, after assignment/acceptance only.
+- [ ] Keep technician/customer phone numbers private (no new phone field anywhere).
+- [ ] Thread read-only/closed after terminal job states unless a dispute keeps it
+  open (per decision #1).
+- [ ] Short polling first; upgrade to realtime/WebSocket later if needed.
+- [ ] BFF routes (technician-web + intake-web) and the two thread UIs (EN/ES on
+  customer side).
+- [ ] pytest coverage for auth/gating/no-leak; apply migration `0022` to prod.
 
 Boundaries:
 
 - Do not expose raw customer or technician phone numbers.
 - Do not show chat before assignment/acceptance.
-- Do not implement real voice/call in this slice.
+- Do not implement real voice/call in this slice (that is Slice T8).
 - Current web/PWA is enough for chat MVP; native app is not required.
 
 Minimum verification:
