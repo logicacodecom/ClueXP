@@ -2485,3 +2485,22 @@ def test_technician_documents_flow_and_self_scope():
     asyncio.run(store.review_technician_document(UUID(d["id"]), status="approved", reviewer_id=None))
     assert asyncio.run(store.list_pending_technician_documents()) == []
     assert asyncio.run(store.list_technician_documents(UUID(t1)))[0]["status"] == "approved"
+
+
+def test_postgres_sql_has_no_unescaped_percent():
+    """Guard the psycopg landmine that the in-memory tests can't see: in a
+    parameterised query a literal '%' (e.g. LIKE 'x:%') must be doubled as '%%',
+    or psycopg raises at execute time and the endpoint 500s. Regression for the
+    get_provider_active_jobs 'tech_issue:%' bug. Scans the store source for a '%'
+    that is not part of '%s', '%%', or a '%(name)s' mapping placeholder."""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1].joinpath("store.py").read_text(encoding="utf-8")
+    # strip the valid tokens (%%, %s, %(name)s) then flag any '%' that remains.
+    offenders = [
+        (i + 1, line.strip())
+        for i, line in enumerate(src.splitlines())
+        if "%" in re.sub(r"%%|%s|%\([^)]+\)s", "", line)
+    ]
+    assert not offenders, f"unescaped '%' in SQL (use '%%'): {offenders}"

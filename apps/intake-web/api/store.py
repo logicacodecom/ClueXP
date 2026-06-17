@@ -3357,7 +3357,7 @@ class PostgresStore(Store):
                 " left join dispatch_offers o on o.job_id = j.id and o.status = 'offered'"
                 " left join lateral ("
                 "   select event from events"
-                "   where job_id = j.id and event like 'tech_issue:%'"
+                "   where job_id = j.id and event like 'tech_issue:%%'"
                 "   order by at desc limit 1"
                 " ) i on true"
                 " where (j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)"
