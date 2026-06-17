@@ -99,8 +99,9 @@ without the legacy instant-match, demo finalize, or demo review path.
 - Connect intake tracking and technician completion UI to those contracts.
 - Pilot one channel, run the full acceptance matrix, then widen by channel.
 
-This is the immediate product priority. Detailed contract:
-`docs/SPRINT-2B-CUTOVER-PLAN.md`.
+This release shipped — the cutover lifecycle is live (canonical status:
+`docs/EXECUTION-PLAN.md` §3; design: `docs/SYSTEM-DESIGN.md`). The standalone
+`SPRINT-2B-CUTOVER-PLAN.md` design doc was removed 2026-06-17 as fully delivered.
 
 ### Release 2 - Field Fulfillment Integrity
 

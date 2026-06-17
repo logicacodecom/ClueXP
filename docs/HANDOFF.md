@@ -9,7 +9,8 @@
 > - `docs/EXECUTION-PLAN.md` — sprint tasks + acceptance + **Canonical Status** (current truth)
 > - `docs/ROADMAP.md` — epics + sprint table
 > - `docs/DATABASE-AND-STORAGE.md`, `SPEC.md`, `DESIGN-SYSTEM.md`, `adr/0001`–`0004` — design contracts
-> - `docs/SPRINT-2B-CUTOVER-PLAN.md` — the approved Sprint 3 fulfillment-cutover design
+> - `docs/SYSTEM-DESIGN.md` — fulfillment-cutover design (the standalone
+>   `SPRINT-2B-CUTOVER-PLAN.md` was removed 2026-06-17 once delivered)
 >
 > Don't restate scope or state here; link to those docs. Keep it lean — delete
 > threads once resolved (the durable outcome belongs in the plan/design docs).

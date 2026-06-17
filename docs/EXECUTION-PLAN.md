@@ -81,8 +81,11 @@ renumbered below rather than hidden inside 2B.
 
 **Priority:** P0
 **Goal:** prove one real request-to-close cycle on one pilot intake channel.
-**Detailed design:** `docs/SPRINT-2B-CUTOVER-PLAN.md` (historical filename;
-this execution plan treats it as Sprint 3).
+**Detailed design:** the cutover design (two-field `trust_state`/`job.status`
+model, capability `tracking_token`, 72h auto-close, per-`intake_channel` flag) is
+**implemented and live** — see §3.1–§3.2 below and `docs/SYSTEM-DESIGN.md`. The
+standalone `SPRINT-2B-CUTOVER-PLAN.md` design doc was removed 2026-06-17 as fully
+delivered (it had gone stale at rev `0009`).
 
 ### 3.1 Backend and data contract
 
