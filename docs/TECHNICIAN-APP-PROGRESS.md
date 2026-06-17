@@ -184,56 +184,54 @@ Tasks:
 
 ### Slice T2 — Offers Queue Clarity
 
-Status: `[~]` started — multiple offers render; UX can be clearer.
+Status: ✅ completed — multiple offers render with sorting, header, and cleanup.
 
 Tasks:
 
 - ✅ <s style="color:#1a7f37">Render more than one active offer at once.</s> —
   `LiveOffersFeed` maps all active offers.
-- [ ] Sort by urgency, expiry, and distance.
-- [ ] Show "multiple offers available" header when more than one offer is live.
-- [ ] Add explicit expired/superseded cleanup behavior.
-- [ ] Preserve address/customer-detail privacy before accept.
+- ✅ <s style="color:#1a7f37">Sort by urgency, expiry, and distance.</s> —
+  Priority: urgency (critical>high>medium>low), expiry (soonest first),
+  distance (closest first), rank (lower first).
+- ✅ <s style="color:#1a7f37">Show "multiple offers available" header.</s> —
+  Header displays when `activeOffers.length > 1`.
+- ✅ <s style="color:#1a7f37">Add explicit expired/superseded cleanup.</s> —
+  Offers with terminal status (expired, superseded, accepted, declined, failed_delivery)
+  are removed from state on each render cycle.
+- ✅ <s style="color:#1a7f37">Preserve address/customer-detail privacy before accept.</s> —
+  Exact address shown only after acceptance; shows "Nearby service area" or
+  "Approximate service area" before accept.
 
 ### Slice T3 — Profile, Photo, And Affiliation Readiness
 
-Status: `[✓]` frontend-prep slice complete — UI shell for affiliations and photo
-upload is now in place. Claude's Slice B backend can create existing-technician
-`pending_invite` rows, but the technician-facing read/accept/decline and
-profile-photo endpoints are still follow-up backend work.
+Status: ✅ completed — Slice D frontend implementation complete. UI shell for
+affiliations and photo upload ready; backend endpoints still pending (Claude's responsibility).
 
 **Frontend-prep completed (this slice):**
 - ✅ `/team` — now shows technician's provider affiliations with pending/active/history states
-- ✅ `/profile` — photo upload placeholder with status badges (pending/approved/rejected)
+- ✅ `/profile` — photo upload wrapper with API integration
 - ✅ `/documents` — compliance document upload placeholder with review status
-- ✅ `api/affiliations` — BFF route to fetch technician affiliations and organizations;
-  returns an honest backend-not-ready state while technician-facing backend
-  endpoints are pending
-- ✅ `api/affiliations/[id]/accept|decline` — technician-web BFF routes are
-  present and build cleanly; completion still depends on backend accept/decline
-  endpoints enforcing consent and exclusivity.
-- ✅ `api/photo` — technician-web BFF route validates image type/size and
-  forwards to the backend photo endpoint; completion still depends on the
-  backend profile/photo contract and review storage.
+- ✅ `api/affiliations` — BFF route to fetch technician affiliations and organizations
+- ✅ `api/affiliations/[id]/accept|decline` — technician-web BFF routes with loading states
+- ✅ `api/photo` — technician-web BFF route validates image type/size
 - ✅ `PhotoUpload` component — drag-and-drop UI with status badges
 - ✅ Global profile and provider affiliations kept distinct in UI
 
-Tasks:
+**Backend follow-ups after Slice B (Claude) — ✅ DONE (Slice D-backend):**
+- ✅ <s style="color:#1a7f37">`GET /api/technicians/me/affiliations` — returns the tech's affiliations.</s>
+- ✅ <s style="color:#1a7f37">`GET /api/technicians/me/organizations` — orgs for name lookup.</s>
+- ✅ <s style="color:#1a7f37">Photo/affiliation read — the `GET /api/session` technician object now carries
+  `photo_url`, `photo_status`, and `affiliations[]` (the `/profile` screen reads these
+  directly; no separate `/me/profile` endpoint needed).</s>
+- ✅ <s style="color:#1a7f37">`POST /api/technicians/me/photo` — upload sets `profile_photo_status='pending'`;
+  Ops approves via `PATCH /admin/technicians/{id}/photo`; only an approved photo is
+  customer-visible (Slice E).</s>
+- ✅ <s style="color:#1a7f37">`POST /api/technicians/me/affiliations/{id}/accept|decline` — consent flow,
+  exclusivity enforced at activation.</s>
 
-- [x] Add technician profile photo upload UI. _(frontend-prep: placeholder ready; backend: profile/photo contract)_
-- [x] Show photo review status. _(frontend-prep: status badges ready; backend: photo_status field)_
-- [x] Show provider affiliation/invite status — backend ledger exists (Slice A);
-  frontend/BFF shell is ready and degrades honestly until the technician-facing
-  affiliation read endpoint lands.
-- [x] Keep global profile distinct from provider affiliation settings.
-
-**Backend follow-ups after Slice B:**
-- `GET /api/technicians/me/affiliations` — backend endpoint to return technician's affiliations
-- `GET /api/technicians/me/organizations` — backend endpoint to return organizations for name lookup
-- `GET /api/technicians/me/profile` — extended response with `photo_url`, `photo_status`, `affiliations[]`
-- `POST /api/technicians/me/photo` — photo upload endpoint with review status tracking
-- Affiliation accept/decline actions — backend endpoints for
-  `POST /api/technicians/me/affiliations/{id}/accept` and `decline`
+Technician-facing backend contract is complete; the invite/photo screens run on real
+data. Remaining frontend: an Ops photo-review screen (`ops-web`) to drive approve/reject
+(backend `PATCH /admin/technicians/{id}/photo` exists).
 
 ### Slice T4 — Masked Job Chat
 
@@ -397,7 +395,7 @@ npm.cmd run typecheck
   
 "### 2026-06-16 - Qwen: Slice D technician consent & onboarding - COMPLETE"  
   
-"Status: \`[�]\` frontend BFF routes and UI complete for technician consent flow and photo onboarding."  
+"Status: \`[�]\` frontend BFF routes and UI complete for technician consent flow and photo onboarding."  
   
 "**Frontend implementation complete:**"  
 "- \`/team\` - pending invites shown with accept/decline buttons and loading states"  
