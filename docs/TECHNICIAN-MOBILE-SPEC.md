@@ -42,6 +42,12 @@ Key needs:
 - Belong to one or many teams such as car lockout, home team, key team, night shift, region team.
 - Share live GPS location with the organization and, when on an active job, the customer-facing tracking flow.
 
+Model note:
+- Technician identity is global. Company/provider membership is represented by
+  affiliation records, not by changing the technician into a company-owned
+  identity. Affiliations keep history, so a technician can leave, rejoin, or
+  belong to multiple providers over time according to the workforce model.
+
 ### 2.3 Organization Dispatcher / Manager
 
 Not part of this Technician App build, but the Technician App must be compatible with the organization-managed dispatch direction in `SPEC.md` §2.10.
@@ -569,8 +575,9 @@ Purpose:
 
 Content:
 - Name/photo.
-- Provider type: individual or affiliated.
-- Organization membership if any.
+- Global technician profile details.
+- Provider/company affiliations if any, including active, pending, suspended,
+  ended, or historical membership.
 - Team membership if any.
 - Skills/service types.
 - Service area.
@@ -794,14 +801,26 @@ Technician:
 - user_id
 - display_name
 - photo_url
+- photo_status: none, pending, approved, rejected
 - phone/email
-- provider_type: individual or affiliated
 - status
 - skills/service_types
 - service_area
 - rating
 - current_lat/current_lng
 - last_location_at
+
+Affiliation:
+- id
+- technician_id
+- organization_id
+- organization_name
+- status: pending_invite, active, suspended, ended, declined
+- affiliation_type: w2_employee, contractor, individual_marketplace
+- exclusivity: exclusive, non_exclusive
+- dispatch_allowed
+- starts_at / ended_at where applicable
+- invited_at / accepted_at / declined_at where applicable
 
 Organization:
 - id
@@ -1009,7 +1028,8 @@ The UI should still contain believable placeholders/states for these where they 
 If another model builds the UI:
 - Build mobile-first.
 - Start with Jobs Home, Incoming Job Alert, Active Job Overview, Chat, Map, Profile/Documents.
-- Use local mock data first.
+- Use explicit placeholders only for not-yet-live slices. Do not replace live
+  BFF-backed screens with local mock data.
 - Keep all technician app screens separate from the customer intake flow.
 - Do not implement production API calls until the backend contract is scheduled.
 - Treat this document as the UI flow contract.

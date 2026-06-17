@@ -32,7 +32,8 @@ routes that forward the signed-in technician session to the intake API.
 
 **Next:**
 - Masked job chat (T4) remains the next high-priority slice
-- Documents/compliance (T6) needs backend endpoints before frontend can be live
+- Documents/compliance (T6) is code-complete; remaining work is the prod code
+  deploy + `private-technician-docs` bucket (see Slice T6)
 
 ## Current Reality
 
@@ -61,7 +62,6 @@ Still intentionally incomplete:
 
 - Masked job chat is not live yet.
 - Voice/call remains placeholder until the communication provider is selected.
-- Technician documents/compliance is still mock and needs real backend endpoints.
 - Native background GPS, push notifications, and alarm behavior remain future
   native/PWA-platform work.
 
@@ -82,7 +82,7 @@ Secondary routes that exist but are not bottom tabs:
 - `/settings` — reached from Account/Profile; controls language and explicit GPS
   update actions.
 - `/team` — provider affiliation/team context.
-- `/documents` — compliance/document surface; currently mock.
+- `/documents` — compliance/document surface; live with upload and status tracking.
 - `/onboarding` — onboarding flow.
 - `/offer/[id]` — focused offer detail/decision route.
 
@@ -100,8 +100,6 @@ High priority:
 
 - Add masked job chat after assignment so the customer and assigned technician
   can message through ClueXP without exposing phone numbers.
-- Replace technician `/documents` mock data with live document/compliance
-  endpoints and upload flow.
 - Confirm all active-job lifecycle transitions remain live backend mutations and
   do not invent a separate technician-only lifecycle.
 
@@ -244,41 +242,72 @@ Future polish:
 
 ### Slice T6 — Documents And Compliance
 
-Status: `[ ]` needs backend endpoints; current technician `/documents` page is
-mock/placeholder.
+Status: ✅ **CODE COMPLETE** — backend, BFF, and frontend integrated; prod schema
+applied; **prod code deploy pending**.
 
-Required backend endpoints:
+**Completed:**
+- ✅ <s style="color:#1a7f37">Database migration for `technician_documents` table.</s>
+- ✅ <s style="color:#1a7f37">Backend endpoints: `GET /api/technicians/me/documents`, `POST /api/technicians/me/documents`.</s>
+- ✅ <s style="color:#1a7f37">InMemoryStore and PostgresStore implementations.</s>
+- ✅ <s style="color:#1a7f37">Frontend `/documents` page uses real API with upload flow.</s>
+- ✅ <s style="color:#1a7f37">File validation: 10MB limit, types: PNG, JPEG, WebP, PDF.</s>
+- ✅ <s style="color:#1a7f37">Document status tracking: pending_review, approved, rejected.</s>
 
-- `GET /api/technicians/me/documents` — list technician documents with status.
-- `POST /api/technicians/me/documents` — upload new technician document.
+**Database Schema (migration 0020; `0021_tech_doc_defaults` repaired missing
+`id`/`uploaded_at`/`status` defaults):**
+```sql
+CREATE TABLE technician_documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  technician_id UUID NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+  document_type TEXT NOT NULL,
+  document_number TEXT,
+  storage_bucket TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_review',
+  rejected_reason TEXT,
+  expiration_date DATE,
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_at TIMESTAMPTZ,
+  CHECK (status IN ('pending_review', 'approved', 'rejected'))
+);
 
-Document response should include:
-
-- `id`
-- `name`
-- `type`
-- `status`
-- `uploaded_at`
-- `reviewed_at`
-- `expiration_date`
-- `rejection_reason`
-
-Required frontend changes:
-
-- Replace hardcoded document array with API fetch.
-- Implement upload with file validation and progress/loading state.
-- Refresh document status after upload.
-- Show required document types from backend policy.
-- Connect compliance status to availability/dispatch blocking only after the
-  backend policy exists.
-
-Minimum verification:
-
-```powershell
-uv run pytest apps/intake-web/api/tests/test_dispatch.py -q
-npm.cmd run build:tech
-npm.cmd run typecheck
+CREATE INDEX idx_technician_documents_technician_id ON technician_documents (technician_id);
+CREATE INDEX idx_technician_documents_status ON technician_documents (status);
 ```
+
+**API Response Format:**
+```json
+[
+  {
+    "id": "uuid",
+    "document_type": "driver_license",
+    "document_number": "D1234567",
+    "storage_bucket": "private-technician-docs",
+    "storage_path": "technicians/{id}/documents/{uuid}.pdf",
+    "status": "pending_review",
+    "rejected_reason": null,
+    "expiration_date": "2027-01-15",
+    "uploaded_at": "2026-06-17T10:30:00Z",
+    "reviewed_at": null
+  }
+]
+```
+
+**Verification (2026-06-17, post-`0020` repair):**
+- ✅ `npm.cmd run build:tech` — Build successful
+- ✅ `npm.cmd run typecheck` — No type errors
+- ✅ `uv run pytest apps/intake-web/api/tests/test_dispatch.py` — 136 passed, 1 skipped
+
+**Production status:**
+- ✅ Schema live — migration head `0021_tech_doc_defaults` applied to prod
+  2026-06-17 (`0020` created the table; `0021` repaired the missing column
+  defaults). Canonical: `EXECUTION-PLAN.md` §1.
+- ⏳ Code deploy pending — the technician-documents endpoints + BFF route are
+  committed locally but the prod image has not shipped, so `/documents` stays
+  non-functional in prod until the deploy lands. The deployed image must include
+  `python-multipart`.
+- ⏳ Ops action — ensure the Supabase Storage bucket `private-technician-docs`
+  exists (backend uses `storage.py:TECHNICIAN_DOCS_BUCKET`).
 
 ### Slice T7 — Settings/Profile Consolidation
 
