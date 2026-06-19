@@ -2583,3 +2583,162 @@ def test_provider_cannot_upload_technician_documents():
         headers={"Authorization": f"Bearer {access}"},
     )
     assert res.status_code == 403, res.text
+
+
+# --- global_settings: DB-backed offer TTL + admin API (migration 0023) -------
+
+def test_settings_resolve_ttl_from_db():
+    from api import settings as rs
+    store = InMemoryStore()  # seeded with dispatch_offer_ttl_seconds = 300
+    rs.clear_cache()
+    assert asyncio.run(rs.resolve_offer_ttl_seconds(store)) == 300
+    asyncio.run(store.upsert_global_setting("dispatch_offer_ttl_seconds", 240, "integer", None))
+    rs.clear_cache()
+    assert asyncio.run(rs.resolve_offer_ttl_seconds(store)) == 240
+
+
+def test_settings_fallback_to_env_when_db_absent(monkeypatch):
+    from api import settings as rs
+    store = InMemoryStore()
+    store._global_settings.clear()  # no DB row
+    monkeypatch.setenv("DISPATCH_OFFER_TTL_SECONDS", "120")
+    rs.clear_cache()
+    assert asyncio.run(rs.resolve_offer_ttl_seconds(store)) == 120
+
+
+def test_settings_fallback_to_hardcoded_300_when_db_and_env_absent(monkeypatch):
+    from api import settings as rs
+    store = InMemoryStore()
+    store._global_settings.clear()
+    monkeypatch.delenv("DISPATCH_OFFER_TTL_SECONDS", raising=False)
+    rs.clear_cache()
+    assert asyncio.run(rs.resolve_offer_ttl_seconds(store)) == 300
+
+
+def test_settings_invalid_db_value_falls_back(monkeypatch):
+    from api import settings as rs
+    store = InMemoryStore()
+    store._global_settings["dispatch_offer_ttl_seconds"] = {
+        "key": "dispatch_offer_ttl_seconds", "value": 30, "value_type": "integer",
+        "description": None, "is_secret": False, "is_runtime_editable": True,
+        "updated_at": None, "updated_by": None,
+    }
+    monkeypatch.delenv("DISPATCH_OFFER_TTL_SECONDS", raising=False)
+    rs.clear_cache()
+    assert asyncio.run(rs.resolve_offer_ttl_seconds(store)) == 300
+
+
+def test_settings_db_read_failure_falls_back_and_dispatch_survives(monkeypatch):
+    from api import settings as rs
+
+    class BrokenStore(InMemoryStore):
+        async def get_global_setting(self, key):
+            raise RuntimeError("db unavailable")
+
+    store = BrokenStore()
+    monkeypatch.delenv("DISPATCH_OFFER_TTL_SECONDS", raising=False)
+    rs.clear_cache()
+    # Resolver must not raise; dispatch keeps working on the hardcoded fallback.
+    assert asyncio.run(rs.resolve_offer_ttl_seconds(store)) == 300
+
+
+def test_settings_validation_type_and_range():
+    import pytest
+    from api import settings as rs
+    for bad in ("abc", 59, 901, True, 30.5):
+        with pytest.raises(rs.SettingValidationError):
+            rs.coerce_and_validate("dispatch_offer_ttl_seconds", bad)
+    # boundaries accepted
+    assert rs.coerce_and_validate("dispatch_offer_ttl_seconds", 60) == 60
+    assert rs.coerce_and_validate("dispatch_offer_ttl_seconds", 900) == 900
+
+
+def test_settings_unknown_key_rejected():
+    import pytest
+    from api import settings as rs
+    assert rs.is_known_key("dispatch_offer_ttl_seconds") is True
+    assert rs.is_known_key("definitely_not_a_setting") is False
+    with pytest.raises(rs.SettingValidationError):
+        rs.coerce_and_validate("definitely_not_a_setting", 100)
+
+
+def test_existing_offer_ttl_stamped_at_creation_unaffected_by_later_change():
+    """New offers pick up the new TTL; an already-stamped expires_at does not move.
+    Verified at the resolver/stamp boundary (where main.py computes expires_at)."""
+    from datetime import datetime, timezone, timedelta
+    from api import settings as rs
+    store = InMemoryStore()
+    rs.clear_cache()
+    ttl1 = asyncio.run(rs.resolve_offer_ttl_seconds(store))           # 300 (seed)
+    created1 = datetime.now(timezone.utc)
+    expires1 = created1 + timedelta(seconds=ttl1)                     # stamped onto offer #1
+    # Operator lowers the TTL after offer #1 already exists.
+    asyncio.run(store.upsert_global_setting("dispatch_offer_ttl_seconds", 120, "integer", None))
+    rs.clear_cache()
+    ttl2 = asyncio.run(rs.resolve_offer_ttl_seconds(store))           # 120 (new offers only)
+    created2 = datetime.now(timezone.utc)
+    expires2 = created2 + timedelta(seconds=ttl2)
+    assert ttl1 == 300 and ttl2 == 120
+    assert abs((expires1 - created1).total_seconds() - 300) < 1
+    assert abs((expires2 - created2).total_seconds() - 120) < 1
+    # offer #1's stamped expiry is unchanged by the setting change.
+    assert (expires1 - created1).total_seconds() > 290
+
+
+def _settings_user(store, roles):
+    from uuid import uuid4
+    uid = str(uuid4())
+    store.users[uid] = {
+        "id": uid, "email": f"{uid}@cluexp.test", "phone": None,
+        "display_name": "U", "password_hash": "",
+        "roles": roles, "active_organization_id": None, "organization_name": None,
+    }
+    return uid
+
+
+def test_admin_global_settings_endpoints_authz_and_validation():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from api import settings as rs
+    rs.clear_cache()
+
+    admin = _settings_user(app_store, ["platform_admin"])
+    disp = _settings_user(app_store, ["dispatcher"])
+    padmin = _settings_user(app_store, ["provider_admin"])
+    tech = _settings_user(app_store, ["technician"])
+    client = TestClient(app)
+
+    def hdr(uid, roles):
+        return {"Authorization": f"Bearer {create_access_token({'sub': uid, 'id': uid, 'roles': roles})}"}
+
+    path = "/admin/global-settings/dispatch_offer_ttl_seconds"
+
+    # GET as platform_admin lists the seeded setting.
+    r = client.get("/admin/global-settings", headers=hdr(admin, ["platform_admin"]))
+    assert r.status_code == 200
+    assert any(s["key"] == "dispatch_offer_ttl_seconds" for s in r.json()["settings"])
+
+    # PATCH valid (admin) + boundaries.
+    assert client.patch(path, json={"value": 300}, headers=hdr(admin, ["platform_admin"])).status_code == 200
+    assert client.patch(path, json={"value": 60}, headers=hdr(admin, ["platform_admin"])).status_code == 200
+    ok = client.patch(path, json={"value": 900}, headers=hdr(admin, ["platform_admin"]))
+    assert ok.status_code == 200 and ok.json()["value"] == 900
+
+    # Invalid type / range → 422.
+    assert client.patch(path, json={"value": "abc"}, headers=hdr(admin, ["platform_admin"])).status_code == 422
+    assert client.patch(path, json={"value": 59}, headers=hdr(admin, ["platform_admin"])).status_code == 422
+    assert client.patch(path, json={"value": 901}, headers=hdr(admin, ["platform_admin"])).status_code == 422
+
+    # Unknown key → 404.
+    assert client.patch("/admin/global-settings/nope", json={"value": 100},
+                        headers=hdr(admin, ["platform_admin"])).status_code == 404
+
+    # Non-platform-admins cannot read or update.
+    for uid, roles in ((disp, ["dispatcher"]), (padmin, ["provider_admin"]), (tech, ["technician"])):
+        assert client.patch(path, json={"value": 300}, headers=hdr(uid, roles)).status_code == 403
+        assert client.get("/admin/global-settings", headers=hdr(uid, roles)).status_code == 403
+
+    # Restore the seed so other tests see the default, and clear the resolver cache.
+    assert client.patch(path, json={"value": 300}, headers=hdr(admin, ["platform_admin"])).status_code == 200
+    rs.clear_cache()

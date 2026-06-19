@@ -133,6 +133,18 @@ class Store:
     async def log_event(self, ticket: Ticket, event: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    # --- global_settings: runtime operational settings (not secrets) ---
+    async def get_global_setting(self, key: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def list_global_settings(self) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def upsert_global_setting(
+        self, key: str, value: object, value_type: str, updated_by: str | None = None
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
     async def record_media(
         self,
         *,
@@ -498,6 +510,20 @@ class InMemoryStore(Store):
         self._tickets: dict[UUID, Ticket] = {}
         self.events: list[str] = []
         self.media: list[dict[str, str]] = []
+        # Runtime operational settings — mirrors the migration/startup seed so the
+        # in-memory store behaves like a freshly-migrated DB. Never holds secrets.
+        self._global_settings: dict[str, dict] = {
+            "dispatch_offer_ttl_seconds": {
+                "key": "dispatch_offer_ttl_seconds",
+                "value": 300,
+                "value_type": "integer",
+                "description": "Seconds before a provider-created dispatch offer expires.",
+                "is_secret": False,
+                "is_runtime_editable": True,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_by": None,
+            }
+        }
         password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         self.users: dict[str, dict] = {
             "usr_platform_demo": {
@@ -1679,6 +1705,30 @@ class InMemoryStore(Store):
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
         return []
 
+    async def get_global_setting(self, key: str) -> dict | None:
+        row = self._global_settings.get(key)
+        return dict(row) if row is not None else None
+
+    async def list_global_settings(self) -> list[dict]:
+        return [dict(v) for v in self._global_settings.values()]
+
+    async def upsert_global_setting(
+        self, key: str, value: object, value_type: str, updated_by: str | None = None
+    ) -> dict:
+        existing = self._global_settings.get(key, {})
+        row = {
+            "key": key,
+            "value": value,
+            "value_type": value_type,
+            "description": existing.get("description"),
+            "is_secret": False,
+            "is_runtime_editable": existing.get("is_runtime_editable", True),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": updated_by,
+        }
+        self._global_settings[key] = row
+        return dict(row)
+
 
 class PostgresStore(Store):
     def __init__(self, dsn: str) -> None:
@@ -1749,6 +1799,31 @@ class PostgresStore(Store):
                 "  uploaded_by uuid,"
                 "  uploaded_at timestamptz not null default now()"
                 ")"
+            )
+            # Runtime operational settings (migration 0023). Resilience guard so the
+            # API boots + seeds even if the migration is behind. Never holds secrets
+            # (the is_secret=false CHECK enforces that). updated_by FK omitted here on
+            # purpose — the migration owns the authoritative schema; this is a fallback.
+            await conn.execute(
+                "create table if not exists global_settings ("
+                "  key text primary key,"
+                "  value jsonb not null,"
+                "  value_type text not null"
+                "    check (value_type in ('integer','boolean','string','object','array')),"
+                "  description text,"
+                "  is_secret boolean not null default false,"
+                "  is_runtime_editable boolean not null default true,"
+                "  updated_at timestamptz not null default now(),"
+                "  updated_by uuid,"
+                "  check (is_secret = false)"
+                ")"
+            )
+            await conn.execute(
+                "insert into global_settings"
+                " (key, value, value_type, description, is_secret, is_runtime_editable)"
+                " values ('dispatch_offer_ttl_seconds', '300'::jsonb, 'integer',"
+                "  'Seconds before a provider-created dispatch offer expires.', false, true)"
+                " on conflict (key) do nothing"
             )
             await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
             # Fulfillment cutover (migration 0010) — additive columns. Repeated here
@@ -4974,6 +5049,62 @@ class PostgresStore(Store):
         if row is None:
             return None
         return {"storage_bucket": row[0], "storage_path": row[1]}
+
+    # --- global_settings ---
+    @staticmethod
+    def _global_setting_row(row: tuple) -> dict:
+        return {
+            "key": row[0],
+            "value": row[1],  # jsonb → already a native Python value (int/str/bool/...)
+            "value_type": row[2],
+            "description": row[3],
+            "is_secret": row[4],
+            "is_runtime_editable": row[5],
+            "updated_at": row[6].isoformat() if row[6] else None,
+            "updated_by": str(row[7]) if row[7] else None,
+        }
+
+    _GLOBAL_SETTING_COLS = (
+        "key, value, value_type, description, is_secret, is_runtime_editable,"
+        " updated_at, updated_by"
+    )
+
+    async def get_global_setting(self, key: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._GLOBAL_SETTING_COLS} from global_settings where key = %s",
+                (key,),
+            )
+            row = await cur.fetchone()
+        return self._global_setting_row(row) if row is not None else None
+
+    async def list_global_settings(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._GLOBAL_SETTING_COLS} from global_settings order by key"
+            )
+            rows = await cur.fetchall()
+        return [self._global_setting_row(r) for r in rows]
+
+    async def upsert_global_setting(
+        self, key: str, value: object, value_type: str, updated_by: str | None = None
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into global_settings (key, value, value_type, updated_by, updated_at)"
+                " values (%s, %s, %s, %s, now())"
+                " on conflict (key) do update set"
+                "   value = excluded.value,"
+                "   value_type = excluded.value_type,"
+                "   updated_by = excluded.updated_by,"
+                "   updated_at = now()"
+                f" returning {self._GLOBAL_SETTING_COLS}",
+                (key, Jsonb(value), value_type, str(updated_by) if updated_by else None),
+            )
+            row = await cur.fetchone()
+        return self._global_setting_row(row)
 
 
 def make_store() -> Store:

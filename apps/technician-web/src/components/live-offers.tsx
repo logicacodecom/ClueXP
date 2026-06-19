@@ -12,6 +12,7 @@ interface LiveOffer {
   job_id: string;
   status: "offered" | "seen" | "accepted" | "declined" | "expired" | "superseded" | "failed_delivery";
   expires_at: string;
+  offered_at?: string;
   rank?: number;
   dist_km?: number;
   distance_mi?: number;
@@ -237,7 +238,7 @@ export function LiveOffersFeed() {
               <div className="text-[10px] font-black uppercase text-muted">min ETA</div>
             </div>
           </div>
-          <div className="mt-4"><Countdown expiresAt={offer.expires_at} /></div>
+          <div className="mt-4"><Countdown expiresAt={offer.expires_at} offeredAt={offer.offered_at} /></div>
           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
             <OfferMetric label="Distance" value={offer.distance_mi != null ? `${offer.distance_mi} mi` : offer.dist_km != null ? `${offer.dist_km.toFixed(1)} km` : "--"} />
             <OfferMetric label="Value" value={offer.estimated_earnings || "TBD"} />

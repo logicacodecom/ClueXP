@@ -22,6 +22,7 @@ from api.geocode import geocode, places_autocomplete
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
+from api import settings as runtime_settings
 from api.dispatch import (
     STATUS_ARRIVED,
     STATUS_ASSIGNED,
@@ -1659,7 +1660,10 @@ async def _send_targeted_offer(
         )
     org_id_str = tech.get("primary_organization_id")
     org_id = UUID(org_id_str) if org_id_str else None
-    expires_at = now() + timedelta(seconds=config.OFFER_TTL_SECONDS)
+    # TTL resolved at offer-creation time: global_settings → env → 300 (safe under
+    # DB failure). Stamped onto this offer only; existing offers are never changed.
+    ttl_seconds = await runtime_settings.resolve_offer_ttl_seconds(store)
+    expires_at = now() + timedelta(seconds=ttl_seconds)
     offer = await store.ops_create_single_offer(job_id, technician_id, org_id, expires_at)
     if offer is None or "error_code" in offer:
         error_code = (offer or {}).get("error_code", "concurrent_offer")
@@ -1748,6 +1752,43 @@ async def ops_flags(session: dict[str, Any] = Depends(require_session)) -> dict[
         "arrival_pin_configured": config.ARRIVAL_PIN_SECRET != "dev-arrival-pin-secret",
         "is_production": config.IS_PRODUCTION,
     }
+
+
+class GlobalSettingUpdate(BaseModel):
+    value: Any
+
+
+@app.get("/admin/global-settings")
+async def admin_list_global_settings(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """platform_admin: list runtime operational settings. The table never holds
+    secrets (DB CHECK), so every row is safe to return."""
+    require_any_role(session, {"platform_admin"})
+    return {"settings": await store.list_global_settings()}
+
+
+@app.patch("/admin/global-settings/{key}")
+async def admin_update_global_setting(
+    key: str,
+    payload: GlobalSettingUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """platform_admin only: update one allowlisted runtime setting. Unknown keys →
+    404; bad type/range → 422 (via the per-key contract). Records updated_by/at and
+    clears the resolver cache so the change applies immediately."""
+    require_any_role(session, {"platform_admin"})
+    if not runtime_settings.is_known_key(key):
+        raise HTTPException(status_code=404, detail=f"Unknown setting '{key}'")
+    try:
+        value = runtime_settings.coerce_and_validate(key, payload.value)
+    except runtime_settings.SettingValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    spec = runtime_settings.SETTINGS[key]
+    actor_id = session.get("user", {}).get("id")
+    row = await store.upsert_global_setting(key, value, spec.value_type, actor_id)
+    runtime_settings.clear_cache()
+    return row
 
 
 # --- company (provider-managed) dispatch: org-scoped clones of the ops console ---
