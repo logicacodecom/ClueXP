@@ -6,7 +6,7 @@ import { BriefcaseBusiness, LogOut, Map, MessageCircle, Timer, UserRound } from 
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const navItems: Array<{ href: string; label: string; icon: LucideIcon }> = [
   { href: "/jobs", label: "Home", icon: BriefcaseBusiness },
@@ -115,7 +115,7 @@ export function AvailabilityToggle({ profile = technicianAppProfile }: { profile
   );
 }
 
-export function Countdown({ expiresAt }: { expiresAt: string }) {
+export function Countdown({ expiresAt, offeredAt }: { expiresAt: string; offeredAt?: string }) {
   const target = useMemo(() => new Date(expiresAt).getTime(), [expiresAt]);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -123,10 +123,22 @@ export function Countdown({ expiresAt }: { expiresAt: string }) {
     return () => window.clearInterval(id);
   }, []);
   const remaining = Math.max(0, target - now);
+  // Progress denominator = the offer's real window. Prefer offered_at→expires_at
+  // (the true TTL, whatever it is); otherwise fall back to the remaining captured
+  // on first render. Never assume a fixed TTL client-side.
+  const initialRemaining = useRef(remaining);
+  const totalWindow = useMemo(() => {
+    if (offeredAt) {
+      const start = new Date(offeredAt).getTime();
+      if (!Number.isNaN(start) && target > start) return target - start;
+    }
+    return initialRemaining.current || remaining;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offeredAt, target]);
   const seconds = Math.floor(remaining / 1000);
   const minutesPart = String(Math.floor(seconds / 60)).padStart(2, "0");
   const secondsPart = String(seconds % 60).padStart(2, "0");
-  const pct = Math.max(0, Math.min(100, (remaining / (90 * 1000)) * 100));
+  const pct = totalWindow > 0 ? Math.max(0, Math.min(100, (remaining / totalWindow) * 100)) : 0;
   return (
     <div>
       <div className="flex items-end justify-between">

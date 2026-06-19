@@ -14,7 +14,13 @@ def _int(name: str, default: int) -> int:
 
 # How long a targeted dispatcher offer lives before it expires and the job
 # returns to pending_dispatch for the dispatcher to re-assign.
-OFFER_TTL_SECONDS = _int("DISPATCH_OFFER_TTL_SECONDS", 90)
+#
+# FALLBACK/DEFAULT ONLY. The primary operational control is the DB-backed
+# `global_settings.dispatch_offer_ttl_seconds` (resolved at request time via
+# `api/settings.py`). This env var is the middle fallback when the DB row is
+# missing/invalid/unreadable; the hardcoded default below is the last resort.
+# Pilot value is 300s.
+OFFER_TTL_SECONDS = _int("DISPATCH_OFFER_TTL_SECONDS", 300)
 
 # How long since a technician's last location ping before they are considered
 # "offline" in the ops candidates view.

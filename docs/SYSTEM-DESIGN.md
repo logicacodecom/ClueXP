@@ -49,13 +49,19 @@ Controls what the customer is allowed to see. Defined in `schema.py`.
 | Value | Meaning |
 |-------|---------|
 | `intake` | Job is being collected; no technician committed. Customer sees a loading/waiting screen. |
-| `matched` | A technician has accepted. Customer may see technician info. |
-| `fulfillment` | Live operational data (en route, on-site, etc.) is flowing. |
+| `matched` | A named technician has accepted. Customer may see technician identity (name/photo/rating). |
+| `fulfillment` | Completion/closeout phase — set when the customer confirms (or the job auto-closes). |
 
 `trust_state` only ever moves **forward**: `intake → matched → fulfillment`. It never goes backward. It is set by the backend — never trusted from the browser.
 
+**`trust_state` gates customer-visible _identity_, not live tracking.** `matched` reveals the named
+technician; `fulfillment` marks closeout (it is set at customer confirmation / auto-close, **not**
+when the technician goes en route). Live technician **position** is gated separately by
+`jobs.status` via `may_show_live_tracking(status)` — true only for `en_route` / `arrived` /
+`in_progress` (§6). Do **not** describe `trust_state = fulfillment` as the live-tracking gate.
+
 ### `jobs.status` — the operational lifecycle
-Tracks where the job is in its physical lifecycle. This is the Sprint 3 cutover addition (only populated for cutover-path jobs; legacy jobs leave this as `draft`).
+Tracks where the job is in its physical lifecycle. This is the Sprint 3 cutover addition (only populated for cutover-path jobs; non-cutover/non-dispatched jobs leave this as `draft`).
 
 ```
 pending_dispatch → assigned → en_route → arrived → in_progress
@@ -122,8 +128,15 @@ TERMINAL_STATUSES   = {completed_confirmed, completed_auto_closed, cancelled, no
 
 - Records all form data (location, identity, price acceptance) into `jobs.detail` (JSONB)
 - Geocodes address if not already geocoded (sets `lat`, `lng`)
-- On legacy (non-cutover) path: calls `/dispatch` stub (instant fake match), returns legacy tracking
-- On cutover path: returns the `tracking_path` so the frontend redirects to `/t/{token}`
+- **Commit does not dispatch.** It only finalizes the intake record (sets the ticket lifecycle
+  status, e.g. `complete`/`partial`) and returns the envelope. Dispatch is decided earlier, at
+  create (§3.3) — never here.
+- On the **cutover path**: the tracking token already exists, so commit returns the `tracking_path`
+  and the frontend redirects to `/t/{token}`.
+- On a **non-cutover path** (channelless/public, or a channel without cutover): the ticket is saved
+  as a non-dispatchable intake record — it has no token and never enters the operational ladder. The
+  old `/dispatch` auto-match stub is **gated (410)**; there is no instant/fake match. Such a request
+  is not dispatched and would need human handoff.
 
 ---
 
@@ -226,11 +239,23 @@ After offer is accepted (`status = assigned`):
 | Step | Technician action | Status after | API call |
 |------|------------------|-------------|---------|
 | 1 | Starts driving | `en_route` | `PATCH /api/tickets/{id}/status { status: "en_route" }` |
-| 2 | Arrives on-site | `arrived` | `PATCH /api/tickets/{id}/status { status: "arrived" }` |
+| 2 | Arrives on-site | `arrived` | **PIN-gated — `POST /jobs/{id}/arrival/verify { pin }`** (see §5.1a). A plain `PATCH …/status { status: "arrived" }` is **rejected with 422**. |
 | 3 | Begins service | `in_progress` | `PATCH /api/tickets/{id}/status { status: "in_progress" }` |
 | 4 | Work complete, awaiting customer | `completed_pending_customer` | `PATCH /api/tickets/{id}/status { status: "completed_pending_customer" }` |
 
-Each transition writes a timestamp column (`en_route_at`, `arrived_at`, etc.) and validates forward-only movement with `can_technician_transition(current, target)`.
+Each transition writes a timestamp column (`en_route_at`, `arrived_at`, etc.) and validates forward-only movement with `can_technician_transition(current, target)`. The `en_route → arrived` step is the one exception: it is **not** reachable through the generic status PATCH — it requires arrival-PIN verification (or a dispatcher override), detailed next.
+
+### 5.1a Arrival Verification (Gate 2 — PIN)
+
+`en_route → arrived` requires the technician to enter a customer-held six-digit PIN. The PIN is single-use, expiring (`ARRIVAL_PIN_TTL_SECONDS`, default 15 min), and attempt-limited (`ARRIVAL_PIN_MAX_ATTEMPTS`, default 5). Only a keyed HMAC of the PIN is stored (§9). Flow:
+
+| Step | Actor | Endpoint | Behavior |
+|------|-------|----------|----------|
+| Issue | Customer (tracking-token holder) | `POST /t/{token}/arrival-pin` | Returns `{ pin, expires_at }`. Available only once the job is `en_route`; issuing a new PIN invalidates any prior PIN and resets the attempt counter. |
+| Verify | Assigned technician | `POST /jobs/{id}/arrival/verify { pin }` | On match, advances `en_route → arrived` and logs `arrival:pin_verified`. Failures (`no_pin` / `expired` / `locked` / `already_used` / `technician_mismatch` / `incorrect`) return 422 with the remaining-attempts count and never advance status. |
+| Override | Owning company's dispatcher | `POST /provider/jobs/{id}/arrival/override { reason }` | Forces `en_route → arrived` **without** a PIN; a non-empty `reason` is mandatory (422 otherwise) and the override is audited (`arrival:provider_override`). Tenant-scoped. |
+
+(The old `POST /tickets/{id}/arrival-handshake` is removed — it now returns 410 pointing to the two endpoints above.)
 
 ### 5.2 Completion (Customer-Driven)
 The customer holds a token link (`/t/{token}`). When the tech marks `completed_pending_customer`:
@@ -259,9 +284,10 @@ tech just finished shows **immediately**, before the customer confirms) plus the
 live recovery workspace, not history.) Endpoints return jobs enriched with the customer review and
 the technician's reported payment:
 - `GET /provider/jobs/history` — tenant-scoped; backs the provider **Completed** view (totals
-  **earned (tech collected)** + a job count; no two-value comparison).
+  **reported collected** (the technician-reported advisory amount) + a job count; no two-value
+  comparison). These are advisory operational records, **not** ledger-backed earnings or payout.
 - `GET /technician/jobs/history` — the signed-in technician's finished jobs; backs the technician
-  **Activity** view (with a **Total earned** summary).
+  **Activity** view (with a **Total reported collected** summary — advisory, not a payout/settlement total).
 
 ### 5.3 Where Technician App Code Lives
 
@@ -275,7 +301,7 @@ All pages are Next.js App Router server/client components in `apps/technician-we
 | Service | `jobs/[id]/service/page.tsx` | En route → arrived → in_progress → completed_pending flow |
 | Approval | `jobs/[id]/approval/page.tsx` | Waiting screen — customer confirms externally |
 | Complete | `jobs/[id]/complete/page.tsx` | Summary screen after confirmed |
-| Activity | `activity/page.tsx` | Finished-job history: payment collected + customer review + total earned |
+| Activity | `activity/page.tsx` | Finished-job history: reported collected + customer review + total reported collected (advisory) |
 
 The in-service screen (`components/active-job-workflow.tsx`) also carries the **"Payment collected"**
 form (amount + method → `POST /api/jobs/{id}/collection`) while the job is `in_progress` / `completed_pending_customer`,
@@ -325,12 +351,21 @@ reason is recorded as a `customer_cancel:{reason}` audit event. Allowed `pending
 | `waiting` | Job in `pending_dispatch` — dispatcher has not yet assigned a technician, or offer expired and queue returned | "Looking for a technician..." |
 | `matched` | Tech accepted; trust_state = matched | Technician details card |
 | `expired_retry` | Offer expired, job returned to `pending_dispatch`; dispatcher will re-assign | "Still searching..." |
-| `no_eligible` | Terminal — no technician assigned after ops review | "No tech available; we'll follow up" |
+| `no_eligible` | **Reserved/legacy** (see note below) — derived state, not a `jobs.status` | "No tech available; we'll follow up" |
 | `matched` + status=`en_route`/`arrived`/`in_progress` | Live tracking | Progress stepper |
 | `completed_pending_customer` | Tech done, customer action needed | Confirm / Dispute buttons |
 | `completed_confirmed` / `completed_auto_closed` | Closed | Review prompt |
-| `disputed` | Customer disputed | Ops notified |
+| `disputed` | Customer disputed | Flagged for resolution by the owning company |
 | `cancelled` | Cancelled | Cancellation screen |
+
+> **`no_eligible` note.** This is a **derived, customer-facing tracking state** computed by
+> `resolve_dispatch_state` — it is **not** a `jobs.status` constant. It was produced only by the
+> **legacy auto-dispatch** path (when `dispatch_attempts` exhausted the rounds or no eligible tech
+> ranked). In the provider-managed model nothing increments `dispatch_attempts` (no auto-offers), so
+> the current cutover flow **never reaches `no_eligible`** — it stays `waiting` until the company's
+> dispatcher acts. It is retained as **reserved**: surfacing it deliberately would require a provider
+> "close as no provider capacity" action, which is **not yet implemented**. Until then, treat it as
+> legacy/reserved, not current behavior.
 
 Customer affordances are driven by `customer_actions(status)`:
 ```python
@@ -488,6 +523,31 @@ Document validity will gate dispatch eligibility (Sprint 7).
 
 **`media`** — Uploaded files: `{ owner_type, owner_id, kind, bucket, path, visibility, uploaded_by, uploaded_at }`.
 
+**`global_settings`** — The **primary runtime operational settings store** (migration `0023`).
+One row per setting: `{ key text PK, value jsonb, value_type text (integer|boolean|string|object|array),
+description, is_secret bool, is_runtime_editable bool, updated_at, updated_by → users(id) }`.
+**Not a secret store and not deployment/infra config** — a `CHECK (is_secret = false)` makes that a
+DB-level invariant; secrets stay in env/Vercel/secret manager. `value` is jsonb for flexibility but
+**never free-form**: every supported key has strict per-key validation in `api/settings.py` (an
+allowlist registry). Today it holds exactly one key, `dispatch_offer_ttl_seconds` (integer 60–900,
+seeded `300`). Read/write only via the platform-admin API (§13); a foreign role gets 403.
+
+### 7.2a Runtime setting resolution (offer TTL)
+
+`api/settings.py` resolves a setting **at request time** (never at import — `config.py` stays
+DB-free) with a tolerant fallback chain, and a small in-process cache (~30s; stale acceptable):
+
+```
+global_settings.dispatch_offer_ttl_seconds   (DB, validated 60–900)
+  → DISPATCH_OFFER_TTL_SECONDS               (env, validated)
+  → 300                                       (hardcoded last resort)
+```
+
+If the DB row is missing, invalid, or the read fails, resolution falls through to env then `300` —
+**dispatch never breaks** while a fallback exists. The resolved TTL is used **only when creating an
+offer** (`expires_at = now() + ttl`, in `_send_targeted_offer`); changing the setting later affects
+**only new offers** — existing offers keep their stamped `expires_at`.
+
 ### 7.3 Important Indexing Notes
 
 - `jobs.tracking_token` has a UNIQUE index (`idx_jobs_tracking_token`)
@@ -628,7 +688,7 @@ Per-token sliding window guarding capability-link mutations (confirm / review / 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DISPATCH_OFFER_TTL_SECONDS` | `90` | How long a targeted offer lives before it expires and the job returns to `pending_dispatch` |
+| `DISPATCH_OFFER_TTL_SECONDS` | `300` | **Fallback/default only.** How long a targeted offer lives before it expires and the job returns to `pending_dispatch`. The **primary** control is the DB-backed `global_settings.dispatch_offer_ttl_seconds` (§7.2a); this env var is the middle fallback, `300` the last resort. Pilot value is `300`. |
 | `AUTO_CLOSE_WINDOW_SECONDS` | `259200` | 72h — time before `completed_pending_customer` auto-closes |
 | `LOCATION_ONLINE_THRESHOLD_MINUTES` | `15` | Techs whose `location_updated_at` is within this window are shown as "online" in the provider candidates view |
 
@@ -645,8 +705,28 @@ Per-token sliding window guarding capability-link mutations (confirm / review / 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DISPATCH_CUTOVER_GLOBAL_OFF` | `false` | **Emergency kill-switch.** When `true`, forces *all* channels back to the legacy stub regardless of their `dispatch_cutover_enabled` flag — a DB-free, redeploy-only rollback (no per-row SQL). This is the official rollback mechanism for the pilot. Verify the live value as a platform admin via `GET /ops/flags`. |
+| `DISPATCH_CUTOVER_GLOBAL_OFF` | `false` | **Emergency kill-switch.** When `true`, `cutover` evaluates `false` for *every* channel regardless of its `dispatch_cutover_enabled` flag, so **new** intakes are not placed on the operational ladder (created as `draft`, with no `pending_dispatch`, no tracking token, no offer). The legacy auto-match `/dispatch` stub is itself gated (410), so nothing auto-dispatches those requests either — they need manual/human handoff. A DB-free, redeploy-only rollback (no per-row SQL); the official pilot rollback mechanism. Verify the live value as a platform admin via `GET /ops/flags`. |
 | `DISPATCH_CUTOVER_PUBLIC` | `false` | **Deprecated / disabled.** Once enabled cutover for channelless (public) intake. ClueXP is a SaaS platform that never dispatches channelless requests — every dispatchable job must belong to a provider company via a branded channel. No longer read by the intake path; retained only so environments that still define it don't break. |
+
+**When the kill-switch is evaluated, and what happens to in-flight jobs.** The `cutover` decision
+(`channel_on AND NOT DISPATCH_CUTOVER_GLOBAL_OFF`) is computed **once, at ticket create** (`POST
+/tickets`); `commit` does not re-evaluate it and there is no background reconciler. Flipping
+`DISPATCH_CUTOVER_GLOBAL_OFF` therefore **only affects new requests** — it does **not** retroactively
+cancel, freeze, reassign, or invalidate anything already in flight:
+
+| Existing state at flip | Effect of toggling `DISPATCH_CUTOVER_GLOBAL_OFF` |
+|------------------------|--------------------------------------------------|
+| `draft` (created, not committed) | None to the row. If still `draft` it never entered the ladder; whether a *future* create dispatches depends on the flag at that create. |
+| Committed, pre-`pending_dispatch` | None. A cutover job reaches `pending_dispatch` at create, not commit; a non-cutover job stays off the ladder regardless. |
+| `pending_dispatch` (in the provider queue) | **Unaffected.** Stays in the owning company's queue; the dispatcher can still assign. |
+| Active offer outstanding | **Unaffected.** The offer lives to `expires_at`; accept/decline/expiry behave normally. |
+| `assigned` | **Unaffected.** Stays assigned; the technician proceeds. |
+| `en_route` / `arrived` / `in_progress` | **Unaffected.** Fulfillment continues; PIN, status transitions, live tracking all work. |
+| Existing tracking tokens | **Still valid.** Customers keep reading `/t/{token}` and using confirm / dispute / cancel / review / arrival-pin. |
+
+In short: the kill-switch **stops new cutover traffic** but leaves in-flight jobs and their tracking
+tokens fully functional. To halt an in-flight job you must use a provider recovery action
+(cancel / release / no-show), not the flag.
 
 ### Frontend (Next.js apps: `intake-web`, `ops-web`, `provider-web`, `technician-web`)
 
@@ -730,20 +810,21 @@ All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/ap
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `POST` | `/tickets` | public | Create job; fires dispatch if cutover active |
-| `GET` | `/tickets/{id}` | public | Get ticket state (polling endpoint for legacy path) |
+| `GET` | `/tickets/{id}` | public | Get ticket state (polling endpoint for the non-cutover intake path) |
 | `PATCH` | `/tickets/{id}` | public | Update ticket fields during intake form steps |
 | `POST` | `/tickets/{id}/price-quote` | public | Generate price estimate |
-| `POST` | `/tickets/{id}/commit` | public | Finalize intake and submit to dispatch |
+| `POST` | `/tickets/{id}/commit` | public | Finalize the intake record (does **not** dispatch — dispatch is decided at create; §3.4) |
 | `POST` | `/tickets/{id}/dispatch` | — | **Gated (410)** — legacy auto-match stub, removed |
 
 ### Customer Tracking (Cutover Path)
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `GET` | `/t/{token}` | public | Read tracking state by opaque token |
-| `POST` | `/t/{token}/confirm` | public | Customer confirms job completion |
+| `POST` | `/t/{token}/confirm` | public | Customer confirms job completion (sets `completed_confirmed`, `trust_state = fulfillment`) |
 | `POST` | `/t/{token}/dispute` | public | Customer disputes the job |
-| `POST` | `/t/{token}/cancel` | public | Customer cancels (allowed pre-arrival) |
+| `POST` | `/t/{token}/cancel` | public | Customer cancels (allowed `pending_dispatch`→`en_route`; **non-empty reason required, else 422**) |
 | `POST` | `/t/{token}/review` | public | Customer submits a review |
+| `POST` | `/t/{token}/arrival-pin` | public (token) | Issue a fresh six-digit arrival PIN (only once `en_route`); see §5.1a |
 
 ### Provider Dispatch + Recovery (Requires `dispatcher`/`provider_admin`, org-scoped)
 The dispatch surface. Every endpoint is scoped to `session.active_organization_id`; a foreign job/technician returns 404/422 (no cross-tenant leak).
@@ -775,14 +856,16 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 | `GET` | `/technicians/{id}/offers` | session | List active offers for a technician |
 | `POST` | `/offers/{id}/accept` | session | Technician accepts an offer (atomic first-accept-wins) |
 | `POST` | `/offers/{id}/decline` | session | Technician declines an offer; job returns to `pending_dispatch` |
-| `GET` | `/tickets/{id}/dispatch-status` | public | Check dispatch state (legacy polling) |
+| `GET` | `/tickets/{id}/dispatch-status` | public | Check dispatch state — **non-cutover/legacy polling only**; the provider-managed path uses `/t/{token}` (no auto-dispatch behind this) |
 | `POST` | `/tickets/{id}/offers` | — | **Gated (410)** — use `/provider/queue/{id}/assign` instead |
 | `GET/POST` | `/cron/dispatch-sweep` | CRON_SECRET | Scheduled: expire stale offers + auto-close (no re-dispatch) |
 
 ### Job Lifecycle (Cutover Path)
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `PATCH` | `/tickets/{id}/status` | session (technician) | Advance job status (technician-settable only) |
+| `PATCH` | `/tickets/{id}/status` | session (technician) | Advance job status (technician-settable only). `arrived` is **rejected (422)** here — use the arrival-verify endpoint below |
+| `POST` | `/jobs/{id}/arrival/verify` | session (technician) | Verify the customer-held PIN; advances `en_route → arrived` (§5.1a) |
+| `POST` | `/provider/jobs/{id}/arrival/override` | session (dispatcher) | Dispatcher arrival override without PIN; mandatory reason, audited (§5.1a) |
 | `GET` | `/technicians/{id}/active-job` | session | Get the technician's current active job |
 | `GET` | `/tickets/{id}/lifecycle` | session | Full lifecycle detail for ops view |
 
@@ -825,7 +908,9 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 | `PATCH` | `/admin/technicians/{id}/photo` | session (platform_admin) | Approve/reject a global profile photo (only `approved` is customer-visible) |
 | `GET` | `/admin/technicians/photos` | session (platform_admin) | List pending headshots for review |
 | `PATCH` | `/admin/documents/{id}` | session (platform_admin) | Review a compliance document |
-| `POST` | `/admin/jobs/{id}/resolve` | session (platform_admin) | **Tenant-scoped** dispute resolution (no cross-tenant override; platform_admin → 403 on foreign jobs) |
+| `POST` | `/admin/jobs/{id}/resolve` | session (**dispatcher / provider_admin**) | **Provider recovery, despite the `/admin/` path.** Close / cancel / redispatch a job the caller's org owns or fulfills; tenant-scoped (foreign job → 404). `platform_admin` is **not** an allowed caller (403) — ClueXP Ops does not recover provider jobs. |
+| `GET` | `/admin/global-settings` | session (platform_admin) | List runtime operational settings (`global_settings`, §7.2a). Never returns secrets (table forbids them). |
+| `PATCH` | `/admin/global-settings/{key}` | session (platform_admin) | Update one allowlisted setting. Unknown key → 404; invalid type/range → 422; records `updated_by`/`updated_at`; clears the resolver cache. |
 
 ---
 
@@ -854,6 +939,7 @@ These are hard rules enforced by the API. Breaking them causes 403 or data corru
 5. **`save(ticket)` never overwrites an operational status.** Once a job enters the dispatch pipeline (status is any operational value from `pending_dispatch` onward), the JSONB upsert's CASE guard in `store.py` leaves `status` alone. Only `set_job_status()` and the fulfillment transitions may change it.
 6. **Channel slugs are server-resolved; never trust the browser's `intake_channel` as an org ID.** `resolve_intake_channel()` is the single trust boundary.
 7. **Offer privacy: area only before acceptance.** `list_technician_offers` returns `area_lat/area_lng` rounded to 1km — never the exact address. Exact address only after acceptance.
+8. **`global_settings` never holds secrets, and every key is validated.** A `CHECK (is_secret = false)` is a DB invariant; the admin API rejects unknown keys (404) and out-of-contract values (422). It is for runtime operational settings only — secrets and deployment/infra config stay in env/Vercel (§7.2a, §9).
 
 ---
 
@@ -962,8 +1048,14 @@ An active job takes priority over ordinary tabs (persistent job bar).
 lifecycle):** `offer_received → accepted → assigned → en_route → arrived (PIN-verified) →
 in_service → customer_approval_needed → completed`, plus `declined`/`expired`/`cancelled`.
 Offer timers derive from backend `expires_at`; **first-accept-wins is backend-enforced** (the UI
-reflects the result, including the "another technician accepted first" superseded state). Accepting
-an offer does **not** by itself make the customer `MATCHED` — that is the named-assignment event.
+reflects the result, including the "another technician accepted first" superseded state).
+
+**Acceptance _is_ the named-assignment event.** The provider dispatcher *creating/sending* a targeted
+offer does **not** make the customer `MATCHED`. Only the **technician accepting** the offer commits
+the assignment, atomically: it sets `fulfillment_technician_id`, `jobs.status = assigned`,
+`trust_state = matched`, and makes the named technician customer-visible (§4.2 Step 5). Do not
+conflate this with a future org-routed **"org accept"** flow (§20.4) — that is a separate,
+not-yet-built event; in the current provider-managed model the only acceptance is the technician's.
 
 **Hard contracts:** honest status (no fake customer data/ETA/route/movement); no customer/job
 detail before acceptance; customer phone masked/mediated; expired docs block availability.
@@ -1018,8 +1110,10 @@ administration. **Ops does not dispatch** — there is no platform assign mutati
 **Primary users:** `platform_admin`. Capabilities: read-only oversight of the platform-wide queue,
 candidates, and fleet (`/ops/queue`, `/ops/queue/{id}/candidates`, `/ops/fleet`, `/ops/flags`);
 technician/org approval + rejection; compliance + technician-photo review; global technician
-suspension; tenant-scoped dispute resolution (`/admin/jobs/{id}/resolve` — platform_admin gets 403
-on a foreign job; no cross-tenant override).
+suspension. **Ops does not resolve, close, cancel, or redispatch provider jobs** — job recovery and
+dispute resolution (`/admin/jobs/{id}/resolve`, despite its path) are **provider-side**, restricted
+to the owning company's `dispatcher`/`provider_admin` and tenant-scoped; a `platform_admin` calling
+it gets 403.
 
 **Status:** oversight, approvals, compliance/photo review, and org lifecycle controls are wired.
 The ClueXP-managed **routing/marketplace** dispatch surface ("ClueXP Direct" — dispatching
