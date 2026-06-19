@@ -138,12 +138,13 @@ export default function TechniciansPage() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to create invite");
       if (body.mode === "existing_technician") {
-        setInviteMessage(`Invite sent to ${body.display_name ?? inviteEmail}. They'll see it in their technician portal.`);
+        setInviteMessage(`Pending invite created for ${body.display_name ?? inviteEmail}. No email is sent yet; ask them to sign in to the technician app and accept it from their profile.`);
         await refresh();
       } else {
+        if (!body.invite?.token) throw new Error("Invite was created, but no signup token was returned.");
         const base = (process.env.NEXT_PUBLIC_TECHNICIAN_BASE_URL || window.location.origin).replace(/\/$/, "");
         setInviteLink(`${base}/signup?invite=${body.invite.token}`);
-        setInviteMessage("Invite created. Share this signup link with the technician.");
+        setInviteMessage("Signup link created. Email is not automatic yet; copy this link and send it to the technician.");
       }
       setInviteEmail("");
     } catch (cause) {
@@ -175,10 +176,10 @@ export default function TechniciansPage() {
         <Card className="mb-6 border-primary/30">
           <CardHeader><CardTitle className="flex items-center gap-2"><UserPlus className="size-5 text-primary" />Invite a technician</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            <p className="text-sm text-muted-foreground">Enter the technician's email. If they already have a ClueXP account, the invite appears in their portal. Otherwise we create a signup link you can share — they keep your company affiliation after signing up.</p>
+            <p className="text-sm text-muted-foreground">Enter the technician's email. Existing ClueXP technicians get a pending invite in their portal. New technicians get a signup link you can copy and send manually — email delivery is not automatic yet.</p>
             <div className="flex flex-col gap-3 sm:flex-row">
               <Input className="sm:max-w-sm" type="email" placeholder="technician@example.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
-              <Button disabled={inviteBusy || !inviteEmail.trim()} onClick={() => void sendInvite()}>{inviteBusy ? "Sending…" : "Send invite"}</Button>
+              <Button disabled={inviteBusy || !inviteEmail.trim()} onClick={() => void sendInvite()}>{inviteBusy ? "Creating…" : "Create invite"}</Button>
             </div>
             {inviteMessage ? <div className="text-sm text-muted-foreground" role="status">{inviteMessage}</div> : null}
             {inviteLink ? (
