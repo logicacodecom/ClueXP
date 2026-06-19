@@ -123,7 +123,7 @@ class Store:
         raise NotImplementedError
 
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:  # pragma: no cover
-        """Trusted server-side slug -> owning-org resolution (adr/0004).
+        """Trusted server-side slug -> owning-org resolution (SYSTEM-DESIGN §20.4).
 
         Returns {origin_org_id, customer_owner_org_id, intake_channel_id} for a
         known active channel, else None (public ClueXP intake). A browser-supplied
@@ -2052,7 +2052,7 @@ class PostgresStore(Store):
         return {
             "intake_channel_id": channel_id,
             "origin_org_id": org_id,
-            "customer_owner_org_id": org_id,  # origin owns the customer (adr/0004 §4)
+            "customer_owner_org_id": org_id,  # origin owns the customer (SYSTEM-DESIGN §20.4)
             "dispatch_cutover_enabled": bool(cutover),
         }
 

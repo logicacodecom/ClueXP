@@ -1,6 +1,6 @@
 """provider affiliation leave/rejoin history — surrogate PK + open-period uniqueness
 
-Slice B of the Provider Workforce Model (docs/PROVIDER-WORKFORCE-MODEL.md). Lets a
+Slice B of the Provider Workforce Model (docs/SYSTEM-DESIGN.md §18.3). Lets a
 technician hold MULTIPLE historical affiliation periods with the same provider
 (join → leave → rejoin) without overwriting the prior period:
 

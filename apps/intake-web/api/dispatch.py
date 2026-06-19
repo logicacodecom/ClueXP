@@ -3,7 +3,7 @@
 Pure functions (no I/O) so they are trivially testable. The store supplies the
 job and the available technicians; this module scores and ranks them.
 
-Selection rule (adr/0004 + EXECUTION-PLAN §2B acceptance): an eligible candidate
+Selection rule (SYSTEM-DESIGN §20.4 + EXECUTION-PLAN §2B acceptance): an eligible candidate
 must be **available**, **skilled** for the job's access type, and have the job
 **within their service area**. Eligible candidates are ranked nearest-first,
 then by rating. Nothing here mutates state or reveals identity to the customer.

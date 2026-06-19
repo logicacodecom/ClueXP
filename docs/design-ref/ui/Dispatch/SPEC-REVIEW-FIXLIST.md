@@ -1,7 +1,7 @@
 # Dispatch Console Mocks — Spec Review & Prioritized Fix-List
 
-> **Reviewed:** 2026-06-02
-> **Against:** [`docs/ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`](../../../ORGANIZATION-DISPATCH-CONSOLE-SPEC.md)
+> **Reviewed:** 2026-06-02 (archival). **Against:** the dispatch-console spec, now
+> [`docs/SYSTEM-DESIGN.md`](../../../SYSTEM-DESIGN.md) §18.3–§18.4 (was `ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`, retired 2026-06-19).
 > **Scope:** the 10 generated screens under `docs/design-ref/ui/Dispatch/`.
 > **Rule of precedence:** mocks are visual exploration; where a mock and the spec
 > disagree, **the spec wins** (per `cluexp/DESIGN.md` and SPEC §8). This list is for

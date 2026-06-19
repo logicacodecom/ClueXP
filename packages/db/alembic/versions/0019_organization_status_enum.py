@@ -1,6 +1,6 @@
 """organization status — canonical company lifecycle enum
 
-Slice G of the Provider Workforce Model (docs/PROVIDER-WORKFORCE-MODEL.md). The
+Slice G of the Provider Workforce Model (docs/SYSTEM-DESIGN.md §18.3). The
 `organizations.status` column was free text with divergent values (`pending_vetting`
 on insert, `active` on approve, legacy `verified`/`expired`). This reconciles it to
 the canonical company lifecycle and enforces it:

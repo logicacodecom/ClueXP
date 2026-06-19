@@ -1207,7 +1207,7 @@ async def places_autocomplete_endpoint(q: str) -> dict[str, Any]:
 @app.post("/tickets", response_model=TicketEnvelope)
 async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
-    # Trusted intake-channel resolution (adr/0004): the browser supplies only a channel
+    # Trusted intake-channel resolution (SYSTEM-DESIGN §20.4): the browser supplies only a channel
     # slug (attribution, dropped by sanitize); the owning org is resolved server-side and
     # is never trusted from the client. Absent/unknown slug => public ClueXP intake.
     raw_slug = (payload or {}).get("intake_channel")

@@ -1,6 +1,6 @@
 """technician profile photo approval status — customer-safe identity gate
 
-Slice E of the Provider Workforce Model (docs/PROVIDER-WORKFORCE-MODEL.md). The
+Slice E of the Provider Workforce Model (docs/SYSTEM-DESIGN.md §18.3). The
 `technicians.profile_photo_url` column already exists (0001 baseline, public CDN
 bucket from 0002). This adds an approval gate so the customer tracking response can
 expose the assigned technician's photo ONLY when it is approved:

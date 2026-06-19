@@ -1,5 +1,5 @@
 // Domain types for the ClueXP dispatch console.
-// Source of truth: docs/ORGANIZATION-DISPATCH-CONSOLE-SPEC.md §7 (states) and §10 (data).
+// Source of truth: docs/SYSTEM-DESIGN.md §18.3-§18.4 (partner + ops subsystems).
 // These mirror the spec's vocabulary exactly — do not invent state values.
 
 /** §7.1 — operator projection over backend job/offer/technician events. NOT trust_state. */
@@ -152,7 +152,7 @@ export interface Technician {
   rating?: number;
   document_status: DocumentStatus;
   location_updated_min_ago?: number;
-  /** ADR 0004 — membership-level permission for verified network routing, future/planned. */
+  /** SYSTEM-DESIGN §20.4 — membership-level permission for verified network routing, future/planned. */
   direct_dispatch_allowed: boolean;
   blocking_reason?: string;
   verified?: boolean;
