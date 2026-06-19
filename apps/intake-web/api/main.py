@@ -177,6 +177,13 @@ class TechnicianRegisterRequest(BaseModel):
     service_area_center_lng: float | None = None
     service_area_radius_km: float | None = None
     locale: str | None = None
+    # Optional company-invite token: links the new technician to the inviting
+    # company as a pending affiliation on signup (Part 4 invite flow).
+    invite_token: str | None = None
+
+
+class TechnicianInviteRequest(BaseModel):
+    email: str | None = None
 
 
 class OrganizationRegisterRequest(BaseModel):
@@ -851,6 +858,81 @@ async def create_provider_technician(
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+@app.get("/provider/technicians")
+async def list_provider_technicians(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Operational directory of the company's affiliated technicians. Tenant-scoped:
+    derives from the org's open affiliation periods only — never another company's
+    roster. Includes status, availability, completed jobs, rating, affiliation date,
+    skills, and a per-technician compliance summary (real data, no mock)."""
+    organization_id = _provider_organization_id(session)
+    return {"technicians": await store.list_affiliated_technicians_directory(organization_id)}
+
+
+@app.post("/provider/technicians/invite")
+async def invite_provider_technician(
+    payload: TechnicianInviteRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Invite a technician by email. If a ClueXP technician already exists for that
+    email, attach them to this company as a PENDING invite (they accept in their own
+    portal). Otherwise mint a one-time signup invite token and return a copyable link
+    (email delivery is a follow-up) — on signup the technician is linked to this
+    company. Consent is always required; nothing is silently activated."""
+    organization_id = _provider_organization_id(session)
+    email = (payload.email or "").strip() or None
+    if not email:
+        raise HTTPException(status_code=422, detail="A technician email is required")
+    # Existing account → attach directly as a pending affiliation.
+    existing = await store.find_technician_by_email(email)
+    if existing is not None:
+        try:
+            result = await store.add_affiliation(
+                organization_id, UUID(existing["id"]), status="pending_invite",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {
+            "mode": "existing_technician",
+            "technician_id": existing["id"],
+            "display_name": existing.get("display_name"),
+            "affiliation": result,
+        }
+    invite = await store.create_technician_invite(
+        organization_id, email=email, invited_by=str(session.get("user", {}).get("id")),
+    )
+    return {"mode": "invite_link", "invite": invite}
+
+
+@app.get("/technician-invites/{token}")
+async def resolve_technician_invite(token: str) -> dict[str, Any]:
+    """Public: resolve a company invite token so the technician signup page can show
+    the inviting company. Returns 404 for unknown/expired/used tokens."""
+    invite = await store.resolve_technician_invite(token)
+    if invite is None or invite.get("status") != "pending":
+        raise HTTPException(status_code=404, detail="Invite not found or no longer valid")
+    return {
+        "organization_id": invite["organization_id"],
+        "organization_name": invite.get("organization_name"),
+        "email": invite.get("email"),
+        "expires_at": invite.get("expires_at"),
+    }
+
+
+@app.post("/provider/intake-channel")
+async def ensure_provider_intake_channel(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Ensure the company has a branded intake slug, generating a unique one from its
+    name if missing. Tenant-scoped to the caller's org. Returns {slug}."""
+    organization_id = _provider_organization_id(session)
+    result = await store.ensure_intake_channel(organization_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
 @app.post("/provider/technicians/{technician_id}/affiliation/end")
 async def provider_end_affiliation(
     technician_id: UUID,
@@ -919,8 +1001,14 @@ async def create_provider_document(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     organization_id = _provider_organization_id(session)
-    if payload.owner_type not in {"organization", "technician"}:
-        raise HTTPException(status_code=422, detail="Invalid document owner")
+    # Document ownership (Part 5): a provider company owns and maintains ONLY its own
+    # company credentials. Technician documents are the technician's / ClueXP ops'
+    # responsibility — a provider may never upload or edit them through this surface.
+    if payload.owner_type != "organization":
+        raise HTTPException(
+            status_code=403,
+            detail="Provider companies can only manage their own company documents, not technician documents.",
+        )
     try:
         return await store.create_provider_document(
             organization_id, payload.model_dump(mode="json")

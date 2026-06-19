@@ -3,7 +3,22 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-export type MapPoint = { lat: number; lng: number; kind: "tech" | "job"; label?: string; id?: string };
+export type MapPoint = {
+  lat: number;
+  lng: number;
+  kind: "tech" | "job";
+  label?: string;
+  id?: string;
+  // Optional fleet classification for tech markers: free (green), busy (red),
+  // inactive / last-known (yellow). Absent → default amber tech marker.
+  status?: "free" | "busy" | "inactive";
+};
+
+const TECH_STATUS_COLOR: Record<NonNullable<MapPoint["status"]>, string> = {
+  free: "#22c55e",
+  busy: "#ef4444",
+  inactive: "#eab308",
+};
 
 const MAPS_KEY = process.env.NEXT_PUBLIC_MAPS_BROWSER_KEY;
 
@@ -85,14 +100,18 @@ export function GoogleMapView({
         points.forEach((p) => {
           const pos = { lat: p.lat, lng: p.lng };
           bounds.extend(pos);
+          const techColor = p.status ? TECH_STATUS_COLOR[p.status] : "#ffbf00";
           const marker = new maps.Marker({
             position: pos,
             map,
             title: p.label,
+            // Inactive techs render at reduced opacity — they are shown by their
+            // last known location only, not a live position.
+            opacity: p.kind === "tech" && p.status === "inactive" ? 0.7 : 1,
             icon: {
               path: maps.SymbolPath.CIRCLE,
               scale: p.kind === "tech" ? 8 : 9,
-              fillColor: p.kind === "tech" ? "#ffbf00" : "#62a8ff",
+              fillColor: p.kind === "tech" ? techColor : "#62a8ff",
               fillOpacity: 1,
               strokeColor: "#0b0d10",
               strokeWeight: 3,

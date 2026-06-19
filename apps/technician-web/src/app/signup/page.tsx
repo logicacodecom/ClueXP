@@ -1,7 +1,7 @@
 "use client";
 
 import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppFrame, Screen } from "@/components/mobile";
 
 export default function SignUpPage() {
@@ -9,6 +9,26 @@ export default function SignUpPage() {
   const [form, setForm] = useState({ display_name: "", email: "", phone: "", password: "" });
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [inviteOrg, setInviteOrg] = useState<string | null>(null);
+
+  // Company-invite signup: read ?invite=<token> and resolve the inviting company
+  // so the technician knows who they'll be affiliated with. On submit the token
+  // is forwarded so the backend links them as a pending affiliation.
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("invite");
+    if (!token) return;
+    setInviteToken(token);
+    void fetch(`/api/invite/${encodeURIComponent(token)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) return;
+        setInviteOrg(body.organization_name ?? "your inviting company");
+        if (body.email) setForm((f) => ({ ...f, email: f.email || body.email }));
+      })
+      .catch(() => { /* invalid invite → plain signup */ });
+  }, []);
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -16,7 +36,10 @@ export default function SignUpPage() {
     try {
       const result = await sessionRequest<{ session?: { technician?: { id?: string } } }>("/api/register", {
         method: "POST",
-        body: JSON.stringify({ ...form, locale, skills: ["home", "business", "vehicle"] })
+        body: JSON.stringify({
+          ...form, locale, skills: ["home", "business", "vehicle"],
+          ...(inviteToken ? { invite_token: inviteToken } : {})
+        })
       });
       setMessage(`Account request received. Registration ID: ${result.session?.technician?.id ?? "pending assignment"}`);
     } catch (cause) {
@@ -31,6 +54,7 @@ export default function SignUpPage() {
         <div className="flex justify-end py-4"><LanguageSelect /></div>
         <form className="space-y-4 pb-8" onSubmit={submit}>
           <div><h1 className="text-3xl font-black">{t("signUp")}</h1><p className="mt-2 text-sm text-muted">Technician access requires identity and compliance verification.</p></div>
+          {inviteOrg ? <p className="rounded-xl border border-primary/40 bg-primary/10 p-3 text-sm font-bold" role="status">You were invited by {inviteOrg}. After signup you'll be linked to them for dispatch (pending your acceptance).</p> : null}
           {[
             ["display_name", "Full name", "name", "text"],
             ["email", "Email", "email", "email"],

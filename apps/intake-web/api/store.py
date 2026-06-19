@@ -237,6 +237,28 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def list_affiliated_technicians_directory(
+        self, organization_id: UUID
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_technician_invite(
+        self, organization_id: UUID, *, email: str | None, invited_by: str | None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_invites(self, organization_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def resolve_technician_invite(self, token: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def find_technician_by_email(self, email: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     # --- technician self-service (Slice D backend) ---
     async def list_technician_affiliations(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
@@ -646,6 +668,92 @@ class InMemoryStore(Store):
 
     async def update_organization_profile(self, organization_id: UUID, data: dict) -> dict | None:
         return {"id": str(organization_id), **data}
+
+    async def list_affiliated_technicians_directory(self, organization_id: UUID) -> list[dict]:
+        oid = str(organization_id)
+        techs = getattr(self, "_technicians", [])
+        affs = getattr(self, "_affiliations", [])
+        out: list[dict] = []
+        for aff in affs:
+            if str(aff.get("organization_id")) != oid or aff.get("ended_at") is not None:
+                continue
+            tech = next((t for t in techs if str(t.get("id")) == str(aff.get("technician_id"))), None)
+            if tech is None:
+                continue
+            active = tech.get("status") == "active"
+            availability = "free" if (active and tech.get("is_available")) else "offline"
+            out.append({
+                "id": str(tech.get("id")),
+                "display_name": tech.get("display_name"),
+                "email": tech.get("email"),
+                "phone": tech.get("phone"),
+                "status": tech.get("status", "active"),
+                "vetting_status": tech.get("vetting_status"),
+                "skills": tech.get("skills") or [],
+                "is_available": tech.get("is_available"),
+                "availability": availability,
+                "rating": tech.get("rating"),
+                "location_updated_at": tech.get("location_updated_at"),
+                "affiliation": {
+                    "status": aff.get("status"),
+                    "affiliation_type": aff.get("affiliation_type"),
+                    "exclusivity": aff.get("exclusivity"),
+                    "dispatch_allowed": bool(aff.get("dispatch_allowed")),
+                    "affiliated_at": aff.get("starts_at"),
+                    "is_pending_invite": aff.get("status") == "pending_invite",
+                },
+                "completed_jobs": 0,
+                "compliance": {
+                    "total": 0, "verified": 0, "pending": 0, "rejected": 0,
+                    "expired": [], "expiring": [], "summary": "no_documents",
+                },
+            })
+        return out
+
+    async def create_technician_invite(
+        self, organization_id: UUID, *, email: str | None, invited_by: str | None,
+    ) -> dict:
+        invites = self._invites = getattr(self, "_invites", [])
+        token = secrets.token_urlsafe(24)
+        now = datetime.now(timezone.utc)
+        record = {
+            "id": str(uuid4()), "organization_id": str(organization_id),
+            "email": email, "token": token, "status": "pending",
+            "invited_by": invited_by,
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=14)).isoformat(),
+            "accepted_at": None,
+        }
+        invites.append(record)
+        return {k: record[k] for k in ("id", "email", "token", "status", "created_at", "expires_at")}
+
+    async def list_technician_invites(self, organization_id: UUID) -> list[dict]:
+        oid = str(organization_id)
+        return [
+            {k: inv.get(k) for k in ("id", "email", "token", "status", "created_at", "expires_at", "accepted_at")}
+            for inv in getattr(self, "_invites", [])
+            if str(inv.get("organization_id")) == oid
+        ]
+
+    async def resolve_technician_invite(self, token: str) -> dict | None:
+        for inv in getattr(self, "_invites", []):
+            if inv.get("token") == token:
+                return {
+                    "id": inv["id"], "organization_id": inv["organization_id"],
+                    "email": inv.get("email"), "status": inv.get("status"),
+                    "expires_at": inv.get("expires_at"), "organization_name": "Local provider",
+                }
+        return None
+
+    async def find_technician_by_email(self, email: str) -> dict | None:
+        target = (email or "").strip().lower()
+        for tech in getattr(self, "_technicians", []):
+            if str(tech.get("email") or "").strip().lower() == target and target:
+                return {"id": str(tech.get("id")), "display_name": tech.get("display_name")}
+        return None
+
+    async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
+        return {"slug": f"org-{str(organization_id)[:8]}"}
 
     async def create_team(self, organization_id: UUID, data: dict) -> dict:
         return {"id": str(uuid4()), "organization_id": str(organization_id), "status": "active", **data}
@@ -2863,13 +2971,24 @@ class PostgresStore(Store):
         ]
 
     async def get_fleet_state(self, org_id: str | None = None) -> list[dict]:
-        """All active+verified technicians with their current location and active
-        job (if any). Single LEFT JOIN — one round trip for the fleet map. With
-        org_id set, restricted to the company's dispatch-eligible technicians."""
-        org_filter = ""
+        """Technicians with their current location and active job (if any). Single
+        LEFT JOIN — one round trip for the fleet map.
+
+        Ops mode (org_id None): all active+verified technicians, unchanged.
+        Company mode (org_id set): the company's dispatch-eligible technicians,
+        INCLUDING those whose technician profile is no longer active — those are
+        surfaced by their LAST KNOWN location only (they must have coordinates).
+        Each row carries a derived ``marker_status`` for the map:
+          free     — active, available, no active job   (green)
+          busy     — has an active job                   (red)
+          inactive — not active / unavailable            (yellow, last known)
+        """
         active = ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]
-        params: tuple = (active,)
-        if org_id is not None:
+        if org_id is None:
+            where = " where t.status = 'active' and t.vetting_status = 'verified'"
+            params: tuple = (active,)
+        else:
+            # Affiliation gate (Slice A source of truth) with legacy cache fallback.
             org_filter = (
                 " and (exists (select 1 from organization_technicians ot"
                 "   where ot.technician_id = t.id and ot.organization_id = %s"
@@ -2877,24 +2996,40 @@ class PostgresStore(Store):
                 " or (t.primary_organization_id = %s and not exists"
                 "   (select 1 from organization_technicians ot2 where ot2.technician_id = t.id)))"
             )
+            where = (
+                " where t.vetting_status = 'verified'"
+                " and (t.status = 'active'"
+                "   or (t.current_lat is not null and t.current_lng is not null))"
+                + org_filter
+            )
             params = (active, str(org_id), str(org_id))
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select t.id, t.display_name, t.skills, t.is_available,"
                 " t.current_lat, t.current_lng, t.location_updated_at,"
+                " t.status, t.phone,"
                 " j.id as job_id, j.status as job_status, j.address as job_address,"
                 " j.lat as job_lat, j.lng as job_lng, j.access_type, j.situation"
                 " from technicians t"
                 " left join jobs j"
                 "   on j.fulfillment_technician_id = t.id"
                 "   and j.status = any(%s)"
-                " where t.status = 'active' and t.vetting_status = 'verified'" + org_filter +
+                + where +
                 " order by t.display_name",
                 params,
             )
             rows = await cur.fetchall()
-        return [
-            {
+        out: list[dict] = []
+        for r in rows:
+            has_job = r[9] is not None
+            tech_active = r[7] == "active"
+            if has_job:
+                marker_status = "busy"
+            elif tech_active and r[3]:
+                marker_status = "free"
+            else:
+                marker_status = "inactive"
+            out.append({
                 "id": str(r[0]),
                 "display_name": r[1],
                 "skills": list(r[2] or []),
@@ -2902,18 +3037,20 @@ class PostgresStore(Store):
                 "current_lat": r[4],
                 "current_lng": r[5],
                 "location_updated_at": r[6].isoformat() if r[6] else None,
+                "status": r[7],
+                "phone": r[8],
+                "marker_status": marker_status,
                 "active_job": {
-                    "id": str(r[7]),
-                    "status": r[8],
-                    "address": r[9],
-                    "lat": r[10],
-                    "lng": r[11],
-                    "access_type": r[12],
-                    "situation": r[13],
-                } if r[7] else None,
-            }
-            for r in rows
-        ]
+                    "id": str(r[9]),
+                    "status": r[10],
+                    "address": r[11],
+                    "lat": r[12],
+                    "lng": r[13],
+                    "access_type": r[14],
+                    "situation": r[15],
+                } if has_job else None,
+            })
+        return out
 
     async def decline_dispatch_offer(
         self, offer_id: UUID, technician_id: UUID, reason: str | None = None
@@ -3762,6 +3899,39 @@ class PostgresStore(Store):
                     data.get("service_area_radius_km"),
                 ),
             )
+            # Invite-driven signup: attach to the inviting company as a PENDING
+            # affiliation (consent still required to activate — never silent).
+            token = (data.get("invite_token") or "").strip() or None
+            if token:
+                cur = await conn.execute(
+                    "select organization_id from technician_invites"
+                    " where token = %s and status = 'pending' and expires_at > now()",
+                    (token,),
+                )
+                inv = await cur.fetchone()
+                if inv:
+                    await conn.execute(
+                        "insert into organization_technicians"
+                        " (organization_id, technician_id, role, status,"
+                        "  affiliation_type, exclusivity, dispatch_allowed, starts_at)"
+                        " values (%s, %s, 'affiliate_technician', 'pending_invite',"
+                        "  'unknown', 'unknown', true, now())"
+                        " on conflict (organization_id, technician_id) where ended_at is null"
+                        " do nothing",
+                        (str(inv[0]), user_id),
+                    )
+                    await conn.execute(
+                        "insert into user_organization_memberships"
+                        " (user_id, organization_id, role, status)"
+                        " values (%s, %s, 'technician', 'pending')"
+                        " on conflict (user_id, organization_id) do nothing",
+                        (user_id, str(inv[0])),
+                    )
+                    await conn.execute(
+                        "update technician_invites set status = 'accepted',"
+                        " accepted_at = now(), accepted_technician_id = %s where token = %s",
+                        (user_id, token),
+                    )
             return await self._session_for_user(conn, str(user_id))
 
     async def register_organization(self, data: dict) -> dict:
@@ -4140,6 +4310,211 @@ class PostgresStore(Store):
                 for row in document_rows
             ],
         }
+
+    async def list_affiliated_technicians_directory(self, organization_id: UUID) -> list[dict]:
+        """Operational directory of the company's affiliated technicians (open
+        affiliation periods only — tenant-scoped to this org). Each row carries
+        the global technician status, derived availability, completed-job count,
+        rating, affiliation date, skills, and a compliance summary so the portal
+        never needs mock data. Document compliance counts ONLY the technician's
+        own credentials (provider companies do not own technician documents)."""
+        active_job = ("assigned", "en_route", "arrived", "in_progress", "completed_pending_customer")
+        completed = ("completed_confirmed", "completed_auto_closed")
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
+                " t.skills, t.is_available, t.rating, t.location_updated_at,"
+                " ot.status, ot.affiliation_type, ot.exclusivity, ot.dispatch_allowed, ot.starts_at,"
+                " (select count(*) from jobs j where j.fulfillment_technician_id = t.id"
+                "   and j.status = any(%s)) as completed_jobs,"
+                " exists(select 1 from jobs j2 where j2.fulfillment_technician_id = t.id"
+                "   and j2.status = any(%s)) as on_job"
+                " from technicians t"
+                " join organization_technicians ot on ot.technician_id = t.id"
+                " where ot.organization_id = %s and ot.ended_at is null"
+                " order by t.display_name",
+                (list(completed), list(active_job), str(organization_id)),
+            )
+            rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select owner_id, document_type, status, expires_at"
+                " from provider_documents"
+                " where owner_type = 'technician' and owner_id in ("
+                "   select technician_id from organization_technicians"
+                "   where organization_id = %s and ended_at is null)",
+                (str(organization_id),),
+            )
+            doc_rows = await cur.fetchall()
+        today = datetime.now(timezone.utc).date()
+        soon = today + timedelta(days=30)
+        docs_by_tech: dict[str, dict] = {}
+        for owner_id, dtype, dstatus, expires_at in doc_rows:
+            agg = docs_by_tech.setdefault(str(owner_id), {
+                "total": 0, "verified": 0, "pending": 0, "rejected": 0,
+                "expired": [], "expiring": [],
+            })
+            agg["total"] += 1
+            if dstatus == "verified":
+                agg["verified"] += 1
+            elif dstatus == "rejected":
+                agg["rejected"] += 1
+            elif dstatus != "expired":
+                agg["pending"] += 1
+            if dstatus == "expired" or (expires_at is not None and expires_at < today):
+                agg["expired"].append(dtype)
+            elif expires_at is not None and expires_at <= soon:
+                agg["expiring"].append(dtype)
+        out: list[dict] = []
+        for r in rows:
+            on_job = bool(r[16])
+            if on_job:
+                availability = "busy"
+            elif r[4] == "active" and r[7]:
+                availability = "free"
+            else:
+                availability = "offline"
+            compliance = docs_by_tech.get(str(r[0]), {
+                "total": 0, "verified": 0, "pending": 0, "rejected": 0,
+                "expired": [], "expiring": [],
+            })
+            if compliance["total"] == 0:
+                compliance_status = "no_documents"
+            elif compliance["expired"] or compliance["rejected"]:
+                compliance_status = "action_required"
+            elif compliance["expiring"] or compliance["pending"]:
+                compliance_status = "attention"
+            else:
+                compliance_status = "compliant"
+            out.append({
+                "id": str(r[0]),
+                "display_name": r[1],
+                "email": r[2],
+                "phone": r[3],
+                "status": r[4],
+                "vetting_status": r[5],
+                "skills": list(r[6] or []),
+                "is_available": r[7],
+                "availability": availability,
+                "rating": float(r[8]) if r[8] is not None else None,
+                "location_updated_at": r[9].isoformat() if r[9] else None,
+                "affiliation": {
+                    "status": r[10],
+                    "affiliation_type": r[11],
+                    "exclusivity": r[12],
+                    "dispatch_allowed": bool(r[13]),
+                    "affiliated_at": r[14].isoformat() if r[14] else None,
+                    "is_pending_invite": r[10] == "pending_invite",
+                },
+                "completed_jobs": int(r[15] or 0),
+                "compliance": {**compliance, "summary": compliance_status},
+            })
+        return out
+
+    async def create_technician_invite(
+        self, organization_id: UUID, *, email: str | None, invited_by: str | None,
+    ) -> dict:
+        """Create (or refresh) a pending invite for a NEW technician — one with no
+        ClueXP account yet. Returns a one-time token the company can share as a
+        signup link; on signup the token attaches the technician to this org as a
+        pending affiliation. Existing technicians are attached directly via
+        ``create_affiliated_technician`` instead, so this is the no-account path."""
+        token = secrets.token_urlsafe(24)
+        expires = datetime.now(timezone.utc) + timedelta(days=14)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_invites"
+                " (organization_id, email, token, status, invited_by, expires_at)"
+                " values (%s, %s, %s, 'pending', %s, %s)"
+                " returning id, email, token, status, created_at, expires_at",
+                (str(organization_id), email, token, invited_by, expires),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "email": row[1], "token": row[2], "status": row[3],
+            "created_at": row[4].isoformat() if row[4] else None,
+            "expires_at": row[5].isoformat() if row[5] else None,
+        }
+
+    async def list_technician_invites(self, organization_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, email, token, status, created_at, expires_at, accepted_at"
+                " from technician_invites where organization_id = %s"
+                " order by created_at desc",
+                (str(organization_id),),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "email": r[1], "token": r[2], "status": r[3],
+                "created_at": r[4].isoformat() if r[4] else None,
+                "expires_at": r[5].isoformat() if r[5] else None,
+                "accepted_at": r[6].isoformat() if r[6] else None,
+            }
+            for r in rows
+        ]
+
+    async def resolve_technician_invite(self, token: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select i.id, i.organization_id, i.email, i.status, i.expires_at, o.display_name"
+                " from technician_invites i join organizations o on o.id = i.organization_id"
+                " where i.token = %s",
+                (token,),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]), "organization_id": str(row[1]), "email": row[2],
+            "status": row[3], "expires_at": row[4].isoformat() if row[4] else None,
+            "organization_name": row[5],
+        }
+
+    async def find_technician_by_email(self, email: str) -> dict | None:
+        """Look up an existing technician by login email (users.email). Used by the
+        invite flow to attach an already-registered technician directly rather than
+        minting a signup token."""
+        target = (email or "").strip()
+        if not target:
+            return None
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select t.id, t.display_name from technicians t"
+                " join users u on u.id = t.id where lower(u.email) = lower(%s)",
+                (target,),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1]}
+
+    async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
+        """Guarantee the company has a branded intake slug, generating a unique one
+        from its name if absent. Returns {slug}. Tenant-scoped to the caller's org."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select slug, display_name, legal_name from organizations where id = %s",
+                (str(organization_id),),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            if row[0]:
+                return {"slug": row[0]}
+            base = _slugify(row[1] or row[2] or "company")
+            slug, n = base, 1
+            while True:
+                cur = await conn.execute("select 1 from organizations where slug = %s", (slug,))
+                if not await cur.fetchone():
+                    break
+                n += 1
+                slug = f"{base}-{n}"
+            await conn.execute(
+                "update organizations set slug = %s, updated_at = now() where id = %s",
+                (slug, str(organization_id)),
+            )
+        return {"slug": slug}
 
     async def update_organization_profile(self, organization_id: UUID, data: dict) -> dict | None:
         async with await self._connect() as conn:

@@ -26,7 +26,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
   if (error) return <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">{error}</main>;
   if (!session || gatedHere) return null;
   const mappedNav = defaultNav.map((item) =>
-    item.label === "Technicians" ? { ...item, href: "/jobs/JOB-B-2248/assign" } : item
+    item.label === "Technicians" ? { ...item, href: "/technicians" } : item
   );
   const reportsNav = defaultNav.find((item) => item.href === "/reports") ?? defaultNav[0];
   const providerNav = [
