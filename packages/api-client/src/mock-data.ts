@@ -172,7 +172,7 @@ export const technicians: Technician[] = [
     rating: 4.9,
     document_status: "verified",
     location_updated_min_ago: 2,
-    // ADR 0004: Metro may release Samir for verified network routing (future/planned).
+    // SYSTEM-DESIGN §20.4: Metro may release Samir for verified network routing (future/planned).
     direct_dispatch_allowed: true,
     verified: true,
     background_check: "verified",

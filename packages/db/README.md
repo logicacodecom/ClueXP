@@ -24,8 +24,31 @@ uv run --with alembic --with "sqlalchemy>=2" alembic -c packages/db/alembic.ini 
 ```
 
 - `upgrade head` — apply all migrations
+- `upgrade <revision>` — apply up to a specific revision (e.g. `upgrade 0022_technician_invites`)
 - `downgrade -1` — roll back one
 - `current` / `history` — inspect state
+
+### Fallback: Supabase SQL Editor + stamp (when no host is reachable)
+
+When **both** the direct (5432) and pooler (6543) hosts are unreachable from the
+machine (the usual case from this environment — IPv6-only direct host, restricted
+egress), apply the DDL by hand and then record the revision so Alembic's history
+stays consistent:
+
+1. Open the migration file under `packages/db/alembic/versions/` and run its DDL
+   (the `op.execute("…")` / `.sql` body) in the **Supabase SQL Editor**. The DDL is
+   idempotent (`CREATE TABLE IF NOT EXISTS`, `IF NOT EXISTS` indexes), so re-running
+   is safe.
+2. Stamp the revision so `alembic_version` matches reality (no DDL is re-run):
+
+```powershell
+uv run --with alembic --with "sqlalchemy>=2" alembic -c packages/db/alembic.ini stamp <revision>
+# e.g. stamp 0022_technician_invites
+```
+
+`stamp` still needs `MIGRATION_DATABASE_URL` set (it only updates the
+`alembic_version` row, which the pooler can do even when the migration was applied
+via the SQL Editor).
 
 ## Conventions
 

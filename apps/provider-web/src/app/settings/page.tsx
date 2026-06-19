@@ -1,10 +1,12 @@
 "use client";
 
 import { LanguageSettings } from "@cluexp/app-core";
-import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
-import { Save } from "lucide-react";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
+import { Check, Copy, Link2, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
+
+const INTAKE_BASE = (process.env.NEXT_PUBLIC_INTAKE_BASE_URL || "https://intake.cluexp.com").replace(/\/$/, "");
 
 export default function SettingsPage() {
   const [form, setForm] = useState({
@@ -12,6 +14,10 @@ export default function SettingsPage() {
     service_area_radius_km: "", dispatch_mode: "organization_managed",
     fulfillment_policy: "owner_first_then_network"
   });
+  const [slug, setSlug] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [intakeMessage, setIntakeMessage] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -20,6 +26,7 @@ export default function SettingsPage() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to load organization");
       const organization = body.organization ?? {};
+      setSlug(organization.slug ?? null);
       setForm({
         display_name: organization.display_name ?? "",
         legal_name: organization.legal_name ?? "",
@@ -32,6 +39,36 @@ export default function SettingsPage() {
       });
     }).catch((error) => setMessage(error.message));
   }, []);
+
+  const intakeUrl = slug ? `${INTAKE_BASE}/o/${slug}` : null;
+
+  async function copyIntakeLink() {
+    if (!intakeUrl) return;
+    try {
+      await navigator.clipboard.writeText(intakeUrl);
+      setCopied(true);
+      setIntakeMessage("Intake link copied to clipboard.");
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setIntakeMessage("Could not copy automatically — select and copy the link manually.");
+    }
+  }
+
+  async function generateIntakeLink() {
+    setGenerating(true);
+    setIntakeMessage(null);
+    try {
+      const response = await fetch("/api/provider/intake-channel", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to generate intake link");
+      setSlug(body.slug);
+      setIntakeMessage("Branded intake link is ready.");
+    } catch (cause) {
+      setIntakeMessage(cause instanceof Error ? cause.message : "Unable to generate intake link");
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   async function save() {
     setBusy(true);
@@ -58,6 +95,28 @@ export default function SettingsPage() {
     <AppFrame>
       <div className="space-y-6">
         <LanguageSettings className="rounded-md border border-border bg-card p-6" />
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><Link2 className="size-5 text-primary" />Your intake link</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">Share this branded link with your customers. Requests submitted here are routed to your company.</p>
+            {intakeUrl ? (
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-3 py-2.5 text-sm" title={intakeUrl}>{intakeUrl}</code>
+                <Button className="shrink-0" variant="outline" onClick={() => void copyIntakeLink()}>
+                  {copied ? <Check className="size-4" /> : <Copy className="size-4" />}{copied ? "Copied" : "Copy link"}
+                </Button>
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-border bg-secondary/40 p-4">
+                <div className="text-sm font-medium">No intake link yet</div>
+                <p className="mt-1 text-sm text-muted-foreground">Generate a branded intake link so customers can request service directly from your company.</p>
+                <Button className="mt-3" disabled={generating} onClick={() => void generateIntakeLink()}>{generating ? "Generating…" : "Generate intake link"}</Button>
+              </div>
+            )}
+            {intakeMessage ? <div className="text-sm text-muted-foreground" role="status">{intakeMessage}</div> : null}
+            {slug ? <Badge variant="outline">slug: {slug}</Badge> : null}
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle>Organization profile</CardTitle></CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">

@@ -13,6 +13,9 @@ interface Workspace {
 
 export default function DocumentsPage() {
   const [workspace, setWorkspace] = useState<Workspace>({ organization: { id: "" }, technicians: [], documents: [] });
+  // Provider companies manage ONLY their own company credentials here. Technician
+  // documents are owned by the technician / ClueXP ops and are not editable from
+  // this surface (the backend rejects non-organization owners with 403).
   const [form, setForm] = useState({ owner_type: "organization", owner_id: "", document_type: "business_license", document_number: "", expires_at: "" });
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -25,6 +28,10 @@ export default function DocumentsPage() {
     setWorkspace(body);
   }, []);
   useEffect(() => { void refresh().catch((error) => setMessage(error.message)); }, [refresh]);
+
+  // Only the company's own credentials are shown/managed here — technician
+  // documents (owner_type "technician") are intentionally excluded.
+  const companyDocuments = workspace.documents.filter((document) => document.owner_type === "organization");
 
   async function submit() {
     if (!file) return;
@@ -65,24 +72,23 @@ export default function DocumentsPage() {
   return (
     <AppFrame>
       <div className="space-y-6">
-        <header><div className="text-xs font-semibold uppercase text-muted-foreground">Compliance</div><h1 className="mt-2 text-3xl font-semibold">Documents</h1><p className="mt-2 text-sm text-muted-foreground">Submit organization and technician credentials that control dispatch eligibility.</p></header>
+        <header><div className="text-xs font-semibold uppercase text-muted-foreground">Compliance</div><h1 className="mt-2 text-3xl font-semibold">Company documents</h1><p className="mt-2 text-sm text-muted-foreground">Upload and maintain your company credentials. ClueXP ops verifies them — you can replace or renew at any time. Technician credentials are managed by the technician, not here.</p></header>
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
         <Card>
-          <CardHeader><CardTitle className="flex items-center gap-2"><Upload className="size-5 text-primary" />Submit document</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="flex items-center gap-2"><Upload className="size-5 text-primary" />Submit company document</CardTitle></CardHeader>
           <CardContent className="grid gap-3 md:grid-cols-2">
-            <select className="min-h-11 rounded-md border border-input bg-background px-3 text-sm" value={form.owner_type} onChange={(event) => setForm({ ...form, owner_type: event.target.value, owner_id: "" })}><option value="organization">Organization</option><option value="technician">Technician</option></select>
-            {form.owner_type === "technician" ? <select className="min-h-11 rounded-md border border-input bg-background px-3 text-sm" value={form.owner_id} onChange={(event) => setForm({ ...form, owner_id: event.target.value })}><option value="">Choose technician</option>{workspace.technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.display_name}</option>)}</select> : <div className="min-h-11 rounded-md border border-border bg-secondary px-3 py-2 text-sm">Organization credential</div>}
-            <select className="min-h-11 rounded-md border border-input bg-background px-3 text-sm" value={form.document_type} onChange={(event) => setForm({ ...form, document_type: event.target.value })}><option value="business_license">Business license</option><option value="insurance">Insurance</option><option value="technician_license">Technician license</option><option value="identity">Identity verification</option></select>
+            <div className="min-h-11 rounded-md border border-border bg-secondary px-3 py-2 text-sm md:col-span-2">Company credential — verified by ClueXP ops</div>
+            <select className="min-h-11 rounded-md border border-input bg-background px-3 text-sm" value={form.document_type} onChange={(event) => setForm({ ...form, document_type: event.target.value })}><option value="business_license">Business license</option><option value="insurance">Insurance</option><option value="tax_registration">Tax registration</option><option value="bonding">Bonding certificate</option></select>
             <Input placeholder="Document number" value={form.document_number} onChange={(event) => setForm({ ...form, document_number: event.target.value })} />
             <Input aria-label="Expiration date" type="date" value={form.expires_at} onChange={(event) => setForm({ ...form, expires_at: event.target.value })} />
             <Input accept=".pdf,image/png,image/jpeg,image/webp" aria-label="Document file" type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-            <Button className="md:col-span-2 md:w-fit" disabled={busy || !file || (form.owner_type === "technician" && !form.owner_id)} onClick={() => void submit()}><Upload className="size-4" />{busy ? "Uploading…" : "Submit for review"}</Button>
+            <Button className="md:col-span-2 md:w-fit" disabled={busy || !file} onClick={() => void submit()}><Upload className="size-4" />{busy ? "Uploading…" : "Submit for review"}</Button>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>Compliance register</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Company compliance register</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {workspace.documents.length === 0 ? <p className="text-sm text-muted-foreground">No documents submitted.</p> : workspace.documents.map((document) => (
+            {companyDocuments.length === 0 ? <p className="text-sm text-muted-foreground">No company documents submitted.</p> : companyDocuments.map((document) => (
               <div className="flex min-h-14 items-center gap-3 rounded-md border border-border p-3" key={document.id}>
                 <FileCheck2 className="size-5 text-primary" />
                 <div className="min-w-0 flex-1"><div className="font-medium">{document.document_type.replaceAll("_", " ")}</div><div className="text-xs text-muted-foreground">{document.owner_type}{document.expires_at ? ` · expires ${document.expires_at}` : ""}</div></div>

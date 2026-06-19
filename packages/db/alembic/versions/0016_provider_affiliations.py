@@ -1,6 +1,6 @@
 """provider technician affiliations — source-of-truth fields + exclusivity guard
 
-Slice A of the Provider Workforce Model (docs/PROVIDER-WORKFORCE-MODEL.md). Makes
+Slice A of the Provider Workforce Model (docs/SYSTEM-DESIGN.md §18.3). Makes
 `organization_technicians` the authoritative affiliation ledger for dispatch
 eligibility instead of `technicians.primary_organization_id`:
 

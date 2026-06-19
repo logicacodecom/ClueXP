@@ -936,6 +936,8 @@ export function MapOperations({ mode }: { mode: ConsoleMode }) {
   );
 }
 
+type MarkerStatus = "free" | "busy" | "inactive";
+
 type FleetTech = {
   id: string;
   display_name: string | null;
@@ -944,6 +946,9 @@ type FleetTech = {
   current_lat: number | null;
   current_lng: number | null;
   location_updated_at: string | null;
+  status?: string | null;
+  phone?: string | null;
+  marker_status?: MarkerStatus | null;
   active_job: {
     id: string;
     status: string;
@@ -954,6 +959,33 @@ type FleetTech = {
     situation: string | null;
   } | null;
 };
+
+// Derive the marker classification from a fleet row. Falls back to the same
+// rule the backend uses when `marker_status` is absent (e.g. ops fleet feed).
+function fleetMarkerStatus(t: FleetTech): MarkerStatus {
+  if (t.marker_status) return t.marker_status;
+  if (t.active_job) return "busy";
+  if ((t.status == null || t.status === "active") && t.is_available) return "free";
+  return "inactive";
+}
+
+const MARKER_STATUS_META: Record<MarkerStatus, { label: string; variant: "success" | "danger" | "warn"; dot: string }> = {
+  free: { label: "Free", variant: "success", dot: "#22c55e" },
+  busy: { label: "Busy", variant: "danger", dot: "#ef4444" },
+  inactive: { label: "Inactive", variant: "warn", dot: "#eab308" },
+};
+
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return "no update";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "no update";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
 
 export function FleetMap({ mode }: { mode: ConsoleMode }) {
   const [fleet, setFleet] = useState<FleetTech[] | null>(null);
@@ -980,7 +1012,7 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
 
   const techPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.current_lat != null && t.current_lng != null)
-    .map((t): MapPoint => ({ lat: t.current_lat!, lng: t.current_lng!, kind: "tech", label: t.display_name ?? t.id, id: t.id }));
+    .map((t): MapPoint => ({ lat: t.current_lat!, lng: t.current_lng!, kind: "tech", label: t.display_name ?? t.id, id: t.id, status: fleetMarkerStatus(t) }));
 
   const jobPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.active_job?.lat != null && t.active_job?.lng != null)
@@ -998,16 +1030,24 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
   const selectedTech = selected?.kind === "tech" && fleet ? fleet.find((t) => t.id === selected.id) ?? null : null;
   const selectedJob = selected?.kind === "job" && fleet ? fleet.find((t) => t.active_job?.id === selected.id)?.active_job ?? null : null;
 
-  const online = (fleet ?? []).filter((t) => t.is_available).length;
-  const busy = (fleet ?? []).filter((t) => t.active_job != null).length;
+  const free = (fleet ?? []).filter((t) => fleetMarkerStatus(t) === "free").length;
+  const busy = (fleet ?? []).filter((t) => fleetMarkerStatus(t) === "busy").length;
+  const inactive = (fleet ?? []).filter((t) => fleetMarkerStatus(t) === "inactive").length;
 
   return (
     <div>
-      <PageHeader kicker="Live fleet" title="Fleet Map" description={mode === "org" ? "Your company's active technicians and their current jobs. Click a marker for details. Refreshes every 45s." : "All active technicians and their current jobs. Click a marker for details. Refreshes every 45s."} actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
-      <div className="mb-6 grid gap-4 md:grid-cols-3">
-        <StatCard label="Active technicians" value={fleet ? String(fleet.length) : "—"} />
-        <StatCard label="Online / available" value={fleet ? String(online) : "—"} intent="success" />
-        <StatCard label="On active job" value={fleet ? String(busy) : "—"} intent="warn" />
+      <PageHeader kicker="Live fleet" title="Fleet Map" description={mode === "org" ? "Your company's technicians — free (green) and busy (red) by live location, inactive (yellow) by last known. Click a marker for details. Refreshes every 45s." : "All active technicians and their current jobs. Click a marker for details. Refreshes every 45s."} actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        <StatCard label="Technicians" value={fleet ? String(fleet.length) : "—"} />
+        <StatCard label="Free" value={fleet ? String(free) : "—"} intent="success" />
+        <StatCard label="Busy" value={fleet ? String(busy) : "—"} intent="danger" />
+        <StatCard label="Inactive" value={fleet ? String(inactive) : "—"} intent="warn" />
+      </div>
+      <div className="mb-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#22c55e" }} />Free · available</span>
+        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#ef4444" }} />Busy · on a job</span>
+        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full opacity-70" style={{ background: "#eab308" }} />Inactive · last known</span>
+        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#62a8ff" }} />Job location</span>
       </div>
       {error ? <div className="mb-4 rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
       <div className="grid gap-6 xl:grid-cols-[1.3fr_.7fr]">
@@ -1040,11 +1080,12 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
                 {selectedTech ? (
                   <>
                     <div className="flex flex-wrap gap-2">
-                      <Badge variant={selectedTech.is_available ? "success" : "neutral"}>{selectedTech.is_available ? "Available" : "Unavailable"}</Badge>
-                      <Badge variant={selectedTech.active_job ? "warn" : "outline"}>{selectedTech.active_job ? "On job" : "Free"}</Badge>
+                      <Badge variant={MARKER_STATUS_META[fleetMarkerStatus(selectedTech)].variant}>{MARKER_STATUS_META[fleetMarkerStatus(selectedTech)].label}</Badge>
                     </div>
+                    <div className="text-muted-foreground">Location updated: {timeAgo(selectedTech.location_updated_at)}</div>
                     <div className="text-muted-foreground">Skills: {selectedTech.skills.join(", ") || "—"}</div>
-                    {selectedTech.active_job ? <div className="text-muted-foreground">Job: {selectedTech.active_job.status} · {selectedTech.active_job.address ?? selectedTech.active_job.id}</div> : null}
+                    {selectedTech.active_job ? <div className="text-muted-foreground">Current job: {selectedTech.active_job.status.replaceAll("_", " ")} · {selectedTech.active_job.address ?? selectedTech.active_job.id}</div> : null}
+                    {selectedTech.phone ? <div className="text-muted-foreground">Contact: <a className="underline" href={`tel:${selectedTech.phone}`}>{selectedTech.phone}</a></div> : null}
                   </>
                 ) : null}
                 {selectedJob ? (
@@ -1070,19 +1111,23 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
             <CardHeader><CardTitle>Technician list</CardTitle></CardHeader>
             <CardContent className="space-y-2 max-h-[420px] overflow-y-auto">
               {fleet === null ? <LoadingSkeleton /> : fleet.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No active technicians.</p>
-              ) : fleet.map((t) => (
-                <div key={t.id} className="rounded-md border border-border p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">{t.display_name ?? t.id}</span>
-                    <div className="flex gap-1">
-                      <Badge variant={t.is_available ? "success" : "neutral"}>{t.is_available ? "Available" : "Away"}</Badge>
-                      {t.active_job ? <Badge variant="warn">On job</Badge> : null}
+                <p className="text-sm text-muted-foreground">No technicians to show.</p>
+              ) : fleet.map((t) => {
+                const ms = fleetMarkerStatus(t);
+                return (
+                  <div key={t.id} className="rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{t.display_name ?? t.id}</span>
+                      <Badge variant={MARKER_STATUS_META[ms].variant}>{MARKER_STATUS_META[ms].label}</Badge>
                     </div>
+                    {t.active_job ? (
+                      <div className="mt-1 text-xs text-muted-foreground">{t.active_job.status.replaceAll("_", " ")} · {t.active_job.address ?? "—"}</div>
+                    ) : (
+                      <div className="mt-1 text-xs text-muted-foreground">Location {timeAgo(t.location_updated_at)}</div>
+                    )}
                   </div>
-                  {t.active_job ? <div className="mt-1 text-xs text-muted-foreground">{t.active_job.status} · {t.active_job.address ?? "—"}</div> : null}
-                </div>
-              ))}
+                );
+              })}
             </CardContent>
           </Card>
         </div>

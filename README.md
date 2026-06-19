@@ -1,21 +1,28 @@
 # ClueXP Emergency Access Intake
 
-Mobile-web-first emergency access intake for ClueXP. This build follows `SPEC.md`: a Next.js + TypeScript frontend backed by a minimal FastAPI service that imports the canonical Pydantic contract from `apps/intake-web/api/schema.py`.
+Mobile-web-first emergency access intake for ClueXP: a Next.js + TypeScript frontend backed by a minimal FastAPI service that imports the canonical Pydantic contract from `apps/intake-web/api/schema.py`.
+
+## Canonical docs
+
+The project is documented by four canonical docs (plus a pilot runbook):
+
+- [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) — tech stack, database + storage, infrastructure, and the four subsystem specs (intake / technician / partner / ops). **Architecture source of truth.**
+- [`docs/EXECUTION-PLAN.md`](docs/EXECUTION-PLAN.md) — product backlog, releases, sprints, tasks, and **Canonical Status**.
+- [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) — the UI Guide (visual tokens, components); `docs/design-ref/` holds reference assets only.
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — the multi-agent communication channel.
+- Architecture decisions (why/rejected alternatives) live in `SYSTEM-DESIGN.md` §20 · [`docs/PILOT-OPERATIONS.md`](docs/PILOT-OPERATIONS.md) — pilot gates, cutover, matrix, rollback.
 
 ## Project Shape
 
-- `SPEC.md` - product and architecture source of truth.
 - `apps/intake-web/api/schema.py` - canonical Pydantic ticket schema. Do not duplicate it by hand.
-- `docs/DESIGN-SYSTEM.md` - canonical visual tokens; `docs/design-ref/ui/` and `docs/design-ref/brand/` hold reference assets only.
-- `apps/intake-web/api/main.py` - FastAPI stub backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
+- `apps/intake-web/api/main.py` - FastAPI backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
 - `apps/intake-web/src/app/page.tsx` - mobile-first intake and fulfillment flow.
 - `apps/intake-web/src/types/schema.generated.ts` - generated TypeScript contract derived from `api/schema.py`.
 - `apps/intake-web/scripts/generate_types.py` - local schema-to-TypeScript generator.
 - `packages/db/` - Alembic migrations for the dispatch relational core.
-- `apps/ops-web/`, `apps/provider-web/` - dispatch consoles (ClueXP ops + provider org) built on shared `packages/console-ui`; mock-data UI ahead of backend wiring (`docs/ORGANIZATION-DISPATCH-CONSOLE-SPEC.md`, `adr/0003`).
+- `apps/ops-web/`, `apps/provider-web/` - dispatch consoles (ClueXP ops + provider org) built on shared `packages/console-ui` (`SYSTEM-DESIGN.md` §18.3–§18.4, §20.3).
+- `apps/technician-web/` - technician field PWA (`SYSTEM-DESIGN.md` §18.2).
 - `packages/api-client/`, `packages/console-ui/` - shared types + mock data and the shared console component system (seam for the future `cluexp-api`).
-- `docs/ROADMAP.md` - outcome-based release order.
-- `docs/EXECUTION-PLAN.md` - canonical current status, prioritized sprints, and acceptance gates.
 
 > This is an npm-workspace monorepo (`apps/*` + `packages/*`). The instructions below cover the
 > **intake** app; the consoles run via `npm run dev:ops` / `npm run dev:provider` from the repo root.

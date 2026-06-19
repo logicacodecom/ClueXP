@@ -1,7 +1,7 @@
 """neutral-network tenancy & intake (adr/0004)
 
 Aligns the dispatch schema with the neutral multi-tenant dispatch-network model
-in `docs/adr/0004-tenancy-and-intake.md`:
+in `docs/SYSTEM-DESIGN.md` §20.4 (ADR-4):
 
 - Three independent axes on `jobs`: **origin** (who brought the demand),
   **customer owner** (who owns the relationship; defaults to origin), and

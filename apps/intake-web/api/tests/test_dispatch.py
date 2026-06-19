@@ -2509,3 +2509,77 @@ def test_postgres_sql_has_no_unescaped_percent():
         if "%" in re.sub(r"%%|%s|%\([^)]+\)s", "", line)
     ]
     assert not offenders, f"unescaped '%' in SQL (use '%%'): {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# Provider workforce: technician directory, invite flow, document ownership.
+# Tenant-scoped; provider companies may not manage technician documents.
+# ---------------------------------------------------------------------------
+
+def test_provider_technicians_directory_is_tenant_scoped():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    res = client.get("/provider/technicians", headers={"Authorization": f"Bearer {access}"})
+    assert res.status_code == 200, res.text
+    assert "technicians" in res.json()
+    assert isinstance(res.json()["technicians"], list)
+
+
+def test_provider_invite_link_for_new_email_and_resolve():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    # Missing email → 422.
+    bad = client.post("/provider/technicians/invite", json={"email": ""},
+                      headers={"Authorization": f"Bearer {access}"})
+    assert bad.status_code == 422
+
+    # New email → invite link with a token.
+    res = client.post("/provider/technicians/invite", json={"email": "newbie@example.com"},
+                      headers={"Authorization": f"Bearer {access}"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mode"] == "invite_link"
+    token = body["invite"]["token"]
+    assert token
+
+    # Public resolve works for the pending token.
+    resolved = client.get(f"/technician-invites/{token}")
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["organization_id"] == org
+
+    # Unknown token → 404.
+    assert client.get("/technician-invites/does-not-exist").status_code == 404
+
+
+def test_provider_cannot_upload_technician_documents():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    res = client.post(
+        "/provider/documents",
+        json={"owner_type": "technician", "owner_id": str(uuid4()),
+              "document_type": "technician_license", "storage_path": "x/y"},
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert res.status_code == 403, res.text
