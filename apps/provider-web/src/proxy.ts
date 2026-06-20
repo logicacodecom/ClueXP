@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 
 export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  if (pathname.startsWith("/signin") || pathname.startsWith("/signup") || pathname.startsWith("/api/") || pathname.startsWith("/_next/")) {
+  if (
+    pathname.startsWith("/signin") ||
+    pathname.startsWith("/signup") ||
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/_next/") ||
+    pathname === "/icon.png" ||
+    pathname === "/logo.png"
+  ) {
     return NextResponse.next();
   }
   if (!request.cookies.has("cluexp_access_token")) {
