@@ -14,3 +14,15 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   });
   return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
 }
+
+export async function DELETE(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const token = request.cookies.get("cluexp_access_token")?.value;
+  if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
+  const { id } = await context.params;
+  const response = await fetch(`${apiBase}/api/provider/teams/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store"
+  });
+  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
+}

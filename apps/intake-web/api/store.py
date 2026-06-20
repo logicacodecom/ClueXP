@@ -228,6 +228,26 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def delete_team(
+        self, organization_id: UUID, team_id: UUID
+    ) -> str | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def add_team_technician(
+        self, organization_id: UUID, team_id: UUID, technician_id: UUID, *, role: str | None = None
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def remove_team_technician(
+        self, organization_id: UUID, team_id: UUID, technician_id: UUID
+    ) -> bool:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_provider_technician_detail(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> dict | None:  # pragma: no cover
+        return None
+
     async def create_affiliated_technician(
         self, organization_id: UUID, data: dict
     ) -> dict:  # pragma: no cover
@@ -713,6 +733,8 @@ class InMemoryStore(Store):
                 "display_name": tech.get("display_name"),
                 "email": tech.get("email"),
                 "phone": tech.get("phone"),
+                "profile_photo_url": tech.get("profile_photo_url") if tech.get("profile_photo_status") == "approved" else None,
+                "profile_photo_status": tech.get("profile_photo_status"),
                 "status": tech.get("status", "active"),
                 "vetting_status": tech.get("vetting_status"),
                 "skills": tech.get("skills") or [],
@@ -782,10 +804,136 @@ class InMemoryStore(Store):
         return {"slug": f"org-{str(organization_id)[:8]}"}
 
     async def create_team(self, organization_id: UUID, data: dict) -> dict:
-        return {"id": str(uuid4()), "organization_id": str(organization_id), "status": "active", **data}
+        teams = self._teams = getattr(self, "_teams", [])
+        row = {"id": str(uuid4()), "organization_id": str(organization_id), "status": "active", **data}
+        teams.append(row)
+        return dict(row)
 
     async def update_team(self, organization_id: UUID, team_id: UUID, data: dict) -> dict | None:
+        teams = getattr(self, "_teams", [])
+        row = next((t for t in teams if str(t.get("id")) == str(team_id)
+                    and str(t.get("organization_id")) == str(organization_id)), None)
+        if row is not None:
+            row.update(data)
+            return dict(row)
+        # Fallback for stores seeded without a create_team call.
         return {"id": str(team_id), "organization_id": str(organization_id), **data}
+
+    def _team_in_org(self, organization_id: UUID, team_id: UUID) -> dict | None:
+        return next((t for t in getattr(self, "_teams", [])
+                     if str(t.get("id")) == str(team_id)
+                     and str(t.get("organization_id")) == str(organization_id)), None)
+
+    def _is_active_affiliate(self, organization_id: UUID, technician_id: UUID) -> bool:
+        return any(
+            str(a.get("organization_id")) == str(organization_id)
+            and str(a.get("technician_id")) == str(technician_id)
+            and a.get("status") == "active" and a.get("ended_at") is None
+            for a in getattr(self, "_affiliations", [])
+        )
+
+    async def add_team_technician(
+        self, organization_id: UUID, team_id: UUID, technician_id: UUID, *, role: str | None = None
+    ) -> dict:
+        if self._team_in_org(organization_id, team_id) is None:
+            return {"error_code": "team_not_found"}
+        if not self._is_active_affiliate(organization_id, technician_id):
+            return {"error_code": "not_affiliated"}
+        members = self._team_members = getattr(self, "_team_members", [])
+        key = (str(team_id), str(technician_id))
+        existing = next((m for m in members if (m["team_id"], m["technician_id"]) == key), None)
+        if existing is not None:
+            existing["role"] = role
+            return {"added": False, "team_id": str(team_id), "technician_id": str(technician_id)}
+        members.append({"team_id": str(team_id), "technician_id": str(technician_id), "role": role})
+        return {"added": True, "team_id": str(team_id), "technician_id": str(technician_id)}
+
+    async def remove_team_technician(
+        self, organization_id: UUID, team_id: UUID, technician_id: UUID
+    ) -> bool:
+        if self._team_in_org(organization_id, team_id) is None:
+            return False
+        members = getattr(self, "_team_members", [])
+        before = len(members)
+        self._team_members = [
+            m for m in members
+            if not (m["team_id"] == str(team_id) and m["technician_id"] == str(technician_id))
+        ]
+        return len(self._team_members) < before
+
+    async def delete_team(self, organization_id: UUID, team_id: UUID) -> str | None:
+        """Safe delete: 404 if not owned; refuse (`has_children`) if active sub-teams
+        exist; otherwise drop the team and its memberships."""
+        team = self._team_in_org(organization_id, team_id)
+        if team is None:
+            return None
+        children = [t for t in getattr(self, "_teams", [])
+                    if str(t.get("parent_team_id")) == str(team_id) and t.get("status") != "archived"]
+        if children:
+            raise ValueError("has_children")
+        self._teams = [t for t in getattr(self, "_teams", []) if str(t.get("id")) != str(team_id)]
+        self._team_members = [m for m in getattr(self, "_team_members", []) if m["team_id"] != str(team_id)]
+        return "deleted"
+
+    def _review_summary(self, technician_id: UUID, organization_id: UUID | None) -> dict:
+        rows = [r for r in getattr(self, "_job_reviews", [])
+                if str(r.get("fulfillment_technician_ref")) == str(technician_id)
+                and (organization_id is None or str(r.get("fulfillment_org_id")) == str(organization_id))]
+        if not rows:
+            return {"count": 0, "average": None}
+        ratings = [r.get("rating") for r in rows if r.get("rating") is not None]
+        avg = round(sum(ratings) / len(ratings), 2) if ratings else None
+        return {"count": len(rows), "average": avg}
+
+    async def get_provider_technician_detail(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> dict | None:
+        """Tenant-scoped read-only technician profile for the provider console.
+        Returns None when the technician has no open affiliation with this org."""
+        aff = next((a for a in getattr(self, "_affiliations", [])
+                    if str(a.get("organization_id")) == str(organization_id)
+                    and str(a.get("technician_id")) == str(technician_id)
+                    and a.get("ended_at") is None), None)
+        if aff is None:
+            return None
+        tech = next((t for t in getattr(self, "_technicians", [])
+                     if str(t.get("id")) == str(technician_id)), None) or {}
+        photo_approved = tech.get("profile_photo_status") == "approved"
+        memberships = [
+            {"team_id": m["team_id"], "role": m.get("role"),
+             "name": (self._team_in_org(organization_id, UUID(m["team_id"])) or {}).get("name")}
+            for m in getattr(self, "_team_members", [])
+            if m["technician_id"] == str(technician_id)
+            and self._team_in_org(organization_id, UUID(m["team_id"])) is not None
+        ]
+        docs = await self.list_technician_documents(technician_id)
+        return {
+            "id": str(technician_id),
+            "display_name": tech.get("display_name"),
+            "email": tech.get("email"),
+            "phone": tech.get("phone"),
+            "profile_photo_url": tech.get("profile_photo_url") if photo_approved else None,
+            "profile_photo_status": tech.get("profile_photo_status"),
+            "status": tech.get("status", "active"),
+            "vetting_status": tech.get("vetting_status"),
+            "skills": tech.get("skills") or [],
+            "rating": float(tech["rating"]) if tech.get("rating") is not None else None,
+            "location_updated_at": tech.get("location_updated_at"),
+            "affiliation": {
+                "status": aff.get("status"),
+                "affiliation_type": aff.get("affiliation_type"),
+                "exclusivity": aff.get("exclusivity"),
+                "dispatch_allowed": bool(aff.get("dispatch_allowed")),
+                "affiliated_at": aff.get("starts_at"),
+                "is_pending_invite": aff.get("status") == "pending_invite",
+            },
+            "team_memberships": memberships,
+            "reviews": {
+                "company": self._review_summary(technician_id, organization_id),
+                "global": self._review_summary(technician_id, None),
+            },
+            "documents": docs,
+        }
 
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
         techs = self._technicians = getattr(self, "_technicians", [])
@@ -3962,7 +4110,8 @@ class PostgresStore(Store):
                 "insert into user_roles (user_id, role) values (%s, 'technician') on conflict do nothing",
                 (user_id,),
             )
-            # 1:1 technician profile, same id; PENDING approval (dispatch excludes it).
+            # 1:1 technician-owned profile, same id. Company affiliation is a
+            # separate row and is never silently activated by provider signup.
             await conn.execute(
                 "insert into technicians (id, display_name, email, phone, status, vetting_status,"
                 " skills, service_area_center_lat, service_area_center_lng, service_area_radius_km,"
@@ -3975,7 +4124,8 @@ class PostgresStore(Store):
                 ),
             )
             # Invite-driven signup: attach to the inviting company as a PENDING
-            # affiliation (consent still required to activate — never silent).
+            # affiliation. The technician accepts after signup/login; the provider
+            # does not approve or own the global technician profile.
             token = (data.get("invite_token") or "").strip() or None
             if token:
                 cur = await conn.execute(
@@ -4399,8 +4549,10 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
                 " t.skills, t.is_available, t.rating, t.location_updated_at,"
+                " t.profile_photo_url, t.profile_photo_status,"
                 " ot.status, ot.affiliation_type, ot.exclusivity, ot.dispatch_allowed, ot.starts_at,"
                 " (select count(*) from jobs j where j.fulfillment_technician_id = t.id"
+                "   and (j.fulfillment_org_id = %s or j.customer_owner_org_id = %s)"
                 "   and j.status = any(%s)) as completed_jobs,"
                 " exists(select 1 from jobs j2 where j2.fulfillment_technician_id = t.id"
                 "   and j2.status = any(%s)) as on_job"
@@ -4408,7 +4560,7 @@ class PostgresStore(Store):
                 " join organization_technicians ot on ot.technician_id = t.id"
                 " where ot.organization_id = %s and ot.ended_at is null"
                 " order by t.display_name",
-                (list(completed), list(active_job), str(organization_id)),
+                (str(organization_id), str(organization_id), list(completed), list(active_job), str(organization_id)),
             )
             rows = await cur.fetchall()
             cur = await conn.execute(
@@ -4441,7 +4593,7 @@ class PostgresStore(Store):
                 agg["expiring"].append(dtype)
         out: list[dict] = []
         for r in rows:
-            on_job = bool(r[16])
+            on_job = bool(r[18])
             if on_job:
                 availability = "busy"
             elif r[4] == "active" and r[7]:
@@ -4465,6 +4617,8 @@ class PostgresStore(Store):
                 "display_name": r[1],
                 "email": r[2],
                 "phone": r[3],
+                "profile_photo_url": r[10] if r[11] == "approved" else None,
+                "profile_photo_status": r[11],
                 "status": r[4],
                 "vetting_status": r[5],
                 "skills": list(r[6] or []),
@@ -4473,14 +4627,14 @@ class PostgresStore(Store):
                 "rating": float(r[8]) if r[8] is not None else None,
                 "location_updated_at": r[9].isoformat() if r[9] else None,
                 "affiliation": {
-                    "status": r[10],
-                    "affiliation_type": r[11],
-                    "exclusivity": r[12],
-                    "dispatch_allowed": bool(r[13]),
-                    "affiliated_at": r[14].isoformat() if r[14] else None,
-                    "is_pending_invite": r[10] == "pending_invite",
+                    "status": r[12],
+                    "affiliation_type": r[13],
+                    "exclusivity": r[14],
+                    "dispatch_allowed": bool(r[15]),
+                    "affiliated_at": r[16].isoformat() if r[16] else None,
+                    "is_pending_invite": r[12] == "pending_invite",
                 },
-                "completed_jobs": int(r[15] or 0),
+                "completed_jobs": int(r[17] or 0),
                 "compliance": {**compliance, "summary": compliance_status},
             })
         return out
@@ -4666,6 +4820,155 @@ class PostgresStore(Store):
         return {
             "id": str(row[0]), "parent_team_id": str(row[1]) if row[1] else None,
             "name": row[2], "description": row[3], "team_type": row[4], "status": row[5],
+        }
+
+    async def delete_team(self, organization_id: UUID, team_id: UUID) -> str | None:
+        """Safe delete: 404 (None) if not owned; refuse (`has_children`) while active
+        sub-teams exist; otherwise drop memberships then the team."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select 1 from organization_teams where id = %s and organization_id = %s",
+                (str(team_id), str(organization_id)),
+            )
+            if await cur.fetchone() is None:
+                return None
+            cur = await conn.execute(
+                "select count(*) from organization_teams"
+                " where parent_team_id = %s and status <> 'archived'",
+                (str(team_id),),
+            )
+            if (await cur.fetchone())[0] > 0:
+                raise ValueError("has_children")
+            await conn.execute(
+                "delete from organization_team_technicians where team_id = %s", (str(team_id),)
+            )
+            await conn.execute(
+                "delete from organization_teams where id = %s and organization_id = %s",
+                (str(team_id), str(organization_id)),
+            )
+        return "deleted"
+
+    async def add_team_technician(
+        self, organization_id: UUID, team_id: UUID, technician_id: UUID, *, role: str | None = None
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select 1 from organization_teams where id = %s and organization_id = %s",
+                (str(team_id), str(organization_id)),
+            )
+            if await cur.fetchone() is None:
+                return {"error_code": "team_not_found"}
+            cur = await conn.execute(
+                "select 1 from organization_technicians"
+                " where organization_id = %s and technician_id = %s"
+                "   and status = 'active' and ended_at is null",
+                (str(organization_id), str(technician_id)),
+            )
+            if await cur.fetchone() is None:
+                return {"error_code": "not_affiliated"}
+            cur = await conn.execute(
+                "select 1 from organization_team_technicians"
+                " where team_id = %s and technician_id = %s",
+                (str(team_id), str(technician_id)),
+            )
+            if await cur.fetchone() is not None:
+                await conn.execute(
+                    "update organization_team_technicians set role = %s"
+                    " where team_id = %s and technician_id = %s",
+                    (role, str(team_id), str(technician_id)),
+                )
+                return {"added": False, "team_id": str(team_id), "technician_id": str(technician_id)}
+            await conn.execute(
+                "insert into organization_team_technicians (team_id, technician_id, role)"
+                " values (%s, %s, %s)",
+                (str(team_id), str(technician_id), role),
+            )
+        return {"added": True, "team_id": str(team_id), "technician_id": str(technician_id)}
+
+    async def remove_team_technician(
+        self, organization_id: UUID, team_id: UUID, technician_id: UUID
+    ) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "delete from organization_team_technicians ott"
+                " using organization_teams t"
+                " where ott.team_id = t.id and t.organization_id = %s"
+                "   and ott.team_id = %s and ott.technician_id = %s",
+                (str(organization_id), str(team_id), str(technician_id)),
+            )
+            return cur.rowcount > 0
+
+    async def get_provider_technician_detail(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> dict | None:
+        """Tenant-scoped read-only technician profile: base + open affiliation +
+        team memberships + company/global review summaries + compliance documents.
+        None when the technician has no open affiliation with this org."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select t.display_name, t.email, t.phone, t.profile_photo_url,"
+                " t.profile_photo_status, t.status, t.vetting_status, t.skills, t.rating,"
+                " t.location_updated_at, ot.status, ot.affiliation_type, ot.exclusivity,"
+                " ot.dispatch_allowed, ot.starts_at"
+                " from technicians t"
+                " join organization_technicians ot on ot.technician_id = t.id"
+                " where t.id = %s and ot.organization_id = %s and ot.ended_at is null",
+                (str(technician_id), str(organization_id)),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            cur = await conn.execute(
+                "select t.id, t.name, ott.role from organization_team_technicians ott"
+                " join organization_teams t on t.id = ott.team_id"
+                " where ott.technician_id = %s and t.organization_id = %s order by t.name",
+                (str(technician_id), str(organization_id)),
+            )
+            team_rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select count(*), round(avg(rating)::numeric, 2) from job_reviews"
+                " where fulfillment_technician_ref = %s and fulfillment_org_id = %s",
+                (str(technician_id), str(organization_id)),
+            )
+            company = await cur.fetchone()
+            cur = await conn.execute(
+                "select count(*), round(avg(rating)::numeric, 2) from job_reviews"
+                " where fulfillment_technician_ref = %s",
+                (str(technician_id),),
+            )
+            global_row = await cur.fetchone()
+        docs = await self.list_technician_documents(technician_id)
+        photo_approved = row[4] == "approved"
+        return {
+            "id": str(technician_id),
+            "display_name": row[0],
+            "email": row[1],
+            "phone": row[2],
+            "profile_photo_url": row[3] if photo_approved else None,
+            "profile_photo_status": row[4],
+            "status": row[5],
+            "vetting_status": row[6],
+            "skills": list(row[7] or []),
+            "rating": float(row[8]) if row[8] is not None else None,
+            "location_updated_at": row[9].isoformat() if row[9] else None,
+            "affiliation": {
+                "status": row[10],
+                "affiliation_type": row[11],
+                "exclusivity": row[12],
+                "dispatch_allowed": bool(row[13]),
+                "affiliated_at": row[14].isoformat() if row[14] else None,
+                "is_pending_invite": row[10] == "pending_invite",
+            },
+            "team_memberships": [
+                {"team_id": str(tr[0]), "name": tr[1], "role": tr[2]} for tr in team_rows
+            ],
+            "reviews": {
+                "company": {"count": int(company[0] or 0),
+                            "average": float(company[1]) if company[1] is not None else None},
+                "global": {"count": int(global_row[0] or 0),
+                           "average": float(global_row[1]) if global_row[1] is not None else None},
+            },
+            "documents": docs,
         }
 
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:

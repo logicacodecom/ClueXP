@@ -1,12 +1,14 @@
 "use client";
 
 import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
+import { SkillSelect } from "@cluexp/console-ui";
 import { useEffect, useState } from "react";
 import { AppFrame, Screen } from "@/components/mobile";
 
 export default function SignUpPage() {
   const { locale, t } = useLocale();
   const [form, setForm] = useState({ display_name: "", email: "", phone: "", password: "" });
+  const [skills, setSkills] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
@@ -37,7 +39,7 @@ export default function SignUpPage() {
       const result = await sessionRequest<{ session?: { technician?: { id?: string } } }>("/api/register", {
         method: "POST",
         body: JSON.stringify({
-          ...form, locale, skills: ["home", "business", "vehicle"],
+          ...form, locale, skills,
           ...(inviteToken ? { invite_token: inviteToken } : {})
         })
       });
@@ -66,6 +68,14 @@ export default function SignUpPage() {
               <input className="mt-2 min-h-12 w-full rounded-xl border border-border bg-card-strong px-4 text-base outline-none focus:border-primary" autoComplete={autoComplete} type={type} value={form[key as keyof typeof form]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} />
             </label>
           ))}
+          <div className="rounded-xl border border-border bg-card p-3">
+            <div className="mb-2 text-sm font-bold">Skills</div>
+            <SkillSelect
+              selected={skills}
+              onChange={setSkills}
+              placeholder="Choose the services you want to receive offers for."
+            />
+          </div>
           {message ? <p className="rounded-xl border border-border bg-card p-3 text-sm" role="status">{message}</p> : null}
           <button className="touch-target min-h-[54px] w-full rounded-2xl bg-primary px-4 text-base font-black text-primary-foreground disabled:opacity-50" disabled={busy || !form.display_name || !form.email || !form.phone || form.password.length < 8} type="submit">{busy ? t("saving") : t("signUp")}</button>
           <a className="touch-target flex min-h-11 items-center justify-center text-sm font-bold text-muted" href="/signin">{t("signIn")}</a>

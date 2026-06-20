@@ -1070,6 +1070,13 @@ def test_http_update_my_profile_validates_and_persists():
             headers={"Authorization": f"Bearer {token}"},
         )
         assert bad_radius.status_code == 422
+
+        # Skills are catalog-backed, not free text.
+        bad_skill = client.patch(
+            "/technicians/me/profile", json={"skills": ["safe-cracking"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert bad_skill.status_code == 422
     finally:
         app_store.get_user_session = _orig_session
 
@@ -2566,6 +2573,31 @@ def test_provider_invite_link_for_new_email_and_resolve():
     assert client.get("/technician-invites/does-not-exist").status_code == 404
 
 
+def test_provider_cannot_create_global_technician_profile_directly():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    res = client.post(
+        "/provider/technicians",
+        json={
+            "display_name": "Provider Created Tech",
+            "email": "provider-created@example.com",
+            "password": "temporary-password",
+            "skills": ["home"],
+        },
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert res.status_code == 410
+    assert "invite" in res.json()["detail"].lower()
+
+
 def test_provider_cannot_upload_technician_documents():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -2742,3 +2774,136 @@ def test_admin_global_settings_endpoints_authz_and_validation():
     # Restore the seed so other tests see the default, and clear the resolver cache.
     assert client.patch(path, json={"value": 300}, headers=hdr(admin, ["platform_admin"])).status_code == 200
     rs.clear_cache()
+
+
+# --- provider workforce: technician detail + team management (read-only ownership) ---
+
+def _seed_affiliation(app_store, org_id, tid, *, status="active"):
+    from datetime import datetime, timezone
+    app_store._affiliations = getattr(app_store, "_affiliations", [])
+    app_store._affiliations.append({
+        "id": str(uuid4()), "organization_id": org_id, "technician_id": tid,
+        "status": status, "affiliation_type": "employee_w2", "exclusivity": "non_exclusive",
+        "dispatch_allowed": True, "ended_at": None,
+        "starts_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def test_provider_technician_detail_tenant_scoped_and_read_only():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, other_org = str(uuid4()), str(uuid4())
+    uid, tid = str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._job_reviews = [
+        {"fulfillment_technician_ref": tid, "fulfillment_org_id": org, "rating": 5},
+        {"fulfillment_technician_ref": tid, "fulfillment_org_id": other_org, "rating": 3},
+    ]
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    ok = client.get(f"/provider/technicians/{tid}", headers={"Authorization": f"Bearer {access}"})
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["id"] == tid
+    assert "team_memberships" in body and "documents" in body
+    # company review summary scoped to this org; global spans all orgs.
+    assert body["reviews"]["company"] == {"count": 1, "average": 5.0}
+    assert body["reviews"]["global"]["count"] == 2 and body["reviews"]["global"]["average"] == 4.0
+    # No write/edit affordance is exposed in the contract (read-only profile).
+    assert "password" not in body
+
+    # A technician with no affiliation to this org is invisible (no cross-tenant leak).
+    foreign = str(uuid4())
+    _seed_org_tech(app_store, other_org, foreign)
+    _seed_affiliation(app_store, other_org, foreign)
+    miss = client.get(f"/provider/technicians/{foreign}", headers={"Authorization": f"Bearer {access}"})
+    assert miss.status_code == 404
+
+
+def test_provider_team_membership_add_remove_and_affiliation_required():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid, tid = str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    team = client.post("/provider/teams", json={"name": "North Crew"}, headers=H).json()
+    team_id = team["id"]
+
+    # Add an affiliated technician.
+    add = client.post(f"/provider/teams/{team_id}/technicians", json={"technician_id": tid}, headers=H)
+    assert add.status_code == 200 and add.json()["added"] is True
+    # Idempotent: adding again is a no-op.
+    assert client.post(f"/provider/teams/{team_id}/technicians", json={"technician_id": tid}, headers=H).json()["added"] is False
+
+    # A non-affiliated technician cannot join.
+    stranger = str(uuid4())
+    _seed_org_tech(app_store, org, stranger)  # profile but NO affiliation row
+    bad = client.post(f"/provider/teams/{team_id}/technicians", json={"technician_id": stranger}, headers=H)
+    assert bad.status_code == 422
+
+    # Unknown team → 404.
+    assert client.post(f"/provider/teams/{uuid4()}/technicians", json={"technician_id": tid}, headers=H).status_code == 404
+
+    # Remove membership.
+    rm = client.delete(f"/provider/teams/{team_id}/technicians/{tid}", headers=H)
+    assert rm.status_code == 200 and rm.json()["removed"] is True
+    # Removing again → 404 (not a member).
+    assert client.delete(f"/provider/teams/{team_id}/technicians/{tid}", headers=H).status_code == 404
+
+
+def test_provider_team_safe_delete():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    parent = client.post("/provider/teams", json={"name": "Region"}, headers=H).json()
+    child = client.post("/provider/teams", json={"name": "Sub", "parent_team_id": parent["id"]}, headers=H).json()
+
+    # Refuse to delete a team that still has sub-teams.
+    assert client.delete(f"/provider/teams/{parent['id']}", headers=H).status_code == 409
+    # Deleting the leaf is fine.
+    assert client.delete(f"/provider/teams/{child['id']}", headers=H).status_code == 200
+    # Now the parent has no children → deletable.
+    assert client.delete(f"/provider/teams/{parent['id']}", headers=H).status_code == 200
+    # Unknown/foreign team → 404.
+    assert client.delete(f"/provider/teams/{uuid4()}", headers=H).status_code == 404
+
+
+def test_provider_can_revoke_pending_invite_before_acceptance():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid, tid = str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid, status="pending_invite")
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    # Revoke = end the still-open (pending) affiliation period before the tech accepts.
+    revoke = client.post(f"/provider/technicians/{tid}/affiliation/end", json={"reason": "mistake"}, headers=H)
+    assert revoke.status_code == 200
+    assert revoke.json()["status"] == "ended"

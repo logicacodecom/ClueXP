@@ -97,7 +97,7 @@ export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  group?: "Operations" | "Network" | "Reports" | "Admin";
+  group?: "Operations" | "Workforce" | "Reports" | "Admin";
   cluexpOnly?: boolean;
 }
 
@@ -108,9 +108,9 @@ export const defaultNav: NavItem[] = [
   { href: "/map", label: "Map", icon: Map, group: "Operations" },
   { href: "/messages", label: "Messages", icon: MessageSquare, group: "Operations" },
   { href: "/escalations", label: "Escalations", icon: ShieldAlert, group: "Operations" },
-  { href: "/jobs/JOB-A-2201/assign", label: "Technicians", icon: Users, group: "Network" },
-  { href: "/teams", label: "Teams", icon: Briefcase, group: "Network" },
-  { href: "/documents", label: "Documents", icon: FileText, group: "Network" },
+  { href: "/jobs/JOB-A-2201/assign", label: "Technicians", icon: Users, group: "Workforce" },
+  { href: "/teams", label: "Teams", icon: Briefcase, group: "Workforce" },
+  { href: "/documents", label: "Documents", icon: FileText, group: "Workforce" },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck, group: "Admin", cluexpOnly: true },
   { href: "/reports", label: "Reports", icon: ClipboardCheck, group: "Reports" },
   { href: "/settings", label: "Settings", icon: Settings, group: "Admin" },
@@ -301,7 +301,7 @@ export function Sidebar({
   onToggle: () => void;
   surfaceLabel: string;
 }) {
-  const groups = ["Operations", "Network", "Reports", "Admin"] as const;
+  const groups = ["Operations", "Workforce", "Reports", "Admin"] as const;
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 flex flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200", collapsed ? "w-[76px]" : "w-[264px]")}>
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">

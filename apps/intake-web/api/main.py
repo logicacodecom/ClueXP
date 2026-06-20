@@ -183,6 +183,28 @@ class TechnicianRegisterRequest(BaseModel):
     invite_token: str | None = None
 
 
+TECHNICIAN_SKILL_CATALOG = {
+    "vehicle",
+    "home",
+    "business",
+    "broken_key",
+    "rekey",
+    "smart_lock",
+    "key_programming",
+}
+
+
+def normalize_technician_skills(skills: list[str]) -> list[str]:
+    normalized = sorted({skill.strip().lower() for skill in skills if skill.strip()})
+    unknown = [skill for skill in normalized if skill not in TECHNICIAN_SKILL_CATALOG]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid technician skill: {', '.join(unknown)}",
+        )
+    return normalized
+
+
 class TechnicianInviteRequest(BaseModel):
     email: str | None = None
 
@@ -527,16 +549,17 @@ async def me(session: dict[str, Any] = Depends(require_session)) -> dict[str, An
 
 @app.post("/auth/register/technician", response_model=AuthResponse)
 async def register_technician(payload: TechnicianRegisterRequest) -> AuthResponse:
-    """Self-service individual-technician signup. Creates the login + a PENDING
-    technician profile (cannot receive offers until a platform admin approves —
-    the dispatch engine already filters active+verified)."""
+    """Self-service individual-technician signup. The technician owns the global
+    profile; company membership is accepted later through affiliation rows."""
     await latency()
     if not payload.email and not payload.phone:
         raise HTTPException(status_code=422, detail="Email or phone is required")
     if len(payload.password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    data = payload.model_dump()
+    data["skills"] = normalize_technician_skills(payload.skills)
     try:
-        session = await store.register_technician(payload.model_dump())
+        session = await store.register_technician(data)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     token = create_access_token(
@@ -835,28 +858,83 @@ async def update_provider_team(
     return result
 
 
+class TeamTechnicianRequest(BaseModel):
+    technician_id: UUID
+    role: str | None = None
+
+
+@app.delete("/provider/teams/{team_id}")
+async def delete_provider_team(
+    team_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Safe-delete a team. Tenant-scoped (foreign/unknown team → 404). Refuses with 409
+    while the team still has sub-teams; otherwise removes its memberships and the team
+    (technician profiles and affiliations are untouched — only team structure)."""
+    organization_id = _provider_organization_id(session)
+    try:
+        result = await store.delete_team(organization_id, team_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=409,
+            detail="Reassign or remove sub-teams before deleting this team.",
+        )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return {"deleted": True, "team_id": str(team_id)}
+
+
+@app.post("/provider/teams/{team_id}/technicians")
+async def add_provider_team_technician(
+    team_id: UUID,
+    payload: TeamTechnicianRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Add one of the company's already-affiliated technicians to a team. Both the team
+    and the technician must belong to the caller's org (else 404/422). Idempotent."""
+    organization_id = _provider_organization_id(session)
+    result = await store.add_team_technician(
+        organization_id, team_id, payload.technician_id, role=payload.role
+    )
+    if result.get("error_code") == "team_not_found":
+        raise HTTPException(status_code=404, detail="Team not found")
+    if result.get("error_code") == "not_affiliated":
+        raise HTTPException(
+            status_code=422,
+            detail="Only technicians actively affiliated with your company can join a team.",
+        )
+    return result
+
+
+@app.delete("/provider/teams/{team_id}/technicians/{technician_id}")
+async def remove_provider_team_technician(
+    team_id: UUID,
+    technician_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Remove a technician from a team (team structure only; the affiliation is untouched).
+    Tenant-scoped to the caller's org."""
+    organization_id = _provider_organization_id(session)
+    removed = await store.remove_team_technician(organization_id, team_id, technician_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Team membership not found")
+    return {"removed": True, "team_id": str(team_id), "technician_id": str(technician_id)}
+
+
 @app.post("/provider/technicians")
 async def create_provider_technician(
     payload: AffiliatedTechnicianRequest,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    organization_id = _provider_organization_id(session)
-    if not payload.email and not payload.phone:
-        raise HTTPException(status_code=422, detail="Email or phone is required")
-    if len(payload.password) < 8:
-        raise HTTPException(status_code=422, detail="Temporary password must be at least 8 characters")
-    if payload.affiliation_type not in {
-        "employee_w2", "contractor", "subcontractor", "owner_operator", "unknown"
-    }:
-        raise HTTPException(status_code=422, detail="Invalid affiliation type")
-    if payload.exclusivity not in {"exclusive", "non_exclusive", "unknown"}:
-        raise HTTPException(status_code=422, detail="Invalid exclusivity")
-    try:
-        return await store.create_affiliated_technician(
-            organization_id, payload.model_dump(mode="json")
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    _provider_organization_id(session)
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Provider-created technician profiles are retired. "
+            "Use POST /provider/technicians/invite so the person signs up as a technician "
+            "and accepts the company affiliation."
+        ),
+    )
 
 
 @app.get("/provider/technicians")
@@ -966,6 +1044,22 @@ async def provider_suspend_affiliation(
     if result is None:
         raise HTTPException(status_code=404, detail="No active affiliation with this technician")
     return result
+
+
+@app.get("/provider/technicians/{technician_id}")
+async def get_provider_technician(
+    technician_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Tenant-scoped, **read-only** profile of one affiliated technician: base profile,
+    affiliation, team memberships, company + global review summaries, and compliance
+    documents. The technician owns the global profile — there are no edit actions here.
+    A technician not affiliated with the caller's org returns 404 (no cross-tenant leak)."""
+    organization_id = _provider_organization_id(session)
+    detail = await store.get_provider_technician_detail(organization_id, technician_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Technician is not affiliated with your company")
+    return detail
 
 
 @app.post("/provider/documents/upload-intent", response_model=PhotoIntentResponse)
@@ -1251,7 +1345,7 @@ async def update_my_profile(
         if len(data["phone"]) < 7:
             raise HTTPException(status_code=422, detail="Enter a valid phone number")
     if "skills" in data:
-        data["skills"] = sorted({skill.strip().lower() for skill in data["skills"] if skill.strip()})
+        data["skills"] = normalize_technician_skills(data["skills"])
     radius = data.get("service_area_radius_km")
     if radius is not None and not 1 <= radius <= 250:
         raise HTTPException(status_code=422, detail="Service radius must be between 1 and 250 km")

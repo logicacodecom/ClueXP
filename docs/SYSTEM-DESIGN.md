@@ -887,9 +887,15 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 |--------|------|------|---------|
 | `POST` | `/auth/register/organization` | public | Register an org (creates `pending_review` org + provider admin) |
 | `GET/PATCH` | `/provider/workspace` | session (provider_admin) | Org profile |
-| `GET/POST` | `/provider/technicians` | session (provider_admin) | List / add-or-invite affiliated techs (affiliation ledger) |
-| `POST` | `/provider/technicians/{id}/affiliation/{end,suspend}` | session (provider_admin) | End/suspend this org's affiliation (tenant-scoped; history preserved) |
-| `GET/PATCH` | `/provider/teams` | session (provider_admin) | Manage teams |
+| `GET` | `/provider/technicians` | session (provider_admin) | List this company's affiliated technicians (tenant-scoped, read-only profile data) |
+| `GET` | `/provider/technicians/{id}` | session (provider_admin) | **Read-only** detail of one affiliated technician: base profile, affiliation, **team memberships**, **company + global review summaries**, and **compliance documents**. Foreign/unaffiliated → 404. No edit actions (the technician owns the global profile) |
+| `POST` | `/provider/technicians/invite` | session (provider_admin) | Create a company affiliation invite; new people receive a technician signup token, existing technicians receive a pending affiliation |
+| `POST` | `/provider/technicians` | session (provider_admin) | Retired (`410`): providers cannot create or own global technician profiles |
+| `POST` | `/provider/technicians/{id}/affiliation/{end,suspend}` | session (provider_admin) | End/suspend this org's affiliation (tenant-scoped; history preserved). `end` on a `pending_invite` row is the **revoke-before-acceptance** path |
+| `GET/PATCH` | `/provider/teams` | session (provider_admin) | List / create / update teams |
+| `DELETE` | `/provider/teams/{id}` | session (provider_admin) | Safe-delete a team — `409` while it has sub-teams; otherwise drops memberships + team (affiliations untouched). Tenant-scoped |
+| `POST` | `/provider/teams/{id}/technicians` | session (provider_admin) | Add an actively-affiliated technician to a team (`422` if not affiliated; `404` foreign team). Idempotent |
+| `DELETE` | `/provider/teams/{id}/technicians/{technician_id}` | session (provider_admin) | Remove a technician from a team (structure only; affiliation untouched) |
 | `GET/POST` | `/provider/documents` | session (provider_admin) | Upload compliance docs |
 
 ### Technician Self-Service (global profile + affiliations)
@@ -1087,15 +1093,34 @@ endpoints: §4 and §13.
 - A technician may hold multiple **non-exclusive** affiliations; at most **one active exclusive
   (W-2)** affiliation, enforced by a DB partial unique index. A conflicting attach returns 409/422.
 - Add/invite: an existing global technician gets a `pending_invite` (consent required to activate —
-  enforced at accept, with exclusivity re-checked); a brand-new email/phone creates the global
-  profile + affiliation. Leave/rejoin preserves prior periods (new rows).
+  enforced at accept, with exclusivity re-checked); a brand-new email gets a
+  technician-signup invite link (`https://tech.cluexp.com/signup?invite=...`). The invited person
+  signs up as a technician first, then accepts the company affiliation. Provider/company signup is
+  never used for technician invites. Leave/rejoin preserves prior periods (new rows).
+- **Affiliation lifecycle (no provider re-approval).** Once the technician **accepts**, the
+  affiliation is `active` immediately — there is no further provider approval step. Before
+  acceptance the provider may **revoke** the pending invite (`POST …/affiliation/end` closes the
+  still-open `pending_invite` period). After activation the provider may **suspend** (period stays
+  open, dispatch-ineligible) or **unaffiliate** (`end` sets `ended_at`; history preserved, rejoin
+  allowed). All of these touch only the caller's own affiliation period — never global status.
+- **Teams** are virtual structure over already-affiliated technicians: `POST/DELETE
+  /provider/teams/{id}/technicians` add/remove members (membership ≠ affiliation; removing from a
+  team never changes the affiliation), and `DELETE /provider/teams/{id}` safe-deletes (refused while
+  sub-teams exist). A provider technician's read-only detail (`GET /provider/technicians/{id}`)
+  surfaces team memberships, company + global review summaries, and compliance documents.
 - The active-job lock is **global** to the technician (no double-dispatch across two companies).
 - Tenant boundaries: a provider mutates only its own affiliations, never global technician
   status (that is Ops). Company lifecycle (`pending_review`/`active`/`suspended`/`rejected`/`closed`,
   migration `0019`) is distinct from the technician lifecycle.
+- Profile ownership: the technician owns and updates the global profile (display name, phone/contact,
+  approved profile photo, skills from the managed catalog, service preferences). A provider may view
+  affiliated technicians, company-scoped performance/compliance signals, and end/suspend its own
+  affiliation, but cannot edit global profile fields, technician skills, documents, or global vetting.
 
 **Console IA (shared shell, §20.3):** Live Queue · Dispatch Board · Map · Technicians ·
-Teams · Messages · Documents · Reports · Settings · Audit Log. Customer `MATCHED` requires a named
+Teams · Messages · Documents · Reports · Settings · Audit Log. The current MVP labels the
+affiliated-technician surface as **Workforce/Technicians**, not "Network"; providers see only their
+own affiliated roster. Customer `MATCHED` requires a named
 verified technician — organization acceptance alone never flips customer visibility.
 
 **Status:** dispatch, recovery, notes, timeline, completed-job history, workforce, and company

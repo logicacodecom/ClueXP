@@ -10,7 +10,6 @@ import {
   CardTitle,
   Input,
   PageHeader,
-  SkillSelect,
   StatCard,
   Table,
   TableBody,
@@ -20,8 +19,8 @@ import {
   TableRow,
   skillLabel
 } from "@cluexp/console-ui";
-import { BriefcaseBusiness, CheckCircle2, Plus, ShieldCheck, UserPlus, Users } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { BriefcaseBusiness, CheckCircle2, Plus, ShieldCheck, Trash2, UserPlus, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
 
 interface Team {
@@ -57,10 +56,10 @@ interface Workspace { teams: Team[]; technicians: Technician[]; }
 export default function TeamsPage() {
   const [workspace, setWorkspace] = useState<Workspace>({ teams: [], technicians: [] });
   const [teamForm, setTeamForm] = useState({ name: "", description: "", parent_team_id: "" });
-  const [techForm, setTechForm] = useState({ display_name: "", email: "", phone: "", password: "", skills: [] as string[], team_id: "", affiliation_type: "employee_w2", exclusivity: "non_exclusive", dispatch_allowed: true });
+  const [manageTeamId, setManageTeamId] = useState("");
+  const [addTechId, setAddTechId] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [exclusivityConflict, setExclusivityConflict] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/workspace", { cache: "no-store" });
@@ -74,7 +73,6 @@ export default function TeamsPage() {
   async function submit(path: string, payload: unknown, done: () => void) {
     setBusy(true);
     setMessage(null);
-    setExclusivityConflict(null);
     try {
       const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
       const body = await response.json().catch(() => ({}));
@@ -90,14 +88,41 @@ export default function TeamsPage() {
       setMessage("Saved.");
     } catch (cause) {
       const errorMessage = cause instanceof Error ? cause.message : "Unable to save";
-      if (errorMessage.toLowerCase().includes("exclusive")) {
-        setExclusivityConflict(errorMessage);
-      }
       setMessage(errorMessage);
     } finally {
       setBusy(false);
     }
   }
+
+  async function del(path: string, confirmText: string | null) {
+    if (confirmText && !confirm(confirmText)) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const response = await fetch(path, { method: "DELETE" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(body.detail || "Unable to remove"));
+      await refresh();
+      setMessage("Done.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to remove");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const affiliatedActive = useMemo(
+    () => workspace.technicians.filter((t) => (t.affiliation?.status ?? t.status) === "active" && !t.affiliation?.is_pending_invite),
+    [workspace.technicians]
+  );
+  const manageMembers = useMemo(
+    () => (manageTeamId ? affiliatedActive.filter((t) => t.team_ids.includes(manageTeamId)) : []),
+    [manageTeamId, affiliatedActive]
+  );
+  const addableTechs = useMemo(
+    () => (manageTeamId ? affiliatedActive.filter((t) => !t.team_ids.includes(manageTeamId)) : []),
+    [manageTeamId, affiliatedActive]
+  );
 
   const activeTeams = workspace.teams.filter((team) => team.status === "active");
   const verifiedTechnicians = workspace.technicians.filter((technician) => technician.vetting_status === "verified");
@@ -113,9 +138,9 @@ export default function TeamsPage() {
     <AppFrame>
       <div className="space-y-6">
         <PageHeader
-          kicker="Provider network"
-          title="Workforce"
-          description="Manage technicians, assign skills, and organize teams for dispatch readiness."
+          kicker="Workforce"
+          title="Teams"
+          description="Organize already-affiliated technicians into dispatch teams. Technician invites live in the Technicians area."
         />
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -124,7 +149,7 @@ export default function TeamsPage() {
           <StatCard icon={ShieldCheck} intent="success" label="Verified" value={verifiedTechnicians.length.toString()} trend="Passed provider vetting" />
           <StatCard icon={CheckCircle2} intent="success" label="Dispatch ready" value={dispatchReadyTechnicians.length.toString()} trend="Active and verified" />
         </div>
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
           <Card>
             <CardHeader>
               <div>
@@ -145,59 +170,38 @@ export default function TeamsPage() {
           <Card>
             <CardHeader>
               <div>
-                <CardTitle className="flex items-center gap-2"><UserPlus className="size-5 text-primary" />Add technician</CardTitle>
-                <CardDescription>Onboard affiliated technicians with assigned skills.</CardDescription>
+                <CardTitle className="flex items-center gap-2"><UserPlus className="size-5 text-primary" />Manage team membership</CardTitle>
+                <CardDescription>Add or remove already-affiliated technicians. Membership is team structure only — it never changes the technician's global profile or affiliation.</CardDescription>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Input placeholder="Full name" value={techForm.display_name} onChange={(event) => setTechForm({ ...techForm, display_name: event.target.value })} />
-              <Input placeholder="Email" type="email" value={techForm.email} onChange={(event) => setTechForm({ ...techForm, email: event.target.value })} />
-              <Input placeholder="Phone (optional)" type="tel" value={techForm.phone} onChange={(event) => setTechForm({ ...techForm, phone: event.target.value })} />
-              <Input placeholder="Temporary password" type="password" value={techForm.password} onChange={(event) => setTechForm({ ...techForm, password: event.target.value })} />
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">Affiliation type</label>
-                  <select className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={techForm.affiliation_type} onChange={(event) => setTechForm({ ...techForm, affiliation_type: event.target.value })}>
-                    <option value="employee_w2">W-2 Employee</option>
-                    <option value="contractor">Contractor</option>
-                    <option value="subcontractor">Subcontractor</option>
-                    <option value="owner_operator">Owner-Operator</option>
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">Exclusivity</label>
-                  <select className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={techForm.exclusivity} onChange={(event) => setTechForm({ ...techForm, exclusivity: event.target.value })}>
-                    <option value="exclusive">Exclusive</option>
-                    <option value="non_exclusive">Non-Exclusive</option>
-                  </select>
-                </div>
-              </div>
-              {exclusivityConflict && (
-                <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">
-                  <span className="font-semibold">Exclusivity conflict:</span> {exclusivityConflict}
-                </div>
-              )}
-              <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2">
-                <input
-                  id="dispatch_allowed"
-                  type="checkbox"
-                  checked={techForm.dispatch_allowed}
-                  onChange={(event) => setTechForm({ ...techForm, dispatch_allowed: event.target.checked })}
-                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                />
-                <label htmlFor="dispatch_allowed" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                  Allow dispatch
-                </label>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase text-muted-foreground">Skills</label>
-                <SkillSelect selected={techForm.skills} onChange={(skills) => setTechForm({ ...techForm, skills })} />
-              </div>
-              <select className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={techForm.team_id} onChange={(event) => setTechForm({ ...techForm, team_id: event.target.value })}>
-                <option value="">No team yet</option>
-                {workspace.teams.filter((team) => team.status === "active").map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+              <select aria-label="Team" className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={manageTeamId} onChange={(event) => { setManageTeamId(event.target.value); setAddTechId(""); }}>
+                <option value="">Select a team…</option>
+                {activeTeams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
               </select>
-              <Button disabled={busy || !techForm.display_name || (!techForm.email && !techForm.phone) || techForm.password.length < 8} onClick={() => void submit("/api/technicians", { display_name: techForm.display_name, email: techForm.email, phone: techForm.phone, password: techForm.password, skills: techForm.skills, team_ids: techForm.team_id ? [techForm.team_id] : [], affiliation_type: techForm.affiliation_type, exclusivity: techForm.exclusivity, dispatch_allowed: techForm.dispatch_allowed }, () => { setTechForm({ display_name: "", email: "", phone: "", password: "", skills: [], team_id: "", affiliation_type: "employee_w2" as const, exclusivity: "non_exclusive" as const, dispatch_allowed: true }); setExclusivityConflict(null); })}><UserPlus className="size-4" />Add technician</Button>
+              {manageTeamId ? (
+                <>
+                  <div className="flex gap-2">
+                    <select aria-label="Technician to add" className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={addTechId} onChange={(event) => setAddTechId(event.target.value)}>
+                      <option value="">Add a technician…</option>
+                      {addableTechs.map((t) => <option key={t.id} value={t.id}>{t.display_name}</option>)}
+                    </select>
+                    <Button disabled={busy || !addTechId} onClick={() => void submit(`/api/teams/${manageTeamId}/technicians`, { technician_id: addTechId }, () => setAddTechId(""))}><Plus className="size-4" />Add</Button>
+                  </div>
+                  <div className="space-y-1.5">
+                    {manageMembers.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No technicians in this team yet.</p>
+                    ) : manageMembers.map((t) => (
+                      <div key={t.id} className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
+                        <span className="truncate">{t.display_name}</span>
+                        <Button variant="ghost" size="sm" disabled={busy} onClick={() => void del(`/api/teams/${manageTeamId}/technicians/${t.id}`, null)}><X className="size-4" /></Button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">Select a team to add or remove members. Invite new technicians from the Technicians area.</p>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -217,11 +221,12 @@ export default function TeamsPage() {
                       <TableHead>Team</TableHead>
                       <TableHead>Members</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {workspace.teams.length === 0 ? (
-                      <TableRow><TableCell className="py-8 text-center text-muted-foreground" colSpan={3}>No teams created.</TableCell></TableRow>
+                      <TableRow><TableCell className="py-8 text-center text-muted-foreground" colSpan={4}>No teams created.</TableCell></TableRow>
                     ) : workspace.teams.map((team) => (
                       <TableRow key={team.id}>
                         <TableCell>
@@ -235,6 +240,12 @@ export default function TeamsPage() {
                         </TableCell>
                         <TableCell className="tabular-nums">{team.member_count}</TableCell>
                         <TableCell><Badge variant={team.status === "active" ? "success" : "neutral"}>{team.status}</Badge></TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost" size="sm" disabled={busy}
+                            onClick={() => void del(`/api/teams/${team.id}`, `Delete team "${team.name}"? Members are unassigned; technician profiles and affiliations are untouched.`)}
+                          ><Trash2 className="size-4" /></Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

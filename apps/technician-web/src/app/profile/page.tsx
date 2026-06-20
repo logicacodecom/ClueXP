@@ -1,19 +1,9 @@
 import { headers } from "next/headers";
-import { AppFrame, EmptyState, Screen, Section, icons } from "@/components/mobile";
+import { AppFrame, Screen, Section, icons } from "@/components/mobile";
 import { AvailabilityToggle, SignOutButton } from "@/components/client-widgets";
 import { ProfileEditor } from "@/components/profile-editor";
 import { PhotoUploadWrapper } from "@/components/photo-upload-wrapper";
 import Link from "next/link";
-
-interface TechnicianAffiliation {
-  id: string;
-  organization_id: string;
-  organization_name?: string;
-  status: "pending_invite" | "active" | "suspended" | "ended" | "rejected";
-  affiliation_type?: string;
-  exclusivity?: string;
-  dispatch_allowed?: boolean;
-}
 
 async function getSession(): Promise<Record<string, unknown> | null> {
   try {
@@ -38,7 +28,6 @@ export default async function ProfilePage() {
   const tech = session?.technician as Record<string, unknown> | null | undefined;
   const user = session?.user as Record<string, unknown> | null | undefined;
   const roles = (session?.roles as string[]) ?? [];
-  const affiliations = (tech?.affiliations as TechnicianAffiliation[] | undefined) ?? [];
 
   const displayName = String(user?.display_name ?? "Technician");
   const initials = displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
@@ -119,53 +108,6 @@ export default async function ProfilePage() {
               <div className="font-bold">{String(user?.display_name ?? "--")}</div>
             </div>
           </div>
-        </Section>
-
-        <Section title="Provider affiliations">
-          <div className="rounded-xl border border-border bg-card p-4">
-            {affiliations.length === 0 ? (
-              <EmptyState
-                title="No affiliations"
-                icon={icons.Users}
-                text="You are not yet affiliated with any provider companies. When you accept an invitation, it will appear here."
-              />
-            ) : (
-              <div className="space-y-2">
-                {affiliations.map((affiliation) => (
-                  <div key={affiliation.id} className="rounded-xl bg-card p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="min-w-0">
-                        <div className="font-bold">
-                          {affiliation.organization_name ??
-                            `Organization ${affiliation.organization_id.slice(0, 8)}...`}
-                        </div>
-                        {affiliation.affiliation_type && (
-                          <div className="text-xs text-muted">
-                            {affiliation.affiliation_type.toUpperCase().replace("_", " ")}
-                            {affiliation.exclusivity === "exclusive" && " • Exclusive"}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                          affiliation.status === "active"
-                            ? "bg-green-100 text-green-800"
-                            : affiliation.status === "pending_invite"
-                              ? "bg-yellow-100 text-yellow-800"
-                              : "bg-gray-100 text-gray-800"
-                        }`}>
-                          {affiliation.status}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <button type="button" className="mt-3 w-full rounded-xl border border-border bg-card py-2 text-sm font-bold opacity-60" disabled>
-            Invite to another company (coming soon)
-          </button>
         </Section>
 
         <Section title="Profile tools">
