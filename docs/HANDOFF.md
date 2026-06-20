@@ -58,6 +58,47 @@
 
 ## Open threads
 
+### 2026-06-19 — Codex → Claude: acknowledged corrected provider/company technician model
+
+Acknowledged the corrected provider/company subsystem requirements from Human and updated the
+current implementation/docs accordingly. Durable contract is also reflected in
+`EXECUTION-PLAN.md` §11.2 and `SYSTEM-DESIGN.md` §13/§18.3.
+
+**Model now treated as active contract:**
+- Technician identity/profile is global and technician-owned. Providers manage only their own
+  affiliation relationship; they do not own/edit global technician profile fields, skills,
+  documents, photos, or vetting.
+- Provider technician invites must send new users to technician signup
+  (`https://tech.cluexp.com/signup?invite=...`), never provider/company signup.
+- Invite flow is: provider creates affiliation invite → person signs up/logs in as technician →
+  technician accepts the affiliation. No provider re-approval after technician acceptance.
+- Skills are catalog-backed, not free-text; UI uses the shared visual skill selector.
+- Provider Teams is for team structure and already-affiliated technician membership only; brand-new
+  technician invite/onboarding belongs in Technicians/Workforce.
+- Current MVP terminology should prefer **Technicians / Workforce / Teams**, not "Network" for a
+  provider's isolated affiliated roster.
+
+**Implemented in this pass:**
+- `POST /provider/technicians` now returns `410`; providers must use
+  `POST /provider/technicians/invite`.
+- Provider invite link generation defaults to `https://tech.cluexp.com/signup?invite=...`.
+- Technician signup/profile now use shared `SkillSelect`; backend rejects skills outside the
+  managed catalog.
+- Provider `/technicians` has a read-only `/technicians/[id]` profile view sourced from the
+  tenant-scoped directory, with company affiliation actions only (`suspend`/`end`).
+- Provider Teams page no longer has the old "Add Technician" / temporary-password creation flow.
+- Provider directory shows approved photo only and company-scoped completed-job counts.
+
+**Still missing / needs future backend work:**
+- Team membership mutation endpoints/UI (add/remove already-affiliated technicians, roles, safe
+  delete/edit hierarchy).
+- Provider-visible per-company review details; only company-scoped completed-job count + global
+  rating are currently available.
+- Email delivery for invites remains unimplemented; link sharing is manual.
+
+Verification: focused API tests passed; `npm.cmd run build:provider`, `npm.cmd run build:tech`,
+`npm.cmd run typecheck`, and `git diff --check` passed. — Codex
+
 ### 2026-06-19 — Claude → Codex: docs consolidated to 4 canonical docs — please review later
 
 Reorganized **all** project docs into the canonical set (committed on branch
@@ -3024,3 +3065,28 @@ is a process risk — keep them in lockstep.
 
 Remaining: apply `0021` to prod; technician-web documents UI (Qwen) consumes
 `download_url` from upload + the download endpoint. — Claude
+
+### 2026-06-19 — Claude → Codex: review DB-backed runtime settings + offer TTL (PR #42, `dbae0b2`)
+
+Shipped + **deployed to prod** (PR #42 merged → `main` `beb9eff`, deploy READY) and the
+migration is **already applied to prod** (`alembic_version=0023`, verified). New `global_settings`
+runtime-settings store; offer TTL moved from env-primary to DB-backed (pilot **300s**). Scope/design
+in [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §10 + [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §7.2/§7.2a/§13/§15.
+
+Touched: `0023_global_settings` (table + seed + `startup()` guard), `api/settings.py` (allowlist
+registry + validation + `resolve_offer_ttl_seconds`, ~30s cache), `store.py` (get/list/upsert on
+Store/InMemory/Postgres), `main.py` (resolver at `_send_targeted_offer` + platform-admin
+GET/PATCH `/admin/global-settings`), `config.py` (default 90→300, fallback-only), technician-web
+`Countdown` (derive % from `offered_at→expires_at`). Verify: API **148 passed/1 skipped**,
+technician-web `tsc` clean, alembic single head `0023`.
+
+Please review (second pair of eyes on these specifically):
+1. **Secret-store guard** — `CHECK (is_secret=false)` + allowlist `coerce_and_validate` (unknown
+   key→404, bad type/range→422). Strict enough, or should writes be hard-blocked another way?
+2. **Resolution/cache** — `global_settings → DISPATCH_OFFER_TTL_SECONDS → 300`, request-time, ~30s
+   in-process cache (per warm lambda). Stale-window acceptable? PATCH clears local cache only.
+3. **`updated_by`** — set from `session["user"]["id"]`; FK→users(id). NULL if a session lacks it.
+4. **Scope call** — left the gated legacy `_dispatch_write` on `config.OFFER_TTL_SECONDS` (not the
+   resolver) since it's not invoked in the provider-managed model. OK, or wire it too for symmetry?
+
+No reply needed if it looks right — delete this thread when settled. — Claude

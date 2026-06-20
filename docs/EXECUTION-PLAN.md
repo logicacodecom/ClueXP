@@ -599,11 +599,32 @@ prod head `0021`). Model and schema: [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18
 rows; add/invite with exclusivity guard (DB partial unique index); leave/rejoin history;
 technician self-service accept/decline + photo upload; Ops photo review; customer security
 identity (approved photo only after assignment); provider `/teams` suspend/end; company
-signup/onboarding + org-status lifecycle.
+signup/onboarding + org-status lifecycle. Technician invite links go to the technician app
+signup flow (`tech.cluexp.com/signup?invite=...`), never the company/partner signup flow.
+Technician global profile ownership stays with the technician: providers can view affiliated
+technicians and manage only their own affiliation relationship, not global profile fields,
+skills, documents, or vetting.
+
+**Affiliation flow (confirmed in code):** technician acceptance activates the affiliation with
+**no provider re-approval**; the provider can **revoke** a pending invite before acceptance
+(`…/affiliation/end` on the open `pending_invite` period), **suspend**, or **unaffiliate** later —
+all scoped to the provider's own affiliation period (never global status).
+
+**Done (slices A, B, C, D-backend/frontend, E, G, + team management):** affiliation eligibility
+from active rows; add/invite with exclusivity guard; leave/rejoin history; technician self-service
+accept/decline + photo upload; Ops photo review; customer security identity. **Team management
+complete** — `POST/DELETE /provider/teams/{id}/technicians` add/remove already-affiliated
+technicians, `DELETE /provider/teams/{id}` safe-delete (refused with sub-teams), with provider-web
+membership UI. **Read-only provider technician detail** (`GET /provider/technicians/{id}`) surfaces
+team memberships, **company + global review summaries**, and compliance documents. Skills use one
+shared `SkillSelect` (technician signup/profile only; provider surfaces are read-only via `skillLabel`).
 
 **Remaining (polish / deferred):**
 - [ ] Ops **suspend/reactivate UI** in ops-web (backend endpoints exist; `/approvals` only covers pending approve/reject).
-- [ ] Provider `/teams` temporary-password affordance + rejoin/history drawer.
-- [ ] Deferred (post-MVP): full Ops-managed skill catalog (currently a frontend fixed list);
+- [ ] Per-review **detail rows** (individual customer comments) — only company/global review
+  **summaries** (count + average) are surfaced today; the comment-level contract is a follow-up.
+- [ ] Team **hierarchy editing** (reparent/move sub-teams) and per-membership **roles** UI beyond add/remove.
+- [ ] Deferred (post-MVP): full Ops-managed skill catalog (currently a shared frontend `SKILL_CATALOG`
+  mirrored by a backend allowlist — keep in lockstep until Ops owns it);
   provider subscription limits (max technicians/seats); company document approval +
   suspension-reason taxonomy; invite-acceptance notifications.

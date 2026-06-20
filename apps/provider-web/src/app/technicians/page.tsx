@@ -5,6 +5,7 @@ import {
   PageHeader, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@cluexp/console-ui";
 import { AlertTriangle, Check, Copy, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -13,6 +14,8 @@ interface DirectoryTech {
   display_name: string | null;
   email: string | null;
   phone: string | null;
+  profile_photo_url?: string | null;
+  profile_photo_status?: string | null;
   status: string;
   vetting_status: string | null;
   skills: string[];
@@ -142,7 +145,7 @@ export default function TechniciansPage() {
         await refresh();
       } else {
         if (!body.invite?.token) throw new Error("Invite was created, but no signup token was returned.");
-        const base = (process.env.NEXT_PUBLIC_TECHNICIAN_BASE_URL || window.location.origin).replace(/\/$/, "");
+        const base = (process.env.NEXT_PUBLIC_TECHNICIAN_BASE_URL || "https://tech.cluexp.com").replace(/\/$/, "");
         setInviteLink(`${base}/signup?invite=${body.invite.token}`);
         setInviteMessage("Signup link created. Email is not automatic yet; copy this link and send it to the technician.");
       }
@@ -166,7 +169,7 @@ export default function TechniciansPage() {
   return (
     <AppFrame>
       <PageHeader
-        kicker="Network"
+        kicker="Workforce"
         title="Technicians"
         description="Your company's affiliated technicians — status, availability, jobs, and compliance."
         actions={<Button onClick={() => setInviteOpen((v) => !v)}><UserPlus className="size-4" />Invite technician</Button>}
@@ -250,13 +253,14 @@ export default function TechniciansPage() {
                 <TableHead>Compliance</TableHead>
                 <TableHead>Affiliated</TableHead>
                 <TableHead>Last active</TableHead>
+                <TableHead className="text-right">Profile</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {techs === null ? (
-                <TableRow><TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="py-8 text-center text-sm text-muted-foreground">Loading…</TableCell></TableRow>
               ) : filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                <TableRow><TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
                   {(techs.length === 0) ? "No technicians affiliated yet. Use “Invite technician” to add one." : "No technicians match the current filters."}
                 </TableCell></TableRow>
               ) : filtered.map((t) => {
@@ -264,8 +268,19 @@ export default function TechniciansPage() {
                 return (
                   <TableRow key={t.id}>
                     <TableCell>
-                      <div className="font-medium">{t.display_name ?? "—"}</div>
-                      <div className="text-xs text-muted-foreground">{t.email ?? t.phone ?? "—"}</div>
+                      <div className="flex items-center gap-3">
+                        {t.profile_photo_url ? (
+                          <img alt="" className="size-9 rounded-full object-cover" src={t.profile_photo_url} />
+                        ) : (
+                          <div className="flex size-9 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+                            {(t.display_name ?? "?").slice(0, 1).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-medium">{t.display_name ?? "—"}</div>
+                          <div className="truncate text-xs text-muted-foreground">{t.email ?? t.phone ?? "—"}</div>
+                        </div>
+                      </div>
                     </TableCell>
                     <TableCell><Badge variant={STATUS_VARIANT[aStatus] ?? "neutral"}>{aStatus.replaceAll("_", " ")}</Badge></TableCell>
                     <TableCell><Badge variant={AVAIL_VARIANT[t.availability]}>{t.availability}</Badge></TableCell>
@@ -282,6 +297,11 @@ export default function TechniciansPage() {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{formatDate(t.affiliation.affiliated_at)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{timeAgo(t.location_updated_at)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/technicians/${t.id}`}>View</Link>
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 );
               })}
