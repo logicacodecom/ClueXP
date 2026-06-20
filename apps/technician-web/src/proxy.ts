@@ -9,7 +9,8 @@ export function proxy(request: NextRequest) {
     pathname.startsWith("/api/") ||
     pathname.startsWith("/_next/") ||
     pathname === "/manifest.webmanifest" ||
-    pathname === "/icon.svg"
+    pathname === "/icon.png" ||
+    pathname === "/logo.png"
   ) {
     return NextResponse.next();
   }

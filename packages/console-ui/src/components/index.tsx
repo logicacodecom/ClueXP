@@ -219,13 +219,13 @@ export function SafetyFlagBadge({ flag }: { flag: SafetyFlagType }) {
   );
 }
 
-function KeyholeMark({ className }: { className?: string }) {
+function BrandMark({ collapsed }: { collapsed: boolean }) {
   return (
-    <div className={cn("flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground", className)}>
-      <svg className="size-5" viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" clipRule="evenodd" aria-hidden>
-        <path d="M12 2a6 6 0 0 0-3.2 11.08l-1.7 6.34A1.3 1.3 0 0 0 8.35 21h7.3a1.3 1.3 0 0 0 1.25-1.58l-1.7-6.34A6 6 0 0 0 12 2Zm0 3.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z" />
-      </svg>
-    </div>
+    <img
+      src={collapsed ? "/icon.png" : "/logo.png"}
+      alt="ClueXP"
+      className={cn("shrink-0 object-contain", collapsed ? "size-10" : "h-10 w-auto max-w-[128px]")}
+    />
   );
 }
 
@@ -305,10 +305,9 @@ export function Sidebar({
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 flex flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200", collapsed ? "w-[76px]" : "w-[264px]")}>
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
-        <KeyholeMark />
+        <BrandMark collapsed={collapsed} />
         {!collapsed ? (
           <div className="min-w-0">
-            <div className="font-condensed text-xl font-bold uppercase leading-none text-foreground">ClueXP</div>
             <div className="truncate text-[11px] font-semibold uppercase text-muted-foreground">{surfaceLabel}</div>
           </div>
         ) : null}
