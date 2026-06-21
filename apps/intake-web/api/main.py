@@ -1406,7 +1406,8 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     # public/channelless path is intentionally disabled: a request with no owning
     # company is never made dispatchable.
     channel_on = bool(origin and origin.get("dispatch_cutover_enabled"))
-    cutover = channel_on and not config.DISPATCH_CUTOVER_GLOBAL_OFF
+    global_off = await runtime_settings.resolve(store, "dispatch_cutover_global_off")
+    cutover = channel_on and not global_off
     if cutover:
         # Put the job on the company's operational ladder. No offer is created
         # here — the company's dispatcher assigns via POST /provider/queue/{id}/assign.
@@ -1841,7 +1842,9 @@ async def ops_flags(session: dict[str, Any] = Depends(require_session)) -> dict[
     a DB query. Reports whether the arrival-PIN secret is configured — never its value."""
     require_any_role(session, {"platform_admin"})
     return {
-        "dispatch_cutover_global_off": config.DISPATCH_CUTOVER_GLOBAL_OFF,
+        "dispatch_cutover_global_off": await runtime_settings.resolve(
+            store, "dispatch_cutover_global_off"
+        ),
         "dispatch_cutover_public": config.DISPATCH_CUTOVER_PUBLIC,
         "arrival_pin_configured": config.ARRIVAL_PIN_SECRET != "dev-arrival-pin-secret",
         "is_production": config.IS_PRODUCTION,
@@ -2112,11 +2115,13 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
 _token_action_hits: dict[str, list[float]] = {}
 
 
-def _rate_limit_token_action(token: str) -> None:
-    window = config.TOKEN_ACTION_WINDOW_SECONDS
+async def _rate_limit_token_action(token: str) -> None:
+    # Runtime-tunable via global_settings (falls back to env → hardcoded default).
+    window = await runtime_settings.resolve(store, "token_action_window_seconds")
+    max_hits = await runtime_settings.resolve(store, "token_action_max")
     now_t = time.monotonic()
     hits = [t for t in _token_action_hits.get(token, []) if now_t - t < window]
-    if len(hits) >= config.TOKEN_ACTION_MAX:
+    if len(hits) >= max_hits:
         _token_action_hits[token] = hits
         raise HTTPException(status_code=429, detail="Too many requests — please slow down.")
     hits.append(now_t)
@@ -2124,7 +2129,7 @@ def _rate_limit_token_action(token: str) -> None:
 
 
 async def _require_token_job(token: str) -> UUID:
-    _rate_limit_token_action(token)
+    await _rate_limit_token_action(token)
     job_id = await store.resolve_tracking_token(token)
     if job_id is None:
         raise HTTPException(status_code=404, detail="Not found")
