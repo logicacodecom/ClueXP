@@ -50,16 +50,19 @@
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
-| Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is **configured/armed** for cutover (`dispatch_cutover_enabled=true`) but **suppressed** while `DISPATCH_CUTOVER_GLOBAL_OFF=true` — not "live"; pilot smoke test pending |
+| Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. Authenticated end-to-end prod smoke still recommended. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Technician-reported collection | `[~]` advisory only | Technician-reported amount/method and finished-job history are implemented in code (`0015`); these are advisory operational records — **no real payment processing, no authorization hold, no capture, refund, payout or settlement**. Customer acknowledges by confirming completion |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
 | CI | `[x]` | Local gates green — cutover release (2026-06-15) API `104 passed, 1 skipped`, then the workforce release through `0021` API `134 passed, 1 skipped`; shared typecheck and all four production builds pass |
 
-Current production migration head: **`0023_global_settings`** (applied 2026-06-19; chains
-`0021_tech_doc_defaults → 0022_technician_invites → 0023`). `0022` adds technician invites; `0023`
-adds the `global_settings` runtime-settings table and seeds `dispatch_offer_ttl_seconds=300`
-(verified live: `alembic_version=0023`, row present, both CHECK constraints in place).
+Current production migration head: **`0024_gs_more_tunables`** (applied 2026-06-21; chains
+`0021_tech_doc_defaults → 0022_technician_invites → 0023_global_settings → 0024`). `0022` adds
+technician invites; `0023` adds the `global_settings` runtime-settings table and seeds
+`dispatch_offer_ttl_seconds=300`; `0024` migrates five more env-only tunables into `global_settings`
+(`dispatch_cutover_global_off`, `token_action_max`/`_window_seconds`, `login_max_failures`/`login_window_seconds`)
+— all DB-backed and runtime-editable via the admin API (verified live: `alembic_version=0024`, all six
+rows present, both CHECK constraints in place).
 `0011`–`0018` plus `0016` (affiliation fields + exclusive guard + backfill), `0017`
 (affiliation history), `0018` (technician photo status), `0019` (organization status
 enum), `0020` (technician documents) and `0021` (technician_documents defaults repair)
@@ -195,7 +198,7 @@ delivered (it had gone stale at rev `0009`).
   `completed_pending_customer` after 72 hours.
 - [x] Add per-channel cutover and emergency global-off behavior
   (`DISPATCH_CUTOVER_GLOBAL_OFF`).
-- [x] ~~Keep the legacy `/dispatch` route as rollback during the pilot (untouched).~~ **[Superseded by Sprint 3.4]** The rollback mechanism is now `DISPATCH_CUTOVER_GLOBAL_OFF=true` (env var flip, no code path needed). The `/dispatch` auto-match stub is **now gated (410)** — not a usable dispatch path.
+- [x] ~~Keep the legacy `/dispatch` route as rollback during the pilot (untouched).~~ **[Superseded by Sprint 3.4; mechanism updated by migration 0024]** The rollback mechanism is the global kill-switch `dispatch_cutover_global_off`, now **DB-backed** (`global_settings`) and flipped live via `PATCH /admin/global-settings/dispatch_cutover_global_off` — no redeploy, no code path. The `/dispatch` auto-match stub is **gated (410)** — not a usable dispatch path.
 - [!] Isolate demo `/charge`, `/finalize`, and `/review` from the real path —
   the provider-managed path never invokes them, and the old auto-dispatch stub that once chained to
   them is gated (410). Hard removal of the demo endpoints is tracked as cleanup before widening.
@@ -263,13 +266,13 @@ countdown.
 
 ### 3.3 Pilot and acceptance
 
-**Live pilot is held OFF** (`DISPATCH_CUTOVER_GLOBAL_OFF=true`); confirm at runtime via
-`GET /ops/flags` after redeploy. `metro-key` keeps `dispatch_cutover_enabled=true` and is
-the pilot channel — the global kill-switch halts new-request dispatch without a DB change.
-The switch is evaluated **only at intake create**; in-flight jobs and existing tracking tokens are
-unaffected by a flip (full matrix in SYSTEM-DESIGN §9). When §3.4 is smoke-tested, remove
-`DISPATCH_CUTOVER_GLOBAL_OFF` (or set `false`) to re-enable the cutover path under the
-provider-managed model.
+**As of 2026-06-21 the live pilot is ON** — the global kill-switch `dispatch_cutover_global_off` is
+`false` (DB-backed via migration 0024), so cutover is live for `metro-key`
+(`dispatch_cutover_enabled=true`, the pilot channel). Confirm at runtime via `GET /ops/flags`. The
+switch is now flipped live via `PATCH /admin/global-settings/dispatch_cutover_global_off` (no
+redeploy); it is evaluated **only at intake create**, so a flip affects new requests only — in-flight
+jobs and existing tracking tokens are unaffected (full matrix in SYSTEM-DESIGN §9). To roll back,
+`PATCH` it to `true`. An authenticated end-to-end prod smoke (§3.4) is still recommended.
 
 The full pilot evidence matrix and rollback procedure live in
 [`docs/PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md). Execution (not just code) is required
@@ -325,9 +328,10 @@ These two surfaces never share a bundle or auth domain (SYSTEM-DESIGN §20.3).
 `is_busy`, `skills_match`, and `dist_km` as information — not as hard gates. Dispatchers
 exercise judgment. Compliance doc enforcement (expired licenses, etc.) is a Sprint 7 gate.
 
-**Halt auto-dispatch before cutover:**
-- [ ] Confirm `DISPATCH_CUTOVER_GLOBAL_OFF=true` in Vercel via `GET /ops/flags`. `metro-key`
-  keeps `dispatch_cutover_enabled=true`; the global-off switch halts the old path without a DB change. _(operational)_
+**Global kill-switch (to halt dispatch if needed):**
+- [x] `dispatch_cutover_global_off` is DB-backed (`global_settings`, migration 0024) and flipped via
+  `PATCH /admin/global-settings/dispatch_cutover_global_off`; verify the live value via
+  `GET /ops/flags`. Currently `false` (cutover live for `metro-key`). _(operational)_
 
 **Backend (provider-managed):**
 - [x] No auto-offers on ticket creation; job enters `pending_dispatch` without offers; the cron sweep is cleanup-only (`expire_stale_offers`, `auto_close_pending`).
@@ -524,13 +528,14 @@ Remaining work to a meaningful pilot is operational, not new code:
    in production tip `882664f`** (verified via git ancestry 2026-06-19). Migrations through `0015`
    are applied (prod verified at `0021`). Status: **deployed, not yet runtime-smoked** — run an
    authenticated prod pass over these four features (see step 3) before relying on them in the pilot.
-2. **Confirm the kill-switch state:** verify `DISPATCH_CUTOVER_GLOBAL_OFF=true` via
-   `GET /ops/flags` while preparing; `metro-key` stays the pilot channel.
+2. **Confirm the kill-switch state:** verify `dispatch_cutover_global_off` via `GET /ops/flags`
+   (currently `false` → cutover live for `metro-key`, the pilot channel). It is DB-backed and
+   flips live via `PATCH /admin/global-settings/dispatch_cutover_global_off` — no redeploy.
 3. **Run an authenticated end-to-end prod smoke** (the build sandbox can't reach prod):
    intake → provider dispatch → accept → PIN arrival → completion → customer confirm.
 4. **Execute the Sprint 3.3 pilot matrix** (`docs/PILOT-OPERATIONS.md`) with the approved
-   pilot company + roster; fix failures; only then flip `DISPATCH_CUTOVER_GLOBAL_OFF=false`
-   to re-enable the cutover path, and widen channel by channel.
+   pilot company + roster; if a defect surfaces, roll back by `PATCH`ing
+   `dispatch_cutover_global_off` to `true`. Widen channel by channel.
 5. **Sprint 4 remaining items** (Google Routes ETA, live position, shared cross-app timeline)
    and **Sprint 5 communications/notifications** follow once the pilot passes.
 
@@ -540,13 +545,20 @@ readiness variant.
 ## 10. Active Decisions and Risks
 
 - `[!]` **Dispatcher availability risk + SLA gap:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. **For the pilot:** acceptable because the pilot company's dispatch is dedicated and controlled; no customer SLA is advertised. **Before widening:** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), and the customer-facing message for long waits.
-- `[x]` **Offer TTL is now DB-backed (`global_settings`, migration `0023`).** Resolved at offer
-  creation as `global_settings.dispatch_offer_ttl_seconds` → `DISPATCH_OFFER_TTL_SECONDS` env → `300`.
-  **Pilot value `300s`** is the seeded default (was `90s`, sized for the old automated model). A
-  `platform_admin` can retune it at runtime via `PATCH /admin/global-settings/dispatch_offer_ttl_seconds`
-  (integer 60–900); changes affect **new offers only** (existing `expires_at` is stamped at creation).
-  `DISPATCH_OFFER_TTL_SECONDS` is now fallback/default only, not the primary control. Only this one
-  setting is migrated to `global_settings`; other env vars are classified for later, not moved.
+- `[x]` **Six operational tunables are DB-backed (`global_settings`, migrations `0023`+`0024`).**
+  Each is resolved **at request time** via `api/settings.py`'s generic `resolve(store, key)` with a
+  tolerant `DB → env → hardcoded` chain (~30s cache), and is runtime-editable by a `platform_admin`
+  via `PATCH /admin/global-settings/{key}` (unknown key → 404; bad type/range → 422). The env vars
+  are now fallback-only, not the primary control:
+  - `dispatch_offer_ttl_seconds` (int 60–900, default `300`; was `90s`, sized for the old automated
+    model). Resolved at offer creation; changes affect **new offers only** (existing `expires_at`
+    is stamped at creation).
+  - `dispatch_cutover_global_off` (boolean, default `false`) — the global dispatch kill-switch
+    (§3.3); flips live with no redeploy.
+  - `token_action_max` / `token_action_window_seconds` (capability-link mutation rate limit).
+  - `login_max_failures` / `login_window_seconds` (login throttle).
+  Note: because the resolver reads DB **before** env, a seeded DB row overrides the matching env var
+  — so the legacy `DISPATCH_CUTOVER_GLOBAL_OFF` Vercel var no longer governs cutover on its own.
 - `[!]` Payments are intentionally outside the first complete operational cycle;
   closure must work without pretending a payment occurred.
 - `[!]` PWA notification/background-location limits mean polling is acceptable

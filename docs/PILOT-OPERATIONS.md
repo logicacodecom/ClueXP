@@ -76,7 +76,7 @@ request — never a real customer's data to prove readiness.
 |---|---|
 | Release | Git commit deployed by each of the four Vercel projects (prod `main` tip) |
 | Database | `alembic_version.version_num` ≥ `0015_job_payments`; `job_notes` + `job_payment_reports` present |
-| Global switch | Current `DISPATCH_CUTOVER_GLOBAL_OFF` value |
+| Global switch | Current `dispatch_cutover_global_off` value (`global_settings`; read via `GET /api/ops/flags`) |
 | Company channel | Channel ID, slug, owner organization, and `dispatch_cutover_enabled` |
 | Provider access | Provider dispatcher can sign in and sees only its organization |
 | Technician supply | Approved technicians are active, verified, correctly affiliated, and have required skills |
@@ -166,12 +166,13 @@ and can open the **recovery workspace** (`/recovery`).
    from intake_channels where id = '<approved-channel-uuid>';
    ```
 
-4. In Vercel, set `DISPATCH_CUTOVER_GLOBAL_OFF=false` on the **cluexp-intake** project's
-   **Production** environment.
-5. Redeploy **cluexp-intake** so the env change takes effect (redeploy the current production
-   deployment, or push a no-op — env changes require a new deploy).
-6. Re-read `GET /api/ops/flags` → `dispatch_cutover_global_off` is now `false`.
-7. Submit one **synthetic** request through the branded channel and confirm it enters the
+4. Ensure the global kill-switch is **off**. As a platform admin:
+   `PATCH /api/admin/global-settings/dispatch_cutover_global_off` with `{"value": false}`.
+   This is DB-backed (`global_settings`, migration 0024) and takes effect on the next intake
+   within the resolver cache (~30s) — **no redeploy required**. (The legacy
+   `DISPATCH_CUTOVER_GLOBAL_OFF` Vercel env var is a fallback only; leave it `false`/unset.)
+5. Re-read `GET /api/ops/flags` → `dispatch_cutover_global_off` is now `false`.
+6. Submit one **synthetic** request through the branded channel and confirm it enters the
    owning company's provider queue as `pending_dispatch` with **no automatic offer**.
 
 ---
@@ -272,14 +273,19 @@ only while `en_route`/`arrived`/`in_progress` **and** the location is fresh.
 
 ## 8. Emergency Rollback
 
-Use the **global switch first** when the defect may affect more than one company:
+Use the **global switch first** when the defect may affect more than one company. It is now
+DB-backed and flips live — **no redeploy** (migration 0024):
 
-1. Set `DISPATCH_CUTOVER_GLOBAL_OFF=true` in the **cluexp-intake** Production environment.
-2. Redeploy cluexp-intake.
-3. `GET /api/ops/flags` → `dispatch_cutover_global_off: true`.
-4. Submit a synthetic branded request and verify it does **not** enter `pending_dispatch`.
-5. Confirm existing operational jobs remain visible to the owning provider.
-6. Record the incident time, deployed commit, affected jobs, and operator.
+1. As a platform admin, `PATCH /api/admin/global-settings/dispatch_cutover_global_off` with
+   `{"value": true}`. Takes effect on the next intake within the resolver cache (~30s).
+2. `GET /api/ops/flags` → `dispatch_cutover_global_off: true`.
+3. Submit a synthetic branded request and verify it does **not** enter `pending_dispatch`.
+4. Confirm existing operational jobs remain visible to the owning provider.
+5. Record the incident time, deployed commit, affected jobs, and operator.
+
+> Fallback if the admin API is unavailable: set `DISPATCH_CUTOVER_GLOBAL_OFF=true` in the
+> **cluexp-intake** Production environment and redeploy. The env var is the resolver's fallback;
+> a present DB row takes precedence, so clear/align both if you use this path.
 
 To disable only **one** company (affects new intake immediately, **no redeploy**):
 

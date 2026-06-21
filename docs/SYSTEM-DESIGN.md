@@ -523,30 +523,50 @@ Document validity will gate dispatch eligibility (Sprint 7).
 
 **`media`** — Uploaded files: `{ owner_type, owner_id, kind, bucket, path, visibility, uploaded_by, uploaded_at }`.
 
-**`global_settings`** — The **primary runtime operational settings store** (migration `0023`).
-One row per setting: `{ key text PK, value jsonb, value_type text (integer|boolean|string|object|array),
-description, is_secret bool, is_runtime_editable bool, updated_at, updated_by → users(id) }`.
+**`global_settings`** — The **primary runtime operational settings store** (migration `0023`;
+expanded by `0024`). One row per setting: `{ key text PK, value jsonb, value_type text
+(integer|boolean|string|object|array), description, is_secret bool, is_runtime_editable bool,
+updated_at, updated_by → users(id) }`.
 **Not a secret store and not deployment/infra config** — a `CHECK (is_secret = false)` makes that a
 DB-level invariant; secrets stay in env/Vercel/secret manager. `value` is jsonb for flexibility but
 **never free-form**: every supported key has strict per-key validation in `api/settings.py` (an
-allowlist registry). Today it holds exactly one key, `dispatch_offer_ttl_seconds` (integer 60–900,
-seeded `300`). Read/write only via the platform-admin API (§13); a foreign role gets 403.
+allowlist registry). Read/write only via the platform-admin API (§13); a foreign role gets 403.
 
-### 7.2a Runtime setting resolution (offer TTL)
+Keys today (each seeded with the same default as its env fallback, so behavior is unchanged until an
+operator tunes it):
 
-`api/settings.py` resolves a setting **at request time** (never at import — `config.py` stays
-DB-free) with a tolerant fallback chain, and a small in-process cache (~30s; stale acceptable):
+| Key | Type | Default | Migration | Controls |
+|-----|------|---------|-----------|----------|
+| `dispatch_offer_ttl_seconds` | integer 60–900 | `300` | 0023 | Offer expiry (§7.2a) |
+| `dispatch_cutover_global_off` | boolean | `false` | 0024 | Global dispatch kill-switch (§9 Cutover Flags) |
+| `token_action_max` | integer 1–10000 | `30` | 0024 | Capability-link mutation rate-limit count (§10) |
+| `token_action_window_seconds` | integer 1–3600 | `60` | 0024 | Capability-link rate-limit window (§10) |
+| `login_max_failures` | integer 1–1000 | `8` | 0024 | Login-throttle failure count (§10) |
+| `login_window_seconds` | integer 1–86400 | `900` | 0024 | Login-throttle window (§10) |
+
+### 7.2a Runtime setting resolution
+
+`api/settings.py` exposes a generic `resolve(store, key)` that reads a setting **at request time**
+(never at import — `config.py` stays DB-free) with a tolerant fallback chain, and a small in-process
+cache (~30s; stale acceptable). The chain is the same for every key:
 
 ```
-global_settings.dispatch_offer_ttl_seconds   (DB, validated 60–900)
-  → DISPATCH_OFFER_TTL_SECONDS               (env, validated)
-  → 300                                       (hardcoded last resort)
+global_settings.<key>   (DB, validated against the key's per-key contract)
+  → <ENV_VAR>           (env, validated — e.g. DISPATCH_OFFER_TTL_SECONDS)
+  → <hardcoded default> (last resort)
 ```
 
-If the DB row is missing, invalid, or the read fails, resolution falls through to env then `300` —
-**dispatch never breaks** while a fallback exists. The resolved TTL is used **only when creating an
-offer** (`expires_at = now() + ttl`, in `_send_targeted_offer`); changing the setting later affects
-**only new offers** — existing offers keep their stamped `expires_at`.
+If the DB row is missing, invalid, or the read fails, resolution falls through to env then the
+hardcoded default — **callers never break** while a fallback exists. Both integer and boolean keys
+are supported; an admin `PATCH` clears the resolver cache so a change applies on the next request.
+
+**Editing a setting affects future evaluations only, not in-flight state.** The offer TTL is read
+**only when creating an offer** (`expires_at = now() + ttl`, in `_send_targeted_offer`); existing
+offers keep their stamped `expires_at`. The kill-switch is read at ticket create (see §9). The
+rate-limit/login windows are read per request.
+
+**The InMemoryStore seed is derived from the `SETTINGS` registry**, so the test store always mirrors
+a freshly-migrated DB and the two cannot drift.
 
 ### 7.3 Important Indexing Notes
 
@@ -672,17 +692,23 @@ Secure customer-held PIN the technician must enter to move `en_route → arrived
 
 Per-token sliding window guarding capability-link mutations (confirm / review / dispute / cancel / arrival-pin). In-process (per-instance) — a first layer of abuse protection on a leaked tracking link.
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `TOKEN_ACTION_MAX` | `30` | Max mutating actions per token within the window. |
-| `TOKEN_ACTION_WINDOW_SECONDS` | `60` | Length of the sliding window. |
+**DB-backed (primary) since migration 0024.** The values below are now resolved from
+`global_settings` at request time (env → hardcoded fallback); the env vars are fallback-only and the
+live values are tunable via the platform-admin API (§7.2a, §13) without a redeploy.
+
+| Key / env var | Default | Purpose |
+|---------------|---------|---------|
+| `token_action_max` / `TOKEN_ACTION_MAX` | `30` | Max mutating actions per token within the window. |
+| `token_action_window_seconds` / `TOKEN_ACTION_WINDOW_SECONDS` | `60` | Length of the sliding window. |
 
 ### Backend — Auth Hardening (Login)
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `LOGIN_MAX_FAILURES` | `8` | Failed logins within the window before the account is locked. Tracked in `login_attempts`. |
-| `LOGIN_WINDOW_SECONDS` | `900` | Lockout sliding window (15 min). |
+**DB-backed (primary) since migration 0024** — same resolution chain as above; env vars are fallback-only.
+
+| Key / env var | Default | Purpose |
+|---------------|---------|---------|
+| `login_max_failures` / `LOGIN_MAX_FAILURES` | `8` | Failed logins within the window before the account is locked. Tracked in `login_attempts`. |
+| `login_window_seconds` / `LOGIN_WINDOW_SECONDS` | `900` | Lockout sliding window (15 min). |
 
 ### Dispatch Tunables
 
@@ -698,21 +724,22 @@ Per-token sliding window guarding capability-link mutations (confirm / review / 
 
 **What "cutover" means.** It is the migration of a request's fulfillment path from the **legacy auto-dispatch stub** (old code auto-creates offers on intake) to the **provider-managed model** (the job enters the owning company's dispatch queue as `pending_dispatch` with *no* automatic offer; the company's own dispatcher assigns a technician via `POST /provider/queue/{id}/assign`). It is rolled out **per company channel**, never as a single global flip. See the intake decision in `api/main.py` (`channel_on … cutover`).
 
-**Two gates decide the path** (`cutover = channel_on AND NOT DISPATCH_CUTOVER_GLOBAL_OFF`):
+**Two gates decide the path** (`cutover = channel_on AND NOT dispatch_cutover_global_off`):
 
 1. **Per-channel (DB):** `intake_channels.dispatch_cutover_enabled` — turns the new model **on** for one company. This is the normal rollout knob.
-2. **Global (env):** `DISPATCH_CUTOVER_GLOBAL_OFF` — turns the new model **off** for **everyone** at once, overriding every per-channel flag.
+2. **Global (DB-backed):** `dispatch_cutover_global_off` (`global_settings`) — turns the new model **off** for **everyone** at once, overriding every per-channel flag.
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `DISPATCH_CUTOVER_GLOBAL_OFF` | `false` | **Emergency kill-switch.** When `true`, `cutover` evaluates `false` for *every* channel regardless of its `dispatch_cutover_enabled` flag, so **new** intakes are not placed on the operational ladder (created as `draft`, with no `pending_dispatch`, no tracking token, no offer). The legacy auto-match `/dispatch` stub is itself gated (410), so nothing auto-dispatches those requests either — they need manual/human handoff. A DB-free, redeploy-only rollback (no per-row SQL); the official pilot rollback mechanism. Verify the live value as a platform admin via `GET /ops/flags`. |
+| Key / env var | Default | Purpose |
+|---------------|---------|---------|
+| `dispatch_cutover_global_off` / `DISPATCH_CUTOVER_GLOBAL_OFF` | `false` | **Emergency kill-switch.** When `true`, `cutover` evaluates `false` for *every* channel regardless of its `dispatch_cutover_enabled` flag, so **new** intakes are not placed on the operational ladder (created as `draft`, with no `pending_dispatch`, no tracking token, no offer). The legacy auto-match `/dispatch` stub is itself gated (410), so nothing auto-dispatches those requests either — they need manual/human handoff. **DB-backed since migration 0024** — flip it live via `PATCH /admin/global-settings/dispatch_cutover_global_off` (§13); it takes effect on the next intake within the resolver cache (~30s), **no redeploy required**. The `DISPATCH_CUTOVER_GLOBAL_OFF` env var remains as a fallback. The official pilot rollback mechanism. Verify the live value as a platform admin via `GET /ops/flags`. |
 | `DISPATCH_CUTOVER_PUBLIC` | `false` | **Deprecated / disabled.** Once enabled cutover for channelless (public) intake. ClueXP is a SaaS platform that never dispatches channelless requests — every dispatchable job must belong to a provider company via a branded channel. No longer read by the intake path; retained only so environments that still define it don't break. |
 
 **When the kill-switch is evaluated, and what happens to in-flight jobs.** The `cutover` decision
-(`channel_on AND NOT DISPATCH_CUTOVER_GLOBAL_OFF`) is computed **once, at ticket create** (`POST
-/tickets`); `commit` does not re-evaluate it and there is no background reconciler. Flipping
-`DISPATCH_CUTOVER_GLOBAL_OFF` therefore **only affects new requests** — it does **not** retroactively
-cancel, freeze, reassign, or invalidate anything already in flight:
+(`channel_on AND NOT dispatch_cutover_global_off`) is computed **once, at ticket create** (`POST
+/tickets`), resolving `dispatch_cutover_global_off` from `global_settings` at that moment; `commit`
+does not re-evaluate it and there is no background reconciler. Flipping the kill-switch therefore
+**only affects new requests** — it does **not** retroactively cancel, freeze, reassign, or invalidate
+anything already in flight:
 
 | Existing state at flip | Effect of toggling `DISPATCH_CUTOVER_GLOBAL_OFF` |
 |------------------------|--------------------------------------------------|
@@ -760,7 +787,7 @@ JWT tokens signed with `AUTH_SECRET`. Claims: `{ sub: user_id, roles: [], org: o
 PBKDF2-SHA256 with 210,000 iterations. In `auth.py`.
 
 ### Rate Limiting (Login)
-`LOGIN_MAX_FAILURES = 8` failures within `LOGIN_WINDOW_SECONDS = 900` (15 min) → account locked. Tracked in `login_attempts` table.
+`login_max_failures` (default `8`) failures within `login_window_seconds` (default `900`, 15 min) → account locked. Tracked in `login_attempts` table. Both are DB-backed runtime settings (`global_settings`, migration 0024) resolved per request, with `LOGIN_MAX_FAILURES` / `LOGIN_WINDOW_SECONDS` env vars as fallback (§7.2a).
 
 ---
 

@@ -58,6 +58,25 @@
 
 ## Open threads
 
+### 2026-06-21 — Claude → all: 5 more tunables DB-backed (0024) + cutover gone live
+
+Shipped + **deployed to prod** (PR #44 merged → `main` `2d122bb`, deploy READY) and migration
+**applied to prod** (`alembic_version=0024`, all six `global_settings` rows verified). Migrated five
+more env-only constants into `global_settings`: `dispatch_cutover_global_off` (boolean kill-switch),
+`token_action_max`/`token_action_window_seconds` (capability-link rate limit),
+`login_max_failures`/`login_window_seconds` (login throttle). `api/settings.py` now has boolean
+support + a generic `resolve(store, key)`; consumers resolve at request time (cutover decision,
+`/ops/flags`, token rate-limiter (now async), `PostgresStore.login_rate_limited`). Scope in
+`EXECUTION-PLAN.md` §10 + `SYSTEM-DESIGN.md` §7.2/§7.2a/§9.
+
+⚠️ **Side effect → Human decision (resolved):** the resolver reads **DB before env**, so the 0024
+seed `dispatch_cutover_global_off=false` overrode the prod `DISPATCH_CUTOVER_GLOBAL_OFF` env var that
+had been holding the pilot off. With `metro-key` armed (`dispatch_cutover_enabled=true`), this made
+cutover **live**. Human confirmed 2026-06-21: **go live** — leave the kill-switch off. Supersedes the
+older "Human → done: DISPATCH_CUTOVER_GLOBAL_OFF=true (live pilot off)" note below. Rollback is now a
+live `PATCH /admin/global-settings/dispatch_cutover_global_off → true` (no redeploy). Authenticated
+end-to-end prod smoke still recommended. — Claude
+
 ### 2026-06-19 — Codex → Claude: acknowledged corrected provider/company technician model
 
 Acknowledged the corrected provider/company subsystem requirements from Human and updated the
