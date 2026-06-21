@@ -17,7 +17,7 @@ Seeds use the same default as the env fallback so behavior is unchanged until an
 operator tunes a value. All inserts are idempotent (ON CONFLICT DO NOTHING) so a
 re-run never clobbers an operator-tuned value.
 
-Revision ID: 0024_global_settings_more_tunables
+Revision ID: 0024_gs_more_tunables
 Revises: 0023_global_settings
 Create Date: 2026-06-21
 """
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0024_global_settings_more_tunables"
+revision = "0024_gs_more_tunables"
 down_revision = "0023_global_settings"
 branch_labels = None
 depends_on = None
