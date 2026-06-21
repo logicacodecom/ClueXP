@@ -37,14 +37,69 @@ Official brand reference files live in `docs/design-ref/brand/`:
 
 | File | Use |
 |---|---|
+| `logo.png` | Production app logo. Copy this exact filename to every app `public/logo.png`. Use for expanded app chrome and visible wordmark placement. |
+| `icon.png` | Production app icon. Copy this exact filename to every app `public/icon.png`. Use for favicons, PWA icons, and collapsed console sidebar rails. |
 | `cluexp-brand-board.png` | Visual reference board: logo, icon, tagline, and brand values. Use for design context, not app chrome. |
 | `cluexp-logo-reversed.png` | White/reversed logo reference for dark product UI. |
 | `cluexp-logo-on-light.png` | Black logo reference for light surfaces, documents, and white-background mocks. |
 
-These PNG files are the current brand references. If a formal designer-exported SVG becomes
-available, add it here and treat that SVG as the production app asset. The console **logo
-area** uses an amber keyhole SVG + "ClueXP" wordmark (condensed font); reuse the existing
-mark, do not redraw it.
+`logo.png` and `icon.png` are the production app assets. Keep those filenames stable because all
+four apps reference them as root-relative public files (`/logo.png`, `/icon.png`). If a formal
+designer-exported SVG becomes available, add it here first, update this guide, then migrate all
+four app references in one commit.
+
+### 1.2 Replacing the logo and icon across all systems
+
+When the brand changes, update the canonical source files first:
+
+1. Replace `docs/design-ref/brand/logo.png`.
+2. Replace `docs/design-ref/brand/icon.png`.
+3. Copy both files into each app's public directory:
+   - `apps/intake-web/public/logo.png`
+   - `apps/intake-web/public/icon.png`
+   - `apps/technician-web/public/logo.png`
+   - `apps/technician-web/public/icon.png`
+   - `apps/provider-web/public/logo.png`
+   - `apps/provider-web/public/icon.png`
+   - `apps/ops-web/public/logo.png`
+   - `apps/ops-web/public/icon.png`
+4. Keep the visible image elements pointed at the public-root paths, not relative filesystem
+   paths. Required HTML/JSX properties:
+   - Expanded logo: `<img src="/logo.png" alt="ClueXP" className="... object-contain" />`
+   - Collapsed console icon: `<img src="/icon.png" alt="ClueXP" className="... object-contain" />`
+   - Do not omit `alt`. Use `alt="ClueXP"` for brand identity. If a purely decorative duplicate
+     is ever added, use `alt="" aria-hidden="true"` instead.
+   - Set stable dimensions with CSS classes (`height`, `width`/`max-width`, `object-contain`) so
+     the header/sidebar does not shift while the image loads.
+5. Update app metadata icons in every `src/app/layout.tsx`:
+   - `icons.icon = "/icon.png"`
+   - `icons.apple = "/icon.png"`
+6. Update PWA metadata where present. Technician currently owns
+   `apps/technician-web/public/manifest.webmanifest`; its icon entry must use:
+   - `"src": "/icon.png"`
+   - `"sizes": "1254x1254"` unless the source icon dimensions change
+   - `"type": "image/png"`
+   - `"purpose": "any maskable"`
+7. Keep auth proxies from intercepting static brand files. Provider, ops, and technician proxies
+   must allow:
+   - `pathname === "/logo.png"`
+   - `pathname === "/icon.png"`
+8. Build and smoke-test all four systems:
+   - `npm.cmd run build --workspace @cluexp/intake-web`
+   - `npm.cmd run build:tech`
+   - `npm.cmd run build:provider`
+   - `npm.cmd run build:ops`
+   - After deploy, verify every production domain returns `200 image/png` for `/logo.png` and
+     `/icon.png`.
+
+Implementation locations:
+
+| Surface | Visible logo/icon references | Public assets | Metadata/proxy |
+|---|---|---|---|
+| Intake | `apps/intake-web/src/app/page.tsx`, `apps/intake-web/src/app/globals.css` | `apps/intake-web/public/logo.png`, `apps/intake-web/public/icon.png` | `apps/intake-web/src/app/layout.tsx` |
+| Technician | `apps/technician-web/src/components/mobile.tsx` | `apps/technician-web/public/logo.png`, `apps/technician-web/public/icon.png` | `apps/technician-web/src/app/layout.tsx`, `apps/technician-web/public/manifest.webmanifest`, `apps/technician-web/src/proxy.ts` |
+| Provider | `packages/console-ui/src/components/index.tsx` | `apps/provider-web/public/logo.png`, `apps/provider-web/public/icon.png` | `apps/provider-web/src/app/layout.tsx`, `apps/provider-web/src/proxy.ts` |
+| Ops | `packages/console-ui/src/components/index.tsx` | `apps/ops-web/public/logo.png`, `apps/ops-web/public/icon.png` | `apps/ops-web/src/app/layout.tsx`, `apps/ops-web/src/proxy.ts` |
 
 ## 2. Color tokens
 
@@ -122,7 +177,7 @@ light-mode toggle). Faint amber grid is rendered via `body::before`.
 ## 5. Core components — intake (shared vocabulary)
 These exist in the live intake app and are the seed for `packages/console-ui` + the
 technician app:
-- **Top bar** — sticky, brand mark (amber) + wordmark + uppercase subtitle.
+- **Top bar** — sticky, production `logo.png` image + uppercase subtitle.
 - **Step pipes** — 6-segment progress (intake only; **not** on fulfillment/console).
 - **Agent message** — large `32px/800` framing line + `18px` muted support.
 - **Choice / Chip** — full-width `58px`, left-aligned, heavy; `.active` = amber border +
@@ -178,8 +233,8 @@ right-side drawer), `tooltip`, `table` (Table/Header/Body/Row/Head/Cell), `tabs`
 ### 6.2 Composed components — `console-ui/src/components/`
 - **`AppShell`** — fixed Sidebar + sticky Topbar + scrollable content (`max-w` container,
   24–32px padding). Props: `{ mode, surfaceLabel, modeBadge, nav, activePath, children }`.
-- **`Sidebar`** — collapsible (icon-rail ↔ expanded, state persists). Logo area (amber
-  keyhole + wordmark, `font-condensed`). **Grouped nav** with section labels:
+- **`Sidebar`** — collapsible (icon-rail ↔ expanded, state persists). Logo area uses
+  `/logo.png` when expanded and `/icon.png` when collapsed. **Grouped nav** with section labels:
   - **Operations:** Dashboard, Live Queue, Dispatch Board, Map, Escalations, Messages
   - **Network:** Technicians, Teams, Documents
   - **Finance:** Reports (revenue/settlement)
