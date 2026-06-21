@@ -224,7 +224,7 @@ function BrandMark({ collapsed }: { collapsed: boolean }) {
     <img
       src={collapsed ? "/icon.png" : "/logo.png"}
       alt="ClueXP"
-      className={cn("shrink-0 object-contain", collapsed ? "size-10" : "h-10 w-auto max-w-[128px]")}
+      className={cn("shrink-0 object-contain", collapsed ? "size-10" : "h-10 w-[148px]")}
     />
   );
 }
