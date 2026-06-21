@@ -21,6 +21,10 @@ export const metadata: Metadata = {
   title: "ClueXP Technician",
   description: "ClueXP field technician application",
   manifest: "/manifest.webmanifest",
+  icons: {
+    icon: "/icon.png",
+    apple: "/icon.png"
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",

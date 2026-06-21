@@ -19,7 +19,11 @@ const inter = localFont({
 
 export const metadata: Metadata = {
   title: "ClueXP Operations Console",
-  description: "ClueXP dispatch operations console"
+  description: "ClueXP dispatch operations console",
+  icons: {
+    icon: "/icon.png",
+    apple: "/icon.png"
+  }
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

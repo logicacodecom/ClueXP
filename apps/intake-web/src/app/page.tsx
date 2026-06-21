@@ -1,6 +1,6 @@
 "use client";
 
-import { Car, Clock3, Home, LoaderCircle, MapPin, Phone, ShieldCheck, Store, UserRound } from "lucide-react";
+import { Car, Clock3, Home, LoaderCircle, MapPin, Phone, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -153,11 +153,8 @@ function TopBar({ organizationName }: { organizationName?: string }) {
   const { locale } = useLocale();
   return (
     <header className="topbar">
-      <div className="mark" aria-hidden="true">
-        <ShieldCheck size={26} />
-      </div>
       <div className="brand">
-        <div className="wordmark">ClueXP</div>
+        <img className="brand-logo" src="/logo.png" alt="ClueXP" />
         <div className="subtitle">
           {organizationName
             ? `${organizationName} ${locale === "es" ? "solicitud" : "intake"}`

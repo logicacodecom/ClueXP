@@ -69,17 +69,16 @@ button {
   background: var(--surface);
 }
 
-.mark {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  color: var(--primary);
-}
-
 .brand {
   display: grid;
-  gap: 2px;
+  gap: 4px;
+}
+
+.brand-logo {
+  display: block;
+  width: auto;
+  height: 34px;
+  object-fit: contain;
 }
 
 .wordmark {

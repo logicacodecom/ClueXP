@@ -143,7 +143,7 @@ export function TechnicianTopBar({
     <header className="safe-top sticky top-0 z-30 border-b border-border/80 bg-background/96 px-4 pb-3 backdrop-blur-xl">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-black uppercase tracking-[.08em] text-muted">ClueXP</div>
+          <img className="h-6 w-auto object-contain" src="/logo.png" alt="ClueXP" />
           <div className="truncate text-base font-black leading-tight">{title}</div>
         </div>
         <span className="shrink-0 border border-border bg-card-strong px-2.5 py-1 text-[11px] font-black uppercase text-muted">Field app</span>

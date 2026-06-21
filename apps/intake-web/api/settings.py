@@ -44,9 +44,17 @@ class SettingSpec:
     is_runtime_editable: bool = True
 
 
-def _is_ttl_valid(v: Any) -> bool:
-    # Reject bools (bool is a subclass of int) and anything out of [60, 900].
-    return isinstance(v, int) and not isinstance(v, bool) and 60 <= v <= 900
+def _int_range(lo: int, hi: int) -> Callable[[Any], bool]:
+    """Build a validator accepting ints in [lo, hi]. Rejects bools (a subclass of int)."""
+
+    def _validate(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+    return _validate
+
+
+def _is_bool(v: Any) -> bool:
+    return isinstance(v, bool)
 
 
 # --- allowlist registry: the single source of truth for validation -----------
@@ -57,7 +65,51 @@ SETTINGS: dict[str, SettingSpec] = {
         description="Seconds before a provider-created dispatch offer expires.",
         env="DISPATCH_OFFER_TTL_SECONDS",
         fallback=300,
-        validate=_is_ttl_valid,
+        validate=_int_range(60, 900),
+    ),
+    # --- emergency kill-switch: force every channel back to the legacy stub ---
+    "dispatch_cutover_global_off": SettingSpec(
+        key="dispatch_cutover_global_off",
+        value_type="boolean",
+        description="Force every channel back to the legacy dispatch stub, "
+        "regardless of its per-channel dispatch_cutover_enabled flag.",
+        env="DISPATCH_CUTOVER_GLOBAL_OFF",
+        fallback=False,
+        validate=_is_bool,
+    ),
+    # --- tracking-token mutation rate limit (Gate 4) ---
+    "token_action_max": SettingSpec(
+        key="token_action_max",
+        value_type="integer",
+        description="Max customer capability-link mutations per token per window.",
+        env="TOKEN_ACTION_MAX",
+        fallback=30,
+        validate=_int_range(1, 10_000),
+    ),
+    "token_action_window_seconds": SettingSpec(
+        key="token_action_window_seconds",
+        value_type="integer",
+        description="Sliding-window length (seconds) for the per-token mutation limit.",
+        env="TOKEN_ACTION_WINDOW_SECONDS",
+        fallback=60,
+        validate=_int_range(1, 3_600),
+    ),
+    # --- auth hardening: login throttle ---
+    "login_max_failures": SettingSpec(
+        key="login_max_failures",
+        value_type="integer",
+        description="Failed logins allowed per window before throttling.",
+        env="LOGIN_MAX_FAILURES",
+        fallback=8,
+        validate=_int_range(1, 1_000),
+    ),
+    "login_window_seconds": SettingSpec(
+        key="login_window_seconds",
+        value_type="integer",
+        description="Sliding-window length (seconds) for the login-failure throttle.",
+        env="LOGIN_WINDOW_SECONDS",
+        fallback=900,
+        validate=_int_range(1, 86_400),
     ),
 }
 
@@ -80,10 +132,10 @@ def coerce_and_validate(key: str, value: Any) -> Any:
         raise SettingValidationError(f"Setting '{key}' is not runtime-editable")
     if spec.value_type == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
         raise SettingValidationError(f"{key} must be an integer")
+    if spec.value_type == "boolean" and not isinstance(value, bool):
+        raise SettingValidationError(f"{key} must be a boolean")
     if not spec.validate(value):
-        raise SettingValidationError(
-            f"{key} failed validation (integer 60–900 expected for dispatch_offer_ttl_seconds)"
-        )
+        raise SettingValidationError(f"{key} failed validation for its allowed range")
     return value
 
 
@@ -110,7 +162,25 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-async def _resolve_int(store: Any, key: str) -> int:
+def _parse_env(spec: SettingSpec, raw: str) -> Any:
+    """Coerce a raw env string into the spec's type. Returns ``None`` if uncoercible."""
+    if spec.value_type == "integer":
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    if spec.value_type == "boolean":
+        return raw.strip().lower() == "true"
+    return raw
+
+
+async def resolve(store: Any, key: str) -> Any:
+    """Resolve one runtime setting: DB → env → hardcoded fallback.
+
+    Tolerant by design — a missing/invalid DB row, an unreadable DB, or a bad env
+    value never raises; resolution degrades to the next source and ultimately the
+    hardcoded ``fallback``. Values are cached per warm instance for ~30s.
+    """
     spec = SETTINGS[key]
     cached = _cache_get(key)
     if cached is not None:
@@ -119,7 +189,7 @@ async def _resolve_int(store: Any, key: str) -> int:
     # 1) DB (global_settings) — tolerant of a missing/invalid row or read failure.
     try:
         row = await store.get_global_setting(key)
-    except Exception:  # pragma: no cover - defensive: a DB hiccup must not break dispatch
+    except Exception:  # pragma: no cover - defensive: a DB hiccup must never break callers
         logger.warning("global_settings read failed for %s; using env/default", key)
         row = None
     if row is not None:
@@ -132,10 +202,7 @@ async def _resolve_int(store: Any, key: str) -> int:
     if spec.env:
         raw = os.environ.get(spec.env)
         if raw is not None:
-            try:
-                env_value = int(raw)
-            except (TypeError, ValueError):
-                env_value = None
+            env_value = _parse_env(spec, raw)
             if env_value is not None and spec.validate(env_value):
                 return _remember(key, env_value)
 
@@ -149,4 +216,4 @@ async def resolve_offer_ttl_seconds(store: Any) -> int:
     Order: ``global_settings.dispatch_offer_ttl_seconds`` → ``DISPATCH_OFFER_TTL_SECONDS``
     env → hardcoded ``300``. Safe under DB failure (falls back; never raises).
     """
-    return await _resolve_int(store, "dispatch_offer_ttl_seconds")
+    return await resolve(store, "dispatch_offer_ttl_seconds")

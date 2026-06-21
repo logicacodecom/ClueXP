@@ -1605,19 +1605,26 @@ def test_ops_flags_admin_only():
     assert forbidden.status_code == 403
 
 
-def test_token_action_rate_limited(monkeypatch):
+def test_token_action_rate_limited():
     from starlette.testclient import TestClient
-    from api.main import app, _token_action_hits
-    from api import config
-    monkeypatch.setattr(config, "TOKEN_ACTION_MAX", 2)
+    from api.main import app, _token_action_hits, store as app_store
+    from api import settings as rs
+    # The limit is now runtime-tunable via global_settings; drive it through the store.
+    asyncio.run(app_store.upsert_global_setting("token_action_max", 2, "integer", None))
+    rs.clear_cache()
     _token_action_hits.clear()
-    client = TestClient(app)
-    tok = "rl-" + uuid4().hex
-    # The limiter runs before token resolution: first 2 pass (unknown token → 404),
-    # the 3rd trips the limit → 429.
-    assert client.post(f"/t/{tok}/confirm").status_code == 404
-    assert client.post(f"/t/{tok}/confirm").status_code == 404
-    assert client.post(f"/t/{tok}/confirm").status_code == 429
+    try:
+        client = TestClient(app)
+        tok = "rl-" + uuid4().hex
+        # The limiter runs before token resolution: first 2 pass (unknown token → 404),
+        # the 3rd trips the limit → 429.
+        assert client.post(f"/t/{tok}/confirm").status_code == 404
+        assert client.post(f"/t/{tok}/confirm").status_code == 404
+        assert client.post(f"/t/{tok}/confirm").status_code == 429
+    finally:
+        # Restore the seeded default so the shared app store doesn't leak into other tests.
+        asyncio.run(app_store.upsert_global_setting("token_action_max", 30, "integer", None))
+        rs.clear_cache()
 
 
 # ---------------------------------------------------------------------------

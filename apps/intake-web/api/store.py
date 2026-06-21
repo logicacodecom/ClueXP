@@ -45,6 +45,7 @@ from api.dispatch import (
     resolve_dispatch_state,
 )
 from api import config
+from api import settings as runtime_settings
 from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -530,19 +531,21 @@ class InMemoryStore(Store):
         self._tickets: dict[UUID, Ticket] = {}
         self.events: list[str] = []
         self.media: list[dict[str, str]] = []
-        # Runtime operational settings — mirrors the migration/startup seed so the
-        # in-memory store behaves like a freshly-migrated DB. Never holds secrets.
+        # Runtime operational settings — derived from the settings registry so the
+        # in-memory store behaves like a freshly-migrated DB (the migration seeds use
+        # the same per-key fallback). Never holds secrets.
         self._global_settings: dict[str, dict] = {
-            "dispatch_offer_ttl_seconds": {
-                "key": "dispatch_offer_ttl_seconds",
-                "value": 300,
-                "value_type": "integer",
-                "description": "Seconds before a provider-created dispatch offer expires.",
-                "is_secret": False,
-                "is_runtime_editable": True,
+            spec.key: {
+                "key": spec.key,
+                "value": spec.fallback,
+                "value_type": spec.value_type,
+                "description": spec.description,
+                "is_secret": spec.is_secret,
+                "is_runtime_editable": spec.is_runtime_editable,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "updated_by": None,
             }
+            for spec in runtime_settings.SETTINGS.values()
         }
         password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         self.users: dict[str, dict] = {
@@ -1973,6 +1976,18 @@ class PostgresStore(Store):
                 "  'Seconds before a provider-created dispatch offer expires.', false, true)"
                 " on conflict (key) do nothing"
             )
+            # Migration 0024 tunables — same idempotent seeds, repeated here so the
+            # live API self-heals if the migration is behind.
+            await conn.execute(
+                "insert into global_settings"
+                " (key, value, value_type, is_secret, is_runtime_editable) values"
+                " ('dispatch_cutover_global_off', 'false'::jsonb, 'boolean', false, true),"
+                " ('token_action_max', '30'::jsonb, 'integer', false, true),"
+                " ('token_action_window_seconds', '60'::jsonb, 'integer', false, true),"
+                " ('login_max_failures', '8'::jsonb, 'integer', false, true),"
+                " ('login_window_seconds', '900'::jsonb, 'integer', false, true)"
+                " on conflict (key) do nothing"
+            )
             await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
             # Fulfillment cutover (migration 0010) — additive columns. Repeated here
             # as add-column-if-not-exists so the live API is resilient if it boots
@@ -2435,15 +2450,18 @@ class PostgresStore(Store):
 
     async def login_rate_limited(self, identifier: str) -> bool:
         normalized = identifier.strip().lower()
+        # Runtime-tunable via global_settings (falls back to env → hardcoded default).
+        window = await runtime_settings.resolve(self, "login_window_seconds")
+        max_failures = await runtime_settings.resolve(self, "login_max_failures")
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select count(*) from login_attempts"
                 " where lower(identifier) = %s and success = false"
                 " and created_at >= now() - (%s * interval '1 second')",
-                (normalized, config.LOGIN_WINDOW_SECONDS),
+                (normalized, window),
             )
             row = await cur.fetchone()
-        return bool(row and row[0] >= config.LOGIN_MAX_FAILURES)
+        return bool(row and row[0] >= max_failures)
 
     async def record_login_attempt(
         self, identifier: str, *, success: bool, ip: str | None
