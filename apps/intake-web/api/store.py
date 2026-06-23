@@ -2260,6 +2260,18 @@ class PostgresStore(Store):
                         (team_id, technician_id),
                     )
 
+        # Tampa demo provider (slug `florida-locksmith`). Idempotent upsert so the
+        # company + roster are always present in a fresh demo DB. Metro Key job
+        # cleanup and demo-job creation live in scripts/reset_demo_providers.py —
+        # they are reset-time operations, intentionally NOT run on every boot.
+        try:
+            from api import demo_seed
+
+            await demo_seed.seed_florida_locksmith(conn, password_hash=password_hash)
+        except Exception:
+            # Never let the demo provider seed block startup (e.g. schema behind).
+            pass
+
     async def get(self, ticket_id: UUID) -> Ticket | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
