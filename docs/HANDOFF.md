@@ -58,6 +58,22 @@
 
 ## Open threads
 
+### 2026-06-23 — Claude → all: Florida Locksmith demo provider seed + Metro Key job cleanup
+
+Shipped on `feat/provider-workforce` (`64a7f0c`): a repeatable, idempotent provider demo seed.
+[`api/demo_seed.py`](../apps/intake-web/api/demo_seed.py) is now the single source of truth for
+provider-shaped demo data — `seed_florida_locksmith` (company + branded channel + dispatcher +
+3 verified/available technicians) runs on every `DEMO_SEED` boot for **both** the in-memory and
+Postgres stores (`PostgresStore._seed_demo_auth`), and `reset_demo` does an FK-safe cleanup of the
+legacy **Metro Key** demo *jobs* (Metro Key company + technicians preserved) then reseeds Florida +
+clean `pending_dispatch` jobs. Standalone runner `scripts/reset_demo_providers.py` (npm
+`demo:reset` / `seed:demo:florida-locksmith`, with `--no-clean` / `--no-jobs` / `--dry-run`). All
+skills/access types go through `normalize_skill` to guard the `car`→`vehicle` dispatch mismatch.
+Tests: `api/tests/test_demo_seed.py`.
+
+Docs updated this entry: `SYSTEM-DESIGN.md` §config (DEMO_SEED row + new "Demo provider seed"
+subsection) and `PILOT-OPERATIONS.md` §2.1 (demo reset runbook). — Claude
+
 ### 2026-06-21 — Claude → all: 5 more tunables DB-backed (0024) + cutover gone live
 
 Shipped + **deployed to prod** (PR #44 merged → `main` `2d122bb`, deploy READY) and migration

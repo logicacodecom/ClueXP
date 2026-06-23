@@ -49,6 +49,29 @@ and `@metrokey.example` are real addresses here, **not** placeholders.
 > any of them. (Dispatching to *independent* technicians — those with no organization — is a
 > future "ClueXP Direct" capability, out of scope for this MVP.)
 
+### 2.1 Resetting demo provider data
+
+To re-stage a clean provider demo (used for the Tampa **Florida Locksmith** demo provider), run
+the idempotent reset from `apps/intake-web`. It cleans the legacy **Metro Key** demo *jobs*
+(FK-safe; the Metro Key company + technicians are preserved) and (re)seeds Florida Locksmith — its
+branded channel, dispatcher (`dispatch@florida-locksmith.demo`), three verified technicians, and a
+few clean unassigned demo jobs. Source of truth: [`api/demo_seed.py`](../apps/intake-web/api/demo_seed.py).
+
+```bash
+# from apps/intake-web — uses MIGRATION_DATABASE_URL (direct host, preferred) or DATABASE_URL
+npm run demo:reset                       # clean Metro Key jobs + reseed Florida + demo jobs
+npm run seed:demo:florida-locksmith      # --no-clean: ensure Florida + jobs, leave Metro Key
+uv run python scripts/reset_demo_providers.py --dry-run   # preview counts, roll back
+```
+
+Flags: `--no-clean` (skip Metro Key cleanup), `--no-jobs` (company + roster only), `--dry-run`
+(runs in a transaction and rolls back — change nothing). The script prints a summary + validation
+and exits non-zero on validation issues. Re-running is always safe; lookups are by slug/email so
+nothing duplicates.
+
+> ⚠️ Run against a **demo** database only. The cleanup deletes Metro Key demo jobs and their
+> dependent rows — never point it at a database with real pilot data.
+
 ---
 
 ## 3. Readiness Gates

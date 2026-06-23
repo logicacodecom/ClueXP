@@ -666,8 +666,30 @@ All environment variables for `intake-web`. Set in Vercel project dashboard unde
 | `SUPABASE_SERVICE_ROLE_KEY` | — | Service-role key for storage operations. Legacy fallback `SUPABASE_SERVICE_KEY` is still read if the role-key name is absent. Server-only — never expose to the browser. |
 | `CRON_SECRET` | `""` (disabled) | Bearer secret for `POST /cron/dispatch-sweep`. Unset = endpoint returns 503. Sent as `Authorization: Bearer ${CRON_SECRET}` by Vercel Cron / pg_cron / any caller. |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set explicitly in prod. |
-| `DEMO_SEED` | `true` | If true, seeds demo technicians/orgs on startup (in-memory store only). Set `false` to disable. |
+| `DEMO_SEED` | `true` | If true, seeds demo technicians/orgs on startup. Applies to **both** the in-memory store and a Postgres store: `PostgresStore._seed_demo_auth` idempotently upserts the demo accounts and calls `demo_seed.seed_florida_locksmith` so the Tampa demo provider is always present in a fresh demo DB. Set `false` to disable. |
 | `DEMO_SEED_PASSWORD` | `123456` | Login password for the seeded demo accounts. Intentionally simple for demos; the JWT signing secret (`AUTH_SECRET`) is separate and must still be strong. |
+
+#### Demo provider seed — Florida Locksmith
+
+[`api/demo_seed.py`](../apps/intake-web/api/demo_seed.py) is the single source of truth for
+the provider-shaped demo data. It is **idempotent** (lookups by slug/email, so reseeding upserts
+and never duplicates) and exposes two entry points:
+
+- `seed_florida_locksmith(conn, *, password_hash)` — upserts the Tampa provider **Florida
+  Locksmith** (slug `florida-locksmith`): the company, its branded intake channel, a dispatcher
+  login (`dispatch@florida-locksmith.demo`), and three verified/available technicians (Carlos
+  Rivera `home/business/vehicle`, Maya Thompson `home/business`, Andre Wilson `vehicle/home`).
+  Called on every demo boot via `DEMO_SEED`.
+- `reset_demo(conn, …)` — the on-demand reset: FK-safe cleanup of the legacy **Metro Key** demo
+  *jobs* (and the offers/tracking/notes/reviews/payments + orphan customers hanging off them —
+  the Metro Key company and technicians are **preserved**), then `seed_florida_locksmith` plus a
+  few clean unassigned demo jobs (`pending_dispatch`) so the dispatch flow has something to show.
+
+All technician skills and job access types pass through `normalize_skill`, which maps the
+`car`/`auto` aliases to the canonical `vehicle` token the dispatch engine compares against
+(`AccessType.CAR.value == "vehicle"`) — guarding the historical `car`-vs-`vehicle` dispatch
+mismatch. The standalone runner is `scripts/reset_demo_providers.py` (see the demo-prep runbook
+in `PILOT-OPERATIONS.md`).
 
 ### Backend — Environment Detection
 
