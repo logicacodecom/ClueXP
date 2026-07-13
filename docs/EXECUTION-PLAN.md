@@ -50,7 +50,7 @@
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
-| Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. Authenticated end-to-end prod smoke still recommended. |
+| Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Technician-reported collection | `[~]` advisory only | Technician-reported amount/method and finished-job history are implemented in code (`0015`); these are advisory operational records — **no real payment processing, no authorization hold, no capture, refund, payout or settlement**. Customer acknowledges by confirming completion |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
@@ -272,7 +272,21 @@ countdown.
 switch is now flipped live via `PATCH /admin/global-settings/dispatch_cutover_global_off` (no
 redeploy); it is evaluated **only at intake create**, so a flip affects new requests only — in-flight
 jobs and existing tracking tokens are unaffected (full matrix in SYSTEM-DESIGN §9). To roll back,
-`PATCH` it to `true`. An authenticated end-to-end prod smoke (§3.4) is still recommended.
+`PATCH` it to `true`.
+
+**Authenticated end-to-end prod smoke — run 2026-07-12, PASSED.** Direct authenticated API calls
+(no UI) against `intake.cluexp.com`, one synthetic/disposable request through `metro-key`: create →
+`pending_dispatch` → dispatcher (`Nadia Reyes`) queue/candidates → targeted offer → technician
+(`Lena Ortiz`) accept → `en_route` → customer-issued arrival PIN → technician verify → `arrived` →
+`in_progress` → advisory collection report → `completed_pending_customer` → customer confirm →
+`completed_confirmed`. Every step returned the expected status/shape; the one deviation (chosen
+technician showed `is_online=false` because no demo technician has a recent location ping, so the
+first assign attempt correctly 422'd and required `override_reason`) is expected behavior, not a
+defect. The disposable job was left in place, closed, clearly labelled in `location.raw_text` /
+`additional_details` as a smoke test — not deleted, per the rollback data-hygiene rule.
+
+**Found in the process — real 3-day-stale unassigned job, see §10 "Dispatcher availability risk."**
+The pilot channel has been receiving real traffic while unattended.
 
 The full pilot evidence matrix and rollback procedure live in
 [`docs/PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md). Execution (not just code) is required
@@ -531,12 +545,17 @@ Remaining work to a meaningful pilot is operational, not new code:
 2. **Confirm the kill-switch state:** verify `dispatch_cutover_global_off` via `GET /ops/flags`
    (currently `false` → cutover live for `metro-key`, the pilot channel). It is DB-backed and
    flips live via `PATCH /admin/global-settings/dispatch_cutover_global_off` — no redeploy.
-3. **Run an authenticated end-to-end prod smoke** (the build sandbox can't reach prod):
-   intake → provider dispatch → accept → PIN arrival → completion → customer confirm.
-4. **Execute the Sprint 3.3 pilot matrix** (`docs/PILOT-OPERATIONS.md`) with the approved
+3. ~~Run an authenticated end-to-end prod smoke~~ **[DONE 2026-07-12 — passed, see §3.3.]**
+4. **Resolve the stale job found by the smoke test** (real intake, 2026-07-09, safety flag
+   `person_inside`, no contact info captured, 3 days unassigned in `metro-key`'s queue) —
+   close it via the recovery workspace/`POST /admin/jobs/{id}/resolve`, and **confirm
+   `NEXT_PUBLIC_DISPATCH_PHONE` is set to a real staffed number in the intake-web production
+   env** (the safety-flag "Call dispatch now" screen falls back to a placeholder
+   `+1 800-555-1234` if unset — unverified from this environment).
+5. **Execute the Sprint 3.3 pilot matrix** (`docs/PILOT-OPERATIONS.md`) with the approved
    pilot company + roster; if a defect surfaces, roll back by `PATCH`ing
    `dispatch_cutover_global_off` to `true`. Widen channel by channel.
-5. **Sprint 4 remaining items** (Google Routes ETA, live position, shared cross-app timeline)
+6. **Sprint 4 remaining items** (Google Routes ETA, live position, shared cross-app timeline)
    and **Sprint 5 communications/notifications** follow once the pilot passes.
 
 **Post-pilot follow-ups (non-blocking):** DB-backed token limiter; `/healthz` DB-ping
@@ -544,7 +563,7 @@ readiness variant.
 
 ## 10. Active Decisions and Risks
 
-- `[!]` **Dispatcher availability risk + SLA gap:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. **For the pilot:** acceptable because the pilot company's dispatch is dedicated and controlled; no customer SLA is advertised. **Before widening:** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), and the customer-facing message for long waits.
+- `[!]` **Dispatcher availability risk + SLA gap — CONFIRMED IN PRODUCTION 2026-07-12:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. The 2026-07-12 prod smoke test found a real (non-test) `metro-key` job — vehicle lockout, safety flag `person_inside`/`advised_emergency_services`, Rockville MD, created 2026-07-09 — that had sat in `pending_dispatch` with **zero dispatcher action for 3 days**. No `customer_name`/`customer_phone` was captured (session ended at the safety-handoff screen before the identity step), so there is no way to reach that person now; the intake UI's real-time safety path is a `tel:` link to `NEXT_PUBLIC_DISPATCH_PHONE`, separate from this queue entry — whether that env var holds Metro Key's real number (vs. the code default placeholder `+1 800-555-1234`) is unverified. **For the pilot:** was assumed acceptable because pilot dispatch is "dedicated and controlled" — this incident shows that assumption doesn't hold once a branded channel is live and unattended. **Before widening (now more urgent):** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), the customer-facing message for long waits, and verify the safety-flag phone escape hatch is wired to a real, staffed number.
 - `[x]` **Six operational tunables are DB-backed (`global_settings`, migrations `0023`+`0024`).**
   Each is resolved **at request time** via `api/settings.py`'s generic `resolve(store, key)` with a
   tolerant `DB → env → hardcoded` chain (~30s cache), and is runtime-editable by a `platform_admin`

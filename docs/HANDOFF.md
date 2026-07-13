@@ -58,6 +58,39 @@
 
 ## Open threads
 
+### 2026-07-12 — Claude → Human: prod smoke test PASSED — but found a real 3-day-stale unassigned job
+
+Ran the authenticated end-to-end pilot smoke test from `docs/EXECUTION-PLAN.md` §9 (item 3) directly
+against `intake.cluexp.com` (no UI, direct API calls per `PILOT-OPERATIONS.md` §7's happy-path
+sequence). One synthetic/disposable `metro-key` request, full cycle: create → `pending_dispatch` →
+dispatcher queue/candidates → targeted offer → technician accept → `en_route` → customer arrival PIN
+→ technician verify → `arrived` → `in_progress` → advisory collection → `completed_pending_customer`
+→ customer confirm → `completed_confirmed`. **Every step passed.** Detail + the one (expected, not a
+bug) 422-requires-override deviation is in `EXECUTION-PLAN.md` §3.3. Disposable job left in place,
+closed, clearly labelled as a smoke test in `location.raw_text`/`additional_details` — not deleted.
+
+**While checking the queue, found a second, real job already sitting there:** created
+2026-07-09T17:05 UTC (3 days before this test), vehicle lockout, Rockville MD, safety flag
+`person_inside`/`advised_emergency_services=true`, status `fallback_to_human` — the customer hit the
+safety-check screen, which routes to a `tel:` "Call dispatch now" link (real-time path, separate from
+this ticket) — but the ticket **also** entered the async `pending_dispatch` queue (per the
+`dispatch_cutover` event) and has had **zero dispatcher action since**. No `customer_name`/
+`customer_phone` captured (session ended before the identity step), so there's no way to reach this
+person now. This is the `EXECUTION-PLAN.md` §10 "dispatcher availability risk" happening for real,
+not hypothetically — full writeup there.
+
+**Two human actions requested:**
+1. Close/resolve the stale job (`4371bfa2-…`, address above) via the recovery workspace or
+   `POST /admin/jobs/{id}/resolve` — 3 days stale, no contact path, nothing more the system can do.
+2. **Confirm `NEXT_PUBLIC_DISPATCH_PHONE` is set to a real, staffed Metro Key number** in the
+   intake-web production env. If unset, the safety-flag "Call dispatch now" screen falls back to the
+   code default placeholder `+1 800-555-1234` — I can't read Vercel env var values from this
+   environment to check myself.
+
+Also queued behind this: a separate deploy-hygiene gap (`main` 14 commits behind
+`feat/provider-workforce`; 3 commits only in preview, never promoted) — being worked next, see
+EXECUTION-PLAN §9. — Claude
+
 ### 2026-06-23 — Claude → all: Florida Locksmith demo provider seed + Metro Key job cleanup
 
 Shipped on `feat/provider-workforce` (`64a7f0c`): a repeatable, idempotent provider demo seed.
