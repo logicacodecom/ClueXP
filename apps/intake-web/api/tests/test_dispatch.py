@@ -2967,3 +2967,101 @@ def test_token_read_includes_owner_dispatch_phone(monkeypatch):
     client = TestClient(app)
     body = client.get(f"/t/{token}").json()
     assert body["dispatch_phone"] == "+15559876543"
+
+
+# --- per-provider dispatch settings (0025): ack SLA / stalled threshold override --
+def test_dispatch_settings_default_before_any_override():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    body = client.get("/provider/settings/dispatch", headers=H).json()
+    assert body == {
+        "ack_sla_minutes": {"value": 5, "is_override": False, "platform_default": 5},
+        "stalled_minutes": {"value": 15, "is_override": False, "platform_default": 15},
+    }
+
+
+def test_dispatch_settings_override_and_clear():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    # Set an override on both fields.
+    r = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": 10, "stalled_minutes": 30}, headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ack_sla_minutes"] == {"value": 10, "is_override": True, "platform_default": 5}
+    assert body["stalled_minutes"] == {"value": 30, "is_override": True, "platform_default": 15}
+
+    # Another org is unaffected (per-org, not global).
+    other_org = str(uuid4())
+    other_uid = str(uuid4())
+    _seed_dispatcher(app_store, other_uid, other_org)
+    other_access = create_access_token({"sub": other_uid, "id": other_uid, "roles": ["dispatcher"]})
+    other = client.get("/provider/settings/dispatch", headers={"Authorization": f"Bearer {other_access}"}).json()
+    assert other["ack_sla_minutes"]["is_override"] is False
+
+    # Clearing one field (explicit null) reverts just that field to the platform default.
+    r2 = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": None}, headers=H)
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["ack_sla_minutes"] == {"value": 5, "is_override": False, "platform_default": 5}
+    assert body2["stalled_minutes"]["is_override"] is True  # untouched
+
+
+def test_dispatch_settings_rejects_ack_above_stalled_and_out_of_range():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    # ack_sla_minutes (20) > stalled_minutes default (15) -> rejected.
+    r = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": 20}, headers=H)
+    assert r.status_code == 422
+
+    # Out of the per-key allowed range.
+    r2 = client.patch("/provider/settings/dispatch", json={"stalled_minutes": 5000}, headers=H)
+    assert r2.status_code == 422
+
+    # No fields sent at all.
+    r3 = client.patch("/provider/settings/dispatch", json={}, headers=H)
+    assert r3.status_code == 422
+
+
+def test_dispatch_settings_requires_dispatch_org():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    # A technician session has no dispatcher/provider_admin role.
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "techrole2@cluexp.test", "phone": None,
+        "display_name": "Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["technician"]})
+    client = TestClient(app)
+    r = client.get("/provider/settings/dispatch", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 403
