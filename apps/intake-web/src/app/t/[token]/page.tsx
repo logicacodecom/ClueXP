@@ -65,6 +65,7 @@ interface TrackingResponse {
     can_dispute: boolean;
   };
   terminal: boolean;
+  dispatch_phone?: string | null;
 }
 
 interface ReviewData {
@@ -203,6 +204,7 @@ export default function TokenTrackingPage() {
   const [destination, setDestination] = useState<{ lat: number; lng: number } | null>(null);
   const [payment, setPayment] = useState<PaymentView | null>(null);
   const [arrivalPin, setArrivalPin] = useState<string | null>(null);
+  const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
 
   const localeText = {
     waiting: {
@@ -349,6 +351,7 @@ export default function TokenTrackingPage() {
       setDestination(data.destination ?? null);
       setPayment(data.payment ?? null);
       setCustomerActions(data.customer_actions ?? emptyCustomerActions);
+      setDispatchPhone(data.dispatch_phone ?? null);
 
       const TERMINAL: Record<string, Screen> = {
         completed_pending_customer: "completed_pending_customer",
@@ -757,7 +760,7 @@ export default function TokenTrackingPage() {
             {renderCancelControl()}
             <a
               className="ghost"
-              href={`tel:${DISPATCH_PHONE}`}
+              href={`tel:${dispatchPhone || DISPATCH_PHONE}`}
               style={{ display: "block", textAlign: "center", textDecoration: "none" }}
             >
               {locale === "es"

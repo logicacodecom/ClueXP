@@ -1387,6 +1387,23 @@ async def places_autocomplete_endpoint(q: str) -> dict[str, Any]:
     return {"predictions": predictions}
 
 
+@app.get("/channels/{slug}")
+async def channel_info(slug: str) -> dict[str, Any]:
+    """Customer-safe branded-channel info for the intake UI: the owning
+    provider's display name and its own dispatch phone (organizations.phone,
+    provider-editable in Settings). Never exposes internal IDs or flags.
+    Unknown/inactive slug → 404."""
+    await latency()
+    origin = await store.resolve_intake_channel(slug)
+    if origin is None:
+        raise HTTPException(status_code=404, detail="Unknown channel")
+    return {
+        "slug": slug,
+        "organization_name": origin.get("organization_name"),
+        "dispatch_phone": origin.get("dispatch_phone"),
+    }
+
+
 @app.post("/tickets", response_model=TicketEnvelope)
 async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
@@ -2107,6 +2124,12 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
         "may_show_eta": has_assignment,
         "may_show_live_tracking": may_show_live_tracking(status.get("status")) and has_live_location,
     }
+    # The owning provider's own dispatch line for the "Call dispatch" affordance —
+    # each provider has its own number (organizations.phone); null on public intake.
+    job_id = await store.resolve_tracking_token(token)
+    status["dispatch_phone"] = (
+        await store.get_customer_owner_phone(UUID(job_id)) if job_id else None
+    )
     return status
 
 

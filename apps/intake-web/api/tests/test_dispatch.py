@@ -2914,3 +2914,56 @@ def test_provider_can_revoke_pending_invite_before_acceptance():
     revoke = client.post(f"/provider/technicians/{tid}/affiliation/end", json={"reason": "mistake"}, headers=H)
     assert revoke.status_code == 200
     assert revoke.json()["status"] == "ended"
+
+
+# --- per-provider dispatch phone (channel info + token read) -----------------
+def test_channel_info_unknown_slug_is_404():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    assert client.get("/channels/not-a-real-channel").status_code == 404
+
+
+def test_channel_info_returns_provider_dispatch_phone(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": "c1",
+            "origin_org_id": "o1",
+            "customer_owner_org_id": "o1",
+            "dispatch_cutover_enabled": True,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+    body = client.get("/channels/metro-key").json()
+    # Customer-safe shape only: no internal IDs, no cutover flag.
+    assert body == {
+        "slug": "metro-key",
+        "organization_name": "Metro Key Partners",
+        "dispatch_phone": "+15551234567",
+    }
+
+
+def test_token_read_includes_owner_dispatch_phone(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    jid = str(uuid4())
+    token = "t" * 43
+    app_store._tokens = {jid: token}
+    app_store._job_status = {jid: STATUS_PENDING_DISPATCH}
+
+    async def fake_phone(job_id):
+        assert str(job_id) == jid
+        return "+15559876543"
+
+    monkeypatch.setattr(app_store, "get_customer_owner_phone", fake_phone)
+    client = TestClient(app)
+    body = client.get(f"/t/{token}").json()
+    assert body["dispatch_phone"] == "+15559876543"

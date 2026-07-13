@@ -411,6 +411,11 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_customer_owner_phone(self, job_id: UUID) -> str | None:
+        """Owning provider's dispatch phone for the customer UI. None when the
+        job has no owning org (public intake) or the store has no org data."""
+        return None
+
     async def get_job_lifecycle(self, job_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -2394,9 +2399,12 @@ class PostgresStore(Store):
         try:
             async with await self._connect() as conn:
                 cur = await conn.execute(
-                    "select id, organization_id,"
-                    " coalesce(dispatch_cutover_enabled, false) from intake_channels"
-                    " where slug = %s and active = true",
+                    "select c.id, c.organization_id,"
+                    " coalesce(c.dispatch_cutover_enabled, false),"
+                    " o.display_name, o.phone"
+                    " from intake_channels c"
+                    " join organizations o on o.id = c.organization_id"
+                    " where c.slug = %s and c.active = true",
                     (slug,),
                 )
                 row = await cur.fetchone()
@@ -2406,12 +2414,16 @@ class PostgresStore(Store):
             return None
         if not row:
             return None
-        channel_id, org_id, cutover = row[0], row[1], row[2]
+        channel_id, org_id, cutover, org_name, org_phone = row
         return {
             "intake_channel_id": channel_id,
             "origin_org_id": org_id,
             "customer_owner_org_id": org_id,  # origin owns the customer (SYSTEM-DESIGN §20.4)
             "dispatch_cutover_enabled": bool(cutover),
+            "organization_name": org_name,
+            # The owning provider's own dispatch line (organizations.phone,
+            # provider-editable via PATCH /provider/organization).
+            "dispatch_phone": org_phone,
         }
 
     async def log_event(self, ticket: Ticket, event: str) -> None:
@@ -3079,6 +3091,17 @@ class PostgresStore(Store):
         return await self.get_dispatch_status(
             UUID(job_id), max_attempts=max_attempts, total_timeout_seconds=total_timeout_seconds
         )
+
+    async def get_customer_owner_phone(self, job_id: UUID) -> str | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select o.phone from jobs j"
+                " join organizations o on o.id = j.customer_owner_org_id"
+                " where j.id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        return row[0] if row else None
 
     async def get_job_lifecycle(self, job_id: UUID) -> dict | None:
         async with await self._connect() as conn:
