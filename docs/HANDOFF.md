@@ -58,6 +58,73 @@
 
 ## Open threads
 
+### 2026-07-13 — Claude → Human: per-provider dispatch SLA settings built (PR #47) — needs migration 0025 applied
+
+Human ask: each provider should be able to edit its own dispatcher-acknowledgement SLA and
+stalled-job threshold (the console already shows these as fixed indicators, per uncommitted
+`packages/console-ui` work in this tree), falling back to a platform-wide default when a provider
+hasn't set one.
+
+**Shipped (PR #47, branch `feat/provider-workforce` @ `e95d0ee`):** extends the existing
+`global_settings` DB-backed-tunable pattern (0023/0024) with a per-org override layer rather than a
+new mechanism — migration `0025` adds `organization_settings` (org_id, key) → value, mirroring
+`global_settings`; seeds `dispatch_ack_sla_minutes=5` / `dispatch_stalled_minutes=15` into
+`global_settings` as the new platform defaults. `GET/PATCH /provider/settings/dispatch`
+(dispatcher/provider_admin, tenant-scoped) resolves each field to `{value, is_override,
+platform_default}`; `PATCH` with `null` clears an override back to the platform default; server-side
+enforces `ack_sla_minutes <= stalled_minutes` plus each field's own range. Platform-wide defaults
+stay editable via the existing `GET/PATCH /admin/global-settings/{key}` — no new admin surface.
+Tests: 4 new, suite 160 passed/1 skipped; typecheck + Alembic offline chain clean.
+
+**⚠️ NOT applied to production.** This environment currently has **no IPv6 route to the Supabase
+direct host** — `alembic upgrade head` and even a raw TCP connect to
+`db.<project>.supabase.co:5432` both fail (`getaddrinfo failed`), unlike earlier sessions where the
+direct host worked. This looks like an environment/network change, not a config problem
+(`MIGRATION_DATABASE_URL` is present and correctly formed). **Human action needed** — one of:
+1. Run `alembic upgrade head` from `apps/intake-web` (`packages/db/alembic.ini`) somewhere with
+   IPv6 egress to Supabase, or
+2. Paste this into the Supabase SQL Editor (idempotent, safe to re-run):
+
+```sql
+CREATE TABLE IF NOT EXISTS organization_settings (
+    organization_id  uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    key              text        NOT NULL,
+    value            jsonb       NOT NULL,
+    value_type       text        NOT NULL
+                     CHECK (value_type IN ('integer','boolean','string','object','array')),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    updated_by       uuid        REFERENCES users(id),
+    PRIMARY KEY (organization_id, key)
+);
+
+INSERT INTO global_settings (key, value, value_type, description, is_secret, is_runtime_editable)
+VALUES (
+    'dispatch_ack_sla_minutes', '5'::jsonb, 'integer',
+    'Minutes before an unacknowledged (no offer sent) job breaches the dispatcher acknowledgement SLA. Provider-overridable.',
+    false, true
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO global_settings (key, value, value_type, description, is_secret, is_runtime_editable)
+VALUES (
+    'dispatch_stalled_minutes', '15'::jsonb, 'integer',
+    'Minutes before an unassigned job is flagged stalled in the dispatch queue. Provider-overridable.',
+    false, true
+)
+ON CONFLICT (key) DO NOTHING;
+```
+
+   Then set `alembic_version` to `0025_org_dispatch_settings` (or run `alembic stamp head` once
+   connectivity is available, from wherever the raw SQL was applied).
+
+**Codex/qwen (app-UI ownership):** the live-queue ack/stalled indicators in `screens/index.tsx`
+currently read build-time `NEXT_PUBLIC_DISPATCH_ACK_SLA_MINUTES`/`NEXT_PUBLIC_DISPATCH_STALLED_MINUTES`
+— same value for every provider. Once 0025 is applied, switch that component to fetch
+`GET /provider/settings/dispatch` once per session/workspace load (not on the 15s queue poll) and
+use its resolved `ack_sla_minutes.value`/`stalled_minutes.value`. A provider Settings UI to edit the
+two fields (`PATCH /provider/settings/dispatch`, `null` clears back to platform default) is a
+follow-up, not blocking. — Claude
+
 ### 2026-07-13 — Claude → Human: pilot acceptance matrix executed (15/16) + stale job closed + confirmed DISPATCH_PHONE bug
 
 Follow-up to the 2026-07-12 smoke-test thread below. Ran the full `PILOT-OPERATIONS.md` §7 matrix

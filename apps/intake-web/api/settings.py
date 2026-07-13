@@ -42,6 +42,9 @@ class SettingSpec:
     validate: Callable[[Any], bool]
     is_secret: bool = False
     is_runtime_editable: bool = True
+    # True for settings a provider may override for its own organization
+    # (organization_settings, 0025) on top of the platform-wide default below.
+    org_overridable: bool = False
 
 
 def _int_range(lo: int, hi: int) -> Callable[[Any], bool]:
@@ -110,6 +113,27 @@ SETTINGS: dict[str, SettingSpec] = {
         env="LOGIN_WINDOW_SECONDS",
         fallback=900,
         validate=_int_range(1, 86_400),
+    ),
+    # --- per-provider-overridable dispatch queue thresholds (0025) ---
+    "dispatch_ack_sla_minutes": SettingSpec(
+        key="dispatch_ack_sla_minutes",
+        value_type="integer",
+        description="Minutes before an unacknowledged (no offer sent) job breaches "
+        "the dispatcher acknowledgement SLA.",
+        env="DISPATCH_ACK_SLA_MINUTES",
+        fallback=5,
+        validate=_int_range(1, 120),
+        org_overridable=True,
+    ),
+    "dispatch_stalled_minutes": SettingSpec(
+        key="dispatch_stalled_minutes",
+        value_type="integer",
+        description="Minutes before an unassigned job is flagged stalled in the "
+        "dispatch queue.",
+        env="DISPATCH_STALLED_MINUTES",
+        fallback=15,
+        validate=_int_range(1, 1440),
+        org_overridable=True,
     ),
 }
 
@@ -217,3 +241,24 @@ async def resolve_offer_ttl_seconds(store: Any) -> int:
     env → hardcoded ``300``. Safe under DB failure (falls back; never raises).
     """
     return await resolve(store, "dispatch_offer_ttl_seconds")
+
+
+async def resolve_org(store: Any, organization_id: str, key: str) -> Any:
+    """Resolve an org-overridable setting: this org's override (organization_settings)
+    → the platform-wide default (``resolve``, itself DB → env → hardcoded).
+
+    Not cached (org overrides are read far less often than the hot offer-creation
+    path) and just as tolerant of a DB hiccup — a failed override read silently
+    falls through to the platform default rather than raising.
+    """
+    spec = SETTINGS[key]
+    if not spec.org_overridable:
+        raise SettingValidationError(f"'{key}' does not support per-organization overrides")
+    try:
+        row = await store.get_organization_setting(organization_id, key)
+    except Exception:  # pragma: no cover - defensive, mirrors resolve()
+        logger.warning("organization_settings read failed for org=%s key=%s; using platform default", organization_id, key)
+        row = None
+    if row is not None and spec.validate(row.get("value")):
+        return row["value"]
+    return await resolve(store, key)

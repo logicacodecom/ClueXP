@@ -1918,6 +1918,84 @@ def _require_dispatch_org(session: dict[str, Any]) -> str:
     return str(org_id)
 
 
+# --- per-provider overrides of org_overridable runtime settings (0025) ---
+# Each provider can tune its own dispatch acknowledgement SLA / stalled threshold;
+# an unset field inherits the platform-wide default (global_settings, admin-
+# editable via /admin/global-settings) so a newly registered provider needs no
+# setup to get sane behavior.
+_DISPATCH_SETTING_FIELDS = {
+    "ack_sla_minutes": "dispatch_ack_sla_minutes",
+    "stalled_minutes": "dispatch_stalled_minutes",
+}
+
+
+async def _resolve_dispatch_settings(org_id: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field, key in _DISPATCH_SETTING_FIELDS.items():
+        override = await store.get_organization_setting(org_id, key)
+        platform_default = await runtime_settings.resolve(store, key)
+        result[field] = {
+            "value": override["value"] if override else platform_default,
+            "is_override": override is not None,
+            "platform_default": platform_default,
+        }
+    return result
+
+
+@app.get("/provider/settings/dispatch")
+async def get_provider_dispatch_settings(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """The company's dispatch queue thresholds (ack SLA / stalled), each resolved
+    from this org's override or the platform-wide default, with enough shape for
+    a settings UI to show "using platform default (Nm)" vs. "overridden"."""
+    org_id = _require_dispatch_org(session)
+    return await _resolve_dispatch_settings(org_id)
+
+
+class ProviderDispatchSettingsUpdate(BaseModel):
+    # Absent = leave unchanged; null = clear the override (revert to platform
+    # default); an int = set this org's override. Uses exclude_unset to tell
+    # "absent" from "sent as null".
+    ack_sla_minutes: int | None = None
+    stalled_minutes: int | None = None
+
+
+@app.patch("/provider/settings/dispatch")
+async def update_provider_dispatch_settings(
+    payload: ProviderDispatchSettingsUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    sent = payload.model_dump(exclude_unset=True)
+    if not sent:
+        raise HTTPException(status_code=422, detail="No settings provided")
+
+    current = await _resolve_dispatch_settings(org_id)
+    effective = {field: current[field]["value"] for field in _DISPATCH_SETTING_FIELDS}
+    for field, value in sent.items():
+        key = _DISPATCH_SETTING_FIELDS[field]
+        effective[field] = value if value is not None else await runtime_settings.resolve(store, key)
+    if effective["ack_sla_minutes"] > effective["stalled_minutes"]:
+        raise HTTPException(
+            status_code=422, detail="ack_sla_minutes cannot exceed stalled_minutes"
+        )
+
+    actor_id = session.get("user", {}).get("id")
+    for field, value in sent.items():
+        key = _DISPATCH_SETTING_FIELDS[field]
+        if value is None:
+            await store.delete_organization_setting(org_id, key)
+            continue
+        try:
+            runtime_settings.coerce_and_validate(key, value)
+        except runtime_settings.SettingValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        spec = runtime_settings.SETTINGS[key]
+        await store.upsert_organization_setting(org_id, key, value, spec.value_type, actor_id)
+    return await _resolve_dispatch_settings(org_id)
+
+
 @app.get("/provider/queue")
 async def provider_get_queue(
     session: dict[str, Any] = Depends(require_session),

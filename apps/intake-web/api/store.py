@@ -146,6 +146,18 @@ class Store:
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
+    # --- organization_settings: per-provider overrides of org_overridable keys ---
+    async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def upsert_organization_setting(
+        self, organization_id: str, key: str, value: object, value_type: str, updated_by: str | None = None
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def delete_organization_setting(self, organization_id: str, key: str) -> None:  # pragma: no cover
+        return None
+
     async def record_media(
         self,
         *,
@@ -552,6 +564,8 @@ class InMemoryStore(Store):
             }
             for spec in runtime_settings.SETTINGS.values()
         }
+        # Per-org overrides of org_overridable settings: (organization_id, key) -> row.
+        self._organization_settings: dict[tuple[str, str], dict] = {}
         password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         self.users: dict[str, dict] = {
             "usr_platform_demo": {
@@ -1884,6 +1898,27 @@ class InMemoryStore(Store):
         }
         self._global_settings[key] = row
         return dict(row)
+
+    async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:
+        row = self._organization_settings.get((str(organization_id), key))
+        return dict(row) if row is not None else None
+
+    async def upsert_organization_setting(
+        self, organization_id: str, key: str, value: object, value_type: str, updated_by: str | None = None
+    ) -> dict:
+        row = {
+            "organization_id": str(organization_id),
+            "key": key,
+            "value": value,
+            "value_type": value_type,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": updated_by,
+        }
+        self._organization_settings[(str(organization_id), key)] = row
+        return dict(row)
+
+    async def delete_organization_setting(self, organization_id: str, key: str) -> None:
+        self._organization_settings.pop((str(organization_id), key), None)
 
 
 class PostgresStore(Store):
@@ -5461,6 +5496,51 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return self._global_setting_row(row)
+
+    async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select organization_id, key, value, value_type, updated_at, updated_by"
+                " from organization_settings where organization_id = %s and key = %s",
+                (str(organization_id), key),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "organization_id": str(row[0]),
+            "key": row[1],
+            "value": row[2],
+            "value_type": row[3],
+            "updated_at": row[4].isoformat() if row[4] else None,
+            "updated_by": str(row[5]) if row[5] else None,
+        }
+
+    async def upsert_organization_setting(
+        self, organization_id: str, key: str, value: object, value_type: str, updated_by: str | None = None
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            await conn.execute(
+                "insert into organization_settings"
+                " (organization_id, key, value, value_type, updated_by, updated_at)"
+                " values (%s, %s, %s, %s, %s, now())"
+                " on conflict (organization_id, key) do update set"
+                "   value = excluded.value,"
+                "   value_type = excluded.value_type,"
+                "   updated_by = excluded.updated_by,"
+                "   updated_at = now()",
+                (str(organization_id), key, Jsonb(value), value_type, str(updated_by) if updated_by else None),
+            )
+        return await self.get_organization_setting(organization_id, key)  # type: ignore[return-value]
+
+    async def delete_organization_setting(self, organization_id: str, key: str) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "delete from organization_settings where organization_id = %s and key = %s",
+                (str(organization_id), key),
+            )
 
 
 def make_store() -> Store:
