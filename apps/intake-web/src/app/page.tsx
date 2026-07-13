@@ -251,6 +251,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState<DispatchStatus | null>(null);
+  const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
   const [form, setForm] = useState({
     address: "",
     make: "",
@@ -445,6 +446,18 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
     );
   }
+
+  // Branded channel → the owning provider's own dispatch number for every
+  // "call dispatch" affordance (each provider has its own line). Public intake
+  // keeps the NEXT_PUBLIC_DISPATCH_PHONE fallback.
+  useEffect(() => {
+    if (!organizationSlug) return;
+    api<{ dispatch_phone: string | null }>(`/channels/${organizationSlug}`)
+      .then((info) => {
+        if (info.dispatch_phone) setDispatchPhone(info.dispatch_phone);
+      })
+      .catch(() => {}); // unknown channel / offline — keep the global fallback
+  }, [organizationSlug]);
 
   // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket —
   // but only for a recent, still-in-progress session. A stale (>12h) or already
@@ -992,7 +1005,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 Contact dispatch
               </button>
             ) : (
-              <a className="ghost" href={`tel:${DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+              <a className="ghost" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
                 Need help? Call dispatch
               </a>
             )}
@@ -1195,7 +1208,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <div className="big-number">Sam Reyes</div>
           <p className="fine">Plain-language support for this request. No app install required.</p>
         </div>
-        <a className="primary" href={`tel:${DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+        <a className="primary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
           Call now
         </a>
       </>
