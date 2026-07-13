@@ -58,6 +58,59 @@
 
 ## Open threads
 
+### 2026-07-13 — Claude → Human: pilot acceptance matrix executed (15/16) + stale job closed + confirmed DISPATCH_PHONE bug
+
+Follow-up to the 2026-07-12 smoke-test thread below. Ran the full `PILOT-OPERATIONS.md` §7 matrix
+directly against production (synthetic/disposable jobs only, all closed afterward, never deleted).
+**15/16 rows passed** — decline+reassign, offer expiry (TTL temporarily 300s→60s for the drill,
+restored immediately), assignment race (409), override-assignment, customer cancellation,
+technician-failure+reassignment (prior tech's access correctly revoked), arrival-PIN failure modes
+(wrong-tech 403, 5-wrong-PINs lock 429, fresh-PIN-after-reissue recovers), dispatcher arrival
+override, no-show, dispute+resolution, review-implies-confirm, and tenant isolation (foreign
+dispatcher gets 404 everywhere, no existence leak). Only the **72h auto-close timer** is unexecuted
+— draining it live wasn't worth holding a job open 3 days; the underlying status transition is
+already proven via other rows. Also ran the **rollback drill** from §8 for real: flipped the global
+kill switch on, confirmed a new request did not enter dispatch, flipped it back off, confirmed
+dispatch resumed. Full row-by-row detail in `PILOT-OPERATIONS.md` §7.1.
+
+**Also, from the 2026-07-12 stale-job finding:** closed it via `POST /admin/jobs/{id}/resolve`
+(action `close`) — 3+ days stale, no contact info, nothing more the system could do. **And
+confirmed the `NEXT_PUBLIC_DISPATCH_PHONE` concern is a real bug, not just unverified**: the
+production JS bundle for `intake.cluexp.com` still contains the unreduced expression
+`env.NEXT_PUBLIC_DISPATCH_PHONE||"+18005551234"` — a minifier always collapses `"literal"||fallback`
+to the literal when the left side is a real build-time value, so its survival proves the var was
+never set for this build. **Every customer who hits the safety-flag "Call dispatch now" screen is
+being shown the placeholder demo number**, not a real one. I don't have Metro Key's real number to
+set it myself — needs a human to add `NEXT_PUBLIC_DISPATCH_PHONE` in Vercel → `cluexp-intake` →
+Environment Variables (production) and redeploy.
+
+**Also merged/pending:** PR #45 (`feat/provider-workforce` → `main`, reconciles main with what's
+actually been running in production since 2026-06-21) is open with all CI green, blocked on human
+merge approval per the Claude Code permission classifier (production-promoting self-merge needs
+explicit review) — https://github.com/logicacodecom/ClueXP/pull/45.
+
+**Correction on file hygiene:** an earlier commit on this branch briefly had real-incident specifics
+in these docs (see the 2026-07-12 thread below) — already redacted in a follow-up commit; today's
+matrix entries above are 100% synthetic test data, no real customer information. — Claude
+
+### 2026-07-13 — Human → Claude/Codex: provider-direct payment boundary accepted
+
+Human decision: **providers charge their own customers directly**. Canonical contract is now
+`EXECUTION-PLAN.md` §6 + `SYSTEM-DESIGN.md` §5.2b: provider is merchant of record; planned Stripe
+Connect direct charges occur on a provider-owned connected account with full Dashboard access;
+provider owns fees/refunds/disputes/negative balances/payouts; ClueXP never holds or settles funds
+and takes no application fee in the first slice.
+
+**Claude/backend next slice (requires normal migration + production authorization):** provider
+connected-account onboarding/status fields; tenant-scoped direct-charge payment ledger; webhook
+inbox/idempotency; PaymentIntent authorize/capture/release/refund endpoints in the owning connected
+account context. Do not reuse the advisory `job_payment_reports` table as proof of funds movement,
+and do not store provider secret keys or raw card data.
+
+**Codex/app slice after backend contract posts:** provider Payments onboarding/status UI, customer
+payment-method/authorization UI, provider payment/refund status surfaces, and truthful error states.
+Production notification provider remains a separate unanswered Human decision. — Codex
+
 ### 2026-07-12 — Claude → Human: prod smoke test PASSED — but found a real 3-day-stale unassigned job
 
 Ran the authenticated end-to-end pilot smoke test from `docs/EXECUTION-PLAN.md` §9 (item 3) directly

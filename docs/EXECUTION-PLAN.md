@@ -33,7 +33,7 @@
 1. Canonical Status · **Product Backlog & Release Map** (R1–R6 + readiness gates) ·
 2. Completed Foundation (Sprints 0–2B) · 3. Sprint 3 — Production Fulfillment Cutover ·
 4. Sprint 4 — Field Fulfillment Integrity · 5. Sprint 5 — Human Operations & Communications ·
-6. Sprint 6 — Payments & Settlement · 7. Sprint 7 — Production Hardening & Scale ·
+6. Sprint 6 — Provider-Direct Payments · 7. Sprint 7 — Production Hardening & Scale ·
 8. Deferred Expansion · 9. Immediate Work Order · 10. Active Decisions & Risks ·
 **11. Workstream Task Plans** (11.1 technician app · 11.2 provider workforce).
 
@@ -43,7 +43,7 @@
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline and completed-job history are wired **and deployed** (migrations through `0021` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline and completed-job history are wired **and deployed** (production migrations through `0024` applied); production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
@@ -54,7 +54,7 @@
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Technician-reported collection | `[~]` advisory only | Technician-reported amount/method and finished-job history are implemented in code (`0015`); these are advisory operational records — **no real payment processing, no authorization hold, no capture, refund, payout or settlement**. Customer acknowledges by confirming completion |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[x]` | Local gates green — cutover release (2026-06-15) API `104 passed, 1 skipped`, then the workforce release through `0021` API `134 passed, 1 skipped`; shared typecheck and all four production builds pass |
+| CI | `[x]` | Local gates green — current verification (2026-07-13) API `160 passed, 1 skipped`; migration chain validates through `0024`; shared typecheck and all four production builds pass |
 
 Current production migration head: **`0024_gs_more_tunables`** (applied 2026-06-21; chains
 `0021_tech_doc_defaults → 0022_technician_invites → 0023_global_settings → 0024`). `0022` adds
@@ -96,7 +96,7 @@ Every job preserves three independent axes — **origin**, **customer owner**, *
 | R1 — Fulfillment Cutover | One pilot channel completes a real request→close cycle with no legacy/demo path | §3 | `[x]` shipped (code); pilot pending |
 | R2 — Field Fulfillment Integrity | Truthful route/location/arrival; shared audited timeline | §4 | `[~]` core shipped |
 | R3 — Human Operations & Comms | Observe/contact/reassign/escalate/resolve/audit any job; notifications | §5 | `[~]` provider recovery shipped; comms pending |
-| R4 — Commercial Completion | Authorize/charge/settle/refund/reconcile a completed job | §6 | `[ ]` advisory-only today |
+| R4 — Commercial Completion | Provider-account authorize/capture/refund/reconcile for a completed job | §6 | `[ ]` advisory-only today |
 | R5 — Trust, Compliance & Scale | Compliance-gated eligibility, retention, observability, SLOs | §7 | `[ ]` partial |
 | R6 — Expansion | New verticals, provider billing, network/marketplace dispatch | §8 | `[ ]` deferred |
 
@@ -118,7 +118,7 @@ Every job preserves three independent axes — **origin**, **customer owner**, *
 | Dispatch-ready | Real request enters the owning company's queue; its dispatcher assigns a technician; technician accepts; no privacy leak; first-accept-wins enforced at DB |
 | Fulfillment-ready | Assigned technician progresses through audited statuses; customer sees truthful state |
 | Closure-ready | Customer confirms, reviews, or disputes through a secure token; timeout and dispatcher resolution work |
-| Revenue-ready | Payment authorization/capture/refund and settlement are idempotent and reconciled |
+| Revenue-ready | Provider-account payment authorization/capture/refund are idempotent and reconciled; ClueXP never holds or settles provider funds |
 | Scale-ready | Compliance blocks invalid supply; tenant isolation, monitoring, retention, backups, and incident response are tested |
 
 The next gate is **Closure-ready in production** (run the [`PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md) matrix), not more mock screen coverage.
@@ -293,18 +293,33 @@ The full pilot evidence matrix and rollback procedure live in
 [`docs/PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md). Execution (not just code) is required
 for each path:
 
-- [ ] Happy path: company-owned request → provider dispatcher offer → accept → en_route →
+- [x] Happy path: company-owned request → provider dispatcher offer → accept → en_route →
   PIN-verified arrival → in_progress → `completed_pending_customer` → customer confirm.
-- [ ] Decline + reassign; offer expiry returns the job to the company's provider queue.
-- [ ] No duplicate offers from customer polling; one active offer enforced (index `0011`).
-- [ ] First-accept-wins and safe matched hydration (single targeted offer).
-- [ ] Technician status progression and audit timestamps.
-- [ ] Customer confirm, review and dispute; dispatcher dispute resolution.
-- [ ] Customer cancel before arrival; technician-failure handoff + replacement; no-show.
-- [ ] 72-hour automatic close (shortened for the drill).
-- [ ] Cross-tenant isolation: foreign job/technician/review are invisible and non-actionable.
-- [ ] Disable the channel flag / global-off and verify instant rollback for new requests.
+  **Executed 2026-07-12, passed.**
+- [x] Decline + reassign; offer expiry returns the job to the company's provider queue.
+  **Executed 2026-07-13, passed** (offer expiry drilled with a temporarily-lowered TTL, restored after).
+- [x] No duplicate offers enforced — proven via the assignment-race drill (index `0011`
+  partial unique constraint: two concurrent `assign` calls → one `200`, one `409`).
+- [x] Single-targeted-offer model: **executed 2026-07-13**, passed (see assignment race +
+  override-assignment rows in `PILOT-OPERATIONS.md` §7.1).
+- [x] Technician status progression and audit timestamps. **Executed, passed** (exercised across
+  every scenario below; audit timeline spot-checked).
+- [x] Customer confirm, review and dispute; dispatcher dispute resolution. **Executed 2026-07-13,
+  passed** — including a review that implies confirm.
+- [x] Customer cancel before arrival; technician-failure handoff + replacement; no-show.
+  **Executed 2026-07-13, passed** (all three).
+- [ ] 72-hour automatic close (shortened for the drill). **Not executed** — draining the real
+  72h window in production wasn't worth holding a job open that long; the same status
+  transition is proven via other rows. Verify the timer itself in a non-prod environment.
+- [x] Cross-tenant isolation: foreign job/technician/review are invisible and non-actionable.
+  **Executed 2026-07-13, passed** (list/candidates/assign/cancel all `404` for a foreign dispatcher).
+- [x] Disable the channel flag / global-off and verify instant rollback for new requests.
+  **Executed 2026-07-13, passed** — flipped on, verified no dispatch, flipped back off, verified
+  restored.
 - [ ] Widen channel-by-channel only after the matrix passes.
+
+Full row-by-row detail and the one open gap (auto-close timer) are in
+[`PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md) §7.1.
 
 **Pilot disclosures (must be stated, no screen may claim otherwise):** no real payment
 (advisory technician-reported collection only); no SMS/email/push delivery (the customer token
@@ -435,6 +450,13 @@ completes the remaining communications surfaces and ops oversight depth.
   ClueXP Ops read-only oversight (`/ops/queue`, `/ops/fleet`, `/ops/flags`) is wired + deployed;
   deeper ops escalation/board surfaces remain.
 - [ ] Operational filters for stalled, expiring, safety, disputed and no-response jobs across queue and board.
+- [x] Staffed-console acknowledgement/stalled indicators + opt-in browser notifications on the
+  provider live queue. Thresholds are build-time public config
+  (`NEXT_PUBLIC_DISPATCH_ACK_SLA_MINUTES`, default 5; `NEXT_PUBLIC_DISPATCH_STALLED_MINUTES`,
+  default 15). The queue refreshes every 30s and labels critical, acknowledgement-breached and
+  stalled jobs. This works only while the console is open; it is not durable production delivery.
+- [ ] Define and approve the dispatcher acknowledgement SLA: staffed coverage window, primary + backup owner, acknowledgement target, stalled-job threshold and after-hours fallback.
+- [ ] Deliver and verify background dispatcher alerts for new, stalled and safety-flagged jobs, with delivery monitoring and an audited escalation path when the first owner does not acknowledge.
 - [ ] Tenant-safe customer, technician and provider communication threads.
 - [ ] Masked call or mediated contact path.
 - [ ] SMS/email delivery of the customer token link and critical status updates.
@@ -442,36 +464,63 @@ completes the remaining communications surfaces and ops oversight depth.
 
 **Sprint 5 exit:** the **owning company's dispatcher/`provider_admin`** can resolve every supported
 failure path for its own jobs through the UI (with **ClueXP Ops** observing/administering, not
-recovering), with an audit event for each action. _(Provider-side recovery
-is met in code; cross-app comms/notifications remain.)_
+recovering), with an audit event for each action. Before any unsupervised real-customer widening,
+the acknowledgement SLA, primary/backup coverage and tested new/stalled/safety alert path must also
+be in place. _(Provider-side recovery is met in code; SLA/alerts and cross-app
+comms/notifications remain.)_
 
-## 6. Sprint 6 - Payments and Settlement
+## 6. Sprint 6 - Provider-Direct Payments
 
 **Priority:** P2, after lifecycle stability
-**Goal:** turn completed service into a safe, reconcilable financial transaction.
+**Goal:** let each provider charge its own customer safely while ClueXP coordinates job state and
+mirrors payment status without becoming merchant of record or holding provider funds.
 
-Three distinct payment events — keep them separate:
+**Accepted payment boundary (Human, 2026-07-13):** the provider is merchant of record. Use Stripe
+Connect **direct charges** on a provider-owned connected account with full Stripe Dashboard access
+(Standard-account behavior). The charge, processing fees, refunds, disputes, negative balance and
+payouts belong to that provider account. ClueXP stores only the connected-account identifier and
+the minimum processor object IDs/status needed to correlate the job and audit webhooks; it never
+stores raw card data or provider secret keys. No ClueXP application fee in the first slice; a future
+software/application fee is a separate pricing decision.
 
-1. **Payment method capture** — at price-consent commit. Customer provides card; authorization hold placed.
-2. **Final capture** — at `completed_confirmed` (customer closes the job). The hold converts to a charge.
-3. **Cancellation / no-show** — releases hold or charges the cancellation fee depending on when cancelled.
+Four distinct payment events — keep them separate:
 
-No payment model changes from the dispatch pivot. The trigger for final capture is `completed_confirmed`, not dispatcher assignment.
+1. **Provider onboarding** — provider connects/owns its Stripe account; dispatch remains available,
+   but card collection is unavailable until `charges_enabled` is true.
+2. **Payment method + authorization** — at price-consent commit, create the PaymentIntent as a
+   direct charge in the owning provider's connected account and place an authorization hold.
+3. **Final capture** — at `completed_confirmed` (customer closes the job), the provider-account hold
+   converts to a charge.
+4. **Cancellation / no-show** — release the hold or let the provider charge the disclosed fee,
+   depending on the accepted policy and job state.
+
+The dispatch pivot does not change the capture trigger: final capture occurs at
+`completed_confirmed`, never at dispatcher assignment.
 
 - [~] Advisory technician-reported collection amount/method and finished-job
   history are implemented (`0015`), but remain non-ledger operational records.
-- [!] Decide merchant-of-record, platform fee, provider settlement and independent
-  technician payout policy.
-- [ ] Stripe payment-method collection and authorization hold at price-consent commit.
-- [ ] Final capture at `completed_confirmed`; separate cancellation-fee capture for no-show/late-cancel.
+- [x] Merchant of record decided: each provider charges its own customers; ClueXP does not collect
+  or settle provider funds. Initial implementation takes no application fee.
+- [ ] Provider-owned Stripe Connect onboarding/status (`stripe_account_id`, `charges_enabled`,
+  `details_submitted`) with no secret-key storage.
+- [ ] Stripe direct-charge PaymentIntent + payment-method collection and authorization hold at
+  price-consent commit, scoped to the job's owning provider account.
+- [ ] Provider-account final capture at `completed_confirmed`; separate cancellation-fee capture
+  for no-show/late-cancel only after policy acceptance.
 - [ ] Final-scope/price proposal and explicit over-estimate customer approval.
 - [ ] Idempotent capture, release, cancellation/no-show fee and refund flows.
-- [ ] Dispute linkage without conflating payment dispute and service issue.
-- [ ] Provider/technician settlement ledger and customer receipt.
-- [ ] Replace advisory collection totals/history with ledger-backed values.
+- [ ] Webhook inbox/idempotency + tenant-safe reconciliation of PaymentIntent, charge, refund and
+  dispute states from each provider account.
+- [ ] Provider-owned refund/dispute workflow (Stripe Dashboard or embedded components), linked to
+  the job without conflating a payment dispute and a service issue.
+- [ ] Provider-branded customer receipt; replace advisory collection totals/history with
+  processor-backed provider-account values.
+- [!] Decide later whether ClueXP charges a disclosed software/application fee. Do not block the
+  initial provider-direct flow on this pricing decision.
 
 **Sprint 6 exit:** happy-path and failure-path money movement reconcile against a
-job, payment intent, settlement record and audit trail.
+job, provider connected account, PaymentIntent/charge/refund state and audit trail; funds settle
+directly from Stripe to the provider, never through ClueXP.
 
 ## 7. Sprint 7 - Production Hardening and Scale
 
@@ -533,7 +582,7 @@ affiliation foundation; model in [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3.)
 
 Provider-managed dispatch (§3.4), the field-integrity core (§4), and the tenant-scoped
 recovery workspace (§5) are **code-complete** and merged. Production migration head is
-`0021_tech_doc_defaults` (applied 2026-06-17); the workforce + company-signup +
+`0024_gs_more_tunables` (applied 2026-06-21); the workforce + company-signup +
 technician-documents code is deployed (`cluexp-intake` auto-deploys on push to `main`).
 Remaining work to a meaningful pilot is operational, not new code:
 
@@ -541,8 +590,10 @@ Remaining work to a meaningful pilot is operational, not new code:
    commit `cfb0b4d`: technician-reported/customer-acknowledged payment, customer live tracking,
    required cancellation reasons, stale-location privacy gating) is **merged to `main` and included
    in production tip `882664f`** (verified via git ancestry 2026-06-19). Migrations through `0015`
-   are applied (prod verified at `0021`). Status: **deployed, not yet runtime-smoked** — run an
-   authenticated prod pass over these four features (see step 3) before relying on them in the pilot.
+   are applied (production is verified at `0024`). Status: **deployed, partially runtime-smoked** —
+   the 2026-07-12 happy path covered advisory collection and lifecycle transitions; run a dedicated
+   authenticated browser/PWA pass for live-location behavior and cancellation/error states before
+   relying on those surfaces in the pilot.
 2. **Confirm the kill-switch state:** verify `dispatch_cutover_global_off` via `GET /ops/flags`
    (currently `false` → cutover live for `metro-key`, the pilot channel). It is DB-backed and
    flips live via `PATCH /admin/global-settings/dispatch_cutover_global_off` — no redeploy.
@@ -553,11 +604,30 @@ Remaining work to a meaningful pilot is operational, not new code:
    `NEXT_PUBLIC_DISPATCH_PHONE` is set to a real staffed number in the intake-web production
    env** (the safety-flag "Call dispatch now" screen falls back to a placeholder
    `+1 800-555-1234` if unset — unverified from this environment).
-5. **Execute the Sprint 3.3 pilot matrix** (`docs/PILOT-OPERATIONS.md`) with the approved
-   pilot company + roster; if a defect surfaces, roll back by `PATCH`ing
-   `dispatch_cutover_global_off` to `true`. Widen channel by channel.
+5. ~~Execute the Sprint 3.3 pilot matrix~~ **[DONE 2026-07-13 — 15/16 rows passed against
+   production with the real `metro-key` demo accounts; only the 72h auto-close *timer* is
+   unexecuted (the underlying state transition is proven elsewhere). Detail in
+   `PILOT-OPERATIONS.md` §7.1.]** Remaining before widening: PO sign-off (`PILOT-OPERATIONS.md`
+   §10), then widen channel by channel. Rollback path (`PATCH
+   dispatch_cutover_global_off=true`) is itself now proven, not just documented.
 6. **Sprint 4 remaining items** (Google Routes ETA, live position, shared cross-app timeline)
    and **Sprint 5 communications/notifications** follow once the pilot passes.
+
+**Broader-launch gates (not optional follow-ups):**
+
+1. **Dispatcher coverage and SLA:** name a primary and backup dispatcher for every enabled channel;
+   approve an acknowledgement target, stalled-job escalation threshold and after-hours fallback;
+   then test the new/stalled/safety alert and escalation path with evidence. Polling/manual queue
+   watching is acceptable only for a time-boxed, continuously staffed internal pilot — not for
+   unattended real-customer traffic.
+2. **Production notifications:** deliver and monitor critical dispatcher alerts, technician offers,
+   and customer tracking/status messages with consent, retry/failure visibility and a documented
+   manual fallback. Provider selection remains a product/architecture decision; this gate does not
+   pretend SMS/email/push exists today.
+3. **Real payments:** not required for a clearly disclosed non-commercial/internal pilot that uses
+   advisory collection records only. Before marketing or using a real card flow, complete the
+   provider-owned Stripe Connect direct-charge paths in Sprint 6. The provider is merchant of
+   record; ClueXP must not hold or settle provider funds.
 
 **Post-pilot follow-ups (non-blocking):** DB-backed token limiter; `/healthz` DB-ping
 readiness variant.
@@ -579,8 +649,10 @@ readiness variant.
   - `login_max_failures` / `login_window_seconds` (login throttle).
   Note: because the resolver reads DB **before** env, a seeded DB row overrides the matching env var
   — so the legacy `DISPATCH_CUTOVER_GLOBAL_OFF` Vercel var no longer governs cutover on its own.
-- `[!]` Payments are intentionally outside the first complete operational cycle;
-  closure must work without pretending a payment occurred.
+- `[x]` **Payment ownership decided 2026-07-13:** providers charge their own customers as merchant
+  of record through provider-owned connected accounts/direct charges. ClueXP does not hold or
+  settle funds; initial implementation has no application fee. Payment processing is still unbuilt,
+  so closure must continue to work without pretending a charge occurred.
 - `[!]` PWA notification/background-location limits mean polling is acceptable
   for pilot operations but not the final reliability standard. Technician offer notification strategy (push/SMS) is Sprint 5.
 - `[!]` Organization `fulfillment_policy` semantic values differ from channel/job values and must be reconciled before org-managed self-dispatch widens. In the provider-managed pilot, policy is advisory — the company's dispatcher sees its own roster regardless.
@@ -618,14 +690,15 @@ Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T
 - [ ] Voice/masked call — after masked chat, once a comms provider is selected.
 - [ ] Production push/sound/alarm delivery strategy; native background GPS. _(§5/§8.)_
 - [ ] Activity pagination/date range as volume grows; keep "collected" separate from
-  payout/settlement language until the payout model is final (§6).
+  provider Stripe payouts or technician compensation language until processor-backed values exist (§6).
 - [ ] Keep all active-job transitions as live backend mutations — never a technician-only lifecycle.
 
 ### 11.2 Provider workforce (technician global profile + affiliation ledger)
 
 **Backend + core UI implemented and deployed** (migrations `0016`/`0017` affiliation ledger +
 history, `0018` photo status, `0019` org-status enum, `0020`/`0021` technician documents;
-prod head `0021`). Model and schema: [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3 + §7.2.
+subsequent platform migrations bring production to `0024`). Model and schema:
+[`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3 + §7.2.
 
 **Done (slices A, B, C, D-backend/frontend, E, G):** affiliation eligibility from active
 rows; add/invite with exclusivity guard (DB partial unique index); leave/rejoin history;

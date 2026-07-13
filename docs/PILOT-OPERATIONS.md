@@ -81,11 +81,16 @@ Do not enable a company channel for real customers until all of these are true:
 - Company recovery controls (cancel/release/no-show/recall/resolve + notes + timeline) are merged and verified.
 - CI passes API tests, Alembic offline validation, shared typecheck, and all four application builds.
 - Production migration head is **at least `0015_job_payments`** (prod is currently at
-  `0021_tech_doc_defaults`); `job_notes` (`0014`) and `job_payment_reports` (`0015`) are present.
+  `0024_gs_more_tunables`); `job_notes` (`0014`) and `job_payment_reports` (`0015`) are present.
 - `ARRIVAL_PIN_SECRET`, `CRON_SECRET`, database credentials, and application authentication
   secrets are configured in the production secret manager.
 - The pilot company and approved technician roster are recorded **outside this public repository**.
-- A dispatcher is assigned for the complete pilot window.
+- Primary and backup dispatchers are assigned for the complete pilot window; the staffed coverage
+  window, acknowledgement target, stalled-job escalation threshold and after-hours fallback are
+  recorded in the private evidence log.
+- The new/stalled/safety-job alert path has been tested. Manual polling is acceptable only for a
+  time-boxed, continuously staffed internal pilot; do not enable unattended real-customer traffic
+  without production alert delivery and escalation.
 - Rollback owners have access to Vercel and the production database.
 
 ---
@@ -292,6 +297,36 @@ sanitized API responses in the private evidence log. Customer-side calls go to
 `POST /api/jobs/{job_id}/collection`) → customer confirms. The live map shows the technician
 only while `en_route`/`arrived`/`in_progress` **and** the location is fresh.
 
+### 7.1 Matrix execution — 2026-07-13
+
+Executed directly against `intake.cluexp.com`/`partners.cluexp.com`/`tech.cluexp.com` (API-level,
+authenticated as the real demo accounts), one synthetic/disposable job per row, all closed
+afterward via dispatcher resolve (never deleted). Full transcripts are in this session, not
+reproduced here.
+
+| Scenario | Result |
+|---|---|
+| Happy path | ✅ Pass — full create→assign→accept→en_route→PIN arrival→in_progress→completion→confirm cycle |
+| Decline | ✅ Pass — decline recorded, job returned to queue with `offer_active=false` |
+| Offer expiry | ✅ Pass — TTL temporarily lowered to 60s for the drill (restored to 300s immediately after); expired offer returned the job to the queue, no auto-reassignment |
+| Assignment race | ✅ Pass — two concurrent `assign` calls on one job: exactly one `200`, one `409 Concurrent assignment` |
+| Override assignment | ✅ Pass — offline/stale-location technician correctly required `override_reason` (`422` without it, `200` with it) |
+| Customer cancellation | ✅ Pass — cancelled during `en_route`; job closed, `can_cancel` false afterward |
+| Technician failure | ✅ Pass — `report-issue(cannot_complete)` recorded, no status change |
+| Reassignment | ✅ Pass — `release` → job back to `pending_dispatch` → new targeted offer to a different technician; the released technician's own status-update attempt on the job then correctly `403`s |
+| Arrival PIN failures | ✅ Pass — wrong-technician attempt `403`; 5 wrong PINs → `429` locked; correct PIN still `429` while locked; fresh re-issued PIN succeeds → `arrived` |
+| Arrival override | ✅ Pass — dispatcher override (with reason) bypassed the PIN, `en_route`→`arrived` |
+| No-show | ✅ Pass — recorded, job closed as `no_show` |
+| Dispute | ✅ Pass — customer dispute → `disputed`; dispatcher `resolve(close)` → `completed_auto_closed` |
+| Review | ✅ Pass (not in the original row list, tested anyway) — review while `completed_pending_customer` implies confirm → `completed_confirmed` |
+| Auto-close (72h) | ⏸ Not executed — the production window is intentionally the real 72h (not shortened); draining it live would hold a synthetic job open for 3 days for no benefit. The identical status transition (→`completed_auto_closed`) *is* proven via the dispute-resolution and stale-job-cleanup rows above; only the timer itself is unverified in prod. Verify with a shortened window in a non-prod environment instead. |
+| Tenant isolation | ✅ Pass — a Florida Locksmith dispatcher got `404` on list/candidates/assign/cancel for a Metro Key job (no existence leak) |
+| Rollback | ✅ Pass — global switch flipped on → new request got no `tracking_token` (did not enter dispatch) → switch flipped back off → next new request entered dispatch normally again |
+
+**Not yet executed:** wider decline-reason persistence variants, expired/reused (not just wrong)
+PIN sub-cases beyond what's above, and the documents/notes tenant-isolation sub-rows. Auto-close
+timer as noted above. §10 "Sign-Off" is otherwise ready for PO review.
+
 ---
 
 ## 8. Emergency Rollback
@@ -335,7 +370,7 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 | Area | Status |
 |---|---|
 | Real payment | None — demo charge/finalize routes are removed (`410`) |
-| SMS / email / push | Not available — share the tracking link manually |
+| SMS / email / push | Not available — manual sharing/polling is pilot-only and blocks unattended real-customer widening |
 | Live map / ETA | Coarse, clearly-labelled estimate (no continuous tracking) |
 | Technician GPS | Foreground/manual — PWA must be open |
 | Dispatch model | **Provider-managed** — ClueXP does not dispatch; public-marketplace + independent-tech dispatch is a future version |
@@ -348,6 +383,7 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 - [ ] No cross-tenant data or mutation access was observed.
 - [ ] No fabricated payment, notification, ETA, or live-location behavior appeared.
 - [ ] Rollback was demonstrated.
+- [ ] Primary/backup dispatcher coverage, acknowledgement SLA and the new/stalled/safety alert escalation were demonstrated.
 - [ ] Product owner, Metro Key dispatcher, and technical release owner approved the private
       evidence log.
 
