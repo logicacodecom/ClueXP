@@ -69,27 +69,33 @@ dispatcher queue/candidates → targeted offer → technician accept → `en_rou
 bug) 422-requires-override deviation is in `EXECUTION-PLAN.md` §3.3. Disposable job left in place,
 closed, clearly labelled as a smoke test in `location.raw_text`/`additional_details` — not deleted.
 
-**While checking the queue, found a second, real job already sitting there:** created
-2026-07-09T17:05 UTC (3 days before this test), vehicle lockout, Rockville MD, safety flag
-`person_inside`/`advised_emergency_services=true`, status `fallback_to_human` — the customer hit the
-safety-check screen, which routes to a `tel:` "Call dispatch now" link (real-time path, separate from
-this ticket) — but the ticket **also** entered the async `pending_dispatch` queue (per the
-`dispatch_cutover` event) and has had **zero dispatcher action since**. No `customer_name`/
-`customer_phone` captured (session ended before the identity step), so there's no way to reach this
-person now. This is the `EXECUTION-PLAN.md` §10 "dispatcher availability risk" happening for real,
-not hypothetically — full writeup there.
+**While checking the queue, found a second, real job already sitting there** — multiple days stale,
+a safety flag set, no customer contact info captured, and **zero dispatcher action** the whole time.
+Per this doc's own safety rule (never paste real customer PII / identifying job specifics into this
+public repo), incident specifics (job id, timestamp, exact location, safety-flag type) are
+deliberately **not** recorded here — they're in this session's transcript and the private evidence
+log only. Ask the human/Claude directly for the record. This is the `EXECUTION-PLAN.md` §10
+"dispatcher availability risk" happening for real, not hypothetically — full writeup there (also
+redacted).
 
 **Two human actions requested:**
-1. Close/resolve the stale job (`4371bfa2-…`, address above) via the recovery workspace or
-   `POST /admin/jobs/{id}/resolve` — 3 days stale, no contact path, nothing more the system can do.
+1. Close/resolve the stale job via the recovery workspace or `POST /admin/jobs/{id}/resolve` — days
+   stale, no contact path, nothing more the system can do. (Ask Claude for the job id out-of-band.)
 2. **Confirm `NEXT_PUBLIC_DISPATCH_PHONE` is set to a real, staffed Metro Key number** in the
    intake-web production env. If unset, the safety-flag "Call dispatch now" screen falls back to the
    code default placeholder `+1 800-555-1234` — I can't read Vercel env var values from this
    environment to check myself.
 
-Also queued behind this: a separate deploy-hygiene gap (`main` 14 commits behind
-`feat/provider-workforce`; 3 commits only in preview, never promoted) — being worked next, see
-EXECUTION-PLAN §9. — Claude
+**Correction note (2026-07-12):** an earlier version of this entry pasted the job's real timestamp,
+approximate location, and safety-flag type directly into this public repo — a mistake, caught by the
+Claude Code permission classifier before it reached a PR, but the doc content itself had already been
+pushed on this branch in a prior commit. This entry supersedes it with the specifics removed; the
+original commit still exists in this branch's git history until squashed/rewritten (a human decision,
+not taken unilaterally here).
+
+Also queued behind this: a separate deploy-hygiene gap (`main` missing several commits from
+`feat/provider-workforce`, including one only manually promoted straight to production) — being
+worked next, see EXECUTION-PLAN §9. — Claude
 
 ### 2026-06-23 — Claude → all: Florida Locksmith demo provider seed + Metro Key job cleanup
 

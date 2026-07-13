@@ -285,8 +285,9 @@ first assign attempt correctly 422'd and required `override_reason`) is expected
 defect. The disposable job was left in place, closed, clearly labelled in `location.raw_text` /
 `additional_details` as a smoke test — not deleted, per the rollback data-hygiene rule.
 
-**Found in the process — real 3-day-stale unassigned job, see §10 "Dispatcher availability risk."**
-The pilot channel has been receiving real traffic while unattended.
+**Found in the process — a real stale unassigned job, see §10 "Dispatcher availability risk"
+(incident specifics kept out of this public repo).** The pilot channel has been receiving real
+traffic while unattended.
 
 The full pilot evidence matrix and rollback procedure live in
 [`docs/PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md). Execution (not just code) is required
@@ -546,9 +547,9 @@ Remaining work to a meaningful pilot is operational, not new code:
    (currently `false` → cutover live for `metro-key`, the pilot channel). It is DB-backed and
    flips live via `PATCH /admin/global-settings/dispatch_cutover_global_off` — no redeploy.
 3. ~~Run an authenticated end-to-end prod smoke~~ **[DONE 2026-07-12 — passed, see §3.3.]**
-4. **Resolve the stale job found by the smoke test** (real intake, 2026-07-09, safety flag
-   `person_inside`, no contact info captured, 3 days unassigned in `metro-key`'s queue) —
-   close it via the recovery workspace/`POST /admin/jobs/{id}/resolve`, and **confirm
+4. **Resolve the stale job found by the smoke test** — a real intake with no contact info
+   captured, multiple days unassigned in `metro-key`'s queue (private evidence log has the
+   record) — close it via the recovery workspace/`POST /admin/jobs/{id}/resolve`, and **confirm
    `NEXT_PUBLIC_DISPATCH_PHONE` is set to a real staffed number in the intake-web production
    env** (the safety-flag "Call dispatch now" screen falls back to a placeholder
    `+1 800-555-1234` if unset — unverified from this environment).
@@ -563,7 +564,7 @@ readiness variant.
 
 ## 10. Active Decisions and Risks
 
-- `[!]` **Dispatcher availability risk + SLA gap — CONFIRMED IN PRODUCTION 2026-07-12:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. The 2026-07-12 prod smoke test found a real (non-test) `metro-key` job — vehicle lockout, safety flag `person_inside`/`advised_emergency_services`, Rockville MD, created 2026-07-09 — that had sat in `pending_dispatch` with **zero dispatcher action for 3 days**. No `customer_name`/`customer_phone` was captured (session ended at the safety-handoff screen before the identity step), so there is no way to reach that person now; the intake UI's real-time safety path is a `tel:` link to `NEXT_PUBLIC_DISPATCH_PHONE`, separate from this queue entry — whether that env var holds Metro Key's real number (vs. the code default placeholder `+1 800-555-1234`) is unverified. **For the pilot:** was assumed acceptable because pilot dispatch is "dedicated and controlled" — this incident shows that assumption doesn't hold once a branded channel is live and unattended. **Before widening (now more urgent):** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), the customer-facing message for long waits, and verify the safety-flag phone escape hatch is wired to a real, staffed number.
+- `[!]` **Dispatcher availability risk + SLA gap — CONFIRMED IN PRODUCTION 2026-07-12:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. The 2026-07-12 prod smoke test found a real (non-test), multi-day-stale `metro-key` job with **zero dispatcher action** and a safety flag set, with no customer contact info captured — incident specifics are intentionally not recorded in this public repo (private evidence log only, per the safety rule below); ask the human/Claude for detail. This also surfaced that the safety-flag real-time phone escape hatch (`NEXT_PUBLIC_DISPATCH_PHONE`) needs verification that it points to a real, staffed number rather than the code default placeholder. **For the pilot:** was assumed acceptable because pilot dispatch is "dedicated and controlled" — this incident shows that assumption doesn't hold once a branded channel is live and unattended. **Before widening (now more urgent):** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), the customer-facing message for long waits, and verify the safety-flag phone escape hatch.
 - `[x]` **Six operational tunables are DB-backed (`global_settings`, migrations `0023`+`0024`).**
   Each is resolved **at request time** via `api/settings.py`'s generic `resolve(store, key)` with a
   tolerant `DB → env → hardcoded` chain (~30s cache), and is runtime-editable by a `platform_admin`
