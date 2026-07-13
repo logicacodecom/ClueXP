@@ -49,6 +49,29 @@ and `@metrokey.example` are real addresses here, **not** placeholders.
 > any of them. (Dispatching to *independent* technicians — those with no organization — is a
 > future "ClueXP Direct" capability, out of scope for this MVP.)
 
+### 2.1 Resetting demo provider data
+
+To re-stage a clean provider demo (used for the Tampa **Florida Locksmith** demo provider), run
+the idempotent reset from `apps/intake-web`. It cleans the legacy **Metro Key** demo *jobs*
+(FK-safe; the Metro Key company + technicians are preserved) and (re)seeds Florida Locksmith — its
+branded channel, dispatcher (`dispatch@florida-locksmith.demo`), three verified technicians, and a
+few clean unassigned demo jobs. Source of truth: [`api/demo_seed.py`](../apps/intake-web/api/demo_seed.py).
+
+```bash
+# from apps/intake-web — uses MIGRATION_DATABASE_URL (direct host, preferred) or DATABASE_URL
+npm run demo:reset                       # clean Metro Key jobs + reseed Florida + demo jobs
+npm run seed:demo:florida-locksmith      # --no-clean: ensure Florida + jobs, leave Metro Key
+uv run python scripts/reset_demo_providers.py --dry-run   # preview counts, roll back
+```
+
+Flags: `--no-clean` (skip Metro Key cleanup), `--no-jobs` (company + roster only), `--dry-run`
+(runs in a transaction and rolls back — change nothing). The script prints a summary + validation
+and exits non-zero on validation issues. Re-running is always safe; lookups are by slug/email so
+nothing duplicates.
+
+> ⚠️ Run against a **demo** database only. The cleanup deletes Metro Key demo jobs and their
+> dependent rows — never point it at a database with real pilot data.
+
 ---
 
 ## 3. Readiness Gates
@@ -58,11 +81,16 @@ Do not enable a company channel for real customers until all of these are true:
 - Company recovery controls (cancel/release/no-show/recall/resolve + notes + timeline) are merged and verified.
 - CI passes API tests, Alembic offline validation, shared typecheck, and all four application builds.
 - Production migration head is **at least `0015_job_payments`** (prod is currently at
-  `0021_tech_doc_defaults`); `job_notes` (`0014`) and `job_payment_reports` (`0015`) are present.
+  `0024_gs_more_tunables`); `job_notes` (`0014`) and `job_payment_reports` (`0015`) are present.
 - `ARRIVAL_PIN_SECRET`, `CRON_SECRET`, database credentials, and application authentication
   secrets are configured in the production secret manager.
 - The pilot company and approved technician roster are recorded **outside this public repository**.
-- A dispatcher is assigned for the complete pilot window.
+- Primary and backup dispatchers are assigned for the complete pilot window; the staffed coverage
+  window, acknowledgement target, stalled-job escalation threshold and after-hours fallback are
+  recorded in the private evidence log.
+- The new/stalled/safety-job alert path has been tested. Manual polling is acceptable only for a
+  time-boxed, continuously staffed internal pilot; do not enable unattended real-customer traffic
+  without production alert delivery and escalation.
 - Rollback owners have access to Vercel and the production database.
 
 ---
@@ -76,7 +104,7 @@ request — never a real customer's data to prove readiness.
 |---|---|
 | Release | Git commit deployed by each of the four Vercel projects (prod `main` tip) |
 | Database | `alembic_version.version_num` ≥ `0015_job_payments`; `job_notes` + `job_payment_reports` present |
-| Global switch | Current `DISPATCH_CUTOVER_GLOBAL_OFF` value |
+| Global switch | Current `dispatch_cutover_global_off` value (`global_settings`; read via `GET /api/ops/flags`) |
 | Company channel | Channel ID, slug, owner organization, and `dispatch_cutover_enabled` |
 | Provider access | Provider dispatcher can sign in and sees only its organization |
 | Technician supply | Approved technicians are active, verified, correctly affiliated, and have required skills |
@@ -166,12 +194,13 @@ and can open the **recovery workspace** (`/recovery`).
    from intake_channels where id = '<approved-channel-uuid>';
    ```
 
-4. In Vercel, set `DISPATCH_CUTOVER_GLOBAL_OFF=false` on the **cluexp-intake** project's
-   **Production** environment.
-5. Redeploy **cluexp-intake** so the env change takes effect (redeploy the current production
-   deployment, or push a no-op — env changes require a new deploy).
-6. Re-read `GET /api/ops/flags` → `dispatch_cutover_global_off` is now `false`.
-7. Submit one **synthetic** request through the branded channel and confirm it enters the
+4. Ensure the global kill-switch is **off**. As a platform admin:
+   `PATCH /api/admin/global-settings/dispatch_cutover_global_off` with `{"value": false}`.
+   This is DB-backed (`global_settings`, migration 0024) and takes effect on the next intake
+   within the resolver cache (~30s) — **no redeploy required**. (The legacy
+   `DISPATCH_CUTOVER_GLOBAL_OFF` Vercel env var is a fallback only; leave it `false`/unset.)
+5. Re-read `GET /api/ops/flags` → `dispatch_cutover_global_off` is now `false`.
+6. Submit one **synthetic** request through the branded channel and confirm it enters the
    owning company's provider queue as `pending_dispatch` with **no automatic offer**.
 
 ---
@@ -268,18 +297,53 @@ sanitized API responses in the private evidence log. Customer-side calls go to
 `POST /api/jobs/{job_id}/collection`) → customer confirms. The live map shows the technician
 only while `en_route`/`arrived`/`in_progress` **and** the location is fresh.
 
+### 7.1 Matrix execution — 2026-07-13
+
+Executed directly against `intake.cluexp.com`/`partners.cluexp.com`/`tech.cluexp.com` (API-level,
+authenticated as the real demo accounts), one synthetic/disposable job per row, all closed
+afterward via dispatcher resolve (never deleted). Full transcripts are in this session, not
+reproduced here.
+
+| Scenario | Result |
+|---|---|
+| Happy path | ✅ Pass — full create→assign→accept→en_route→PIN arrival→in_progress→completion→confirm cycle |
+| Decline | ✅ Pass — decline recorded, job returned to queue with `offer_active=false` |
+| Offer expiry | ✅ Pass — TTL temporarily lowered to 60s for the drill (restored to 300s immediately after); expired offer returned the job to the queue, no auto-reassignment |
+| Assignment race | ✅ Pass — two concurrent `assign` calls on one job: exactly one `200`, one `409 Concurrent assignment` |
+| Override assignment | ✅ Pass — offline/stale-location technician correctly required `override_reason` (`422` without it, `200` with it) |
+| Customer cancellation | ✅ Pass — cancelled during `en_route`; job closed, `can_cancel` false afterward |
+| Technician failure | ✅ Pass — `report-issue(cannot_complete)` recorded, no status change |
+| Reassignment | ✅ Pass — `release` → job back to `pending_dispatch` → new targeted offer to a different technician; the released technician's own status-update attempt on the job then correctly `403`s |
+| Arrival PIN failures | ✅ Pass — wrong-technician attempt `403`; 5 wrong PINs → `429` locked; correct PIN still `429` while locked; fresh re-issued PIN succeeds → `arrived` |
+| Arrival override | ✅ Pass — dispatcher override (with reason) bypassed the PIN, `en_route`→`arrived` |
+| No-show | ✅ Pass — recorded, job closed as `no_show` |
+| Dispute | ✅ Pass — customer dispute → `disputed`; dispatcher `resolve(close)` → `completed_auto_closed` |
+| Review | ✅ Pass (not in the original row list, tested anyway) — review while `completed_pending_customer` implies confirm → `completed_confirmed` |
+| Auto-close (72h) | ⏸ Not executed — the production window is intentionally the real 72h (not shortened); draining it live would hold a synthetic job open for 3 days for no benefit. The identical status transition (→`completed_auto_closed`) *is* proven via the dispute-resolution and stale-job-cleanup rows above; only the timer itself is unverified in prod. Verify with a shortened window in a non-prod environment instead. |
+| Tenant isolation | ✅ Pass — a Florida Locksmith dispatcher got `404` on list/candidates/assign/cancel for a Metro Key job (no existence leak) |
+| Rollback | ✅ Pass — global switch flipped on → new request got no `tracking_token` (did not enter dispatch) → switch flipped back off → next new request entered dispatch normally again |
+
+**Not yet executed:** wider decline-reason persistence variants, expired/reused (not just wrong)
+PIN sub-cases beyond what's above, and the documents/notes tenant-isolation sub-rows. Auto-close
+timer as noted above. §10 "Sign-Off" is otherwise ready for PO review.
+
 ---
 
 ## 8. Emergency Rollback
 
-Use the **global switch first** when the defect may affect more than one company:
+Use the **global switch first** when the defect may affect more than one company. It is now
+DB-backed and flips live — **no redeploy** (migration 0024):
 
-1. Set `DISPATCH_CUTOVER_GLOBAL_OFF=true` in the **cluexp-intake** Production environment.
-2. Redeploy cluexp-intake.
-3. `GET /api/ops/flags` → `dispatch_cutover_global_off: true`.
-4. Submit a synthetic branded request and verify it does **not** enter `pending_dispatch`.
-5. Confirm existing operational jobs remain visible to the owning provider.
-6. Record the incident time, deployed commit, affected jobs, and operator.
+1. As a platform admin, `PATCH /api/admin/global-settings/dispatch_cutover_global_off` with
+   `{"value": true}`. Takes effect on the next intake within the resolver cache (~30s).
+2. `GET /api/ops/flags` → `dispatch_cutover_global_off: true`.
+3. Submit a synthetic branded request and verify it does **not** enter `pending_dispatch`.
+4. Confirm existing operational jobs remain visible to the owning provider.
+5. Record the incident time, deployed commit, affected jobs, and operator.
+
+> Fallback if the admin API is unavailable: set `DISPATCH_CUTOVER_GLOBAL_OFF=true` in the
+> **cluexp-intake** Production environment and redeploy. The env var is the resolver's fallback;
+> a present DB row takes precedence, so clear/align both if you use this path.
 
 To disable only **one** company (affects new intake immediately, **no redeploy**):
 
@@ -306,7 +370,7 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 | Area | Status |
 |---|---|
 | Real payment | None — demo charge/finalize routes are removed (`410`) |
-| SMS / email / push | Not available — share the tracking link manually |
+| SMS / email / push | Not available — manual sharing/polling is pilot-only and blocks unattended real-customer widening |
 | Live map / ETA | Coarse, clearly-labelled estimate (no continuous tracking) |
 | Technician GPS | Foreground/manual — PWA must be open |
 | Dispatch model | **Provider-managed** — ClueXP does not dispatch; public-marketplace + independent-tech dispatch is a future version |
@@ -319,6 +383,7 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 - [ ] No cross-tenant data or mutation access was observed.
 - [ ] No fabricated payment, notification, ETA, or live-location behavior appeared.
 - [ ] Rollback was demonstrated.
+- [ ] Primary/backup dispatcher coverage, acknowledgement SLA and the new/stalled/safety alert escalation were demonstrated.
 - [ ] Product owner, Metro Key dispatcher, and technical release owner approved the private
       evidence log.
 

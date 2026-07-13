@@ -77,7 +77,8 @@ When the brand changes, update the canonical source files first:
 6. Update PWA metadata where present. Technician currently owns
    `apps/technician-web/public/manifest.webmanifest`; its icon entry must use:
    - `"src": "/icon.png"`
-   - `"sizes": "1254x1254"` unless the source icon dimensions change
+   - `"sizes": "246x246"` for the current normalized square icon, or the actual square
+     dimensions if the icon source changes
    - `"type": "image/png"`
    - `"purpose": "any maskable"`
 7. Keep auth proxies from intercepting static brand files. Provider, ops, and technician proxies
