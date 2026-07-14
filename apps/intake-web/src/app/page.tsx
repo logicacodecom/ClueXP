@@ -787,7 +787,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
             />
             {selectedPhotos.length ? (
               <div className="panel">
-                <p className="panel-title">Selected ({selectedPhotos.length})</p>
+                <p className="panel-title">{`Selected (${selectedPhotos.length})`}</p>
                 {selectedPhotos.map((file, i) => (
                   <div key={i} className="row" style={{ alignItems: "center", gap: 8, marginTop: 4 }}>
                     <span className="fine" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -806,7 +806,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               </div>
             ) : null}
             {uploadedPhotoCount || ticket?.photos?.length ? (
-              <p className="fine">{ticket?.photos?.length || uploadedPhotoCount} uploaded for this request.</p>
+              <p className="fine">{`${ticket?.photos?.length || uploadedPhotoCount} uploaded for this request.`}</p>
             ) : null}
             <div className="row">
               <button className="ghost" type="button" onClick={() => setScreen("identity")}>Skip</button>
@@ -909,7 +909,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 </div>
                 <div className="panel">
                   <p className="panel-title">Cancellation policy</p>
-                  <p className="fine">Free before assignment. After assignment: {money(policy?.cancellation_fee, policy?.currency)} cancellation fee. No-show fee: {money(policy?.no_show_fee, policy?.currency)}.</p>
+                  <p className="fine">{`Free before assignment. After assignment: ${money(policy?.cancellation_fee, policy?.currency)} cancellation fee. No-show fee: ${money(policy?.no_show_fee, policy?.currency)}.`}</p>
                 </div>
                 <button
                   className="primary"
@@ -1035,9 +1035,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               {assignment?.role ?? "Verified Technician"}
               {assignment?.rating != null ? ` - ${assignment.rating} rating` : ""}
             </p>
-            {assignment?.provider_company ? <p className="fine">Fulfilled by {assignment.provider_company}</p> : null}
+            {assignment?.provider_company ? <p className="fine">{`Fulfilled by ${assignment.provider_company}`}</p> : null}
             <p className="fine">
-              Estimated arrival {assignment?.eta_min ?? "--"}-{assignment?.eta_max ?? "--"} minutes.
+              {`Estimated arrival ${assignment?.eta_min ?? "--"}-${assignment?.eta_max ?? "--"} minutes.`}
             </p>
           </div>
           <button className="primary" type="button" onClick={() => setScreen("tracking")}>Open live tracking</button>
@@ -1129,6 +1129,14 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     }
 
     if (screen === "review") {
+      const reviewTagOptions = [
+        { value: "arrived_fast", label: "Arrived fast" },
+        { value: "professional", label: "Professional" },
+        { value: "solved_issue", label: "Solved issue" },
+        { value: "clear_price", label: "Clear price" },
+        { value: "felt_safe", label: "Felt safe" },
+        { value: "needs_followup", label: "Needs follow-up" }
+      ];
       return (
         <>
           <AgentMessage support="Rate the completed service. This affects the technician and fulfillment company when applicable.">
@@ -1153,18 +1161,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               </div>
             </div>
             <ChipSelect
-              options={[
-                { value: "arrived_fast", label: "Arrived fast" },
-                { value: "professional", label: "Professional" },
-                { value: "solved_issue", label: "Solved issue" },
-                { value: "clear_price", label: "Clear price" },
-                { value: "felt_safe", label: "Felt safe" },
-                { value: "needs_followup", label: "Needs follow-up" }
-              ]}
+              options={reviewTagOptions}
               value={null}
               onSelect={toggleReviewTag}
             />
-            {reviewTags.length ? <p className="fine">Selected: {reviewTags.join(", ")}</p> : null}
+            {reviewTags.length ? (
+              <p className="fine">
+                Selected:{" "}
+                {reviewTags.map((tag, index) => (
+                  <span key={tag}>
+                    {index > 0 ? ", " : ""}
+                    {reviewTagOptions.find((option) => option.value === tag)?.label ?? tag}
+                  </span>
+                ))}
+              </p>
+            ) : null}
             <textarea
               className="field"
               placeholder="Optional comment"
