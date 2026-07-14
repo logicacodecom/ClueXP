@@ -2,9 +2,20 @@
 
 import { LanguageSettings } from "@cluexp/app-core";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
-import { Check, Copy, Link2, Save } from "lucide-react";
+import { Check, Copy, Link2, Save, TimerReset } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
+
+interface DispatchSettingField {
+  value: number;
+  is_override: boolean;
+  platform_default: number;
+}
+
+interface DispatchSettings {
+  ack_sla_minutes: DispatchSettingField;
+  stalled_minutes: DispatchSettingField;
+}
 
 const INTAKE_BASE = (process.env.NEXT_PUBLIC_INTAKE_BASE_URL || "https://intake.cluexp.com").replace(/\/$/, "");
 
@@ -20,6 +31,30 @@ export default function SettingsPage() {
   const [generating, setGenerating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [dispatchSettings, setDispatchSettings] = useState<DispatchSettings | null>(null);
+  const [ackSlaInput, setAckSlaInput] = useState("");
+  const [stalledInput, setStalledInput] = useState("");
+  const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
+  const [dispatchBusy, setDispatchBusy] = useState(false);
+
+  async function loadDispatchSettings() {
+    try {
+      const response = await fetch("/api/provider/settings/dispatch", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to load dispatch settings");
+      const settings = body as DispatchSettings;
+      setDispatchSettings(settings);
+      setAckSlaInput(String(settings.ack_sla_minutes.value));
+      setStalledInput(String(settings.stalled_minutes.value));
+    } catch (cause) {
+      setDispatchMessage(cause instanceof Error ? cause.message : "Unable to load dispatch settings");
+    }
+  }
+
+  useEffect(() => {
+    void loadDispatchSettings();
+  }, []);
 
   useEffect(() => {
     void fetch("/api/workspace", { cache: "no-store" }).then(async (response) => {
@@ -91,6 +126,53 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveDispatchSettings() {
+    setDispatchBusy(true);
+    setDispatchMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/dispatch", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ack_sla_minutes: Number(ackSlaInput),
+          stalled_minutes: Number(stalledInput)
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save dispatch settings");
+      const settings = body as DispatchSettings;
+      setDispatchSettings(settings);
+      setAckSlaInput(String(settings.ack_sla_minutes.value));
+      setStalledInput(String(settings.stalled_minutes.value));
+      setDispatchMessage("Dispatch settings saved.");
+    } catch (cause) {
+      setDispatchMessage(cause instanceof Error ? cause.message : "Unable to save dispatch settings");
+    } finally {
+      setDispatchBusy(false);
+    }
+  }
+
+  async function resetDispatchField(field: "ack_sla_minutes" | "stalled_minutes") {
+    setDispatchBusy(true);
+    setDispatchMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/dispatch", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ [field]: null })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to reset to platform default");
+      const settings = body as DispatchSettings;
+      setDispatchSettings(settings);
+      setAckSlaInput(String(settings.ack_sla_minutes.value));
+      setStalledInput(String(settings.stalled_minutes.value));
+      setDispatchMessage("Reverted to the platform default.");
+    } catch (cause) {
+      setDispatchMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
+    } finally {
+      setDispatchBusy(false);
+    }
+  }
+
   return (
     <AppFrame>
       <div className="space-y-6">
@@ -133,6 +215,64 @@ export default function SettingsPage() {
           <CardContent className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 text-sm font-medium">Dispatch manager<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.dispatch_mode} onChange={(event) => setForm({ ...form, dispatch_mode: event.target.value })}><option value="organization_managed">Organization managed</option><option value="platform_managed">ClueXP managed</option></select></label>
             <label className="space-y-2 text-sm font-medium">Fulfillment policy<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.fulfillment_policy} onChange={(event) => setForm({ ...form, fulfillment_policy: event.target.value })}><option value="private_owner_only">Private roster only</option><option value="owner_first_then_network">Roster first, then network</option><option value="network_open">Verified network open</option></select></label>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Dispatch queue thresholds</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              How long an unassigned job waits before your live queue flags it. Leave a field at
+              the platform default unless your team needs a different pace.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="ack-sla-minutes">Acknowledgement SLA (minutes)</label>
+                <Input
+                  id="ack-sla-minutes" inputMode="numeric" value={ackSlaInput}
+                  onChange={(event) => setAckSlaInput(event.target.value)}
+                />
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {dispatchSettings?.ack_sla_minutes.is_override
+                    ? <>Overridden — platform default is {dispatchSettings.ack_sla_minutes.platform_default}m.</>
+                    : <>Using the platform default.</>}
+                  {dispatchSettings?.ack_sla_minutes.is_override ? (
+                    <Button
+                      variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
+                      disabled={dispatchBusy} onClick={() => void resetDispatchField("ack_sla_minutes")}
+                    >
+                      <TimerReset className="size-3" />Reset to default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="stalled-minutes">Stalled threshold (minutes)</label>
+                <Input
+                  id="stalled-minutes" inputMode="numeric" value={stalledInput}
+                  onChange={(event) => setStalledInput(event.target.value)}
+                />
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {dispatchSettings?.stalled_minutes.is_override
+                    ? <>Overridden — platform default is {dispatchSettings.stalled_minutes.platform_default}m.</>
+                    : <>Using the platform default.</>}
+                  {dispatchSettings?.stalled_minutes.is_override ? (
+                    <Button
+                      variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
+                      disabled={dispatchBusy} onClick={() => void resetDispatchField("stalled_minutes")}
+                    >
+                      <TimerReset className="size-3" />Reset to default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            {dispatchMessage ? <div className="text-sm" role="status">{dispatchMessage}</div> : null}
+            <Button
+              variant="outline" disabled={dispatchBusy || !ackSlaInput.trim() || !stalledInput.trim()}
+              onClick={() => void saveDispatchSettings()}
+            >
+              <Save className="size-4" />{dispatchBusy ? "Saving…" : "Save dispatch settings"}
+            </Button>
           </CardContent>
         </Card>
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
