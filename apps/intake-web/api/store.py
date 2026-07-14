@@ -208,6 +208,21 @@ class Store:
     async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def update_user_profile(
+        self, user_id: str, data: dict
+    ) -> dict | None | str:  # pragma: no cover
+        """Self-service identity update (display_name/email/phone). Returns the
+        updated {id, display_name, email, phone}, ``None`` if the user doesn't
+        exist, or the string ``"email_taken"``/``"phone_taken"`` on conflict."""
+        raise NotImplementedError
+
+    async def change_user_password(
+        self, user_id: str, current_password: str, new_password: str
+    ) -> bool:  # pragma: no cover
+        """Verify ``current_password`` and set ``new_password``. Returns False
+        (no change made) if the user is missing or the current password is wrong."""
+        raise NotImplementedError
+
     async def update_technician_profile(
         self, technician_id: UUID, data: dict
     ) -> dict | None:  # pragma: no cover
@@ -1804,6 +1819,39 @@ class InMemoryStore(Store):
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:
         return None
+
+    async def update_user_profile(self, user_id: str, data: dict) -> dict | None | str:
+        user = self.users.get(user_id)
+        if user is None:
+            return None
+        email = data.get("email")
+        phone = data.get("phone")
+        if email is not None:
+            normalized = email.strip().lower()
+            for uid, other in self.users.items():
+                if uid != user_id and (other.get("email") or "").strip().lower() == normalized:
+                    return "email_taken"
+        if phone is not None:
+            for uid, other in self.users.items():
+                if uid != user_id and (other.get("phone") or "").strip() == phone.strip():
+                    return "phone_taken"
+        if data.get("display_name") is not None:
+            user["display_name"] = data["display_name"]
+        if email is not None:
+            user["email"] = email
+        if phone is not None:
+            user["phone"] = phone
+        return {
+            "id": user_id, "display_name": user.get("display_name"),
+            "email": user.get("email"), "phone": user.get("phone"),
+        }
+
+    async def change_user_password(self, user_id: str, current_password: str, new_password: str) -> bool:
+        user = self.users.get(user_id)
+        if user is None or not verify_password(current_password, user.get("password_hash")):
+            return False
+        user["password_hash"] = hash_password(new_password)
+        return True
 
     async def update_technician_profile(self, technician_id: UUID, data: dict) -> dict | None:
         tid = str(technician_id)
@@ -4364,6 +4412,52 @@ class PostgresStore(Store):
                 "update users set locale = %s, updated_at = now() where id = %s",
                 (locale, str(user_id)),
             )
+
+    async def update_user_profile(self, user_id: str, data: dict) -> dict | None | str:
+        email = data.get("email")
+        phone = data.get("phone")
+        display_name = data.get("display_name")
+        async with await self._connect() as conn:
+            if email is not None:
+                cur = await conn.execute(
+                    "select 1 from users where lower(email) = lower(%s) and id <> %s",
+                    (email, str(user_id)),
+                )
+                if await cur.fetchone():
+                    return "email_taken"
+            if phone is not None:
+                cur = await conn.execute(
+                    "select 1 from users where phone = %s and id <> %s",
+                    (phone, str(user_id)),
+                )
+                if await cur.fetchone():
+                    return "phone_taken"
+            cur = await conn.execute(
+                "update users set"
+                " display_name = coalesce(%s, display_name),"
+                " email = coalesce(%s, email),"
+                " phone = coalesce(%s, phone),"
+                " updated_at = now()"
+                " where id = %s"
+                " returning id, display_name, email, phone",
+                (display_name, email, phone, str(user_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "email": row[2], "phone": row[3]}
+
+    async def change_user_password(self, user_id: str, current_password: str, new_password: str) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute("select password_hash from users where id = %s", (str(user_id),))
+            row = await cur.fetchone()
+            if row is None or not verify_password(current_password, row[0]):
+                return False
+            await conn.execute(
+                "update users set password_hash = %s, updated_at = now() where id = %s",
+                (hash_password(new_password), str(user_id)),
+            )
+        return True
 
     async def update_technician_profile(self, technician_id: UUID, data: dict) -> dict | None:
         try:

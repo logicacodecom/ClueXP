@@ -376,7 +376,11 @@ function initialsFor(name?: string) {
 }
 
 export function Topbar({ modeBadge, onSignOut, session, surfaceLabel }: { modeBadge: string; onSignOut?: () => void; session?: AuthSession; surfaceLabel: string }) {
-  const orgLabel = session?.active_organization_id ? organizationLabel(session.active_organization_id) : "All network tenants";
+  // The real org name comes from the session (session.organization_name, set by the
+  // backend) — never fall back to the raw organization UUID, which means nothing to a user.
+  const orgLabel = session?.active_organization_id
+    ? (session.organization_name ?? "Organization")
+    : "All network tenants";
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-background/85 px-6 backdrop-blur">
       <div className="relative flex-1 max-w-2xl">
@@ -410,7 +414,7 @@ export function Topbar({ modeBadge, onSignOut, session, surfaceLabel }: { modeBa
           <DropdownMenuItem>{orgLabel}</DropdownMenuItem>
           <DropdownMenuItem>{roleLabel(session?.active_role)}</DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem>Account</DropdownMenuItem>
+          <DropdownMenuItem asChild><Link href="/account">Account</Link></DropdownMenuItem>
           <DropdownMenuItem>Switch workspace</DropdownMenuItem>
           <DropdownMenuItem onClick={onSignOut}>Sign out</DropdownMenuItem>
         </DropdownMenuContent>
