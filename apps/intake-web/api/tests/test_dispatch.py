@@ -3065,3 +3065,132 @@ def test_dispatch_settings_requires_dispatch_org():
     client = TestClient(app)
     r = client.get("/provider/settings/dispatch", headers={"Authorization": f"Bearer {access}"})
     assert r.status_code == 403
+
+
+# --- self-service account: identity update + password change ----------------
+def _seed_full_user(app_store, uid, *, email="orig@cluexp.test", phone=None, password="orig-pw-123"):
+    from api.auth import hash_password
+    app_store.users[uid] = {
+        "id": uid, "email": email, "phone": phone,
+        "display_name": "Original Name", "password_hash": hash_password(password),
+        "roles": ["dispatcher"], "active_organization_id": str(uuid4()), "organization_name": "Acme",
+    }
+
+
+def test_update_account_changes_identity_fields():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    _seed_full_user(app_store, uid)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    r = client.patch(
+        "/auth/me", json={"display_name": "New Name", "email": "new@cluexp.test", "phone": "+15550001111"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["display_name"] == "New Name"
+    assert body["email"] == "new@cluexp.test"
+    assert body["phone"] == "+15550001111"
+
+    # Untouched field (e.g. re-fetch) reflects the partial update; a field left
+    # unset in a follow-up PATCH stays as-is.
+    r2 = client.patch("/auth/me", json={"display_name": "Newer Name"}, headers={"Authorization": f"Bearer {token}"})
+    assert r2.status_code == 200
+    assert r2.json()["email"] == "new@cluexp.test"
+
+
+def test_update_account_rejects_empty_string():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    _seed_full_user(app_store, uid)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    r = client.patch("/auth/me", json={"display_name": "   "}, headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 422
+
+
+def test_update_account_rejects_email_conflict():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid_a, uid_b = str(uuid4()), str(uuid4())
+    _seed_full_user(app_store, uid_a, email="taken@cluexp.test")
+    _seed_full_user(app_store, uid_b, email="free@cluexp.test")
+    token = create_access_token({"sub": uid_b, "id": uid_b, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    r = client.patch("/auth/me", json={"email": "taken@cluexp.test"}, headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 409
+
+
+def test_update_account_requires_auth():
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    r = client.patch("/auth/me", json={"display_name": "X"})
+    assert r.status_code == 401
+
+
+def test_change_password_requires_correct_current_password():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    _seed_full_user(app_store, uid, password="correct-horse-battery")
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    r = client.post(
+        "/auth/me/password", json={"current_password": "wrong-password", "new_password": "brand-new-pw-1"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 422
+
+
+def test_change_password_rejects_short_new_password():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    _seed_full_user(app_store, uid, password="correct-horse-battery")
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    r = client.post(
+        "/auth/me/password", json={"current_password": "correct-horse-battery", "new_password": "short"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 422
+
+
+def test_change_password_success_then_login_with_new_password():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    _seed_full_user(app_store, uid, email="pwchange@cluexp.test", password="correct-horse-battery")
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    r = client.post(
+        "/auth/me/password", json={"current_password": "correct-horse-battery", "new_password": "new-password-99"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"status": "updated"}
+
+    # Old password no longer works; new one does (proves the hash was actually
+    # replaced, not just accepted-and-discarded).
+    old_login = client.post("/auth/login", json={"identifier": "pwchange@cluexp.test", "password": "correct-horse-battery"})
+    assert old_login.status_code == 401
+    new_login = client.post("/auth/login", json={"identifier": "pwchange@cluexp.test", "password": "new-password-99"})
+    assert new_login.status_code == 200

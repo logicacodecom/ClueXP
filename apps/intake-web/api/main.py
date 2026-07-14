@@ -226,6 +226,17 @@ class LocaleUpdateRequest(BaseModel):
     locale: str
 
 
+class AccountUpdateRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class OrganizationProfileUpdateRequest(BaseModel):
     display_name: str | None = None
     legal_name: str | None = None
@@ -595,6 +606,43 @@ async def update_locale(
 ) -> dict[str, Any]:
     await store.update_user_locale(session["user"]["id"], payload.locale)
     return {"locale": payload.locale}
+
+
+@app.patch("/auth/me")
+async def update_account(
+    payload: AccountUpdateRequest, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Self-service identity update — the signed-in user only, no admin path.
+    Any field left unset is untouched; an empty string is rejected rather than
+    silently clearing a login identifier."""
+    sent = payload.model_dump(exclude_unset=True)
+    for field in ("display_name", "email", "phone"):
+        if field in sent and sent[field] is not None and not sent[field].strip():
+            raise HTTPException(status_code=422, detail=f"{field} cannot be empty")
+    result = await store.update_user_profile(session["user"]["id"], sent)
+    if result == "email_taken":
+        raise HTTPException(status_code=409, detail="Email is already in use")
+    if result == "phone_taken":
+        raise HTTPException(status_code=409, detail="Phone is already in use")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return result
+
+
+@app.post("/auth/me/password")
+async def change_password(
+    payload: PasswordChangeRequest, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Self-service password change — requires the current password, so a
+    hijacked session alone can't lock the real owner out."""
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    changed = await store.change_user_password(
+        session["user"]["id"], payload.current_password, payload.new_password
+    )
+    if not changed:
+        raise HTTPException(status_code=422, detail="Current password is incorrect")
+    return {"status": "updated"}
 
 
 @app.post("/admin/technicians/{technician_id}/approve")
