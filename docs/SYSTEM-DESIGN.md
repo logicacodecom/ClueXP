@@ -277,7 +277,31 @@ are advisory records (the MVP processes no real charge).
 - **Method** is one of `PAYMENT_METHODS` (`api/dispatch.py`): credit_card, debit_card, cash, check,
   zelle, cash_app, apple_pay, google_pay, venmo, paypal, other. Unknown → 422.
 
-### 5.2b Finished-Job History
+### 5.2b Real Payment Ownership (Provider Direct Charge — Accepted 2026-07-13)
+
+Each provider company is the **merchant of record** and charges its own customer. ClueXP is the
+dispatch/workflow SaaS layer; it does not hold provider funds, create platform-owned destination
+charges, settle providers, or pay technicians.
+
+The planned card flow uses Stripe Connect **direct charges** on a provider-owned connected account
+with full Stripe Dashboard access (Standard-account behavior):
+
+- the PaymentIntent/charge and resulting balance live on the provider connected account;
+- the provider pays processing fees and owns refunds, disputes, negative balances and payouts;
+- ClueXP initially takes no application fee (a future software/application fee is a separate
+  commercial decision);
+- ClueXP stores `stripe_account_id`, onboarding capability/status fields, and the minimum
+  PaymentIntent/charge/refund/dispute IDs + state needed for job correlation and webhook audit;
+- ClueXP stores no raw card data and no provider secret keys;
+- processor objects must always be created/read in the owning provider account context, and every
+  local payment row remains tenant-scoped through the job's `customer_owner_org_id`;
+- provider-owned Stripe Dashboard or Connect embedded components handle refunds/disputes, while
+  ClueXP mirrors their status without conflating payment disputes with service issues.
+
+The existing `job_payment_reports` record remains advisory until this direct-charge ledger is
+implemented. It is not proof that money moved.
+
+### 5.2c Finished-Job History
 History covers `HISTORY_STATUSES` (`api/dispatch.py`): `completed_pending_customer` (so a job the
 tech just finished shows **immediately**, before the customer confirms) plus the terminal states
 `completed_confirmed`, `completed_auto_closed`, `cancelled`, `no_show`. (`disputed` stays in the
@@ -394,7 +418,7 @@ Customer affordances are driven by `customer_actions(status)`:
 
 ### 7.1 Where Migrations Live
 
-`packages/db/` — Alembic migrations. **Current production head: `0021_tech_doc_defaults`** (applied 2026-06-17). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents.
+`packages/db/` — Alembic migrations. **Current production head: `0024_gs_more_tunables`** (applied 2026-06-21). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables.
 
 The `PostgresStore.startup()` method in `store.py` also runs `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS` guards so the API boots cleanly even if a migration is behind.
 
@@ -517,9 +541,10 @@ Document validity will gate dispatch eligibility (Sprint 7).
 
 **`job_reviews`** — Post-completion review: `{ job_id, rating, tags[], comment, ... }`.
 
-**`job_payment_reports`** — Two-sided payment reconciliation (migration `0015`):
+**`job_payment_reports`** — Advisory technician-reported collection (migration `0015`):
 `{ job_id, reported_by ('technician'|'customer'), amount, currency, method, reported_at }`,
-`UNIQUE (job_id, reported_by)`. Advisory records for the job history — not a payment ledger.
+`UNIQUE (job_id, reported_by)`. The current contract writes `reported_by='technician'`; the
+customer only acknowledges it through completion confirmation. This is not a payment ledger.
 
 **`media`** — Uploaded files: `{ owner_type, owner_id, kind, bucket, path, visibility, uploaded_by, uploaded_at }`.
 

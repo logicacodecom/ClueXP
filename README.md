@@ -92,13 +92,17 @@ The platform deploys on:
 - **Vercel** for the Next.js frontend and FastAPI Python runtime.
 - **Supabase Postgres** for live ticket persistence.
 
-Real intake, authentication, provider onboarding, dispatch offers, technician
-acceptance, and customer waiting/matched tracking are live. The next priority is
-the production fulfillment cutover described in `docs/EXECUTION-PLAN.md`: secure
-token tracking, technician lifecycle transitions, customer confirmation/review/
-dispute, dispatcher resolution, and automatic closure. Arrival verification,
-payments, notifications, and most live console job operations are not yet
-production-complete.
+Real intake, authentication, provider onboarding, provider-managed dispatch,
+technician fulfillment, arrival verification, customer confirmation/review/dispute,
+dispatcher resolution and automatic closure are deployed; the authenticated production
+happy path has been smoke-tested. The next priority is operational readiness described in
+`docs/EXECUTION-PLAN.md`: approve dispatcher acknowledgement SLA and coverage, add durable
+background alerts, and complete the pilot evidence matrix. The provider queue has configurable
+SLA/stalled indicators and opt-in browser alerts for a staffed open console. Production
+SMS/email/push and real payment authorization/capture/refund remain unimplemented;
+technician-reported collection is advisory only. The accepted real-payment direction is
+provider-owned Stripe Connect direct charges: each provider is merchant of record and ClueXP does
+not hold or settle provider funds.
 
 Vercel production traffic should call the API through the same deployment at `/api/...`. Local development rewrites `/api/...` to `LOCAL_API_BASE_URL`, which defaults to `http://127.0.0.1:8000`.
 
