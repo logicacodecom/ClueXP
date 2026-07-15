@@ -4561,13 +4561,24 @@ class PostgresStore(Store):
             row = await cur.fetchone()
             if row is None:
                 return None
+            cur = await conn.execute(
+                "select ot.id, o.display_name, ot.status, ot.affiliation_type"
+                " from organization_technicians ot join organizations o on o.id = ot.organization_id"
+                " where ot.technician_id = %s and ot.ended_at is null"
+                " order by ot.starts_at desc",
+                (tid,),
+            )
+            affiliations = [
+                {"id": str(r[0]), "organization_name": r[1], "status": r[2], "affiliation_type": r[3]}
+                for r in await cur.fetchall()
+            ]
         technician = {
             "id": str(row[0]), "display_name": row[1], "email": row[2], "phone": row[3],
             "status": row[4], "vetting_status": row[5], "skills": row[6] or [],
             "provider_type": row[7], "profile_photo_url": row[8], "profile_photo_status": row[9],
             "created_at": row[10].isoformat() if row[10] else None,
         }
-        technician["affiliations"] = await self.list_technician_organizations(technician_id)
+        technician["affiliations"] = affiliations
         technician["documents"] = await self.list_technician_documents(technician_id)
         return technician
 
