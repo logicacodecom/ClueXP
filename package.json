@@ -13,9 +13,11 @@
     "dev:provider": "npm run dev --workspace @cluexp/provider-web",
     "dev:tech": "npm run dev --workspace @cluexp/technician-web",
     "dev:intake": "npm run dev --workspace @cluexp/intake-web",
+    "dev:console": "npm run dev --workspace @cluexp/console-web",
     "build:ops": "npm run build --workspace @cluexp/ops-web",
     "build:provider": "npm run build --workspace @cluexp/provider-web",
     "build:tech": "npm run build --workspace @cluexp/technician-web",
+    "build:console": "npm run build --workspace @cluexp/console-web",
     "typecheck": "tsc -b packages/api-client packages/app-core packages/console-ui"
   }
 }

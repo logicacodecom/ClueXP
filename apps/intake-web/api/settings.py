@@ -135,6 +135,26 @@ SETTINGS: dict[str, SettingSpec] = {
         validate=_int_range(1, 1440),
         org_overridable=True,
     ),
+    # --- per-org tenant caps, console-overridable (0026) ---
+    "max_users_per_org": SettingSpec(
+        key="max_users_per_org",
+        value_type="integer",
+        description="Max member accounts (admins + dispatchers) per organization.",
+        env="MAX_USERS_PER_ORG",
+        fallback=5,
+        validate=_int_range(1, 500),
+        org_overridable=True,
+    ),
+    "max_technicians_per_org": SettingSpec(
+        key="max_technicians_per_org",
+        value_type="integer",
+        description="Max affiliated technicians (active + pending invites) per "
+        "organization.",
+        env="MAX_TECHNICIANS_PER_ORG",
+        fallback=5,
+        validate=_int_range(1, 500),
+        org_overridable=True,
+    ),
 }
 
 

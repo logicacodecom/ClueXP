@@ -279,6 +279,21 @@ class AffiliatedTechnicianRequest(BaseModel):
     locale: str | None = None
 
 
+class ProviderUserCreateRequest(BaseModel):
+    display_name: str
+    password: str
+    email: str | None = None
+    phone: str | None = None
+    role: str = "dispatcher"
+
+
+class OrganizationLimitsUpdate(BaseModel):
+    # Absent = leave unchanged; null = clear the override (revert to platform
+    # default); an int = set this org's override.
+    max_users: int | None = None
+    max_technicians: int | None = None
+
+
 class ProviderDocumentRequest(BaseModel):
     owner_type: str
     owner_id: UUID | None = None
@@ -713,6 +728,73 @@ async def reactivate_organization(
     return result
 
 
+@app.get("/admin/organizations")
+async def admin_list_organizations(
+    status: str | None = None, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Platform console: the full company directory (any status), for the
+    network-management screens — distinct from /admin/registrations, which is
+    the pending-only approval queue."""
+    require_any_role(session, {"platform_admin"})
+    return {"organizations": await store.list_organizations(status)}
+
+
+@app.get("/admin/organizations/{organization_id}")
+async def admin_get_organization(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    detail = await store.get_organization_admin_detail(organization_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    detail["limits"] = await _resolve_org_limits(str(organization_id))
+    return detail
+
+
+@app.post("/admin/organizations")
+async def admin_create_organization(
+    payload: OrganizationRegisterRequest, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Console-initiated company registration. Lands PENDING, same as
+    self-signup — an admin vouching for a company does not skip approval."""
+    require_any_role(session, {"platform_admin"})
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    try:
+        return await store.register_organization(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/admin/technicians")
+async def admin_list_technicians(
+    status: str | None = None, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return {"technicians": await store.list_technicians_admin(status)}
+
+
+@app.post("/admin/technicians")
+async def admin_create_technician(
+    payload: TechnicianRegisterRequest, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Console-initiated technician registration (no invite token — a standalone
+    signup the admin is entering on the technician's behalf). Lands
+    pending_vetting, same as self-signup."""
+    require_any_role(session, {"platform_admin"})
+    if not payload.email and not payload.phone:
+        raise HTTPException(status_code=422, detail="Email or phone is required")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    data = payload.model_dump()
+    data["skills"] = normalize_technician_skills(payload.skills)
+    data["invite_token"] = None
+    try:
+        return await store.register_technician(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.get("/admin/registrations")
 async def pending_registrations(
     session: dict[str, Any] = Depends(require_session),
@@ -820,6 +902,20 @@ async def admin_download_technician_document(
     except Exception:
         raise HTTPException(status_code=502, detail="Could not issue a download URL")
     return {"download_url": url}
+
+
+# Registered after the literal /admin/technicians/... routes above (photos,
+# photo review) so this catch-all {technician_id} path can't shadow them —
+# Starlette matches path routes in registration order.
+@app.get("/admin/technicians/{technician_id}")
+async def admin_get_technician(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    detail = await store.get_technician_admin_detail(technician_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return detail
 
 
 @app.get("/admin/documents/{document_id}/download")
@@ -1011,6 +1107,13 @@ async def invite_provider_technician(
     email = (payload.email or "").strip() or None
     if not email:
         raise HTTPException(status_code=422, detail="A technician email is required")
+    limit = await _resolve_max_technicians(str(organization_id))
+    occupied = await store.count_organization_technician_slots(organization_id)
+    if occupied >= limit:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This company has reached its technician limit ({limit}).",
+        )
     # Existing account → attach directly as a pending affiliation.
     existing = await store.find_technician_by_email(email)
     if existing is not None:
@@ -1951,6 +2054,125 @@ async def admin_update_global_setting(
     row = await store.upsert_global_setting(key, value, spec.value_type, actor_id)
     runtime_settings.clear_cache()
     return row
+
+
+# --- console: per-organization tenant-limit overrides (0026) ---
+# Mirrors the provider dispatch-settings override pattern (below): an unset
+# field inherits the platform-wide default from global_settings, editable via
+# /admin/global-settings, so a newly approved company needs no setup.
+_ORG_LIMIT_FIELDS = {
+    "max_users": "max_users_per_org",
+    "max_technicians": "max_technicians_per_org",
+}
+
+
+async def _resolve_org_limits(organization_id: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field, key in _ORG_LIMIT_FIELDS.items():
+        override = await store.get_organization_setting(organization_id, key)
+        platform_default = await runtime_settings.resolve(store, key)
+        result[field] = {
+            "value": override["value"] if override else platform_default,
+            "is_override": override is not None,
+            "platform_default": platform_default,
+        }
+    return result
+
+
+@app.get("/admin/organizations/{organization_id}/limits")
+async def admin_get_organization_limits(
+    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return await _resolve_org_limits(str(organization_id))
+
+
+@app.patch("/admin/organizations/{organization_id}/limits")
+async def admin_update_organization_limits(
+    organization_id: UUID,
+    payload: OrganizationLimitsUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    org_id = str(organization_id)
+    sent = payload.model_dump(exclude_unset=True)
+    if not sent:
+        raise HTTPException(status_code=422, detail="No limits provided")
+    actor_id = session.get("user", {}).get("id")
+    for field, value in sent.items():
+        key = _ORG_LIMIT_FIELDS[field]
+        if value is None:
+            await store.delete_organization_setting(org_id, key)
+            continue
+        try:
+            runtime_settings.coerce_and_validate(key, value)
+        except runtime_settings.SettingValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        spec = runtime_settings.SETTINGS[key]
+        await store.upsert_organization_setting(org_id, key, value, spec.value_type, actor_id)
+    return await _resolve_org_limits(org_id)
+
+
+async def _resolve_max_technicians(organization_id: str) -> int:
+    return await runtime_settings.resolve_org(store, organization_id, "max_technicians_per_org")
+
+
+async def _resolve_max_users(organization_id: str) -> int:
+    return await runtime_settings.resolve_org(store, organization_id, "max_users_per_org")
+
+
+# --- provider self-service: company users (dispatchers, additional admins) ---
+# Add-only, tenant-scoped. No edit/delete in this slice — a mis-added user is a
+# console/support matter, not a self-service one yet.
+PROVIDER_USER_ROLES = {"dispatcher", "provider_admin"}
+
+
+@app.get("/provider/settings/limits")
+async def get_provider_limits(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Read-only: the effective (console-set or platform-default) tenant caps for
+    the caller's own company, so provider-web can show usage against the limit.
+    Providers cannot edit these — only the console can."""
+    organization_id = _provider_organization_id(session)
+    org_id = str(organization_id)
+    return {
+        "max_users": await _resolve_max_users(org_id),
+        "max_technicians": await _resolve_max_technicians(org_id),
+    }
+
+
+@app.get("/provider/users")
+async def list_provider_users(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    return {"users": await store.list_organization_members(organization_id)}
+
+
+@app.post("/provider/users")
+async def create_provider_user(
+    payload: ProviderUserCreateRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    if payload.role not in PROVIDER_USER_ROLES:
+        raise HTTPException(status_code=422, detail=f"role must be one of {sorted(PROVIDER_USER_ROLES)}")
+    if not payload.email and not payload.phone:
+        raise HTTPException(status_code=422, detail="Email or phone is required")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    limit = await _resolve_max_users(str(organization_id))
+    occupied = await store.count_organization_members(organization_id)
+    if occupied >= limit:
+        raise HTTPException(
+            status_code=409, detail=f"This company has reached its user limit ({limit})."
+        )
+    try:
+        return await store.create_organization_member(
+            organization_id, payload.model_dump(exclude={"role"}), role=payload.role
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 # --- company (provider-managed) dispatch: org-scoped clones of the ops console ---

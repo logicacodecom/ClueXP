@@ -29,10 +29,12 @@ export function AppFrame({ children }: { children: ReactNode }) {
     item.label === "Technicians" ? { ...item, href: "/technicians" } : item
   );
   const reportsNav = defaultNav.find((item) => item.href === "/reports") ?? defaultNav[0];
+  const adminNav = defaultNav.find((item) => item.href === "/settings") ?? defaultNav[0];
   const providerNav = [
     ...mappedNav,
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
     { ...reportsNav, label: "Completed", href: "/completed" },
+    { ...adminNav, label: "Users", href: "/users" },
   ];
   return (
     <AppShell
