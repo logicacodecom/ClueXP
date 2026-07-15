@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, PageHeader } from "@cluexp/console-ui";
+import { useSession } from "@cluexp/app-core";
 import { UserPlus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../frame";
@@ -8,6 +9,7 @@ import { AppFrame } from "../frame";
 interface OrgUser { id: string; display_name: string; email?: string | null; phone?: string | null; role: string; status: string }
 
 export default function UsersPage() {
+  const { session } = useSession();
   const [users, setUsers] = useState<OrgUser[]>([]);
   const [limit, setLimit] = useState<number | null>(null);
   const [form, setForm] = useState({ display_name: "", email: "", password: "", role: "dispatcher" });
@@ -27,6 +29,7 @@ export default function UsersPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const canManageUsers = session?.user.roles.includes("provider_admin") ?? false;
   const canSubmit = form.display_name.trim() && form.email.trim() && form.password.length >= 8;
 
   async function addUser() {
@@ -76,23 +79,32 @@ export default function UsersPage() {
             ))}
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><UserPlus className="size-4" />Add user</CardTitle>
-            <CardDescription>They can sign in to provider-web immediately.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Input placeholder="Name" value={form.display_name} onChange={(e) => setForm((p) => ({ ...p, display_name: e.target.value }))} />
-            <Input placeholder="Email" type="email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} />
-            <Input placeholder="Temporary password" type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
-            <select className="min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
-              <option value="dispatcher">Dispatcher</option>
-              <option value="provider_admin">Admin</option>
-            </select>
-            {message ? <div className="text-sm" role="status">{message}</div> : null}
-            <Button className="w-full" disabled={!canSubmit || busy} onClick={() => void addUser()}>{busy ? "Adding…" : "Add user"}</Button>
-          </CardContent>
-        </Card>
+        {canManageUsers ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><UserPlus className="size-4" />Add user</CardTitle>
+              <CardDescription>They can sign in to provider-web immediately.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Input placeholder="Name" value={form.display_name} onChange={(e) => setForm((p) => ({ ...p, display_name: e.target.value }))} />
+              <Input placeholder="Email" type="email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} />
+              <Input placeholder="Temporary password" type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
+              <select className="min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
+                <option value="dispatcher">Dispatcher</option>
+                <option value="provider_admin">Admin</option>
+              </select>
+              {message ? <div className="text-sm" role="status">{message}</div> : null}
+              <Button className="w-full" disabled={!canSubmit || busy} onClick={() => void addUser()}>{busy ? "Adding…" : "Add user"}</Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Admin-only</CardTitle>
+              <CardDescription>Provider admins can add users. Dispatchers can view the roster only.</CardDescription>
+            </CardHeader>
+          </Card>
+        )}
       </div>
     </AppFrame>
   );

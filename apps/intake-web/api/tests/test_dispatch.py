@@ -3316,21 +3316,36 @@ def test_provider_users_list_add_and_limit():
     from api.auth import create_access_token
 
     org = str(uuid4())
-    admin_uid, dispatcher_uid = str(uuid4()), str(uuid4())
+    admin_uid, dispatcher_uid, provider_admin_uid = str(uuid4()), str(uuid4()), str(uuid4())
     _seed_platform_admin(app_store, admin_uid)
     _seed_dispatcher(app_store, dispatcher_uid, org)
+    app_store.users[provider_admin_uid] = {
+        "id": provider_admin_uid, "email": f"padmin_{provider_admin_uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
     admin_token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
     dispatcher_token = create_access_token({"sub": dispatcher_uid, "id": dispatcher_uid, "roles": ["dispatcher"]})
+    provider_admin_token = create_access_token({"sub": provider_admin_uid, "id": provider_admin_uid, "roles": ["provider_admin"]})
     client = TestClient(app)
 
-    # The seeded dispatcher already occupies a user slot.
+    # The seeded dispatcher and provider admin already occupy user slots.
     listed = client.get("/provider/users", headers={"Authorization": f"Bearer {dispatcher_token}"})
     assert listed.status_code == 200
-    assert len(listed.json()["users"]) == 1
+    assert len(listed.json()["users"]) == 2
 
-    # Console caps this org at 1 user — the seeded dispatcher already fills it.
+    # Dispatchers can view the roster but cannot create users or escalate peers
+    # into provider admins.
+    forbidden = client.post(
+        "/provider/users",
+        json={"display_name": "Nope", "email": "nope@example.com", "password": "longenough1"},
+        headers={"Authorization": f"Bearer {dispatcher_token}"},
+    )
+    assert forbidden.status_code == 403
+
+    # Console caps this org at 2 users — the seeded dispatcher/admin already fill it.
     limits = client.patch(
-        f"/admin/organizations/{org}/limits", json={"max_users": 1},
+        f"/admin/organizations/{org}/limits", json={"max_users": 2},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert limits.status_code == 200, limits.text
@@ -3338,31 +3353,31 @@ def test_provider_users_list_add_and_limit():
     blocked = client.post(
         "/provider/users",
         json={"display_name": "New Dispatcher", "email": "newdispatcher@example.com", "password": "longenough1"},
-        headers={"Authorization": f"Bearer {dispatcher_token}"},
+        headers={"Authorization": f"Bearer {provider_admin_token}"},
     )
     assert blocked.status_code == 409
     assert "limit" in blocked.json()["detail"].lower()
 
     # Raise the cap; the same request now succeeds and shows up in the roster.
     client.patch(
-        f"/admin/organizations/{org}/limits", json={"max_users": 2},
+        f"/admin/organizations/{org}/limits", json={"max_users": 3},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     added = client.post(
         "/provider/users",
         json={"display_name": "New Dispatcher", "email": "newdispatcher@example.com", "password": "longenough1"},
-        headers={"Authorization": f"Bearer {dispatcher_token}"},
+        headers={"Authorization": f"Bearer {provider_admin_token}"},
     )
     assert added.status_code == 200, added.text
     assert added.json()["role"] == "dispatcher"
     listed_again = client.get("/provider/users", headers={"Authorization": f"Bearer {dispatcher_token}"})
-    assert len(listed_again.json()["users"]) == 2
+    assert len(listed_again.json()["users"]) == 3
 
     # An invalid role is rejected before touching the store.
     bad_role = client.post(
         "/provider/users",
         json={"display_name": "X", "email": "badrole@example.com", "password": "longenough1", "role": "owner"},
-        headers={"Authorization": f"Bearer {dispatcher_token}"},
+        headers={"Authorization": f"Bearer {provider_admin_token}"},
     )
     assert bad_role.status_code == 422
 
@@ -3370,7 +3385,7 @@ def test_provider_users_list_add_and_limit():
     dup = client.post(
         "/provider/users",
         json={"display_name": "Dup", "email": "newdispatcher@example.com", "password": "longenough1"},
-        headers={"Authorization": f"Bearer {dispatcher_token}"},
+        headers={"Authorization": f"Bearer {provider_admin_token}"},
     )
     assert dup.status_code == 409
 

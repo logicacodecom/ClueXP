@@ -1,6 +1,6 @@
 # Console Web Scope And Implementation Plan
 
-**Status:** Implemented locally (backend + console-web + provider-web users page). Not committed, not deployed. See Current Repo Caveat.
+**Status:** Implemented and committed on `feat/provider-workforce` (`6ae62f7`). Not deployed. See Current Repo Caveat.
 **App:** `apps/console-web`
 **Purpose:** Platform-admin tenant and network management console.
 **Port:** `3004`
@@ -179,16 +179,20 @@ Manual local smoke:
 
 ## Current Repo Caveat
 
-As of 2026-07-14, the full Build Order above has been implemented locally and
-verified (`uv run pytest apps/intake-web/api/tests` — 179 passed; `npm run
-typecheck`; `npm run build:console` and `build:provider` — both clean; a live
-local walk with the FastAPI backend + both Next dev servers confirmed sign-in,
-all new console-web pages (200, correct auth-gate redirect, 404 on unknown
-company/technician), the platform-limits GET/PATCH round trip, and the
-provider-web `/users` page rendering).
+As of 2026-07-14, the full Build Order above has been implemented and committed on
+`feat/provider-workforce` (`6ae62f7`). On 2026-07-15 it was review-fixed locally to
+make provider user creation provider-admin-only while keeping dispatcher roster
+visibility read-only. The review fix was verified with `uv run pytest
+apps/intake-web/api/tests/test_dispatch.py -q` (172 passed, 1 skipped),
+`npm.cmd run typecheck`, `npm.cmd run build:console`, and `npm.cmd run
+build:provider`. The original implementation smoke also covered sign-in, all new
+console-web pages (200, correct auth-gate redirect, 404 on unknown
+company/technician), the platform-limits GET/PATCH round trip, and the provider-web
+`/users` page rendering.
 
-Nothing has been committed, pushed, or deployed — that is a separate,
-explicit step per this repo's git-safety rules.
+Nothing has been deployed — migration 0026 application, `cluexp-console`
+provisioning, and production promotion are separate, explicit steps per this
+repo's git-safety rules.
 
 **Known pre-existing issue found during verification (not introduced by this
 work, not fixed):** the demo-seed provider account
