@@ -3194,3 +3194,210 @@ def test_change_password_success_then_login_with_new_password():
     assert old_login.status_code == 401
     new_login = client.post("/auth/login", json={"identifier": "pwchange@cluexp.test", "password": "new-password-99"})
     assert new_login.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Console: platform-wide company/technician directories, tenant limits, and
+# provider self-service users. See docs/CONSOLE-WEB-SCOPE-PLAN.md.
+# ---------------------------------------------------------------------------
+
+def _seed_platform_admin(app_store, uid):
+    app_store.users[uid] = {
+        "id": uid, "email": f"admin_{uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Console Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+
+
+def test_admin_org_and_tech_directories_require_platform_admin():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    dispatcher_uid = str(uuid4())
+    _seed_dispatcher(app_store, dispatcher_uid, org)
+    dispatcher_token = create_access_token({"sub": dispatcher_uid, "id": dispatcher_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    routes = [
+        ("GET", "/admin/organizations"),
+        ("GET", f"/admin/organizations/{org}"),
+        ("GET", f"/admin/organizations/{org}/limits"),
+        ("GET", "/admin/technicians"),
+        ("GET", f"/admin/technicians/{uuid4()}"),
+    ]
+    for method, path in routes:
+        unauth = client.request(method, path)
+        assert unauth.status_code == 401, path
+        forbidden = client.request(method, path, headers={"Authorization": f"Bearer {dispatcher_token}"})
+        assert forbidden.status_code == 403, path
+
+    admin_uid = str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    admin_token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    H = {"Authorization": f"Bearer {admin_token}"}
+    # In-memory store has no organizations/technicians table (Postgres-only
+    # directory, matching the existing list_pending_registrations convention);
+    # the point here is the permission gate + graceful empty response.
+    assert client.get("/admin/organizations", headers=H).json() == {"organizations": []}
+    assert client.get("/admin/technicians", headers=H).json() == {"technicians": []}
+    assert client.get(f"/admin/organizations/{org}", headers=H).status_code == 404
+    assert client.get(f"/admin/technicians/{uuid4()}", headers=H).status_code == 404
+
+
+def test_admin_organization_limits_default_then_override_then_clear():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    admin_uid = str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    H = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app)
+
+    # No override yet: both limits inherit the platform default (5).
+    got = client.get(f"/admin/organizations/{org}/limits", headers=H)
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["max_users"] == {"value": 5, "is_override": False, "platform_default": 5}
+    assert body["max_technicians"] == {"value": 5, "is_override": False, "platform_default": 5}
+
+    # Override max_technicians to 2.
+    patched = client.patch(f"/admin/organizations/{org}/limits", json={"max_technicians": 2}, headers=H)
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["max_technicians"] == {"value": 2, "is_override": True, "platform_default": 5}
+    assert patched.json()["max_users"]["is_override"] is False
+
+    # Out-of-range value is rejected (SettingSpec range 1-500).
+    bad = client.patch(f"/admin/organizations/{org}/limits", json={"max_users": 0}, headers=H)
+    assert bad.status_code == 422
+
+    # Clearing (null) reverts to the platform default.
+    cleared = client.patch(f"/admin/organizations/{org}/limits", json={"max_technicians": None}, headers=H)
+    assert cleared.status_code == 200
+    assert cleared.json()["max_technicians"] == {"value": 5, "is_override": False, "platform_default": 5}
+
+
+def test_provider_technician_invite_blocked_at_org_limit():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    admin_uid, dispatcher_uid = str(uuid4()), str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    _seed_dispatcher(app_store, dispatcher_uid, org)
+    admin_token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    dispatcher_token = create_access_token({"sub": dispatcher_uid, "id": dispatcher_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    # Console caps this org at 1 technician.
+    limits = client.patch(
+        f"/admin/organizations/{org}/limits", json={"max_technicians": 1},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert limits.status_code == 200, limits.text
+
+    H = {"Authorization": f"Bearer {dispatcher_token}"}
+    first = client.post("/provider/technicians/invite", json={"email": "first@example.com"}, headers=H)
+    assert first.status_code == 200, first.text
+
+    second = client.post("/provider/technicians/invite", json={"email": "second@example.com"}, headers=H)
+    assert second.status_code == 409
+    assert "limit" in second.json()["detail"].lower()
+
+
+def test_provider_users_list_add_and_limit():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    admin_uid, dispatcher_uid = str(uuid4()), str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    _seed_dispatcher(app_store, dispatcher_uid, org)
+    admin_token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    dispatcher_token = create_access_token({"sub": dispatcher_uid, "id": dispatcher_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    # The seeded dispatcher already occupies a user slot.
+    listed = client.get("/provider/users", headers={"Authorization": f"Bearer {dispatcher_token}"})
+    assert listed.status_code == 200
+    assert len(listed.json()["users"]) == 1
+
+    # Console caps this org at 1 user — the seeded dispatcher already fills it.
+    limits = client.patch(
+        f"/admin/organizations/{org}/limits", json={"max_users": 1},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert limits.status_code == 200, limits.text
+
+    blocked = client.post(
+        "/provider/users",
+        json={"display_name": "New Dispatcher", "email": "newdispatcher@example.com", "password": "longenough1"},
+        headers={"Authorization": f"Bearer {dispatcher_token}"},
+    )
+    assert blocked.status_code == 409
+    assert "limit" in blocked.json()["detail"].lower()
+
+    # Raise the cap; the same request now succeeds and shows up in the roster.
+    client.patch(
+        f"/admin/organizations/{org}/limits", json={"max_users": 2},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    added = client.post(
+        "/provider/users",
+        json={"display_name": "New Dispatcher", "email": "newdispatcher@example.com", "password": "longenough1"},
+        headers={"Authorization": f"Bearer {dispatcher_token}"},
+    )
+    assert added.status_code == 200, added.text
+    assert added.json()["role"] == "dispatcher"
+    listed_again = client.get("/provider/users", headers={"Authorization": f"Bearer {dispatcher_token}"})
+    assert len(listed_again.json()["users"]) == 2
+
+    # An invalid role is rejected before touching the store.
+    bad_role = client.post(
+        "/provider/users",
+        json={"display_name": "X", "email": "badrole@example.com", "password": "longenough1", "role": "owner"},
+        headers={"Authorization": f"Bearer {dispatcher_token}"},
+    )
+    assert bad_role.status_code == 422
+
+    # A duplicate email is rejected.
+    dup = client.post(
+        "/provider/users",
+        json={"display_name": "Dup", "email": "newdispatcher@example.com", "password": "longenough1"},
+        headers={"Authorization": f"Bearer {dispatcher_token}"},
+    )
+    assert dup.status_code == 409
+
+
+def test_admin_org_and_tech_create_endpoints_gate_on_platform_admin():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    dispatcher_uid = str(uuid4())
+    _seed_dispatcher(app_store, dispatcher_uid, org)
+    dispatcher_token = create_access_token({"sub": dispatcher_uid, "id": dispatcher_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    # Registration itself requires Postgres (same as public self-signup in this
+    # codebase); here we only assert the permission gate runs before any store
+    # call, so a non-admin never reaches it.
+    org_payload = {
+        "organization_name": "New Co", "admin_display_name": "Admin", "admin_email": "new@co.example",
+        "password": "longenough1",
+    }
+    tech_payload = {"display_name": "New Tech", "email": "newtech@example.com", "password": "longenough1"}
+
+    assert client.post("/admin/organizations", json=org_payload).status_code == 401
+    assert client.post("/admin/organizations", json=org_payload,
+                        headers={"Authorization": f"Bearer {dispatcher_token}"}).status_code == 403
+    assert client.post("/admin/technicians", json=tech_payload).status_code == 401
+    assert client.post("/admin/technicians", json=tech_payload,
+                        headers={"Authorization": f"Bearer {dispatcher_token}"}).status_code == 403

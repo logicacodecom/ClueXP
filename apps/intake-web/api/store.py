@@ -190,6 +190,38 @@ class Store:
     async def register_organization(self, data: dict) -> dict:  # pragma: no cover
         raise NotImplementedError
 
+    # --- console: platform-wide directories (Postgres-only, like list_pending_registrations) ---
+    async def list_organizations(self, status: str | None = None) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:  # pragma: no cover
+        return None
+
+    async def list_technicians_admin(self, status: str | None = None) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def get_technician_admin_detail(self, technician_id: UUID) -> dict | None:  # pragma: no cover
+        return None
+
+    # --- console/provider: org membership + tenant-limit enforcement ---
+    async def list_organization_members(self, organization_id: UUID) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def count_organization_members(self, organization_id: UUID) -> int:  # pragma: no cover
+        return 0
+
+    async def create_organization_member(
+        self, organization_id: UUID, data: dict, *, role: str
+    ) -> dict:  # pragma: no cover
+        """Add a user + active membership to an existing organization. Raises
+        ValueError('email_taken') / ValueError('phone_taken') on conflict."""
+        raise NotImplementedError
+
+    async def count_organization_technician_slots(self, organization_id: UUID) -> int:  # pragma: no cover
+        """Open affiliation periods (active/suspended/pending_invite) plus pending,
+        unexpired technician invites — the occupied slots against max_technicians_per_org."""
+        return 0
+
     async def approve_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1801,6 +1833,66 @@ class InMemoryStore(Store):
 
     async def register_organization(self, data: dict) -> dict:
         raise NotImplementedError("registration requires the Postgres store")
+
+    # --- console: platform-wide directories are Postgres-only (no org entity here) ---
+    async def list_organizations(self, status: str | None = None) -> list[dict]:
+        return []
+
+    async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:
+        return None
+
+    async def list_technicians_admin(self, status: str | None = None) -> list[dict]:
+        return []
+
+    async def get_technician_admin_detail(self, technician_id: UUID) -> dict | None:
+        return None
+
+    # --- console/provider: org membership + tenant-limit enforcement ---
+    async def list_organization_members(self, organization_id: UUID) -> list[dict]:
+        oid = str(organization_id)
+        return [
+            {
+                "id": u["id"], "display_name": u.get("display_name"),
+                "email": u.get("email"), "phone": u.get("phone"),
+                "role": (u.get("roles") or [None])[0],
+            }
+            for u in self.users.values()
+            if str(u.get("active_organization_id")) == oid
+        ]
+
+    async def count_organization_members(self, organization_id: UUID) -> int:
+        return len(await self.list_organization_members(organization_id))
+
+    async def create_organization_member(
+        self, organization_id: UUID, data: dict, *, role: str
+    ) -> dict:
+        email = (data.get("email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
+        if email and any(str(u.get("email") or "").lower() == email.lower() for u in self.users.values()):
+            raise ValueError("email_taken")
+        if phone and any(str(u.get("phone") or "") == phone for u in self.users.values()):
+            raise ValueError("phone_taken")
+        uid = str(uuid4())
+        self.users[uid] = {
+            "id": uid, "email": email, "phone": phone,
+            "display_name": data["display_name"],
+            "password_hash": hash_password(data["password"]),
+            "roles": [role], "active_organization_id": str(organization_id),
+            "organization_name": None,
+        }
+        return {"id": uid, "display_name": data["display_name"], "email": email, "phone": phone, "role": role}
+
+    async def count_organization_technician_slots(self, organization_id: UUID) -> int:
+        oid = str(organization_id)
+        open_affiliations = sum(
+            1 for a in getattr(self, "_affiliations", [])
+            if str(a.get("organization_id")) == oid and a.get("ended_at") is None
+        )
+        pending_invites = sum(
+            1 for inv in getattr(self, "_invites", [])
+            if str(inv.get("organization_id")) == oid and inv.get("status") == "pending"
+        )
+        return open_affiliations + pending_invites
 
     async def approve_technician(self, technician_id: UUID) -> dict | None:
         return None
@@ -4343,6 +4435,216 @@ class PostgresStore(Store):
                 (user_id, org_id),
             )
             return await self._session_for_user(conn, str(user_id))
+
+    async def list_organizations(self, status: str | None = None) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select o.id, o.display_name, o.legal_name, o.slug, o.organization_type,"
+                " o.status, o.subscription_status, o.phone, o.email, o.created_at,"
+                " (select count(*) from user_organization_memberships m where m.organization_id = o.id),"
+                " (select count(*) from organization_technicians ot"
+                "  where ot.organization_id = o.id and ot.ended_at is null)"
+                " from organizations o"
+                " where %s::text is null or o.status = %s"
+                " order by o.created_at desc",
+                (status, status),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "display_name": r[1], "legal_name": r[2], "slug": r[3],
+                "organization_type": r[4], "status": r[5], "subscription_status": r[6],
+                "phone": r[7], "email": r[8], "created_at": r[9].isoformat() if r[9] else None,
+                "member_count": r[10], "technician_count": r[11],
+            }
+            for r in rows
+        ]
+
+    async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:
+        oid = str(organization_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, legal_name, slug, organization_type, status,"
+                " subscription_status, phone, email, created_at"
+                " from organizations where id = %s",
+                (oid,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            org = {
+                "id": str(row[0]), "display_name": row[1], "legal_name": row[2], "slug": row[3],
+                "organization_type": row[4], "status": row[5], "subscription_status": row[6],
+                "phone": row[7], "email": row[8], "created_at": row[9].isoformat() if row[9] else None,
+            }
+            cur = await conn.execute(
+                "select u.id, u.display_name, u.email, u.phone, m.role, m.status, m.created_at"
+                " from user_organization_memberships m join users u on u.id = m.user_id"
+                " where m.organization_id = %s order by m.created_at",
+                (oid,),
+            )
+            members = [
+                {
+                    "id": str(r[0]), "display_name": r[1], "email": r[2], "phone": r[3],
+                    "role": r[4], "status": r[5], "created_at": r[6].isoformat() if r[6] else None,
+                }
+                for r in await cur.fetchall()
+            ]
+            cur = await conn.execute(
+                "select t.id, t.display_name, t.status as technician_status, t.vetting_status,"
+                " ot.status as affiliation_status, ot.affiliation_type, ot.starts_at"
+                " from organization_technicians ot join technicians t on t.id = ot.technician_id"
+                " where ot.organization_id = %s and ot.ended_at is null"
+                " order by ot.starts_at desc",
+                (oid,),
+            )
+            technicians = [
+                {
+                    "id": str(r[0]), "display_name": r[1], "technician_status": r[2],
+                    "vetting_status": r[3], "affiliation_status": r[4], "affiliation_type": r[5],
+                    "starts_at": r[6].isoformat() if r[6] else None,
+                }
+                for r in await cur.fetchall()
+            ]
+            cur = await conn.execute(
+                "select id, document_type, document_number, status, expires_at, submitted_at"
+                " from provider_documents where owner_type = 'organization' and owner_id = %s"
+                " order by submitted_at desc",
+                (oid,),
+            )
+            documents = [
+                {
+                    "id": str(r[0]), "document_type": r[1], "document_number": r[2],
+                    "status": r[3], "expires_at": r[4].isoformat() if r[4] else None,
+                    "submitted_at": r[5].isoformat() if r[5] else None,
+                }
+                for r in await cur.fetchall()
+            ]
+        org["members"] = members
+        org["technicians"] = technicians
+        org["documents"] = documents
+        return org
+
+    async def list_technicians_admin(self, status: str | None = None) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
+                " t.skills, t.provider_type, t.primary_organization_id, t.created_at,"
+                " o.display_name"
+                " from technicians t left join organizations o on o.id = t.primary_organization_id"
+                " where %s::text is null or t.status = %s"
+                " order by t.created_at desc",
+                (status, status),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "display_name": r[1], "email": r[2], "phone": r[3],
+                "status": r[4], "vetting_status": r[5], "skills": r[6] or [],
+                "provider_type": r[7],
+                "primary_organization_id": str(r[8]) if r[8] else None,
+                "created_at": r[9].isoformat() if r[9] else None,
+                "primary_organization_name": r[10],
+            }
+            for r in rows
+        ]
+
+    async def get_technician_admin_detail(self, technician_id: UUID) -> dict | None:
+        tid = str(technician_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, email, phone, status, vetting_status, skills,"
+                " provider_type, profile_photo_url, profile_photo_status, created_at"
+                " from technicians where id = %s",
+                (tid,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+        technician = {
+            "id": str(row[0]), "display_name": row[1], "email": row[2], "phone": row[3],
+            "status": row[4], "vetting_status": row[5], "skills": row[6] or [],
+            "provider_type": row[7], "profile_photo_url": row[8], "profile_photo_status": row[9],
+            "created_at": row[10].isoformat() if row[10] else None,
+        }
+        technician["affiliations"] = await self.list_technician_organizations(technician_id)
+        technician["documents"] = await self.list_technician_documents(technician_id)
+        return technician
+
+    async def list_organization_members(self, organization_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select u.id, u.display_name, u.email, u.phone, m.role, m.status, m.created_at"
+                " from user_organization_memberships m join users u on u.id = m.user_id"
+                " where m.organization_id = %s order by m.created_at",
+                (str(organization_id),),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "display_name": r[1], "email": r[2], "phone": r[3],
+                "role": r[4], "status": r[5], "created_at": r[6].isoformat() if r[6] else None,
+            }
+            for r in rows
+        ]
+
+    async def count_organization_members(self, organization_id: UUID) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from user_organization_memberships where organization_id = %s",
+                (str(organization_id),),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+    async def create_organization_member(
+        self, organization_id: UUID, data: dict, *, role: str
+    ) -> dict:
+        email = (data.get("email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
+        pw_hash = hash_password(data["password"])
+        async with await self._connect() as conn:
+            if email:
+                cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
+                if await cur.fetchone():
+                    raise ValueError("email_taken")
+            if phone:
+                cur = await conn.execute("select 1 from users where phone = %s", (phone,))
+                if await cur.fetchone():
+                    raise ValueError("phone_taken")
+            cur = await conn.execute(
+                "insert into users (email, phone, password_hash, display_name, status)"
+                " values (%s, %s, %s, %s, 'active') returning id",
+                (email, phone, pw_hash, data["display_name"]),
+            )
+            user_id = (await cur.fetchone())[0]
+            await conn.execute(
+                "insert into user_roles (user_id, role) values (%s, %s) on conflict do nothing",
+                (user_id, role),
+            )
+            await conn.execute(
+                "insert into user_organization_memberships (user_id, organization_id, role, status)"
+                " values (%s, %s, %s, 'active')"
+                " on conflict (user_id, organization_id) do nothing",
+                (user_id, str(organization_id), role),
+            )
+        return {
+            "id": str(user_id), "display_name": data["display_name"],
+            "email": email, "phone": phone, "role": role,
+        }
+
+    async def count_organization_technician_slots(self, organization_id: UUID) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select"
+                " (select count(*) from organization_technicians"
+                "  where organization_id = %s and ended_at is null)"
+                " + (select count(*) from technician_invites"
+                "    where organization_id = %s and status = 'pending' and expires_at > now())",
+                (str(organization_id), str(organization_id)),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def approve_technician(self, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
