@@ -2154,6 +2154,7 @@ async def list_provider_users(
 async def create_provider_user(
     payload: ProviderUserCreateRequest, session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
     organization_id = _provider_organization_id(session)
     if payload.role not in PROVIDER_USER_ROLES:
         raise HTTPException(status_code=422, detail=f"role must be one of {sorted(PROVIDER_USER_ROLES)}")

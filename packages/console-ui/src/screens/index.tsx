@@ -18,6 +18,8 @@ import { GoogleMapView } from "../components/google-map";
 import type { MapPoint } from "../components/google-map";
 import {
   Building2,
+  Bell,
+  BellRing,
   CheckCircle2,
   CircleDot,
   Lock,
@@ -28,7 +30,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Badge,
@@ -199,10 +201,54 @@ function ageLabel(created_at: string | null): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
+function positiveMinutes(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const DISPATCH_ACK_SLA_MINUTES = positiveMinutes(
+  process.env.NEXT_PUBLIC_DISPATCH_ACK_SLA_MINUTES,
+  5,
+);
+const DISPATCH_STALLED_MINUTES = Math.max(
+  DISPATCH_ACK_SLA_MINUTES,
+  positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 15),
+);
+
+type QueueRisk = "normal" | "ack_breached" | "stalled" | "critical";
+
+function waitingMinutes(createdAt: string | null, now: number): number | null {
+  if (!createdAt) return null;
+  const created = new Date(createdAt).getTime();
+  if (!Number.isFinite(created)) return null;
+  return Math.max(0, Math.floor((now - created) / 60_000));
+}
+
+function queueRisk(job: OpsJob, now: number): QueueRisk {
+  if (job.urgency === "critical" && !job.offer_active) return "critical";
+  if (job.offer_active) return "normal";
+  const waiting = waitingMinutes(job.created_at, now);
+  if (waiting === null) return "normal";
+  if (waiting >= DISPATCH_STALLED_MINUTES) return "stalled";
+  if (job.dispatch_attempts === 0 && waiting >= DISPATCH_ACK_SLA_MINUTES) return "ack_breached";
+  return "normal";
+}
+
+function riskLabel(risk: QueueRisk): string | null {
+  if (risk === "critical") return "Critical · act now";
+  if (risk === "stalled") return "Stalled";
+  if (risk === "ack_breached") return "Ack SLA breached";
+  return null;
+}
+
 export function LiveQueue({ mode }: { mode: ConsoleMode }) {
   const router = useRouter();
   const [queue, setQueue] = useState<OpsJob[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("unsupported");
+  const previousJobIds = useRef<Set<string> | null>(null);
+  const notifiedRisks = useRef(new Set<string>());
   // ClueXP ops dispatches from the global pool; a provider company dispatches
   // its own org-scoped queue. Same UI, different tenant-scoped endpoint.
   const apiPrefix = mode === "org" ? "/api/provider" : "/api/ops";
@@ -212,6 +258,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
       const res = await fetch(`${apiPrefix}/queue`);
       if (!res.ok) throw new Error(`${res.status}`);
       setQueue(await res.json());
+      setNow(Date.now());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load queue");
@@ -224,15 +271,80 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
     return () => window.clearInterval(id);
   }, [fetchQueue]);
 
+  useEffect(() => {
+    setNotificationPermission("Notification" in window ? Notification.permission : "unsupported");
+  }, []);
+
+  const risks = useMemo(
+    () => new Map((queue ?? []).map((job) => [job.id, queueRisk(job, now)])),
+    [queue, now],
+  );
+  const attentionCount = [...risks.values()].filter((risk) => risk !== "normal").length;
+  const criticalCount = [...risks.values()].filter((risk) => risk === "critical").length;
+
+  useEffect(() => {
+    if (mode !== "org" || queue === null) return;
+    const currentIds = new Set(queue.map((job) => job.id));
+    const previousIds = previousJobIds.current;
+    previousJobIds.current = currentIds;
+    if (!("Notification" in window) || notificationPermission !== "granted") return;
+
+    for (const job of queue) {
+      const risk = risks.get(job.id) ?? "normal";
+      const isNew = previousIds !== null && !previousIds.has(job.id);
+      const riskKey = `${job.id}:${risk}`;
+      if (!isNew && risk === "normal") continue;
+      if (!isNew && notifiedRisks.current.has(riskKey)) continue;
+      notifiedRisks.current.add(riskKey);
+      const label = riskLabel(risk);
+      new Notification(isNew ? "New dispatch request" : label ?? "Dispatch queue update", {
+        body: `${job.urgency ? `${job.urgency} urgency · ` : ""}${label ?? "Open the staffed dispatch console to review."}`,
+        tag: riskKey,
+      });
+    }
+  }, [mode, notificationPermission, queue, risks]);
+
+  const enableBrowserAlerts = useCallback(async () => {
+    if (!("Notification" in window)) return;
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+  }, []);
+
   return (
     <div>
       <PageHeader
         kicker={mode === "org" ? "Company dispatch queue" : "Ops dispatch queue"}
         title="Live Dispatch Queue"
         description="All pending jobs in arrival order. Click a job to view candidates and send an assignment offer."
-        actions={<Button variant="outline" onClick={fetchQueue}>Refresh</Button>}
+        actions={
+          <div className="flex flex-wrap gap-2">
+            {mode === "org" && notificationPermission !== "unsupported" ? (
+              <Button variant="outline" onClick={enableBrowserAlerts} disabled={notificationPermission !== "default"}>
+                {notificationPermission === "granted" ? <BellRing /> : <Bell />}
+                {notificationPermission === "granted"
+                  ? "Browser alerts on"
+                  : notificationPermission === "denied"
+                    ? "Browser alerts blocked"
+                    : "Enable browser alerts"}
+              </Button>
+            ) : null}
+            <Button variant="outline" onClick={fetchQueue}>Refresh</Button>
+          </div>
+        }
       />
       {error ? <div className="mb-4 rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+      {mode === "org" ? (
+        <div className={`mb-4 rounded-md border p-3 text-sm ${attentionCount > 0 ? "border-destructive/35 bg-destructive/10 text-destructive" : "border-border bg-secondary/30 text-muted-foreground"}`} role={attentionCount > 0 ? "alert" : undefined}>
+          <div className="font-medium">
+            {attentionCount > 0
+              ? `${attentionCount} job${attentionCount === 1 ? "" : "s"} need immediate dispatcher attention${criticalCount > 0 ? ` · ${criticalCount} critical` : ""}`
+              : "Dispatcher queue is within the staffed-console SLA"}
+          </div>
+          <div className="mt-1 text-xs">
+            Acknowledge within {DISPATCH_ACK_SLA_MINUTES}m; unassigned jobs are stalled at {DISPATCH_STALLED_MINUTES}m. Browser alerts work only while this console is open and are not a substitute for production SMS/push escalation.
+          </div>
+        </div>
+      ) : null}
       {queue === null && !error ? (
         <LoadingSkeleton />
       ) : queue && queue.length === 0 ? (
@@ -255,10 +367,13 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {(queue ?? []).map((job) => (
+                  {(queue ?? []).map((job) => {
+                    const risk = risks.get(job.id) ?? "normal";
+                    const label = riskLabel(risk);
+                    return (
                     <tr
                       key={job.id}
-                      className="border-t border-border transition-colors hover:bg-secondary/40 cursor-pointer"
+                      className={`border-t transition-colors hover:bg-secondary/40 cursor-pointer ${risk === "normal" ? "border-border" : "border-destructive/35 bg-destructive/5"}`}
                       onClick={() => router.push(`/queue/${job.id}`)}
                     >
                       <td className="px-4 py-3 font-medium">{job.address ?? "—"}</td>
@@ -267,7 +382,10 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                       <td className="px-4 py-3">
                         <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
                       </td>
-                      <td className="px-4 py-3 tabular-nums text-muted-foreground">{ageLabel(job.created_at)}</td>
+                      <td className="px-4 py-3 tabular-nums text-muted-foreground">
+                        <div>{ageLabel(job.created_at)}</div>
+                        {label ? <Badge className="mt-1" variant={risk === "ack_breached" ? "warn" : "danger"}>{label}</Badge> : null}
+                      </td>
                       <td className="px-4 py-3 tabular-nums text-muted-foreground">{job.dispatch_attempts}</td>
                       <td className="px-4 py-3">
                         {job.offer_active
@@ -280,7 +398,8 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                         </Button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

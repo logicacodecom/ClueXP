@@ -34,7 +34,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     ...mappedNav,
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
     { ...reportsNav, label: "Completed", href: "/completed" },
-    { ...adminNav, label: "Users", href: "/users" },
+    ...(session.user.roles.includes("provider_admin") ? [{ ...adminNav, label: "Users", href: "/users" }] : []),
   ];
   return (
     <AppShell
