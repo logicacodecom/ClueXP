@@ -623,6 +623,9 @@ type OpsCandidate = {
   id: string;
   display_name: string | null;
   skills: string[];
+  required_skill?: string | null;
+  organization_supports_skill?: boolean;
+  technician_supports_skill?: boolean;
   skills_match: boolean;
   dist_km: number | null;
   eta_min: number | null;
@@ -691,6 +694,22 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
     } finally {
       setAssigning(null);
     }
+  }
+
+  function candidateFlags(tech: {
+    is_online?: boolean;
+    is_busy?: boolean;
+    skills_match?: boolean;
+    organization_supports_skill?: boolean;
+    technician_supports_skill?: boolean;
+  }) {
+    return [
+      !tech.is_online && "offline/stale",
+      tech.is_busy && "busy",
+      tech.organization_supports_skill === false && "company does not offer this service",
+      tech.organization_supports_skill !== false && tech.technician_supports_skill === false && "technician missing required skill",
+      tech.skills_match === false && tech.organization_supports_skill !== false && tech.technician_supports_skill !== false && "missing required skill",
+    ].filter(Boolean) as string[];
   }
 
   function isFlagged(tech: { is_online?: boolean; is_busy?: boolean; skills_match?: boolean }) {
@@ -766,6 +785,8 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                         <Badge variant={tech.is_online ? "success" : "neutral"}>{tech.is_online ? "Online" : "Offline"}</Badge>
                         <Badge variant={tech.is_busy ? "warn" : "outline"}>{tech.is_busy ? "Busy" : "Free"}</Badge>
                         {tech.skills_match ? <Badge variant="success">Skill match</Badge> : null}
+                        {tech.organization_supports_skill === false ? <Badge variant="danger">Company capability missing</Badge> : null}
+                        {tech.organization_supports_skill !== false && tech.technician_supports_skill === false ? <Badge variant="danger">Technician skill missing</Badge> : null}
                       </div>
                       <div className="mt-1 text-sm text-muted-foreground">
                         {tech.dist_km != null ? `${tech.dist_km} km` : "Distance unknown"} · ETA {tech.eta_min != null ? `${tech.eta_min}–${tech.eta_max}m` : "unknown"}
@@ -791,7 +812,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                   {canAssign && overrideFor === tech.id ? (
                     <div className="mt-3 rounded-md border border-warn/35 bg-warn/10 p-3">
                       <p className="text-sm font-medium text-warn">
-                        This technician is {[!tech.is_online && "offline/stale", tech.is_busy && "busy", tech.skills_match === false && "missing the skill"].filter(Boolean).join(", ")}. A reason is required to override.
+                        This assignment is flagged: {candidateFlags(tech).join(", ")}. A reason is required to override.
                       </p>
                       <input
                         className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"

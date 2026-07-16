@@ -1,5 +1,6 @@
 "use client";
 
+import { serviceSkillLabel } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, EmptyState, Input, PageHeader } from "@cluexp/console-ui";
 import { Building2 } from "lucide-react";
 import Link from "next/link";
@@ -17,6 +18,7 @@ interface OrganizationDetail {
   technicians: { id: string; display_name: string; technician_status: string; affiliation_status: string; affiliation_type: string }[];
   documents: { id: string; document_type: string; status: string; expires_at?: string | null }[];
   limits: { max_users: LimitField; max_technicians: LimitField };
+  capabilities: string[];
 }
 
 function statusVariant(status: string) {
@@ -282,6 +284,23 @@ export default function CompanyDetailPage() {
         </Card>
       </div>
       <div className="mt-6 space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Service capabilities</CardTitle>
+            <CardDescription>Company-selected active services. Providers edit this in their own Settings; Console owns the global catalog.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {(detail.capabilities ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No company service capabilities selected.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {(detail.capabilities ?? []).map((skill) => (
+                  <Badge key={skill} variant="outline">{serviceSkillLabel(skill)}</Badge>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
         <div>
           <h2 className="mb-3 text-lg font-semibold">Members</h2>
           <DataTable

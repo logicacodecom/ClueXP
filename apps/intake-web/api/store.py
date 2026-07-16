@@ -4842,6 +4842,7 @@ class PostgresStore(Store):
         org["members"] = members
         org["technicians"] = technicians
         org["documents"] = documents
+        org["capabilities"] = await self.list_organization_capabilities(oid)
         return org
 
     async def list_technicians_admin(self, status: str | None = None) -> list[dict]:
