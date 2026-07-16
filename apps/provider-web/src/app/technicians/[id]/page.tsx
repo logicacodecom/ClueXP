@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../../frame";
+import { ProviderActionDialog } from "../../provider-action-dialog";
 
 interface ReviewSummary {
   count: number;
@@ -94,16 +95,15 @@ export default function ProviderTechnicianProfilePage() {
     });
   }, [refresh]);
 
-  async function mutateAffiliation(action: "suspend" | "end", verb: string) {
+  async function mutateAffiliation(action: "suspend" | "end", reason: string) {
     if (!technician) return;
-    if (!confirm(`${verb} ${technician.display_name ?? "this technician"}?`)) return;
     setBusy(true);
     setMessage(null);
     try {
       const response = await fetch(`/api/technicians/${technician.id}/affiliation/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({})
+        body: JSON.stringify({ reason })
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to update affiliation");
@@ -114,7 +114,9 @@ export default function ProviderTechnicianProfilePage() {
       setMessage("Affiliation suspended.");
       await refresh();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to update affiliation");
+      const error = cause instanceof Error ? cause : new Error("Unable to update affiliation");
+      setMessage(error.message);
+      throw error;
     } finally {
       setBusy(false);
     }
@@ -166,11 +168,41 @@ export default function ProviderTechnicianProfilePage() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {pending ? (
-                    <Button disabled={busy} variant="destructive" onClick={() => void mutateAffiliation("end", "Revoke the pending invite for")}><XCircle className="size-4" />Revoke invite</Button>
+                    <ProviderActionDialog
+                      confirmLabel="Revoke invite"
+                      description={`Revoke the pending company invitation for ${technician.display_name ?? "this technician"}. Their global profile will not be changed.`}
+                      disabled={busy}
+                      onConfirm={(reason) => mutateAffiliation("end", reason)}
+                      reasonMode="required"
+                      title={`Revoke invite for ${technician.display_name ?? "this technician"}?`}
+                      variant="destructive"
+                    >
+                      <Button variant="destructive"><XCircle className="size-4" />Revoke invite</Button>
+                    </ProviderActionDialog>
                   ) : technician.affiliation.status === "active" ? (
                     <>
-                      <Button disabled={busy} variant="outline" onClick={() => void mutateAffiliation("suspend", "Suspend the affiliation with")}><Ban className="size-4" />Suspend</Button>
-                      <Button disabled={busy} variant="destructive" onClick={() => void mutateAffiliation("end", "End the affiliation with")}><UserMinus className="size-4" />End affiliation</Button>
+                      <ProviderActionDialog
+                        confirmLabel="Suspend affiliation"
+                        description={`Temporarily stop ${technician.display_name ?? "this technician"} from receiving work through your company. Their global profile is not changed.`}
+                        disabled={busy}
+                        onConfirm={(reason) => mutateAffiliation("suspend", reason)}
+                        reasonMode="required"
+                        title={`Suspend ${technician.display_name ?? "this technician"}?`}
+                        variant="destructive"
+                      >
+                        <Button variant="outline"><Ban className="size-4" />Suspend</Button>
+                      </ProviderActionDialog>
+                      <ProviderActionDialog
+                        confirmLabel="End affiliation"
+                        description={`End your company's affiliation with ${technician.display_name ?? "this technician"}. History is preserved and they can be invited again later.`}
+                        disabled={busy}
+                        onConfirm={(reason) => mutateAffiliation("end", reason)}
+                        reasonMode="required"
+                        title={`End affiliation with ${technician.display_name ?? "this technician"}?`}
+                        variant="destructive"
+                      >
+                        <Button variant="destructive"><UserMinus className="size-4" />End affiliation</Button>
+                      </ProviderActionDialog>
                     </>
                   ) : null}
                 </div>

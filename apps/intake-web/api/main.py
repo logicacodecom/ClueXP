@@ -1531,8 +1531,10 @@ async def provider_end_affiliation(
     provider can never end another company's affiliation. Closing the period preserves
     history and allows a later rejoin."""
     organization_id = _provider_organization_id(session)
-    reason = (payload.reason if payload else None) or None
-    result = await store.end_affiliation(organization_id, technician_id, reason=reason, status="ended")
+    reason = ((payload.reason if payload else None) or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A reason for ending the affiliation is required.")
+    result = await store.end_affiliation(organization_id, technician_id, reason=reason[:280], status="ended")
     if result is None:
         raise HTTPException(status_code=404, detail="No active affiliation with this technician")
     return result
@@ -1547,8 +1549,10 @@ async def provider_suspend_affiliation(
     """Temporarily suspend this company's affiliation with a technician (dispatch-
     ineligible, period stays open so it can be reactivated). Tenant-scoped."""
     organization_id = _provider_organization_id(session)
-    reason = (payload.reason if payload else None) or None
-    result = await store.end_affiliation(organization_id, technician_id, reason=reason, status="suspended")
+    reason = ((payload.reason if payload else None) or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A reason for suspending the affiliation is required.")
+    result = await store.end_affiliation(organization_id, technician_id, reason=reason[:280], status="suspended")
     if result is None:
         raise HTTPException(status_code=404, detail="No active affiliation with this technician")
     return result

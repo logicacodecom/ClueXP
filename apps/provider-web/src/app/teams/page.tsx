@@ -22,6 +22,7 @@ import {
 import { BriefcaseBusiness, CheckCircle2, Plus, ShieldCheck, Trash2, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
+import { ProviderActionDialog } from "../provider-action-dialog";
 
 interface Team {
   id: string;
@@ -94,8 +95,7 @@ export default function TeamsPage() {
     }
   }
 
-  async function del(path: string, confirmText: string | null) {
-    if (confirmText && !confirm(confirmText)) return;
+  async function del(path: string, successMessage: string) {
     setBusy(true);
     setMessage(null);
     try {
@@ -103,9 +103,33 @@ export default function TeamsPage() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(String(body.detail || "Unable to remove"));
       await refresh();
-      setMessage("Done.");
+      setMessage(successMessage);
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to remove");
+      const error = cause instanceof Error ? cause : new Error("Unable to remove");
+      setMessage(error.message);
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAffiliation(technician: Technician, action: "suspend" | "end", reason: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/technicians/${technician.id}/affiliation/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(body.detail || "Unable to update affiliation"));
+      await refresh();
+      setMessage(action === "suspend" ? `${technician.display_name}'s affiliation was suspended.` : `Affiliation with ${technician.display_name} ended.`);
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error("Unable to update affiliation");
+      setMessage(error.message);
+      throw error;
     } finally {
       setBusy(false);
     }
@@ -194,7 +218,15 @@ export default function TeamsPage() {
                     ) : manageMembers.map((t) => (
                       <div key={t.id} className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
                         <span className="truncate">{t.display_name}</span>
-                        <Button variant="ghost" size="sm" disabled={busy} onClick={() => void del(`/api/teams/${manageTeamId}/technicians/${t.id}`, null)}><X className="size-4" /></Button>
+                        <ProviderActionDialog
+                          confirmLabel="Remove from team"
+                          description={`Remove ${t.display_name} from this team. Their company affiliation and global profile will not change.`}
+                          disabled={busy}
+                          onConfirm={() => del(`/api/teams/${manageTeamId}/technicians/${t.id}`, `${t.display_name} was removed from the team.`)}
+                          title={`Remove ${t.display_name}?`}
+                        >
+                          <Button aria-label={`Remove ${t.display_name} from team`} variant="ghost" size="sm"><X className="size-4" /></Button>
+                        </ProviderActionDialog>
                       </div>
                     ))}
                   </div>
@@ -241,10 +273,16 @@ export default function TeamsPage() {
                         <TableCell className="tabular-nums">{team.member_count}</TableCell>
                         <TableCell><Badge variant={team.status === "active" ? "success" : "neutral"}>{team.status}</Badge></TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="ghost" size="sm" disabled={busy}
-                            onClick={() => void del(`/api/teams/${team.id}`, `Delete team "${team.name}"? Members are unassigned; technician profiles and affiliations are untouched.`)}
-                          ><Trash2 className="size-4" /></Button>
+                          <ProviderActionDialog
+                            confirmLabel="Delete team"
+                            description={`Delete ${team.name}. Members will be unassigned; technician profiles and affiliations remain unchanged.`}
+                            disabled={busy}
+                            onConfirm={() => del(`/api/teams/${team.id}`, `${team.name} was deleted.`)}
+                            title={`Delete ${team.name}?`}
+                            variant="destructive"
+                          >
+                            <Button aria-label={`Delete ${team.name}`} variant="ghost" size="sm"><Trash2 className="size-4" /></Button>
+                          </ProviderActionDialog>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -336,14 +374,28 @@ export default function TeamsPage() {
                           <TableCell className="text-right">
                             {affiliation && affiliation.status === "active" ? (
                               <div className="flex justify-end gap-1.5">
-                                <Button
-                                  variant="outline" size="sm"
-                                  onClick={() => submit(`/api/technicians/${technician.id}/affiliation/suspend`, {}, () => void refresh())}
-                                >Suspend</Button>
-                                <Button
-                                  variant="outline" size="sm"
-                                  onClick={() => { if (confirm(`End the affiliation with ${technician.display_name}? History is preserved and they can be re-invited later.`)) submit(`/api/technicians/${technician.id}/affiliation/end`, {}, () => void refresh()); }}
-                                >End</Button>
+                                <ProviderActionDialog
+                                  confirmLabel="Suspend affiliation"
+                                  description={`Temporarily stop ${technician.display_name} from receiving work through your company. Their global profile is not changed.`}
+                                  disabled={busy}
+                                  onConfirm={(reason) => updateAffiliation(technician, "suspend", reason)}
+                                  reasonMode="required"
+                                  title={`Suspend ${technician.display_name}?`}
+                                  variant="destructive"
+                                >
+                                  <Button variant="outline" size="sm">Suspend</Button>
+                                </ProviderActionDialog>
+                                <ProviderActionDialog
+                                  confirmLabel="End affiliation"
+                                  description={`End your company's affiliation with ${technician.display_name}. History is preserved and they can be invited again later.`}
+                                  disabled={busy}
+                                  onConfirm={(reason) => updateAffiliation(technician, "end", reason)}
+                                  reasonMode="required"
+                                  title={`End affiliation with ${technician.display_name}?`}
+                                  variant="destructive"
+                                >
+                                  <Button variant="outline" size="sm">End</Button>
+                                </ProviderActionDialog>
                               </div>
                             ) : affiliation && affiliation.status === "suspended" ? (
                               <span className="text-xs text-muted-foreground">Suspended</span>

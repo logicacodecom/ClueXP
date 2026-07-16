@@ -2911,6 +2911,8 @@ def test_provider_can_revoke_pending_invite_before_acceptance():
     client = TestClient(app)
 
     # Revoke = end the still-open (pending) affiliation period before the tech accepts.
+    missing_reason = client.post(f"/provider/technicians/{tid}/affiliation/end", json={}, headers=H)
+    assert missing_reason.status_code == 422
     revoke = client.post(f"/provider/technicians/{tid}/affiliation/end", json={"reason": "mistake"}, headers=H)
     assert revoke.status_code == 200
     assert revoke.json()["status"] == "ended"

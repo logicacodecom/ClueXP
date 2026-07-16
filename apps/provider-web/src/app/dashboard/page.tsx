@@ -19,8 +19,9 @@ import {
   TableHeader,
   TableRow,
 } from "@cluexp/console-ui";
-import { RefreshCw, Inbox, Send, AlertTriangle, Users, CheckCircle2 } from "lucide-react";
+import { RefreshCw, Inbox, Send, AlertTriangle, Users, CheckCircle2, FileCheck2 } from "lucide-react";
 import { AppFrame } from "../frame";
+import { buildCompanyCompliance, complianceCounts, type ProviderDocument } from "../compliance";
 
 type ActiveJob = {
   id: string;
@@ -69,6 +70,7 @@ function ProviderDashboard() {
   const [queue, setQueue] = useState<ActiveJob[]>([]);
   const [fleet, setFleet] = useState<FleetTech[]>([]);
   const [completedCount, setCompletedCount] = useState<number | null>(null);
+  const [companyDocuments, setCompanyDocuments] = useState<ProviderDocument[] | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
 
@@ -76,11 +78,12 @@ function ProviderDashboard() {
     setState("loading");
     setError(null);
     try {
-      const [jobsRes, queueRes, fleetRes, historyRes] = await Promise.all([
+      const [jobsRes, queueRes, fleetRes, historyRes, workspaceRes] = await Promise.all([
         fetch("/api/provider/jobs", { cache: "no-store" }),
         fetch("/api/provider/queue", { cache: "no-store" }),
         fetch("/api/provider/fleet", { cache: "no-store" }),
         fetch("/api/provider/jobs/history", { cache: "no-store" }),
+        fetch("/api/workspace", { cache: "no-store" }).catch(() => null),
       ]);
       if (!jobsRes.ok) throw new Error(`Could not load active jobs (${jobsRes.status})`);
       const jobsBody = (await jobsRes.json()) as ActiveJob[];
@@ -88,6 +91,12 @@ function ProviderDashboard() {
       setQueue(queueRes.ok ? ((await queueRes.json()) as ActiveJob[]) : []);
       setFleet(fleetRes.ok ? ((await fleetRes.json()) as FleetTech[]) : []);
       setCompletedCount(historyRes.ok ? ((await historyRes.json()) as unknown[]).length : null);
+      if (workspaceRes?.ok) {
+        const workspace = await workspaceRes.json() as { documents?: ProviderDocument[] };
+        setCompanyDocuments(workspace.documents ?? []);
+      } else {
+        setCompanyDocuments(null);
+      }
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load the dashboard");
@@ -109,6 +118,7 @@ function ProviderDashboard() {
   const disputedCount = jobs.filter((j) => j.status === "disputed").length;
   const availableTechs = fleet.filter((t) => t.is_available).length;
   const stat = (n: number) => (loading ? "—" : String(n));
+  const compliance = companyDocuments === null ? null : complianceCounts(buildCompanyCompliance(companyDocuments));
 
   return (
     <div className="space-y-6">
@@ -128,6 +138,32 @@ function ProviderDashboard() {
         <Card>
           <CardContent className="py-8 text-center text-sm text-destructive">{error}</CardContent>
         </Card>
+      ) : null}
+
+      {state === "ready" && compliance && (compliance.blocking > 0 || compliance.pending > 0 || compliance.expiring > 0) ? (
+        <Card className={compliance.blocking > 0 ? "border-destructive/40" : "border-amber-500/35"}>
+          <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center">
+            <div className={`flex size-10 shrink-0 items-center justify-center rounded-full ${compliance.blocking > 0 ? "bg-destructive/10 text-destructive" : "bg-amber-500/10 text-amber-500"}`}>
+              {compliance.blocking > 0 ? <AlertTriangle className="size-5" /> : <FileCheck2 className="size-5" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold">{compliance.blocking > 0 ? "Company documents need attention" : compliance.pending > 0 ? "Company documents are under review" : "Company documents expire soon"}</div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {[
+                  compliance.blocking > 0 ? `${compliance.blocking} missing, rejected, or expired` : null,
+                  compliance.pending > 0 ? `${compliance.pending} pending review` : null,
+                  compliance.expiring > 0 ? `${compliance.expiring} expiring within 30 days` : null,
+                ].filter(Boolean).join(" · ")}
+              </p>
+            </div>
+            <Button asChild variant={compliance.blocking > 0 ? "default" : "outline"}><Link href="/documents">Review documents</Link></Button>
+          </CardContent>
+        </Card>
+      ) : state === "ready" && compliance === null ? (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+          <span>Company compliance status is temporarily unavailable.</span>
+          <Button asChild size="sm" variant="ghost"><Link href="/documents">Open documents</Link></Button>
+        </div>
       ) : null}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
