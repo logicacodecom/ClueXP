@@ -47,7 +47,7 @@ from api.dispatch import (
 )
 from api import config
 from api.closeout_catalog import default_closeout_item_types
-from api.service_catalog import default_service_catalog
+from api.service_catalog import default_service_catalog, normalize_skill_code
 from api import settings as runtime_settings
 from api.schema import Ticket
 
@@ -56,6 +56,106 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # Demo/seed login password. Intentionally simple for the demo environment; override
 # via env. The JWT signing secret (AUTH_SECRET) is separate and must still be strong.
 DEMO_PASSWORD = os.environ.get("DEMO_SEED_PASSWORD", "123456")
+
+
+def _default_agreement(organization_id: str, technician_id: str) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": None,
+        "organization_id": str(organization_id),
+        "technician_id": str(technician_id),
+        "status": "draft",
+        "effective_from": None,
+        "effective_until": None,
+        "default_labor_cut_basis_points": 5000,
+        "tip_policy": "tech_keeps",
+        "tip_cut_basis_points": 10000,
+        "card_fee_policy": "company_pays",
+        "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0,
+        "service_area_counties": [],
+        "service_area_zipcodes": [],
+        "service_hours": {},
+        "rules": {"skill_cuts": {}, "category_cuts": {}, "targets": []},
+        "created_at": now,
+        "updated_at": now,
+        "updated_by": None,
+    }
+
+
+def _agreement_cut_basis_points(agreement: dict | None, skill_code: str | None) -> int:
+    if not agreement:
+        return 0
+    rules = agreement.get("rules") or {}
+    skill_cuts = rules.get("skill_cuts") or {}
+    category_cuts = rules.get("category_cuts") or {}
+    if skill_code and skill_code in skill_cuts:
+        return int(skill_cuts[skill_code])
+    category = skill_code.split(".", 1)[0] if skill_code and "." in skill_code else None
+    if category and category in category_cuts:
+        return int(category_cuts[category])
+    return int(agreement.get("default_labor_cut_basis_points") or 0)
+
+
+def calculate_settlement(job: dict, agreement: dict | None) -> dict:
+    closeout = job.get("closeout") or {}
+    lines = closeout.get("line_items") or []
+    commissionable_cents = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if line.get("compensation_eligible")
+    )
+    tech_reimbursement_cents = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if line.get("reimbursement_eligible") and line.get("provided_by") == "technician"
+    )
+    company_provided_items_cents = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if line.get("reimbursement_eligible") and line.get("provided_by") == "company"
+    )
+    skill_code = job.get("skill_code")
+    if skill_code is None and job.get("access_type"):
+        skill_code = normalize_skill_code(str(job.get("access_type")))
+    cut_bps = _agreement_cut_basis_points(agreement, skill_code)
+    labor_cut_cents = int(round(commissionable_cents * cut_bps / 10_000))
+    minimum = int((agreement or {}).get("minimum_payout_cents") or 0)
+    flat_bonus = int((agreement or {}).get("flat_job_bonus_cents") or 0)
+    service_payout_cents = max(labor_cut_cents, minimum if commissionable_cents > 0 else 0) + flat_bonus
+    tip_cents = int(closeout.get("tip_cents") or 0)
+    tip_policy = (agreement or {}).get("tip_policy") or "company_keeps"
+    tip_cut_bps = int((agreement or {}).get("tip_cut_basis_points") or (10000 if tip_policy == "tech_keeps" else 0))
+    tech_tip_cents = int(round(tip_cents * tip_cut_bps / 10_000)) if tip_policy in {"tech_keeps", "split"} else 0
+    total_cents = int(closeout.get("total_cents") or 0)
+    tax_cents = int(closeout.get("tax_cents") or 0)
+    card_fee_cents = int(closeout.get("card_fee_cents") or 0)
+    tech_payout_cents = service_payout_cents + tech_reimbursement_cents + tech_tip_cents
+    company_retained_cents = total_cents - tax_cents - card_fee_cents - tech_payout_cents
+    return {
+        "job_id": job.get("id") or closeout.get("job_id"),
+        "technician_id": job.get("fulfillment_technician_id"),
+        "technician_display_name": job.get("technician_display_name"),
+        "status": job.get("status"),
+        "finished_at": job.get("finished_at"),
+        "skill_code": skill_code,
+        "agreement_id": (agreement or {}).get("id"),
+        "agreement_status": (agreement or {}).get("status") or "missing",
+        "cut_basis_points": cut_bps,
+        "currency": closeout.get("currency", "USD"),
+        "customer_total_cents": total_cents,
+        "tax_cents": tax_cents,
+        "card_fee_cents": card_fee_cents,
+        "tip_cents": tip_cents,
+        "commissionable_cents": commissionable_cents,
+        "company_provided_items_cents": company_provided_items_cents,
+        "tech_reimbursement_cents": tech_reimbursement_cents,
+        "tech_service_payout_cents": service_payout_cents,
+        "tech_tip_cents": tech_tip_cents,
+        "tech_payout_cents": tech_payout_cents,
+        "company_retained_cents": company_retained_cents,
+        "closeout": closeout,
+    }
 
 
 def _new_tracking_token() -> str:
@@ -653,6 +753,21 @@ class Store:
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_provider_technician_agreement(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def upsert_provider_technician_agreement(
+        self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_provider_settlements(
+        self, org_id: str, *, limit: int = 100
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100
     ) -> list[dict]:  # pragma: no cover
@@ -702,6 +817,7 @@ class InMemoryStore(Store):
         self._service_skills: dict[str, dict] = {}
         self._closeout_item_types: dict[str, dict] = {}
         self._job_closeouts: dict[str, dict] = {}
+        self._technician_agreements: dict[tuple[str, str], dict] = {}
         self._organization_capabilities: dict[str, set[str]] = {}
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
@@ -1102,6 +1218,7 @@ class InMemoryStore(Store):
                 "affiliated_at": aff.get("starts_at"),
                 "is_pending_invite": aff.get("status") == "pending_invite",
             },
+            "agreement": await self.get_provider_technician_agreement(organization_id, technician_id),
             "team_memberships": memberships,
             "reviews": {
                 "company": self._review_summary(technician_id, organization_id),
@@ -1109,6 +1226,38 @@ class InMemoryStore(Store):
             },
             "documents": docs,
         }
+
+    async def get_provider_technician_agreement(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> dict | None:
+        aff = next((a for a in getattr(self, "_affiliations", [])
+                    if str(a.get("organization_id")) == str(organization_id)
+                    and str(a.get("technician_id")) == str(technician_id)
+                    and a.get("ended_at") is None), None)
+        if aff is None:
+            return None
+        row = self._technician_agreements.get((str(organization_id), str(technician_id)))
+        return dict(row) if row is not None else _default_agreement(str(organization_id), str(technician_id))
+
+    async def upsert_provider_technician_agreement(
+        self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None
+    ) -> dict | None:
+        current = await self.get_provider_technician_agreement(organization_id, technician_id)
+        if current is None:
+            return None
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            **current,
+            **data,
+            "id": current.get("id") or str(uuid4()),
+            "organization_id": str(organization_id),
+            "technician_id": str(technician_id),
+            "created_at": current.get("created_at") or now,
+            "updated_at": now,
+            "updated_by": updated_by,
+        }
+        self._technician_agreements[(str(organization_id), str(technician_id))] = row
+        return dict(row)
 
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
         techs = self._technicians = getattr(self, "_technicians", [])
@@ -1921,11 +2070,25 @@ class InMemoryStore(Store):
             out.append({
                 "id": jid, "status": status,
                 "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
+                "technician_display_name": None,
+                "access_type": getattr(self, "_job_access_type", {}).get(jid),
                 "review": await self.get_job_review(UUID(jid)),
                 "payments": await self.get_payment_reports(UUID(jid)),
                 "closeout": await self.get_job_closeout(UUID(jid)),
             })
         return out[:limit]
+
+    async def list_provider_settlements(self, org_id: str, *, limit: int = 100) -> list[dict]:
+        rows = await self.get_provider_job_history(org_id, limit=limit)
+        out = []
+        for row in rows:
+            tech_id = row.get("fulfillment_technician_id")
+            closeout = row.get("closeout")
+            if not tech_id or not closeout:
+                continue
+            agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), UUID(str(tech_id)))
+            out.append(calculate_settlement(row, agreement))
+        return out
 
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100
@@ -2747,6 +2910,38 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_job_closeout_line_items_job"
                 " on job_closeout_line_items (job_id, closeout_id)"
+            )
+            await conn.execute(
+                "create table if not exists technician_agreements ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  organization_id uuid not null references organizations(id) on delete cascade,"
+                "  technician_id uuid not null references technicians(id) on delete cascade,"
+                "  status text not null default 'draft' check (status in ('draft','active','paused','archived')),"
+                "  effective_from date,"
+                "  effective_until date,"
+                "  default_labor_cut_basis_points integer not null default 5000"
+                "    check (default_labor_cut_basis_points between 0 and 10000),"
+                "  tip_policy text not null default 'tech_keeps'"
+                "    check (tip_policy in ('tech_keeps','company_keeps','split')),"
+                "  tip_cut_basis_points integer not null default 10000"
+                "    check (tip_cut_basis_points between 0 and 10000),"
+                "  card_fee_policy text not null default 'company_pays'"
+                "    check (card_fee_policy in ('company_pays','deduct_from_company','split')),"
+                "  minimum_payout_cents integer not null default 0 check (minimum_payout_cents >= 0),"
+                "  flat_job_bonus_cents integer not null default 0 check (flat_job_bonus_cents >= 0),"
+                "  service_area_counties jsonb not null default '[]',"
+                "  service_area_zipcodes jsonb not null default '[]',"
+                "  service_hours jsonb not null default '{}',"
+                "  rules jsonb not null default '{}',"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  updated_by uuid references users(id),"
+                "  unique (organization_id, technician_id)"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_technician_agreements_org_tech"
+                " on technician_agreements (organization_id, technician_id, status)"
             )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
@@ -4826,7 +5021,7 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select j.id, j.status, j.address, j.situation, j.urgency, j.created_at,"
                 " coalesce(j.confirmed_at, j.closed_at, j.cancelled_at, j.disputed_at, j.updated_at),"
-                " j.fulfillment_technician_id, t.display_name,"
+                " j.fulfillment_technician_id, t.display_name, j.access_type,"
                 " r.rating, r.comment, r.created_at"
                 " from jobs j"
                 " left join technicians t on t.id = j.fulfillment_technician_id"
@@ -4850,10 +5045,11 @@ class PostgresStore(Store):
                 "finished_at": r[6].isoformat() if r[6] else None,
                 "fulfillment_technician_id": str(r[7]) if r[7] else None,
                 "technician_display_name": r[8],
+                "access_type": r[9],
                 "review": (
-                    {"rating": r[9], "comment": r[10],
-                     "created_at": r[11].isoformat() if r[11] else None}
-                    if r[9] is not None else None
+                    {"rating": r[10], "comment": r[11],
+                     "created_at": r[12].isoformat() if r[12] else None}
+                    if r[10] is not None else None
                 ),
                 "payments": payments.get(str(r[0]), {"technician": None, "customer": None}),
                 "closeout": closeouts.get(str(r[0])),
@@ -4866,6 +5062,17 @@ class PostgresStore(Store):
             "(j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)",
             (str(org_id), str(org_id)), limit,
         )
+
+    async def list_provider_settlements(self, org_id: str, *, limit: int = 100) -> list[dict]:
+        rows = await self.get_provider_job_history(org_id, limit=limit)
+        out = []
+        for row in rows:
+            tech_id = row.get("fulfillment_technician_id")
+            if not tech_id or not row.get("closeout"):
+                continue
+            agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), UUID(str(tech_id)))
+            out.append(calculate_settlement(row, agreement))
+        return out
 
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100
@@ -6398,6 +6605,7 @@ class PostgresStore(Store):
                 "affiliated_at": row[14].isoformat() if row[14] else None,
                 "is_pending_invite": row[10] == "pending_invite",
             },
+            "agreement": await self.get_provider_technician_agreement(organization_id, technician_id),
             "team_memberships": [
                 {"team_id": str(tr[0]), "name": tr[1], "role": tr[2]} for tr in team_rows
             ],
@@ -6409,6 +6617,113 @@ class PostgresStore(Store):
             },
             "documents": docs,
         }
+
+    @staticmethod
+    def _agreement_row(row: tuple, organization_id: UUID, technician_id: UUID) -> dict:
+        if row is None:
+            return _default_agreement(str(organization_id), str(technician_id))
+        return {
+            "id": str(row[0]),
+            "organization_id": str(row[1]),
+            "technician_id": str(row[2]),
+            "status": row[3],
+            "effective_from": row[4].isoformat() if row[4] else None,
+            "effective_until": row[5].isoformat() if row[5] else None,
+            "default_labor_cut_basis_points": row[6],
+            "tip_policy": row[7],
+            "tip_cut_basis_points": row[8],
+            "card_fee_policy": row[9],
+            "minimum_payout_cents": row[10],
+            "flat_job_bonus_cents": row[11],
+            "service_area_counties": row[12] or [],
+            "service_area_zipcodes": row[13] or [],
+            "service_hours": row[14] or {},
+            "rules": row[15] or {},
+            "created_at": row[16].isoformat() if row[16] else None,
+            "updated_at": row[17].isoformat() if row[17] else None,
+            "updated_by": str(row[18]) if row[18] else None,
+        }
+
+    async def get_provider_technician_agreement(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select 1 from organization_technicians"
+                " where organization_id = %s and technician_id = %s and ended_at is null",
+                (str(organization_id), str(technician_id)),
+            )
+            if await cur.fetchone() is None:
+                return None
+            cur = await conn.execute(
+                "select id, organization_id, technician_id, status, effective_from, effective_until,"
+                " default_labor_cut_basis_points, tip_policy, tip_cut_basis_points,"
+                " card_fee_policy, minimum_payout_cents, flat_job_bonus_cents,"
+                " service_area_counties, service_area_zipcodes, service_hours, rules,"
+                " created_at, updated_at, updated_by"
+                " from technician_agreements where organization_id = %s and technician_id = %s",
+                (str(organization_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        return self._agreement_row(row, organization_id, technician_id)
+
+    async def upsert_provider_technician_agreement(
+        self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None
+    ) -> dict | None:
+        from psycopg.types.json import Jsonb
+
+        if await self.get_provider_technician_agreement(organization_id, technician_id) is None:
+            return None
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_agreements"
+                " (organization_id, technician_id, status, effective_from, effective_until,"
+                "  default_labor_cut_basis_points, tip_policy, tip_cut_basis_points,"
+                "  card_fee_policy, minimum_payout_cents, flat_job_bonus_cents,"
+                "  service_area_counties, service_area_zipcodes, service_hours, rules, updated_by)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " on conflict (organization_id, technician_id) do update set"
+                "  status = excluded.status,"
+                "  effective_from = excluded.effective_from,"
+                "  effective_until = excluded.effective_until,"
+                "  default_labor_cut_basis_points = excluded.default_labor_cut_basis_points,"
+                "  tip_policy = excluded.tip_policy,"
+                "  tip_cut_basis_points = excluded.tip_cut_basis_points,"
+                "  card_fee_policy = excluded.card_fee_policy,"
+                "  minimum_payout_cents = excluded.minimum_payout_cents,"
+                "  flat_job_bonus_cents = excluded.flat_job_bonus_cents,"
+                "  service_area_counties = excluded.service_area_counties,"
+                "  service_area_zipcodes = excluded.service_area_zipcodes,"
+                "  service_hours = excluded.service_hours,"
+                "  rules = excluded.rules,"
+                "  updated_by = excluded.updated_by,"
+                "  updated_at = now()"
+                " returning id, organization_id, technician_id, status, effective_from, effective_until,"
+                " default_labor_cut_basis_points, tip_policy, tip_cut_basis_points,"
+                " card_fee_policy, minimum_payout_cents, flat_job_bonus_cents,"
+                " service_area_counties, service_area_zipcodes, service_hours, rules,"
+                " created_at, updated_at, updated_by",
+                (
+                    str(organization_id),
+                    str(technician_id),
+                    data["status"],
+                    data.get("effective_from"),
+                    data.get("effective_until"),
+                    data["default_labor_cut_basis_points"],
+                    data["tip_policy"],
+                    data["tip_cut_basis_points"],
+                    data["card_fee_policy"],
+                    data["minimum_payout_cents"],
+                    data["flat_job_bonus_cents"],
+                    Jsonb(data.get("service_area_counties") or []),
+                    Jsonb(data.get("service_area_zipcodes") or []),
+                    Jsonb(data.get("service_hours") or {}),
+                    Jsonb(data.get("rules") or {}),
+                    str(updated_by) if updated_by else None,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._agreement_row(row, organization_id, technician_id)
 
     async def create_affiliated_technician(self, organization_id: UUID, data: dict) -> dict:
         email = (data.get("email") or "").strip() or None

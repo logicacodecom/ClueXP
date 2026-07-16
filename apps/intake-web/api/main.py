@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -405,6 +405,22 @@ class ProviderFinancialSettingsUpdate(BaseModel):
     tax_rate_basis_points: int | None = None
     card_fee_basis_points: int | None = None
     card_fee_fixed_cents: int | None = None
+
+
+class ProviderTechnicianAgreementUpdate(BaseModel):
+    status: str = "draft"
+    effective_from: str | None = None
+    effective_until: str | None = None
+    default_labor_cut_basis_points: int = 5000
+    tip_policy: str = "tech_keeps"
+    tip_cut_basis_points: int = 10000
+    card_fee_policy: str = "company_pays"
+    minimum_payout_cents: int = 0
+    flat_job_bonus_cents: int = 0
+    service_area_counties: list[str] = []
+    service_area_zipcodes: list[str] = []
+    service_hours: dict[str, Any] = {}
+    rules: dict[str, Any] = {}
 
 
 class CloseoutItemTypePayload(BaseModel):
@@ -1701,6 +1717,77 @@ async def get_provider_technician(
     if detail is None:
         raise HTTPException(status_code=404, detail="Technician is not affiliated with your company")
     return detail
+
+
+def _agreement_payload(payload: ProviderTechnicianAgreementUpdate) -> dict[str, Any]:
+    status = payload.status.strip().lower()
+    if status not in {"draft", "active", "paused", "archived"}:
+        raise HTTPException(status_code=422, detail="Agreement status must be draft, active, paused, or archived.")
+    if not (0 <= payload.default_labor_cut_basis_points <= 10000):
+        raise HTTPException(status_code=422, detail="Default cut must be between 0 and 10000 basis points.")
+    if payload.tip_policy not in {"tech_keeps", "company_keeps", "split"}:
+        raise HTTPException(status_code=422, detail="Invalid tip policy.")
+    if not (0 <= payload.tip_cut_basis_points <= 10000):
+        raise HTTPException(status_code=422, detail="Tip cut must be between 0 and 10000 basis points.")
+    if payload.card_fee_policy not in {"company_pays", "deduct_from_company", "split"}:
+        raise HTTPException(status_code=422, detail="Invalid card fee policy.")
+    if payload.minimum_payout_cents < 0 or payload.flat_job_bonus_cents < 0:
+        raise HTTPException(status_code=422, detail="Payout floors and bonuses must be zero or greater.")
+    rules = payload.rules or {}
+    for group in ("skill_cuts", "category_cuts"):
+        cuts = rules.get(group) or {}
+        if not isinstance(cuts, dict):
+            raise HTTPException(status_code=422, detail=f"{group} must be an object.")
+        for code, bps in cuts.items():
+            _validate_catalog_code(str(code))
+            if not isinstance(bps, int) or not (0 <= bps <= 10000):
+                raise HTTPException(status_code=422, detail=f"{group}.{code} must be 0-10000 basis points.")
+    return {
+        "status": status,
+        "effective_from": payload.effective_from,
+        "effective_until": payload.effective_until,
+        "default_labor_cut_basis_points": payload.default_labor_cut_basis_points,
+        "tip_policy": payload.tip_policy,
+        "tip_cut_basis_points": payload.tip_cut_basis_points,
+        "card_fee_policy": payload.card_fee_policy,
+        "minimum_payout_cents": payload.minimum_payout_cents,
+        "flat_job_bonus_cents": payload.flat_job_bonus_cents,
+        "service_area_counties": [item.strip() for item in payload.service_area_counties if item.strip()],
+        "service_area_zipcodes": [item.strip() for item in payload.service_area_zipcodes if item.strip()],
+        "service_hours": payload.service_hours or {},
+        "rules": rules,
+    }
+
+
+@app.get("/provider/technicians/{technician_id}/agreement")
+async def get_provider_technician_agreement(
+    technician_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    agreement = await store.get_provider_technician_agreement(organization_id, technician_id)
+    if agreement is None:
+        raise HTTPException(status_code=404, detail="Technician is not affiliated with your company")
+    return agreement
+
+
+@app.patch("/provider/technicians/{technician_id}/agreement")
+async def update_provider_technician_agreement(
+    technician_id: UUID,
+    payload: ProviderTechnicianAgreementUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    agreement = await store.upsert_provider_technician_agreement(
+        organization_id,
+        technician_id,
+        _agreement_payload(payload),
+        updated_by=session.get("user", {}).get("id"),
+    )
+    if agreement is None:
+        raise HTTPException(status_code=404, detail="Technician is not affiliated with your company")
+    return agreement
 
 
 @app.post("/provider/documents/upload-intent", response_model=PhotoIntentResponse)
@@ -3708,6 +3795,40 @@ async def provider_job_history(
     the technician's collection and the customer's payment. Tenant-scoped."""
     org_id = _require_dispatch_org(session)
     return await store.get_provider_job_history(org_id)
+
+
+def _csv_escape(value: Any) -> str:
+    text = "" if value is None else str(value)
+    if any(ch in text for ch in [",", "\"", "\n", "\r"]):
+        return "\"" + text.replace("\"", "\"\"") + "\""
+    return text
+
+
+@app.get("/provider/settlements", response_model=None)
+async def provider_settlements(
+    format: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]] | Response:
+    """Provider settlement rows derived from technician closeouts and the
+    provider-tech agreement. Parts/items are excluded from commission and
+    tech-provided reimbursable items are separated for settlement."""
+    org_id = _require_dispatch_org(session)
+    rows = await store.list_provider_settlements(org_id)
+    if format == "csv":
+        columns = [
+            "job_id", "technician_id", "technician_display_name", "status", "finished_at",
+            "agreement_status", "cut_basis_points", "customer_total_cents", "tax_cents",
+            "card_fee_cents", "tip_cents", "commissionable_cents",
+            "company_provided_items_cents", "tech_reimbursement_cents",
+            "tech_service_payout_cents", "tech_tip_cents", "tech_payout_cents",
+            "company_retained_cents",
+        ]
+        body = "\n".join(
+            [",".join(columns)]
+            + [",".join(_csv_escape(row.get(col)) for col in columns) for row in rows]
+        )
+        return Response(content=body + "\n", media_type="text/csv")
+    return rows
 
 
 _ASSIGNED_LADDER = [STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS]

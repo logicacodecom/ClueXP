@@ -3093,6 +3093,135 @@ def test_provider_technician_detail_tenant_scoped_and_read_only():
     assert miss.status_code == 404
 
 
+def test_provider_technician_agreement_is_affiliation_scoped():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org_a, tid)
+    _seed_affiliation(app_store, org_a, tid)
+    _seed_affiliation(app_store, org_b, tid)
+
+    admin_a = str(uuid4())
+    admin_b = str(uuid4())
+    app_store.users[admin_a] = {
+        "id": admin_a, "email": f"agr_a_{admin_a[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin A", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org_a, "organization_name": "A",
+    }
+    app_store.users[admin_b] = {
+        "id": admin_b, "email": f"agr_b_{admin_b[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin B", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org_b, "organization_name": "B",
+    }
+    client = TestClient(app)
+    hdr_a = {"Authorization": f"Bearer {create_access_token({'sub': admin_a, 'id': admin_a, 'roles': ['provider_admin']})}"}
+    hdr_b = {"Authorization": f"Bearer {create_access_token({'sub': admin_b, 'id': admin_b, 'roles': ['provider_admin']})}"}
+
+    payload = {
+        "status": "active",
+        "default_labor_cut_basis_points": 6000,
+        "tip_policy": "tech_keeps",
+        "tip_cut_basis_points": 10000,
+        "card_fee_policy": "company_pays",
+        "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0,
+        "service_area_counties": ["Orange"],
+        "service_area_zipcodes": ["32801"],
+        "service_hours": {"mon": ["08:00-18:00"]},
+        "rules": {"skill_cuts": {"locksmith.vehicle_key_programming": 7000}},
+    }
+    saved = client.patch(f"/provider/technicians/{tid}/agreement", json=payload, headers=hdr_a)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["default_labor_cut_basis_points"] == 6000
+
+    scoped_a = client.get(f"/provider/technicians/{tid}", headers=hdr_a)
+    scoped_b = client.get(f"/provider/technicians/{tid}", headers=hdr_b)
+    assert scoped_a.status_code == 200, scoped_a.text
+    assert scoped_b.status_code == 200, scoped_b.text
+    assert scoped_a.json()["agreement"]["default_labor_cut_basis_points"] == 6000
+    assert scoped_b.json()["agreement"]["default_labor_cut_basis_points"] == 5000
+
+
+def test_provider_settlement_excludes_parts_and_reimburses_tech_items():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid, jid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tid
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+    app_store._job_access_type[jid] = "locksmith.vehicle_key_programming"
+
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"set_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+
+    assert client.patch(
+        f"/provider/technicians/{tid}/agreement",
+        json={
+            "status": "active",
+            "default_labor_cut_basis_points": 6000,
+            "tip_policy": "tech_keeps",
+            "tip_cut_basis_points": 10000,
+            "card_fee_policy": "company_pays",
+            "minimum_payout_cents": 0,
+            "flat_job_bonus_cents": 0,
+            "rules": {},
+        },
+        headers=H,
+    ).status_code == 200
+    asyncio.run(app_store.record_job_closeout({
+        "job_id": jid,
+        "reported_by": "technician",
+        "currency": "USD",
+        "method": "cash",
+        "subtotal_cents": 17500,
+        "taxable_subtotal_cents": 15000,
+        "tax_rate_basis_points": 0,
+        "tax_cents": 0,
+        "tip_cents": 2000,
+        "card_fee_basis_points": 0,
+        "card_fee_fixed_cents": 0,
+        "card_fee_cents": 0,
+        "total_cents": 19500,
+        "settings_snapshot": {},
+        "line_items": [
+            {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": 10000, "line_total_cents": 10000, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+            {"line_number": 2, "item_type_code": "hardware", "description": "Lock", "quantity": 1, "unit_amount_cents": 5000, "line_total_cents": 5000, "taxable": True, "provided_by": "company", "compensation_eligible": False, "reimbursement_eligible": True, "note": None},
+            {"line_number": 3, "item_type_code": "key_code_purchase", "description": "Code", "quantity": 1, "unit_amount_cents": 2500, "line_total_cents": 2500, "taxable": False, "provided_by": "technician", "compensation_eligible": False, "reimbursement_eligible": True, "note": "purchase"},
+        ],
+    }))
+
+    report = client.get("/provider/settlements", headers=H)
+    assert report.status_code == 200, report.text
+    row = next(item for item in report.json() if item["job_id"] == jid)
+    assert row["commissionable_cents"] == 10000
+    assert row["company_provided_items_cents"] == 5000
+    assert row["tech_reimbursement_cents"] == 2500
+    assert row["tech_service_payout_cents"] == 6000
+    assert row["tech_tip_cents"] == 2000
+    assert row["tech_payout_cents"] == 10500
+    assert row["company_retained_cents"] == 9000
+
+    csv = client.get("/provider/settlements?format=csv", headers=H)
+    assert csv.status_code == 200
+    assert "tech_payout_cents" in csv.text
+
+
 def test_provider_team_membership_add_remove_and_affiliation_required():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
