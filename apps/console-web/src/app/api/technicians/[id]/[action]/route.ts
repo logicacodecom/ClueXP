@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
-const ACTIONS = new Set(["approve", "reject"]);
+const ACTIONS = new Set(["approve", "reject", "suspend", "reactivate"]);
 
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string; action: string }> }) {
   const token = request.cookies.get("cluexp_access_token")?.value;

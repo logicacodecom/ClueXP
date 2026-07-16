@@ -3246,6 +3246,35 @@ def test_admin_org_and_tech_directories_require_platform_admin():
     assert client.get(f"/admin/technicians/{uuid4()}", headers=H).status_code == 404
 
 
+def test_admin_can_suspend_and_reactivate_technician():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin_uid = str(uuid4())
+    tech_id = str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    app_store._technicians = [{
+        "id": tech_id,
+        "display_name": "Riley Harper",
+        "status": "active",
+        "vetting_status": "verified",
+        "is_available": True,
+    }]
+    token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    H = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app)
+
+    suspended = client.post(f"/admin/technicians/{tech_id}/suspend", headers=H)
+    assert suspended.status_code == 200, suspended.text
+    assert suspended.json()["status"] == "suspended"
+    assert app_store._technicians[0]["is_available"] is False
+
+    reactivated = client.post(f"/admin/technicians/{tech_id}/reactivate", headers=H)
+    assert reactivated.status_code == 200, reactivated.text
+    assert reactivated.json()["status"] == "active"
+
+
 def test_admin_organization_limits_default_then_override_then_clear():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

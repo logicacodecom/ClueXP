@@ -693,6 +693,29 @@ async def reject_technician(
     return result
 
 
+@app.post("/admin/technicians/{technician_id}/suspend")
+async def suspend_technician(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Ops suspends a technician globally, making them unavailable for dispatch."""
+    require_any_role(session, {"platform_admin"})
+    result = await store.set_technician_status(technician_id, "suspended")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
+@app.post("/admin/technicians/{technician_id}/reactivate")
+async def reactivate_technician(
+    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.set_technician_status(technician_id, "active")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
 @app.post("/admin/organizations/{organization_id}/reject")
 async def reject_organization(
     organization_id: UUID, session: dict[str, Any] = Depends(require_session)

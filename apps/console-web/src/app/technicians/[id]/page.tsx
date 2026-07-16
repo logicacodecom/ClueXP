@@ -38,7 +38,10 @@ export default function TechnicianDetailPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function runAction(action: "approve" | "reject") {
+  async function runAction(action: "approve" | "reject" | "suspend" | "reactivate") {
+    if (!detail) return;
+    const verb = action === "reactivate" ? "activate" : action;
+    if (!window.confirm(`${verb[0].toUpperCase()}${verb.slice(1)} ${detail.display_name}? This changes the technician's production dispatch access.`)) return;
     setBusy(action);
     setMessage(null);
     try {
@@ -51,6 +54,17 @@ export default function TechnicianDetailPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function openDocument(documentId: string) {
+    setMessage(null);
+    const response = await fetch(`/api/technician-documents/${encodeURIComponent(documentId)}/download`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to open document");
+      return;
+    }
+    window.open(body.download_url, "_blank", "noopener,noreferrer");
   }
 
   if (notFound) {
@@ -80,21 +94,31 @@ export default function TechnicianDetailPage() {
             <div><span className="text-muted-foreground">Vetting:</span> {detail.vetting_status}</div>
             <div><span className="text-muted-foreground">Photo:</span> {detail.profile_photo_status}</div>
             <div><span className="text-muted-foreground">Created:</span> {detail.created_at ? new Date(detail.created_at).toLocaleDateString() : "—"}</div>
-            {detail.status === "pending_vetting" ? (
-              <div className="flex gap-2 pt-2">
+            <div className="flex flex-wrap gap-2 pt-2">
+              {detail.status === "pending_vetting" ? (
+                <>
                 <Button disabled={busy !== null} onClick={() => void runAction("approve")}>Approve</Button>
                 <Button disabled={busy !== null} variant="outline" onClick={() => void runAction("reject")}>Reject</Button>
-              </div>
-            ) : null}
+                </>
+              ) : null}
+              {detail.status === "active" ? <Button disabled={busy !== null} variant="destructive" onClick={() => void runAction("suspend")}>Suspend</Button> : null}
+              {detail.status === "suspended" || detail.status === "rejected" ? <Button disabled={busy !== null} onClick={() => void runAction("reactivate")}>Activate</Button> : null}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader><CardTitle>Compliance documents</CardTitle></CardHeader>
           <CardContent className="space-y-2 text-sm">
-            {detail.documents.length === 0 ? <p className="text-muted-foreground">No documents on file.</p> : detail.documents.map((doc) => (
-              <div className="flex items-center justify-between gap-2" key={doc.id}>
-                <span>{doc.document_type.replaceAll("_", " ")}</span>
-                <Badge variant={statusVariant(doc.status)}>{doc.status}</Badge>
+            {detail.documents.length === 0 ? <p className="text-muted-foreground">No documents on file. Request license, insurance, and background-check documents before dispatch approval.</p> : detail.documents.map((doc) => (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3" key={doc.id}>
+                <div className="min-w-0">
+                  <div className="font-medium">{doc.document_type.replaceAll("_", " ")}</div>
+                  <div className="text-xs text-muted-foreground">{doc.expiration_date ? `Expires ${new Date(doc.expiration_date).toLocaleDateString()}` : "No expiry date"}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={statusVariant(doc.status)}>{doc.status.replaceAll("_", " ")}</Badge>
+                  <Button size="sm" variant="outline" onClick={() => void openDocument(doc.id)}>Open</Button>
+                </div>
               </div>
             ))}
           </CardContent>

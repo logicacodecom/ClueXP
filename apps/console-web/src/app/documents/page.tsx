@@ -45,24 +45,27 @@ export default function DocumentsPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    const [documentsResponse, photosResponse, techDocsResponse] = await Promise.all([
-      fetch("/api/documents", { cache: "no-store" }),
-      fetch("/api/technician-photos", { cache: "no-store" }),
-      fetch("/api/technician-documents", { cache: "no-store" })
+    const results = await Promise.all([
+      fetch("/api/documents", { cache: "no-store" }).then(async (response) => ({ key: "documents" as const, response, body: await response.json().catch(() => ({})) })),
+      fetch("/api/technician-photos", { cache: "no-store" }).then(async (response) => ({ key: "photos" as const, response, body: await response.json().catch(() => ({})) })),
+      fetch("/api/technician-documents", { cache: "no-store" }).then(async (response) => ({ key: "techDocs" as const, response, body: await response.json().catch(() => ({})) }))
     ]);
-    const documentsBody = await documentsResponse.json().catch(() => ({}));
-    const photosBody = await photosResponse.json().catch(() => ({}));
-    const techDocsBody = await techDocsResponse.json().catch(() => ({}));
-    if (!documentsResponse.ok) throw new Error(documentsBody.detail || "Unable to load documents");
-    if (!photosResponse.ok) throw new Error(photosBody.detail || "Unable to load technician photos");
-    if (!techDocsResponse.ok) throw new Error(techDocsBody.detail || "Unable to load technician documents");
-    setDocuments(documentsBody.documents ?? []);
-    setPhotos(photosBody.photos ?? []);
-    setTechDocs(techDocsBody.documents ?? []);
+    const errors: string[] = [];
+    for (const result of results) {
+      if (!result.response.ok) {
+        errors.push(result.body.detail || `Unable to load ${result.key}`);
+        continue;
+      }
+      if (result.key === "documents") setDocuments(result.body.documents ?? []);
+      if (result.key === "photos") setPhotos(result.body.photos ?? []);
+      if (result.key === "techDocs") setTechDocs(result.body.documents ?? []);
+    }
+    setMessage(errors.length ? `Some review queues could not load: ${errors.join("; ")}` : null);
   }, []);
   useEffect(() => { void refresh().catch((error) => setMessage(error.message)); }, [refresh]);
 
   async function decide(document: Document, status: "verified" | "rejected") {
+    if (!window.confirm(`${status === "verified" ? "Verify" : "Reject"} ${document.document_type.replaceAll("_", " ")} for ${document.owner_name || document.owner_type}?`)) return;
     setBusy(document.id);
     setMessage(null);
     try {
@@ -81,6 +84,7 @@ export default function DocumentsPage() {
   }
 
   async function decidePhoto(photo: TechnicianPhoto, status: "approved" | "rejected") {
+    if (!window.confirm(`${status === "approved" ? "Approve" : "Reject"} profile photo for ${photo.display_name || "this technician"}?`)) return;
     setBusy(`photo:${photo.technician_id}`);
     setMessage(null);
     try {
@@ -110,6 +114,7 @@ export default function DocumentsPage() {
   }
 
   async function decideTechDoc(doc: TechnicianDocument, status: "approved" | "rejected") {
+    if (!window.confirm(`${status === "approved" ? "Approve" : "Reject"} ${doc.document_type.replaceAll("_", " ")} for ${doc.technician_name || "this technician"}?`)) return;
     setBusy(`techdoc:${doc.id}`);
     setMessage(null);
     try {

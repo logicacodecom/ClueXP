@@ -89,4 +89,5 @@ TOKEN_ACTION_WINDOW_SECONDS = _int("TOKEN_ACTION_WINDOW_SECONDS", 60)
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
 LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)
-DEMO_SEED = os.environ.get("DEMO_SEED", "true").strip().lower() != "false"
+_demo_seed_default = "false" if IS_PRODUCTION else "true"
+DEMO_SEED = os.environ.get("DEMO_SEED", _demo_seed_default).strip().lower() != "false"

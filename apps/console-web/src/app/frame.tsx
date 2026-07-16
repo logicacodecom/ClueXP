@@ -3,12 +3,13 @@
 import { AppShell, MockAuthBoundary } from "@cluexp/console-ui";
 import type { NavItem } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { Building2, FileText, Settings, ShieldCheck, UserRound } from "lucide-react";
+import { Building2, FileText, LayoutDashboard, Settings, ShieldCheck, UserRound } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 
 const consoleNav: NavItem[] = [
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, group: "Operations" },
   { href: "/companies", label: "Companies", icon: Building2, group: "Workforce" },
   { href: "/technicians", label: "Technicians", icon: UserRound, group: "Workforce" },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck, group: "Workforce" },

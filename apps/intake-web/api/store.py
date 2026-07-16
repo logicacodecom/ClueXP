@@ -225,6 +225,9 @@ class Store:
     async def approve_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def set_technician_status(self, technician_id: UUID, status: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def approve_organization(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1896,6 +1899,23 @@ class InMemoryStore(Store):
 
     async def approve_technician(self, technician_id: UUID) -> dict | None:
         return None
+
+    async def set_technician_status(self, technician_id: UUID, status: str) -> dict | None:
+        tid = str(technician_id)
+        technician = next((item for item in getattr(self, "_technicians", []) if str(item.get("id")) == tid), None)
+        if technician is None:
+            return None
+        technician["status"] = status
+        if status == "suspended":
+            technician["is_available"] = False
+        if status == "active" and technician.get("vetting_status") == "rejected":
+            technician["vetting_status"] = "verified"
+        return {
+            "id": tid,
+            "display_name": technician.get("display_name"),
+            "status": technician.get("status"),
+            "vetting_status": technician.get("vetting_status"),
+        }
 
     async def approve_organization(self, organization_id: UUID) -> dict | None:
         return None
@@ -4669,6 +4689,24 @@ class PostgresStore(Store):
             return None
         return {"id": str(row[0]), "display_name": row[1], "status": row[2], "vetting_status": row[3]}
 
+    async def set_technician_status(self, technician_id: UUID, status: str) -> dict | None:
+        if status == "suspended":
+            sql = (
+                "update technicians set status = %s, is_available = false"
+                " where id = %s returning id, display_name, status, vetting_status"
+            )
+        else:
+            sql = (
+                "update technicians set status = %s"
+                " where id = %s returning id, display_name, status, vetting_status"
+            )
+        async with await self._connect() as conn:
+            cur = await conn.execute(sql, (status, str(technician_id)))
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2], "vetting_status": row[3]}
+
     async def approve_organization(self, organization_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
@@ -4869,10 +4907,10 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, display_name, email, phone, profile_photo_url,"
-                " profile_photo_status, status, vetting_status, updated_at"
+                " profile_photo_status, status, vetting_status, created_at"
                 " from technicians"
                 " where profile_photo_url is not null and profile_photo_status = 'pending'"
-                " order by updated_at"
+                " order by created_at"
             )
             rows = await cur.fetchall()
         return [

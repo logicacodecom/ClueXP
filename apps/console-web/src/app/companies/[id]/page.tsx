@@ -44,6 +44,9 @@ export default function CompanyDetailPage() {
   useEffect(() => { void refresh(); }, [refresh]);
 
   async function runAction(action: "approve" | "reject" | "suspend" | "reactivate") {
+    if (!detail) return;
+    const verb = action === "reactivate" ? "activate" : action;
+    if (!window.confirm(`${verb[0].toUpperCase()}${verb.slice(1)} ${detail.display_name}? This changes the company's production access.`)) return;
     setBusy(action);
     setMessage(null);
     try {
@@ -79,6 +82,17 @@ export default function CompanyDetailPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function openDocument(documentId: string) {
+    setMessage(null);
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/download`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to open document");
+      return;
+    }
+    window.open(body.download_url, "_blank", "noopener,noreferrer");
   }
 
   async function resetLimit(field: "max_users" | "max_technicians") {
@@ -165,10 +179,16 @@ export default function CompanyDetailPage() {
         <Card>
           <CardHeader><CardTitle>Documents</CardTitle></CardHeader>
           <CardContent className="space-y-2 text-sm">
-            {detail.documents.length === 0 ? <p className="text-muted-foreground">No documents on file.</p> : detail.documents.map((doc) => (
-              <div className="flex items-center justify-between gap-2" key={doc.id}>
-                <span>{doc.document_type.replaceAll("_", " ")}</span>
-                <Badge variant={doc.status === "verified" ? "success" : doc.status === "rejected" ? "danger" : "warn"}>{doc.status}</Badge>
+            {detail.documents.length === 0 ? <p className="text-muted-foreground">No documents on file. Ask the company to upload business license and insurance before activation.</p> : detail.documents.map((doc) => (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3" key={doc.id}>
+                <div className="min-w-0">
+                  <div className="font-medium">{doc.document_type.replaceAll("_", " ")}</div>
+                  <div className="text-xs text-muted-foreground">{doc.expires_at ? `Expires ${new Date(doc.expires_at).toLocaleDateString()}` : "No expiry date"}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={doc.status === "verified" ? "success" : doc.status === "rejected" ? "danger" : "warn"}>{doc.status.replaceAll("_", " ")}</Badge>
+                  <Button size="sm" variant="outline" onClick={() => void openDocument(doc.id)}>Open</Button>
+                </div>
               </div>
             ))}
           </CardContent>

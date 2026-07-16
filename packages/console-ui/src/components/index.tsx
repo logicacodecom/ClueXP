@@ -34,6 +34,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Map,
+  Menu,
   MessageSquare,
   MoreHorizontal,
   Navigation,
@@ -254,9 +255,9 @@ export function AppShell({
     <TooltipProvider>
       <div className="min-h-screen bg-background text-foreground">
         <Sidebar activePath={activePath} collapsed={collapsed} mode={mode} nav={scopedNav} onToggle={() => setCollapsed((value) => !value)} surfaceLabel={surfaceLabel} />
-        <div className={cn("min-h-screen transition-[padding] duration-200", collapsed ? "pl-[76px]" : "pl-[264px]")}>
-          <Topbar modeBadge={modeBadge} onSignOut={onSignOut} session={session} surfaceLabel={surfaceLabel} />
-          <main className="mx-auto w-full max-w-[1760px] px-6 py-6 lg:px-8">{children}</main>
+        <div className={cn("min-h-screen transition-[padding] duration-200 lg:pl-[264px]", collapsed && "lg:pl-[76px]")}>
+          <Topbar activePath={activePath} modeBadge={modeBadge} nav={scopedNav} onSignOut={onSignOut} session={session} surfaceLabel={surfaceLabel} />
+          <main className="mx-auto w-full max-w-[1760px] px-4 py-5 sm:px-6 lg:px-8">{children}</main>
         </div>
       </div>
     </TooltipProvider>
@@ -303,7 +304,7 @@ export function Sidebar({
 }) {
   const groups = ["Operations", "Workforce", "Reports", "Admin"] as const;
   return (
-    <aside className={cn("fixed inset-y-0 left-0 z-30 flex flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200", collapsed ? "w-[76px]" : "w-[264px]")}>
+    <aside className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200 lg:flex", collapsed ? "w-[76px]" : "w-[264px]")}>
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
         <BrandMark collapsed={collapsed} />
         {!collapsed ? (
@@ -375,33 +376,56 @@ function initialsFor(name?: string) {
     .toUpperCase() || "OP";
 }
 
-export function Topbar({ modeBadge, onSignOut, session, surfaceLabel }: { modeBadge: string; onSignOut?: () => void; session?: AuthSession; surfaceLabel: string }) {
+export function Topbar({
+  activePath = "/dashboard",
+  modeBadge,
+  nav = defaultNav,
+  onSignOut,
+  session,
+  surfaceLabel
+}: {
+  activePath?: string;
+  modeBadge: string;
+  nav?: NavItem[];
+  onSignOut?: () => void;
+  session?: AuthSession;
+  surfaceLabel: string;
+}) {
   // The real org name comes from the session (session.organization_name, set by the
   // backend) — never fall back to the raw organization UUID, which means nothing to a user.
   const orgLabel = session?.active_organization_id
     ? (session.organization_name ?? "Organization")
     : "All network tenants";
   return (
-    <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-background/85 px-6 backdrop-blur">
-      <div className="relative flex-1 max-w-2xl">
-        <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden />
-        <Input className="h-9 bg-card pl-9 pr-24" placeholder="Search requests, technicians, organizations" />
-        <span className="absolute right-2 top-2 rounded border border-border bg-secondary px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">Ctrl K</span>
-      </div>
-      <Badge variant="outline">Production</Badge>
-      <Badge variant="success"><span className="size-1.5 rounded-full bg-success" />All systems operational</Badge>
-      <Badge variant="neutral">{modeBadge}</Badge>
-      <Badge variant="outline">{roleLabel(session?.active_role)}</Badge>
+    <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center gap-3 border-b border-border bg-background/85 px-4 py-3 backdrop-blur md:px-6">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button aria-label="Notifications" size="icon" variant="outline"><Bell className="size-4" /></Button>
+          <Button aria-label="Open navigation" className="lg:hidden" size="icon" variant="outline"><Menu className="size-4" /></Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuLabel>Notifications</DropdownMenuLabel>
-          <DropdownMenuItem>2 SLA risk requests</DropdownMenuItem>
-          <DropdownMenuItem>1 document expires soon</DropdownMenuItem>
+        <DropdownMenuContent align="start" className="max-h-[70vh] overflow-y-auto">
+          <DropdownMenuLabel>Console navigation</DropdownMenuLabel>
+          {nav.map((item) => {
+            const Icon = item.icon;
+            const active = activePath === item.href || (item.href !== "/" && activePath.startsWith(item.href));
+            return (
+              <DropdownMenuItem asChild key={item.href}>
+                <Link className={cn(active && "text-primary")} href={item.href}>
+                  <Icon className="size-4" />
+                  {item.label}
+                </Link>
+              </DropdownMenuItem>
+            );
+          })}
         </DropdownMenuContent>
       </DropdownMenu>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-xs font-semibold uppercase text-muted-foreground">{surfaceLabel}</div>
+        <div className="truncate text-sm font-medium text-foreground">{orgLabel}</div>
+      </div>
+      <Badge variant="outline">Production</Badge>
+      <Badge variant="neutral">{modeBadge}</Badge>
+      <Badge className="hidden sm:inline-flex" variant="outline">{roleLabel(session?.active_role)}</Badge>
+      <Button asChild aria-label="Open dashboard notifications" size="icon" variant="outline"><Link href="/dashboard"><Bell className="size-4" /></Link></Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button className="gap-2" variant="ghost">
@@ -415,7 +439,6 @@ export function Topbar({ modeBadge, onSignOut, session, surfaceLabel }: { modeBa
           <DropdownMenuItem>{roleLabel(session?.active_role)}</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem asChild><Link href="/account">Account</Link></DropdownMenuItem>
-          <DropdownMenuItem>Switch workspace</DropdownMenuItem>
           <DropdownMenuItem onClick={onSignOut}>Sign out</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
