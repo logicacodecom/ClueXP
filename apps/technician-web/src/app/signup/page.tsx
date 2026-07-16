@@ -1,6 +1,6 @@
 "use client";
 
-import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
+import { LanguageSelect, sessionRequest, useLocale, useServiceCatalog } from "@cluexp/app-core";
 import { SkillSelect } from "@cluexp/console-ui";
 import { useEffect, useState } from "react";
 import { AppFrame, Screen } from "@/components/mobile";
@@ -13,6 +13,7 @@ export default function SignUpPage() {
   const [busy, setBusy] = useState(false);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [inviteOrg, setInviteOrg] = useState<string | null>(null);
+  const { catalog, error: catalogError } = useServiceCatalog();
 
   // Company-invite signup: read ?invite=<token> and resolve the inviting company
   // so the technician knows who they'll be affiliated with. On submit the token
@@ -71,10 +72,12 @@ export default function SignUpPage() {
           <div className="rounded-xl border border-border bg-card p-3">
             <div className="mb-2 text-sm font-bold">Skills</div>
             <SkillSelect
+              catalog={catalog}
               selected={skills}
               onChange={setSkills}
               placeholder="Choose the services you want to receive offers for."
             />
+            {catalogError ? <div className="mt-2 text-xs text-muted" role="status">{catalogError}; showing the seeded catalog.</div> : null}
           </div>
           {message ? <p className="rounded-xl border border-border bg-card p-3 text-sm" role="status">{message}</p> : null}
           <button className="touch-target min-h-[54px] w-full rounded-2xl bg-primary px-4 text-base font-black text-primary-foreground disabled:opacity-50" disabled={busy || !form.display_name || !form.email || !form.phone || form.password.length < 8} type="submit">{busy ? t("saving") : t("signUp")}</button>

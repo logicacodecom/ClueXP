@@ -1153,6 +1153,49 @@ def test_admin_service_catalog_skill_becomes_profile_valid():
         app_store.get_user_session = _orig_session
 
 
+def test_provider_capabilities_are_catalog_validated_and_persisted():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    uid = str(uuid4())
+    org_id = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "capabilities@cluexp.test", "phone": None,
+        "display_name": "Capabilities Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org_id, "organization_name": "Capability Co",
+    }
+    token = create_access_token({
+        "sub": uid,
+        "id": uid,
+        "roles": ["provider_admin"],
+        "active_organization_id": org_id,
+    })
+    client = TestClient(app)
+
+    saved = client.patch(
+        "/provider/settings/capabilities",
+        json={"skills": ["rekey", "locksmith.vehicle_key_programming"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["skills"] == ["locksmith.rekey", "locksmith.vehicle_key_programming"]
+
+    listed = client.get(
+        "/provider/settings/capabilities",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["skills"] == ["locksmith.rekey", "locksmith.vehicle_key_programming"]
+
+    bad = client.patch(
+        "/provider/settings/capabilities",
+        json={"skills": ["locksmith.safe_cracking"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert bad.status_code == 422
+
+
 def test_http_update_my_profile_requires_technician_role():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

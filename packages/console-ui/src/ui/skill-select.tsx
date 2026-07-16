@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { X } from "lucide-react";
-import { DEFAULT_SERVICE_CATALOG, serviceSkillLabel } from "@cluexp/api-client";
+import { DEFAULT_SERVICE_CATALOG, serviceSkillLabel, type ServiceCategory } from "@cluexp/api-client";
 import { cn } from "../lib/cn";
 import { Badge } from "./badge";
 import { Button } from "./button";
@@ -24,12 +24,13 @@ export function skillLabel(skillCode: string): string {
 export interface SkillSelectProps {
   selected: string[];
   onChange: (skills: string[]) => void;
+  catalog?: ServiceCategory[];
   placeholder?: string;
   className?: string;
 }
 
-export function SkillSelect({ selected, onChange, placeholder = "Select skills...", className }: SkillSelectProps) {
-  const availableSkills = DEFAULT_SERVICE_CATALOG
+export function SkillSelect({ selected, onChange, catalog = DEFAULT_SERVICE_CATALOG, placeholder = "Select skills...", className }: SkillSelectProps) {
+  const availableSkills = catalog
     .filter((category) => category.status === "active")
     .map((category) => ({
       ...category,
@@ -55,7 +56,7 @@ export function SkillSelect({ selected, onChange, placeholder = "Select skills..
       {selected.length > 0 ? (
         <div className="flex flex-wrap gap-2">
           {selected.map((skillCode) => {
-            const label = skillLabel(skillCode);
+            const label = serviceSkillLabel(skillCode, catalog);
             return (
               <Badge
                 key={skillCode}

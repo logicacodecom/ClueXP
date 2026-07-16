@@ -1,6 +1,8 @@
 "use client";
 
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
+import type { ServiceCategory } from "@cluexp/api-client";
+import { DEFAULT_SERVICE_CATALOG } from "@cluexp/api-client";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, SkillSelect } from "@cluexp/console-ui";
 import { Check, Copy, Link2, Save, TimerReset } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
@@ -36,6 +38,10 @@ export default function SettingsPage() {
   const [stalledInput, setStalledInput] = useState("");
   const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
   const [dispatchBusy, setDispatchBusy] = useState(false);
+  const [capabilitySkills, setCapabilitySkills] = useState<string[]>([]);
+  const [capabilityCatalog, setCapabilityCatalog] = useState<ServiceCategory[]>(DEFAULT_SERVICE_CATALOG);
+  const [capabilityMessage, setCapabilityMessage] = useState<string | null>(null);
+  const [capabilityBusy, setCapabilityBusy] = useState(false);
 
   async function loadDispatchSettings() {
     try {
@@ -51,8 +57,21 @@ export default function SettingsPage() {
     }
   }
 
+  async function loadCapabilities() {
+    try {
+      const response = await fetch("/api/provider/settings/capabilities", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to load service capabilities");
+      setCapabilitySkills(body.skills ?? []);
+      setCapabilityCatalog(body.catalog ?? DEFAULT_SERVICE_CATALOG);
+    } catch (cause) {
+      setCapabilityMessage(cause instanceof Error ? cause.message : "Unable to load service capabilities");
+    }
+  }
+
   useEffect(() => {
     void loadDispatchSettings();
+    void loadCapabilities();
   }, []);
 
   useEffect(() => {
@@ -172,6 +191,27 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveCapabilities() {
+    setCapabilityBusy(true);
+    setCapabilityMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/capabilities", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ skills: capabilitySkills })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save service capabilities");
+      setCapabilitySkills(body.skills ?? []);
+      setCapabilityCatalog(body.catalog ?? capabilityCatalog);
+      setCapabilityMessage("Company service capabilities saved.");
+    } catch (cause) {
+      setCapabilityMessage(cause instanceof Error ? cause.message : "Unable to save service capabilities");
+    } finally {
+      setCapabilityBusy(false);
+    }
+  }
+
   return (
     <AppFrame>
       <div className="space-y-6">
@@ -213,6 +253,24 @@ export default function SettingsPage() {
           <CardContent className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 text-sm font-medium">Dispatch manager<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.dispatch_mode} onChange={(event) => setForm({ ...form, dispatch_mode: event.target.value })}><option value="organization_managed">Organization managed</option><option value="platform_managed">ClueXP managed</option></select></label>
             <label className="space-y-2 text-sm font-medium">Fulfillment policy<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.fulfillment_policy} onChange={(event) => setForm({ ...form, fulfillment_policy: event.target.value })}><option value="private_owner_only">Private roster only</option><option value="owner_first_then_network">Roster first, then network</option><option value="network_open">Verified network open</option></select></label>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Company service capabilities</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Select the active services this company offers. Dispatch checks this company list before a technician can be assigned.
+            </p>
+            <SkillSelect
+              catalog={capabilityCatalog}
+              selected={capabilitySkills}
+              onChange={setCapabilitySkills}
+              placeholder="Choose the services your company offers."
+            />
+            {capabilityMessage ? <div className="text-sm" role="status">{capabilityMessage}</div> : null}
+            <Button disabled={capabilityBusy} onClick={() => void saveCapabilities()} variant="outline">
+              <Save className="size-4" />{capabilityBusy ? "Saving…" : "Save service capabilities"}
+            </Button>
           </CardContent>
         </Card>
         <Card>

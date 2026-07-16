@@ -1,5 +1,6 @@
 "use client";
 
+import { useServiceCatalog } from "@cluexp/app-core";
 import { SkillSelect } from "@cluexp/console-ui";
 import { Check, Pencil, X } from "lucide-react";
 import { useState } from "react";
@@ -24,6 +25,7 @@ export function ProfileEditor({
     service_area_radius_km: initialRadius?.toString() ?? "",
     skills: initialSkills
   });
+  const { catalog, error: catalogError } = useServiceCatalog();
 
   async function save() {
     setBusy(true);
@@ -68,10 +70,12 @@ export function ProfileEditor({
           Skills
           <div className="mt-2 rounded-xl border border-border bg-card-strong p-3">
             <SkillSelect
+              catalog={catalog}
               selected={form.skills}
               onChange={(skills) => setForm({ ...form, skills })}
               placeholder="Choose the services you want to receive offers for."
             />
+            {catalogError ? <div className="mt-2 text-xs text-muted" role="status">{catalogError}; showing the seeded catalog.</div> : null}
           </div>
         </div>
         <label className="text-sm font-bold">Service radius (km)<input className="mt-2 min-h-12 w-full border border-border bg-card-strong px-3 text-base outline-none focus:border-primary" inputMode="decimal" value={form.service_area_radius_km} onChange={(event) => setForm({ ...form, service_area_radius_km: event.target.value })} /></label>

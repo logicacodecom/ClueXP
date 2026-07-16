@@ -256,6 +256,13 @@ def normalize_technician_skills(skills: list[str]) -> list[str]:
     return normalized
 
 
+def required_skill_for_job(job: dict[str, Any]) -> str | None:
+    access_type = job.get("access_type")
+    if not access_type or access_type == "other":
+        return None
+    return normalize_skill_code(str(access_type))
+
+
 async def validate_technician_skills(skills: list[str]) -> list[str]:
     catalog = await store.list_service_catalog(active_only=True)
     catalog_codes = active_skill_codes(catalog)
@@ -265,6 +272,19 @@ async def validate_technician_skills(skills: list[str]) -> list[str]:
         raise HTTPException(
             status_code=422,
             detail=f"Invalid technician skill: {', '.join(unknown)}",
+        )
+    return normalized
+
+
+async def validate_active_skill_selection(skills: list[str]) -> list[str]:
+    catalog = await store.list_service_catalog(active_only=True)
+    catalog_codes = active_skill_codes(catalog)
+    normalized = sorted({normalize_skill_code(skill) for skill in skills if skill.strip()})
+    unknown = [skill for skill in normalized if skill not in catalog_codes]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service capability: {', '.join(unknown)}",
         )
     return normalized
 
@@ -288,6 +308,10 @@ class OrganizationRegisterRequest(BaseModel):
 
 class LocaleUpdateRequest(BaseModel):
     locale: str
+
+
+class ProviderCapabilitiesUpdate(BaseModel):
+    skills: list[str]
 
 
 class AccountUpdateRequest(BaseModel):
@@ -2270,6 +2294,15 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
     nearest-first (unknown distance last), rating as tie-breaker."""
     now_dt = datetime.now(tz=timezone.utc)
     threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
+    access_type = job.get("access_type")
+    skill_needed = required_skill_for_job(job)
+    owner_org_id = job.get("customer_owner_org_id") or job.get("origin_org_id") or job.get("fulfillment_org_id")
+    org_capabilities = (
+        set(await store.list_organization_capabilities(str(owner_org_id)))
+        if owner_org_id and skill_needed
+        else set()
+    )
+    organization_supports_skill = skill_needed is None or not owner_org_id or skill_needed in org_capabilities
     enriched = []
     for tech in techs:
         _raw_dist = haversine_km(
@@ -2285,13 +2318,12 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
         is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
         active_job = await store.get_technician_active_job(tech["id"])
         skills = tech.get("skills") or []
-        access_type = job.get("access_type")
-        skill_needed = normalize_skill_code(access_type) if access_type else None
+        technician_supports_skill = (skill_needed in skills or access_type in skills) if skill_needed else True
         enriched.append({
             "id": tech["id"],
             "display_name": tech.get("display_name"),
             "skills": skills,
-            "skills_match": (skill_needed in skills or access_type in skills) if skill_needed else True,
+            "skills_match": organization_supports_skill and technician_supports_skill,
             "dist_km": round(dist, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
@@ -2333,15 +2365,26 @@ async def _send_targeted_offer(
     is_busy = (await store.get_technician_active_job(tech["id"])) is not None
     skills = tech.get("skills") or []
     access_type = job.get("access_type")
-    skill_needed = normalize_skill_code(access_type) if access_type else None
-    skills_match = (skill_needed in skills or access_type in skills) if skill_needed else True
+    skill_needed = required_skill_for_job(job)
+    owner_org_id = job.get("customer_owner_org_id") or job.get("origin_org_id") or job.get("fulfillment_org_id")
+    org_capabilities = (
+        set(await store.list_organization_capabilities(str(owner_org_id)))
+        if owner_org_id and skill_needed
+        else set()
+    )
+    organization_supports_skill = skill_needed is None or not owner_org_id or skill_needed in org_capabilities
+    technician_supports_skill = (skill_needed in skills or access_type in skills) if skill_needed else True
+    skills_match = organization_supports_skill and technician_supports_skill
     override_flags: list[str] = []
     if not is_online:
         override_flags.append("offline or location stale")
     if is_busy:
         override_flags.append("has an active job")
     if not skills_match:
-        override_flags.append(f"skill mismatch (job needs '{access_type}')")
+        if not organization_supports_skill:
+            override_flags.append(f"company does not offer '{skill_needed}'")
+        elif not technician_supports_skill:
+            override_flags.append(f"skill mismatch (job needs '{skill_needed}')")
     if override_flags and not override_reason:
         raise HTTPException(
             status_code=422,
@@ -2610,6 +2653,33 @@ async def get_provider_limits(
         "max_users": await _resolve_max_users(org_id),
         "max_technicians": await _resolve_max_technicians(org_id),
     }
+
+
+@app.get("/provider/settings/capabilities")
+async def get_provider_capabilities(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    return {
+        "skills": await store.list_organization_capabilities(org_id),
+        "catalog": await store.list_service_catalog(active_only=True),
+    }
+
+
+@app.patch("/provider/settings/capabilities")
+async def update_provider_capabilities(
+    payload: ProviderCapabilitiesUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    skills = await validate_active_skill_selection(payload.skills)
+    saved = await store.replace_organization_capabilities(
+        org_id,
+        skills,
+        updated_by=session.get("user", {}).get("id"),
+    )
+    return {"skills": saved, "catalog": await store.list_service_catalog(active_only=True)}
 
 
 @app.get("/provider/users")

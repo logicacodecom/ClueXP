@@ -157,6 +157,14 @@ class Store:
     async def upsert_service_skill(self, data: dict, updated_by: str | None = None) -> dict:  # pragma: no cover
         raise NotImplementedError
 
+    async def list_organization_capabilities(self, organization_id: str) -> list[str]:  # pragma: no cover
+        return []
+
+    async def replace_organization_capabilities(
+        self, organization_id: str, skill_codes: list[str], updated_by: str | None = None
+    ) -> list[str]:  # pragma: no cover
+        raise NotImplementedError
+
     # --- organization_settings: per-provider overrides of org_overridable keys ---
     async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:  # pragma: no cover
         return None
@@ -679,6 +687,7 @@ class InMemoryStore(Store):
         self._organization_settings: dict[tuple[str, str], dict] = {}
         self._service_categories: dict[str, dict] = {}
         self._service_skills: dict[str, dict] = {}
+        self._organization_capabilities: dict[str, set[str]] = {}
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
             self._service_categories[cat["code"]] = cat
@@ -687,6 +696,11 @@ class InMemoryStore(Store):
                     **skill,
                     "category_code": cat["code"],
                 }
+        self._organization_capabilities["org-metro"] = {
+            skill["code"]
+            for skill in self._service_skills.values()
+            if skill.get("status") == "active"
+        }
         password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         self.users: dict[str, dict] = {
             "usr_platform_demo": {
@@ -2243,6 +2257,15 @@ class InMemoryStore(Store):
         self._service_skills[data["code"]] = row
         return dict(row)
 
+    async def list_organization_capabilities(self, organization_id: str) -> list[str]:
+        return sorted(self._organization_capabilities.get(str(organization_id), set()))
+
+    async def replace_organization_capabilities(
+        self, organization_id: str, skill_codes: list[str], updated_by: str | None = None
+    ) -> list[str]:
+        self._organization_capabilities[str(organization_id)] = set(skill_codes)
+        return await self.list_organization_capabilities(organization_id)
+
     async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:
         row = self._organization_settings.get((str(organization_id), key))
         return dict(row) if row is not None else None
@@ -2420,6 +2443,21 @@ class PostgresStore(Store):
                 "create index if not exists idx_service_skills_category"
                 " on service_skills (category_code, sort_order, code)"
             )
+            await conn.execute(
+                "create table if not exists organization_capabilities ("
+                "  organization_id uuid not null,"
+                "  skill_code text not null references service_skills(code),"
+                "  status text not null default 'active'"
+                "    check (status in ('active','inactive')),"
+                "  updated_at timestamptz not null default now(),"
+                "  updated_by uuid,"
+                "  primary key (organization_id, skill_code)"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_organization_capabilities_active"
+                " on organization_capabilities (organization_id, status, skill_code)"
+            )
             for category in default_service_catalog():
                 await conn.execute(
                     "insert into service_categories (code, label, status, sort_order)"
@@ -2442,6 +2480,13 @@ class PostgresStore(Store):
                             skill["sort_order"],
                         ),
                     )
+            await conn.execute(
+                "insert into organization_capabilities (organization_id, skill_code, status)"
+                " select o.id, s.code, 'active'"
+                " from organizations o cross join service_skills s"
+                " where s.status = 'active'"
+                " on conflict (organization_id, skill_code) do nothing"
+            )
             await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
             # Fulfillment cutover (migration 0010) — additive columns. Repeated here
             # as add-column-if-not-exists so the live API is resilient if it boots
@@ -6608,6 +6653,40 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return self._service_skill_row(row)
+
+    async def list_organization_capabilities(self, organization_id: str) -> list[str]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select skill_code from organization_capabilities"
+                " where organization_id = %s and status = 'active'"
+                " order by skill_code",
+                (str(organization_id),),
+            )
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
+    async def replace_organization_capabilities(
+        self, organization_id: str, skill_codes: list[str], updated_by: str | None = None
+    ) -> list[str]:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "update organization_capabilities set status = 'inactive',"
+                " updated_by = %s, updated_at = now()"
+                " where organization_id = %s",
+                (str(updated_by) if updated_by else None, str(organization_id)),
+            )
+            for skill_code in skill_codes:
+                await conn.execute(
+                    "insert into organization_capabilities"
+                    " (organization_id, skill_code, status, updated_by, updated_at)"
+                    " values (%s, %s, 'active', %s, now())"
+                    " on conflict (organization_id, skill_code) do update set"
+                    "   status = 'active',"
+                    "   updated_by = excluded.updated_by,"
+                    "   updated_at = now()",
+                    (str(organization_id), skill_code, str(updated_by) if updated_by else None),
+                )
+        return await self.list_organization_capabilities(organization_id)
 
     async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:
         async with await self._connect() as conn:
