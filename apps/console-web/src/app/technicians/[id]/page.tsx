@@ -1,10 +1,11 @@
 "use client";
 
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, EmptyState, PageHeader } from "@cluexp/console-ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, EmptyState, Input, PageHeader } from "@cluexp/console-ui";
 import { UserRound } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../../frame";
+import { GovernanceActionDialog } from "../../governance-action-dialog";
 
 interface TechnicianDetail {
   id: string; display_name: string; email?: string | null; phone?: string | null;
@@ -17,7 +18,7 @@ interface TechnicianDetail {
 function statusVariant(status: string) {
   if (status === "active" || status === "approved" || status === "verified") return "success" as const;
   if (status === "pending_vetting" || status === "pending_review") return "warn" as const;
-  if (status === "suspended" || status === "rejected") return "danger" as const;
+  if (status === "suspended" || status === "rejected" || status === "archived") return "danger" as const;
   return "neutral" as const;
 }
 
@@ -27,6 +28,7 @@ export default function TechnicianDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [profileInputs, setProfileInputs] = useState({ display_name: "", phone: "", skills: "" });
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/technicians/${params.id}`, { cache: "no-store" });
@@ -34,23 +36,76 @@ export default function TechnicianDetailPage() {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setMessage(body.detail || "Unable to load technician"); return; }
     setDetail(body);
+    setProfileInputs({
+      display_name: body.display_name || "",
+      phone: body.phone || "",
+      skills: (body.skills || []).join(", ")
+    });
   }, [params.id]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function runAction(action: "approve" | "reject" | "suspend" | "reactivate") {
+  async function runAction(action: "approve" | "reject" | "suspend" | "reactivate", reason = "") {
     if (!detail) return;
-    const verb = action === "reactivate" ? "activate" : action;
-    if (!window.confirm(`${verb[0].toUpperCase()}${verb.slice(1)} ${detail.display_name}? This changes the technician's production dispatch access.`)) return;
     setBusy(action);
     setMessage(null);
     try {
-      const response = await fetch(`/api/technicians/${params.id}/${action}`, { method: "POST" });
+      const response = await fetch(`/api/technicians/${params.id}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || `Unable to ${action}`);
       await refresh();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : `Unable to ${action}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveProfile() {
+    setBusy("profile");
+    setMessage(null);
+    try {
+      const skills = profileInputs.skills.split(",").map((item) => item.trim()).filter(Boolean);
+      const response = await fetch(`/api/technicians/${params.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          display_name: profileInputs.display_name.trim(),
+          phone: profileInputs.phone.trim() || null,
+          skills
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save technician profile");
+      await refresh();
+      setMessage("Technician profile saved.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to save technician profile");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteOrArchive(reason: string) {
+    if (!detail) return;
+    setBusy("delete");
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/technicians/${params.id}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to delete or archive technician");
+      await refresh();
+      setMessage(body.action === "deleted" ? "Technician deleted." : "Technician archived because linked records exist.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to delete or archive technician");
     } finally {
       setBusy(null);
     }
@@ -88,21 +143,48 @@ export default function TechnicianDetailPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
-          <CardContent className="space-y-2 text-sm">
+          <CardContent className="space-y-4 text-sm">
+            <label className="block space-y-1.5 font-medium">
+              Full name
+              <Input value={profileInputs.display_name} onChange={(event) => setProfileInputs((prev) => ({ ...prev, display_name: event.target.value }))} />
+            </label>
+            <label className="block space-y-1.5 font-medium">
+              Phone
+              <Input value={profileInputs.phone} onChange={(event) => setProfileInputs((prev) => ({ ...prev, phone: event.target.value }))} />
+            </label>
+            <label className="block space-y-1.5 font-medium">
+              Skills
+              <Input value={profileInputs.skills} onChange={(event) => setProfileInputs((prev) => ({ ...prev, skills: event.target.value }))} placeholder="home, vehicle, rekey" />
+            </label>
             <div><span className="text-muted-foreground">Email:</span> {detail.email || "—"}</div>
-            <div><span className="text-muted-foreground">Phone:</span> {detail.phone || "—"}</div>
             <div><span className="text-muted-foreground">Vetting:</span> {detail.vetting_status}</div>
             <div><span className="text-muted-foreground">Photo:</span> {detail.profile_photo_status}</div>
             <div><span className="text-muted-foreground">Created:</span> {detail.created_at ? new Date(detail.created_at).toLocaleDateString() : "—"}</div>
             <div className="flex flex-wrap gap-2 pt-2">
+              <Button disabled={busy !== null || !profileInputs.display_name.trim()} onClick={() => void saveProfile()}>Save profile</Button>
               {detail.status === "pending_vetting" ? (
                 <>
-                <Button disabled={busy !== null} onClick={() => void runAction("approve")}>Approve</Button>
-                <Button disabled={busy !== null} variant="outline" onClick={() => void runAction("reject")}>Reject</Button>
+                  <GovernanceActionDialog confirmLabel="Approve technician" description={`Approve ${detail.display_name} for production dispatch eligibility.`} disabled={busy !== null} onConfirm={(reason) => runAction("approve", reason)} title={`Approve ${detail.display_name}?`}>
+                    <Button disabled={busy !== null}>Approve</Button>
+                  </GovernanceActionDialog>
+                  <GovernanceActionDialog confirmLabel="Reject technician" description={`Reject ${detail.display_name}. This blocks dispatch eligibility until reactivated.`} disabled={busy !== null} onConfirm={(reason) => runAction("reject", reason)} reasonRequired title={`Reject ${detail.display_name}?`} variant="destructive">
+                    <Button disabled={busy !== null} variant="outline">Reject</Button>
+                  </GovernanceActionDialog>
                 </>
               ) : null}
-              {detail.status === "active" ? <Button disabled={busy !== null} variant="destructive" onClick={() => void runAction("suspend")}>Suspend</Button> : null}
-              {detail.status === "suspended" || detail.status === "rejected" ? <Button disabled={busy !== null} onClick={() => void runAction("reactivate")}>Activate</Button> : null}
+              {detail.status === "active" ? (
+                <GovernanceActionDialog confirmLabel="Suspend technician" description={`Suspend ${detail.display_name}. They will no longer be available for dispatch.`} disabled={busy !== null} onConfirm={(reason) => runAction("suspend", reason)} reasonRequired title={`Suspend ${detail.display_name}?`} variant="destructive">
+                  <Button disabled={busy !== null} variant="destructive">Suspend</Button>
+                </GovernanceActionDialog>
+              ) : null}
+              {detail.status === "suspended" || detail.status === "rejected" || detail.status === "archived" ? (
+                <GovernanceActionDialog confirmLabel="Activate technician" description={`Reactivate ${detail.display_name} for production dispatch eligibility.`} disabled={busy !== null} onConfirm={(reason) => runAction("reactivate", reason)} title={`Activate ${detail.display_name}?`}>
+                  <Button disabled={busy !== null}>Activate</Button>
+                </GovernanceActionDialog>
+              ) : null}
+              <GovernanceActionDialog confirmLabel="Delete or archive" description={`If ${detail.display_name} has no linked records, they will be deleted. If linked records exist, they will be archived instead.`} disabled={busy !== null} onConfirm={deleteOrArchive} reasonRequired title={`Delete or archive ${detail.display_name}?`} variant="destructive">
+                <Button disabled={busy !== null} variant="outline">Delete</Button>
+              </GovernanceActionDialog>
             </div>
           </CardContent>
         </Card>

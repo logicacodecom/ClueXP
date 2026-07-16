@@ -5,6 +5,7 @@ import { Building2 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../../frame";
+import { GovernanceActionDialog } from "../../governance-action-dialog";
 
 interface LimitField { value: number; is_override: boolean; platform_default: number }
 interface OrganizationDetail {
@@ -31,6 +32,7 @@ export default function CompanyDetailPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [limitInputs, setLimitInputs] = useState({ max_users: "", max_technicians: "" });
+  const [profileInputs, setProfileInputs] = useState({ display_name: "", legal_name: "", phone: "", email: "" });
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/organizations/${params.id}`, { cache: "no-store" });
@@ -39,23 +41,77 @@ export default function CompanyDetailPage() {
     if (!response.ok) { setMessage(body.detail || "Unable to load company"); return; }
     setDetail(body);
     setLimitInputs({ max_users: String(body.limits.max_users.value), max_technicians: String(body.limits.max_technicians.value) });
+    setProfileInputs({
+      display_name: body.display_name || "",
+      legal_name: body.legal_name || "",
+      phone: body.phone || "",
+      email: body.email || ""
+    });
   }, [params.id]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function runAction(action: "approve" | "reject" | "suspend" | "reactivate") {
+  async function runAction(action: "approve" | "reject" | "suspend" | "reactivate", reason = "") {
     if (!detail) return;
-    const verb = action === "reactivate" ? "activate" : action;
-    if (!window.confirm(`${verb[0].toUpperCase()}${verb.slice(1)} ${detail.display_name}? This changes the company's production access.`)) return;
     setBusy(action);
     setMessage(null);
     try {
-      const response = await fetch(`/api/organizations/${params.id}/${action}`, { method: "POST" });
+      const response = await fetch(`/api/organizations/${params.id}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || `Unable to ${action}`);
       await refresh();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : `Unable to ${action}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveProfile() {
+    setBusy("profile");
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/organizations/${params.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          display_name: profileInputs.display_name.trim(),
+          legal_name: profileInputs.legal_name.trim() || null,
+          phone: profileInputs.phone.trim() || null,
+          email: profileInputs.email.trim() || null
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save company profile");
+      await refresh();
+      setMessage("Company profile saved.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to save company profile");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteOrArchive(reason: string) {
+    if (!detail) return;
+    setBusy("delete");
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/organizations/${params.id}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to delete or archive company");
+      await refresh();
+      setMessage(body.action === "deleted" ? "Company deleted." : "Company archived because linked records exist.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to delete or archive company");
     } finally {
       setBusy(null);
     }
@@ -135,21 +191,51 @@ export default function CompanyDetailPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         <Card>
           <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
-          <CardContent className="space-y-2 text-sm">
+          <CardContent className="space-y-4 text-sm">
+            <label className="block space-y-1.5 font-medium">
+              Company name
+              <Input value={profileInputs.display_name} onChange={(event) => setProfileInputs((prev) => ({ ...prev, display_name: event.target.value }))} />
+            </label>
+            <label className="block space-y-1.5 font-medium">
+              Legal name
+              <Input value={profileInputs.legal_name} onChange={(event) => setProfileInputs((prev) => ({ ...prev, legal_name: event.target.value }))} />
+            </label>
+            <label className="block space-y-1.5 font-medium">
+              Email
+              <Input type="email" value={profileInputs.email} onChange={(event) => setProfileInputs((prev) => ({ ...prev, email: event.target.value }))} />
+            </label>
+            <label className="block space-y-1.5 font-medium">
+              Phone
+              <Input value={profileInputs.phone} onChange={(event) => setProfileInputs((prev) => ({ ...prev, phone: event.target.value }))} />
+            </label>
             <div><span className="text-muted-foreground">Type:</span> {detail.organization_type}</div>
             <div><span className="text-muted-foreground">Subscription:</span> {detail.subscription_status}</div>
-            <div><span className="text-muted-foreground">Phone:</span> {detail.phone || "—"}</div>
-            <div><span className="text-muted-foreground">Email:</span> {detail.email || "—"}</div>
             <div><span className="text-muted-foreground">Created:</span> {detail.created_at ? new Date(detail.created_at).toLocaleDateString() : "—"}</div>
             <div className="flex flex-wrap gap-2 pt-2">
+              <Button disabled={busy !== null || !profileInputs.display_name.trim()} onClick={() => void saveProfile()}>Save profile</Button>
               {detail.status === "pending_review" ? (
                 <>
-                  <Button disabled={busy !== null} onClick={() => void runAction("approve")}>Approve</Button>
-                  <Button disabled={busy !== null} variant="outline" onClick={() => void runAction("reject")}>Reject</Button>
+                  <GovernanceActionDialog confirmLabel="Approve company" description={`Approve ${detail.display_name} for production access.`} disabled={busy !== null} onConfirm={(reason) => runAction("approve", reason)} title={`Approve ${detail.display_name}?`}>
+                    <Button disabled={busy !== null}>Approve</Button>
+                  </GovernanceActionDialog>
+                  <GovernanceActionDialog confirmLabel="Reject company" description={`Reject ${detail.display_name}. This blocks production access until reactivated.`} disabled={busy !== null} onConfirm={(reason) => runAction("reject", reason)} reasonRequired title={`Reject ${detail.display_name}?`} variant="destructive">
+                    <Button disabled={busy !== null} variant="outline">Reject</Button>
+                  </GovernanceActionDialog>
                 </>
               ) : null}
-              {detail.status === "active" ? <Button disabled={busy !== null} variant="destructive" onClick={() => void runAction("suspend")}>Suspend</Button> : null}
-              {detail.status === "suspended" ? <Button disabled={busy !== null} onClick={() => void runAction("reactivate")}>Reactivate</Button> : null}
+              {detail.status === "active" ? (
+                <GovernanceActionDialog confirmLabel="Suspend company" description={`Suspend ${detail.display_name}. Company users and technicians should no longer be treated as production-active.`} disabled={busy !== null} onConfirm={(reason) => runAction("suspend", reason)} reasonRequired title={`Suspend ${detail.display_name}?`} variant="destructive">
+                  <Button disabled={busy !== null} variant="destructive">Suspend</Button>
+                </GovernanceActionDialog>
+              ) : null}
+              {detail.status === "suspended" || detail.status === "rejected" || detail.status === "closed" ? (
+                <GovernanceActionDialog confirmLabel="Activate company" description={`Reactivate ${detail.display_name} for production access.`} disabled={busy !== null} onConfirm={(reason) => runAction("reactivate", reason)} title={`Activate ${detail.display_name}?`}>
+                  <Button disabled={busy !== null}>Activate</Button>
+                </GovernanceActionDialog>
+              ) : null}
+              <GovernanceActionDialog confirmLabel="Delete or archive" description={`If ${detail.display_name} has no linked records, it will be deleted. If linked records exist, it will be archived instead.`} disabled={busy !== null} onConfirm={deleteOrArchive} reasonRequired title={`Delete or archive ${detail.display_name}?`} variant="destructive">
+                <Button disabled={busy !== null} variant="outline">Delete</Button>
+              </GovernanceActionDialog>
             </div>
           </CardContent>
         </Card>

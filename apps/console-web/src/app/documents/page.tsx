@@ -4,6 +4,7 @@ import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@cluexp
 import { Check, FileCheck2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../frame";
+import { GovernanceActionDialog } from "../governance-action-dialog";
 
 interface Document {
   id: string;
@@ -65,7 +66,6 @@ export default function DocumentsPage() {
   useEffect(() => { void refresh().catch((error) => setMessage(error.message)); }, [refresh]);
 
   async function decide(document: Document, status: "verified" | "rejected") {
-    if (!window.confirm(`${status === "verified" ? "Verify" : "Reject"} ${document.document_type.replaceAll("_", " ")} for ${document.owner_name || document.owner_type}?`)) return;
     setBusy(document.id);
     setMessage(null);
     try {
@@ -84,7 +84,6 @@ export default function DocumentsPage() {
   }
 
   async function decidePhoto(photo: TechnicianPhoto, status: "approved" | "rejected") {
-    if (!window.confirm(`${status === "approved" ? "Approve" : "Reject"} profile photo for ${photo.display_name || "this technician"}?`)) return;
     setBusy(`photo:${photo.technician_id}`);
     setMessage(null);
     try {
@@ -113,13 +112,11 @@ export default function DocumentsPage() {
     window.open(body.download_url, "_blank", "noopener,noreferrer");
   }
 
-  async function decideTechDoc(doc: TechnicianDocument, status: "approved" | "rejected") {
-    if (!window.confirm(`${status === "approved" ? "Approve" : "Reject"} ${doc.document_type.replaceAll("_", " ")} for ${doc.technician_name || "this technician"}?`)) return;
+  async function decideTechDoc(doc: TechnicianDocument, status: "approved" | "rejected", reason?: string) {
     setBusy(`techdoc:${doc.id}`);
     setMessage(null);
     try {
-      const rejected_reason =
-        status === "rejected" ? window.prompt("Reason for rejection (optional):") || undefined : undefined;
+      const rejected_reason = status === "rejected" ? reason || undefined : undefined;
       const response = await fetch(`/api/technician-documents/${encodeURIComponent(doc.id)}`, {
         method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, rejected_reason })
       });
@@ -170,8 +167,12 @@ export default function DocumentsPage() {
                     </div>
                   </div>
                   <Badge variant="warn">pending photo</Badge>
-                  <Button disabled={isBusy} variant="outline" onClick={() => void decidePhoto(photo, "rejected")}><X className="size-4" />Reject</Button>
-                  <Button disabled={isBusy} onClick={() => void decidePhoto(photo, "approved")}><Check className="size-4" />Approve</Button>
+                  <GovernanceActionDialog confirmLabel="Reject photo" description={`Reject the profile photo for ${photo.display_name || "this technician"}.`} disabled={isBusy} onConfirm={() => decidePhoto(photo, "rejected")} title={`Reject ${photo.display_name || "technician"} photo?`} variant="destructive">
+                    <Button disabled={isBusy} variant="outline"><X className="size-4" />Reject</Button>
+                  </GovernanceActionDialog>
+                  <GovernanceActionDialog confirmLabel="Approve photo" description={`Approve the profile photo for ${photo.display_name || "this technician"}.`} disabled={isBusy} onConfirm={() => decidePhoto(photo, "approved")} title={`Approve ${photo.display_name || "technician"} photo?`}>
+                    <Button disabled={isBusy}><Check className="size-4" />Approve</Button>
+                  </GovernanceActionDialog>
                 </div>
               );
             })}
@@ -188,8 +189,12 @@ export default function DocumentsPage() {
                   <div className="min-w-0 flex-1"><div className="font-medium">{doc.technician_name || doc.technician_id}</div><div className="text-sm text-muted-foreground">{doc.document_type.replaceAll("_", " ")}{doc.document_number ? ` · ${doc.document_number}` : ""}{doc.expiration_date ? ` · expires ${doc.expiration_date}` : ""}</div></div>
                   <Badge variant="warn">pending review</Badge>
                   <Button disabled={isBusy} variant="outline" onClick={() => void openTechDoc(doc)}>Open file</Button>
-                  <Button disabled={isBusy} variant="outline" onClick={() => void decideTechDoc(doc, "rejected")}><X className="size-4" />Reject</Button>
-                  <Button disabled={isBusy} onClick={() => void decideTechDoc(doc, "approved")}><Check className="size-4" />Approve</Button>
+                  <GovernanceActionDialog confirmLabel="Reject document" description={`Reject ${doc.document_type.replaceAll("_", " ")} for ${doc.technician_name || "this technician"}.`} disabled={isBusy} onConfirm={(reason) => decideTechDoc(doc, "rejected", reason)} reasonRequired title={`Reject ${doc.document_type.replaceAll("_", " ")}?`} variant="destructive">
+                    <Button disabled={isBusy} variant="outline"><X className="size-4" />Reject</Button>
+                  </GovernanceActionDialog>
+                  <GovernanceActionDialog confirmLabel="Approve document" description={`Approve ${doc.document_type.replaceAll("_", " ")} for ${doc.technician_name || "this technician"}.`} disabled={isBusy} onConfirm={() => decideTechDoc(doc, "approved")} title={`Approve ${doc.document_type.replaceAll("_", " ")}?`}>
+                    <Button disabled={isBusy}><Check className="size-4" />Approve</Button>
+                  </GovernanceActionDialog>
                 </div>
               );
             })}
@@ -204,8 +209,12 @@ export default function DocumentsPage() {
                 <div className="min-w-0 flex-1"><div className="font-medium">{document.owner_name || document.owner_type}</div><div className="text-sm text-muted-foreground">{document.document_type.replaceAll("_", " ")}{document.expires_at ? ` · expires ${document.expires_at}` : ""}</div></div>
                 <Badge variant="warn">pending review</Badge>
                 <Button disabled={busy === document.id} variant="outline" onClick={() => void openDocument(document)}>Open file</Button>
-                <Button disabled={busy === document.id} variant="outline" onClick={() => void decide(document, "rejected")}><X className="size-4" />Reject</Button>
-                <Button disabled={busy === document.id} onClick={() => void decide(document, "verified")}><Check className="size-4" />Verify</Button>
+                <GovernanceActionDialog confirmLabel="Reject document" description={`Reject ${document.document_type.replaceAll("_", " ")} for ${document.owner_name || document.owner_type}.`} disabled={busy === document.id} onConfirm={() => decide(document, "rejected")} title={`Reject ${document.document_type.replaceAll("_", " ")}?`} variant="destructive">
+                  <Button disabled={busy === document.id} variant="outline"><X className="size-4" />Reject</Button>
+                </GovernanceActionDialog>
+                <GovernanceActionDialog confirmLabel="Verify document" description={`Verify ${document.document_type.replaceAll("_", " ")} for ${document.owner_name || document.owner_type}.`} disabled={busy === document.id} onConfirm={() => decide(document, "verified")} title={`Verify ${document.document_type.replaceAll("_", " ")}?`}>
+                  <Button disabled={busy === document.id}><Check className="size-4" />Verify</Button>
+                </GovernanceActionDialog>
               </div>
             ))}
           </CardContent>

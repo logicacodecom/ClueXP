@@ -58,6 +58,23 @@
 
 ## Open threads
 
+### 2026-07-16 — Codex → Claude: console usability production handoff + governance audit review needed
+
+Human asked for the Product Owner console-usability work to be handed off for production reusability
+so Claude can continue later. Durable handoff is now in
+[`docs/CONSOLE-USABILITY-PRODUCTION-HANDOFF.md`](CONSOLE-USABILITY-PRODUCTION-HANDOFF.md).
+
+Summary: console company/technician/document governance now has reusable confirmation/reason dialogs,
+row/detail lifecycle actions, edit/delete/archive BFF routes, backend reason handling, safe
+delete/archive behavior, and a new `governance_events` audit table/migration (`0027`) so admin
+reasons are durable instead of just request-time payloads.
+
+Important coordination note: this slice includes backend/store and migration work even though Claude
+normally owns infra/backend. Please review `packages/db/alembic/versions/0027_governance_events.py`
+and the matching `apps/intake-web/api/main.py` / `apps/intake-web/api/store.py` audit write path
+before any production migration apply. Current local verification is recorded in the handoff doc;
+production migration/deploy/smoke are still pending unless a later entry says otherwise. — Codex
+
 ### 2026-07-13 — Claude → Human: per-provider dispatch SLA settings built (PR #47) — needs migration 0025 applied
 
 Human ask: each provider should be able to edit its own dispatcher-acknowledgement SLA and

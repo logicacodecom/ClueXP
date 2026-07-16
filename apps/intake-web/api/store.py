@@ -14,6 +14,7 @@ The Ticket Pydantic model stays the single source of truth: we persist
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -234,11 +235,34 @@ class Store:
     async def set_organization_status(self, organization_id: UUID, status: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def delete_or_archive_organization(self, organization_id: UUID, *, reason: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def reject_technician(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def reject_organization(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
+
+    async def delete_or_archive_technician(self, technician_id: UUID, *, reason: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def record_governance_event(
+        self,
+        *,
+        entity_type: str,
+        entity_id: UUID,
+        action: str,
+        reason: str | None = None,
+        actor_id: UUID | str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_governance_events(
+        self, entity_type: str, entity_id: UUID, *, limit: int = 50
+    ) -> list[dict]:  # pragma: no cover
+        return []
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:  # pragma: no cover
         raise NotImplementedError
@@ -651,6 +675,7 @@ class InMemoryStore(Store):
         }
         self.reviews: list[dict] = []
         self.login_attempts: list[dict] = []
+        self.governance_events: list[dict] = []
         # Technician documents for Slice T6
         self.technician_documents: list[dict] = []
 
@@ -1923,11 +1948,62 @@ class InMemoryStore(Store):
     async def set_organization_status(self, organization_id: UUID, status: str) -> dict | None:
         return None
 
+    async def delete_or_archive_organization(self, organization_id: UUID, *, reason: str) -> dict | None:
+        return None
+
     async def reject_technician(self, technician_id: UUID) -> dict | None:
         return None
 
     async def reject_organization(self, organization_id: UUID) -> dict | None:
         return None
+
+    async def delete_or_archive_technician(self, technician_id: UUID, *, reason: str) -> dict | None:
+        tid = str(technician_id)
+        techs = getattr(self, "_technicians", [])
+        technician = next((item for item in techs if str(item.get("id")) == tid), None)
+        if technician is None:
+            return None
+        refs = sum(1 for item in getattr(self, "_affiliations", []) if str(item.get("technician_id")) == tid)
+        refs += sum(1 for item in getattr(self, "technician_documents", []) if str(item.get("technician_id")) == tid)
+        if refs == 0:
+            self._technicians = [item for item in techs if str(item.get("id")) != tid]
+            return {"id": tid, "action": "deleted", "reason": reason}
+        technician["status"] = "archived"
+        technician["is_available"] = False
+        return {"id": tid, "action": "archived", "status": "archived", "references": refs, "reason": reason}
+
+    async def record_governance_event(
+        self,
+        *,
+        entity_type: str,
+        entity_id: UUID,
+        action: str,
+        reason: str | None = None,
+        actor_id: UUID | str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        event = {
+            "id": str(uuid4()),
+            "entity_type": entity_type,
+            "entity_id": str(entity_id),
+            "action": action,
+            "reason": reason,
+            "actor_id": str(actor_id) if actor_id else None,
+            "metadata": metadata or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.governance_events.append(event)
+        return event
+
+    async def list_governance_events(
+        self, entity_type: str, entity_id: UUID, *, limit: int = 50
+    ) -> list[dict]:
+        eid = str(entity_id)
+        events = [
+            event for event in self.governance_events
+            if event["entity_type"] == entity_type and event["entity_id"] == eid
+        ]
+        return list(reversed(events))[:limit]
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:
         return None
@@ -2150,6 +2226,26 @@ class PostgresStore(Store):
                 "  uploaded_by uuid,"
                 "  uploaded_at timestamptz not null default now()"
                 ")"
+            )
+            await conn.execute(
+                "create table if not exists governance_events ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  entity_type text not null check (entity_type in ('organization','technician')),"
+                "  entity_id uuid not null,"
+                "  action text not null,"
+                "  reason text,"
+                "  actor_id uuid,"
+                "  metadata jsonb not null default '{}',"
+                "  created_at timestamptz not null default now()"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_governance_events_entity"
+                " on governance_events (entity_type, entity_id, created_at desc)"
+            )
+            await conn.execute(
+                "create index if not exists idx_governance_events_actor"
+                " on governance_events (actor_id, created_at desc)"
             )
             # Runtime operational settings (migration 0023). Resilience guard so the
             # API boots + seeds even if the migration is behind. Never holds secrets
@@ -4743,6 +4839,43 @@ class PostgresStore(Store):
             return None
         return {"id": str(row[0]), "display_name": row[1], "status": row[2]}
 
+    async def delete_or_archive_organization(self, organization_id: UUID, *, reason: str) -> dict | None:
+        oid = str(organization_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute("select id, display_name from organizations where id = %s", (oid,))
+            org = await cur.fetchone()
+            if not org:
+                return None
+            reference_queries = [
+                ("members", "select count(*) from user_organization_memberships where organization_id = %s"),
+                ("technicians", "select count(*) from organization_technicians where organization_id = %s"),
+                ("documents", "select count(*) from provider_documents where owner_type = 'organization' and owner_id = %s"),
+                ("settings", "select count(*) from organization_settings where organization_id = %s"),
+                ("teams", "select count(*) from organization_teams where organization_id = %s"),
+                ("invites", "select count(*) from technician_invites where organization_id = %s"),
+                ("jobs", "select count(*) from jobs where origin_org_id = %s or customer_owner_org_id = %s or fulfillment_org_id = %s"),
+            ]
+            references: dict[str, int] = {}
+            for key, sql in reference_queries:
+                args = (oid, oid, oid) if key == "jobs" else (oid,)
+                cur = await conn.execute(sql, args)
+                row = await cur.fetchone()
+                references[key] = int(row[0]) if row else 0
+            total = sum(references.values())
+            if total == 0:
+                await conn.execute("delete from organizations where id = %s", (oid,))
+                return {"id": oid, "display_name": org[1], "action": "deleted", "references": references, "reason": reason}
+            cur = await conn.execute(
+                "update organizations set status = 'closed', updated_at = now()"
+                " where id = %s returning id, display_name, status",
+                (oid,),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "display_name": row[1], "status": row[2],
+            "action": "archived", "references": references, "reason": reason,
+        }
+
     async def set_organization_status(self, organization_id: UUID, status: str) -> dict | None:
         """Ops transition of a company between active/suspended (and closed). Canonical
         org lifecycle: pending_review | active | suspended | rejected | closed."""
@@ -4756,6 +4889,104 @@ class PostgresStore(Store):
         if not row:
             return None
         return {"id": str(row[0]), "display_name": row[1], "status": row[2]}
+
+    async def delete_or_archive_technician(self, technician_id: UUID, *, reason: str) -> dict | None:
+        tid = str(technician_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute("select id, display_name from technicians where id = %s", (tid,))
+            technician = await cur.fetchone()
+            if not technician:
+                return None
+            reference_queries = [
+                ("affiliations", "select count(*) from organization_technicians where technician_id = %s"),
+                ("documents", "select count(*) from technician_documents where technician_id = %s"),
+                ("offers", "select count(*) from dispatch_offers where technician_id = %s"),
+                ("jobs", "select count(*) from jobs where fulfillment_technician_id = %s"),
+                ("media", "select count(*) from media where owner_type = 'technician' and owner_id = %s"),
+            ]
+            references: dict[str, int] = {}
+            for key, sql in reference_queries:
+                cur = await conn.execute(sql, (tid,))
+                row = await cur.fetchone()
+                references[key] = int(row[0]) if row else 0
+            total = sum(references.values())
+            if total == 0:
+                await conn.execute("delete from technicians where id = %s", (tid,))
+                return {"id": tid, "display_name": technician[1], "action": "deleted", "references": references, "reason": reason}
+            cur = await conn.execute(
+                "update technicians set status = 'archived', is_available = false"
+                " where id = %s returning id, display_name, status, vetting_status",
+                (tid,),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "display_name": row[1], "status": row[2],
+            "vetting_status": row[3], "action": "archived",
+            "references": references, "reason": reason,
+        }
+
+    async def record_governance_event(
+        self,
+        *,
+        entity_type: str,
+        entity_id: UUID,
+        action: str,
+        reason: str | None = None,
+        actor_id: UUID | str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into governance_events"
+                " (entity_type, entity_id, action, reason, actor_id, metadata)"
+                " values (%s, %s, %s, %s, %s, %s::jsonb)"
+                " returning id, entity_type, entity_id, action, reason, actor_id, metadata, created_at",
+                (
+                    entity_type,
+                    str(entity_id),
+                    action,
+                    reason,
+                    str(actor_id) if actor_id else None,
+                    json.dumps(metadata or {}),
+                ),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]),
+            "entity_type": row[1],
+            "entity_id": str(row[2]),
+            "action": row[3],
+            "reason": row[4],
+            "actor_id": str(row[5]) if row[5] else None,
+            "metadata": row[6] or {},
+            "created_at": row[7].isoformat() if hasattr(row[7], "isoformat") else row[7],
+        }
+
+    async def list_governance_events(
+        self, entity_type: str, entity_id: UUID, *, limit: int = 50
+    ) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, entity_type, entity_id, action, reason, actor_id, metadata, created_at"
+                " from governance_events"
+                " where entity_type = %s and entity_id = %s"
+                " order by created_at desc limit %s",
+                (entity_type, str(entity_id), limit),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "entity_type": row[1],
+                "entity_id": str(row[2]),
+                "action": row[3],
+                "reason": row[4],
+                "actor_id": str(row[5]) if row[5] else None,
+                "metadata": row[6] or {},
+                "created_at": row[7].isoformat() if hasattr(row[7], "isoformat") else row[7],
+            }
+            for row in rows
+        ]
 
     async def update_user_locale(self, user_id: str, locale: str) -> None:
         async with await self._connect() as conn:

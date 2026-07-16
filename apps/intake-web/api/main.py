@@ -328,6 +328,10 @@ class TechnicianProfileUpdateRequest(BaseModel):
     service_area_radius_km: float | None = None
 
 
+class AdminActionRequest(BaseModel):
+    reason: str | None = None
+
+
 class JobStatusUpdateRequest(BaseModel):
     status: str
 
@@ -660,94 +664,187 @@ async def change_password(
     return {"status": "updated"}
 
 
+async def _record_admin_governance_event(
+    session: dict[str, Any],
+    *,
+    entity_type: str,
+    entity_id: UUID,
+    action: str,
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    actor_user_id = str(session["user"].get("id") or "")
+    try:
+        actor_id: UUID | None = UUID(actor_user_id)
+    except ValueError:
+        actor_id = None
+    event_metadata = {"actor_user_id": actor_user_id, **(metadata or {})}
+    await store.record_governance_event(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        reason=reason,
+        actor_id=actor_id,
+        metadata=event_metadata,
+    )
+
+
 @app.post("/admin/technicians/{technician_id}/approve")
 async def approve_technician(
-    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+    technician_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
     result = await store.approve_technician(technician_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Technician not found")
+    reason = (payload.reason if payload else None) or None
+    await _record_admin_governance_event(
+        session, entity_type="technician", entity_id=technician_id, action="approve",
+        reason=reason.strip()[:280] if reason else None, metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/organizations/{organization_id}/approve")
 async def approve_organization(
-    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+    organization_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
     result = await store.approve_organization(organization_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    reason = (payload.reason if payload else None) or None
+    await _record_admin_governance_event(
+        session, entity_type="organization", entity_id=organization_id, action="approve",
+        reason=reason.strip()[:280] if reason else None, metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/technicians/{technician_id}/reject")
 async def reject_technician(
-    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+    technician_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
+    reason = (payload.reason if payload else None) or ""
+    if len(reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
     result = await store.reject_technician(technician_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Technician not found")
+    result["reason"] = reason.strip()[:280]
+    await _record_admin_governance_event(
+        session, entity_type="technician", entity_id=technician_id, action="reject",
+        reason=result["reason"], metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/technicians/{technician_id}/suspend")
 async def suspend_technician(
-    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+    technician_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Ops suspends a technician globally, making them unavailable for dispatch."""
     require_any_role(session, {"platform_admin"})
+    reason = (payload.reason if payload else None) or ""
+    if len(reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A suspension reason is required.")
     result = await store.set_technician_status(technician_id, "suspended")
     if result is None:
         raise HTTPException(status_code=404, detail="Technician not found")
+    result["reason"] = reason.strip()[:280]
+    await _record_admin_governance_event(
+        session, entity_type="technician", entity_id=technician_id, action="suspend",
+        reason=result["reason"], metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/technicians/{technician_id}/reactivate")
 async def reactivate_technician(
-    technician_id: UUID, session: dict[str, Any] = Depends(require_session)
+    technician_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
     result = await store.set_technician_status(technician_id, "active")
     if result is None:
         raise HTTPException(status_code=404, detail="Technician not found")
+    reason = (payload.reason if payload else None) or None
+    await _record_admin_governance_event(
+        session, entity_type="technician", entity_id=technician_id, action="reactivate",
+        reason=reason.strip()[:280] if reason else None, metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/organizations/{organization_id}/reject")
 async def reject_organization(
-    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+    organization_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
+    reason = (payload.reason if payload else None) or ""
+    if len(reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
     result = await store.reject_organization(organization_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    result["reason"] = reason.strip()[:280]
+    await _record_admin_governance_event(
+        session, entity_type="organization", entity_id=organization_id, action="reject",
+        reason=result["reason"], metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/organizations/{organization_id}/suspend")
 async def suspend_organization(
-    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+    organization_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Ops suspends an active company (company-wide; distinct from a provider
     suspending one technician affiliation)."""
     require_any_role(session, {"platform_admin"})
+    reason = (payload.reason if payload else None) or ""
+    if len(reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A suspension reason is required.")
     result = await store.set_organization_status(organization_id, "suspended")
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    result["reason"] = reason.strip()[:280]
+    await _record_admin_governance_event(
+        session, entity_type="organization", entity_id=organization_id, action="suspend",
+        reason=result["reason"], metadata={"status": result.get("status")},
+    )
     return result
 
 
 @app.post("/admin/organizations/{organization_id}/reactivate")
 async def reactivate_organization(
-    organization_id: UUID, session: dict[str, Any] = Depends(require_session)
+    organization_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
     result = await store.set_organization_status(organization_id, "active")
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    reason = (payload.reason if payload else None) or None
+    await _record_admin_governance_event(
+        session, entity_type="organization", entity_id=organization_id, action="reactivate",
+        reason=reason.strip()[:280] if reason else None, metadata={"status": result.get("status")},
+    )
     return result
 
 
@@ -774,6 +871,40 @@ async def admin_get_organization(
     return detail
 
 
+@app.patch("/admin/organizations/{organization_id}")
+async def admin_update_organization(
+    organization_id: UUID,
+    payload: OrganizationProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.update_organization_profile(organization_id, payload.model_dump(exclude_unset=True))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
+@app.delete("/admin/organizations/{organization_id}")
+async def admin_delete_or_archive_organization(
+    organization_id: UUID,
+    payload: AdminActionRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A delete/archive reason is required.")
+    result = await store.delete_or_archive_organization(organization_id, reason=reason[:280])
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    action = {"deleted": "delete", "archived": "archive"}.get(str(result.get("action")), str(result.get("action")))
+    await _record_admin_governance_event(
+        session, entity_type="organization", entity_id=organization_id, action=action,
+        reason=result.get("reason"), metadata={"status": result.get("status"), "references": result.get("references")},
+    )
+    return result
+
+
 @app.post("/admin/organizations")
 async def admin_create_organization(
     payload: OrganizationRegisterRequest, session: dict[str, Any] = Depends(require_session)
@@ -795,6 +926,46 @@ async def admin_list_technicians(
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
     return {"technicians": await store.list_technicians_admin(status)}
+
+
+@app.patch("/admin/technicians/{technician_id}")
+async def admin_update_technician(
+    technician_id: UUID,
+    payload: TechnicianProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("skills") is not None:
+        data["skills"] = normalize_technician_skills(data["skills"])
+    try:
+        result = await store.update_technician_profile(technician_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return result
+
+
+@app.delete("/admin/technicians/{technician_id}")
+async def admin_delete_or_archive_technician(
+    technician_id: UUID,
+    payload: AdminActionRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A delete/archive reason is required.")
+    result = await store.delete_or_archive_technician(technician_id, reason=reason[:280])
+    if result is None:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    action = {"deleted": "delete", "archived": "archive"}.get(str(result.get("action")), str(result.get("action")))
+    await _record_admin_governance_event(
+        session, entity_type="technician", entity_id=technician_id, action=action,
+        reason=result.get("reason"), metadata={"status": result.get("status"), "references": result.get("references")},
+    )
+    return result
 
 
 @app.post("/admin/technicians")

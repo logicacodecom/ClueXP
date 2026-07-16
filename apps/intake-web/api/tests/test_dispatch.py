@@ -3265,14 +3265,65 @@ def test_admin_can_suspend_and_reactivate_technician():
     H = {"Authorization": f"Bearer {token}"}
     client = TestClient(app)
 
-    suspended = client.post(f"/admin/technicians/{tech_id}/suspend", headers=H)
+    missing_reason = client.post(f"/admin/technicians/{tech_id}/suspend", json={}, headers=H)
+    assert missing_reason.status_code == 422
+
+    suspended = client.post(f"/admin/technicians/{tech_id}/suspend", json={"reason": "expired insurance"}, headers=H)
     assert suspended.status_code == 200, suspended.text
     assert suspended.json()["status"] == "suspended"
+    assert suspended.json()["reason"] == "expired insurance"
     assert app_store._technicians[0]["is_available"] is False
+    events = asyncio.run(app_store.list_governance_events("technician", UUID(tech_id)))
+    assert events[0]["action"] == "suspend"
+    assert events[0]["reason"] == "expired insurance"
+    assert events[0]["actor_id"] == admin_uid
 
-    reactivated = client.post(f"/admin/technicians/{tech_id}/reactivate", headers=H)
+    reactivated = client.post(f"/admin/technicians/{tech_id}/reactivate", json={}, headers=H)
     assert reactivated.status_code == 200, reactivated.text
     assert reactivated.json()["status"] == "active"
+
+
+def test_admin_delete_archives_referenced_technician():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin_uid = str(uuid4())
+    tech_id = str(uuid4())
+    org_id = str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    app_store._technicians = [{
+        "id": tech_id,
+        "display_name": "Riley Harper",
+        "status": "active",
+        "vetting_status": "verified",
+        "is_available": True,
+    }]
+    app_store._affiliations = [{
+        "id": str(uuid4()),
+        "organization_id": org_id,
+        "technician_id": tech_id,
+        "status": "active",
+        "ended_at": None,
+    }]
+    token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    H = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app)
+
+    missing_reason = client.request("DELETE", f"/admin/technicians/{tech_id}", json={}, headers=H)
+    assert missing_reason.status_code == 422
+
+    archived = client.request("DELETE", f"/admin/technicians/{tech_id}", json={"reason": "duplicate profile"}, headers=H)
+    assert archived.status_code == 200, archived.text
+    body = archived.json()
+    assert body["action"] == "archived"
+    assert body["status"] == "archived"
+    assert app_store._technicians[0]["status"] == "archived"
+    assert app_store._technicians[0]["is_available"] is False
+    events = asyncio.run(app_store.list_governance_events("technician", UUID(tech_id)))
+    assert events[0]["action"] == "archive"
+    assert events[0]["reason"] == "duplicate profile"
+    assert events[0]["metadata"]["references"] == body["references"]
 
 
 def test_admin_organization_limits_default_then_override_then_clear():

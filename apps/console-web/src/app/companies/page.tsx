@@ -5,6 +5,7 @@ import { Building2, Check, Edit, Eye, PauseCircle, Plus, RotateCcw, Trash2, X } 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
+import { GovernanceActionDialog } from "../governance-action-dialog";
 
 interface OrganizationRow {
   id: string;
@@ -61,13 +62,16 @@ export default function CompaniesPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function runAction(row: OrganizationRow, action: "approve" | "reject" | "suspend" | "reactivate") {
+  async function runAction(row: OrganizationRow, action: "approve" | "reject" | "suspend" | "reactivate", reason = "") {
     const label = actionLabel(action);
-    if (!window.confirm(`${label[0].toUpperCase()}${label.slice(1)} ${row.display_name}? This changes the company's production access.`)) return;
     setBusy(`${row.id}:${action}`);
     setMessage(null);
     try {
-      const response = await fetch(`/api/organizations/${encodeURIComponent(row.id)}/${action}`, { method: "POST" });
+      const response = await fetch(`/api/organizations/${encodeURIComponent(row.id)}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || `Unable to ${label} company`);
       await refresh();
@@ -79,8 +83,24 @@ export default function CompaniesPage() {
     }
   }
 
-  function unavailableDelete(row: OrganizationRow) {
-    window.alert(`Delete is not available for ${row.display_name} because company records may be linked to users, technicians, documents, and jobs. Suspend or reject it instead.`);
+  async function deleteOrArchive(row: OrganizationRow, reason: string) {
+    setBusy(`${row.id}:delete`);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/organizations/${encodeURIComponent(row.id)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to delete or archive company");
+      await refresh();
+      setMessage(body.action === "deleted" ? `${row.display_name} deleted.` : `${row.display_name} archived because linked records exist.`);
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to delete or archive company");
+    } finally {
+      setBusy(null);
+    }
   }
 
   const visibleRows = useMemo(() => {
@@ -147,12 +167,26 @@ export default function CompaniesPage() {
               <Button asChild size="sm" variant="outline"><Link href={`/companies/${row.id}`}><Eye className="size-4" />View</Link></Button>
               <Button asChild size="sm" variant="outline"><Link href={`/companies/${row.id}`}><Edit className="size-4" />Edit</Link></Button>
               {row.status === "pending_review" ? <>
-                <Button disabled={busy !== null} size="sm" onClick={() => void runAction(row, "approve")}><Check className="size-4" />Approve</Button>
-                <Button disabled={busy !== null} size="sm" variant="outline" onClick={() => void runAction(row, "reject")}><X className="size-4" />Reject</Button>
+                <GovernanceActionDialog confirmLabel="Approve company" description={`Approve ${row.display_name} for production access.`} disabled={busy !== null} onConfirm={(reason) => runAction(row, "approve", reason)} title={`Approve ${row.display_name}?`}>
+                  <Button disabled={busy !== null} size="sm"><Check className="size-4" />Approve</Button>
+                </GovernanceActionDialog>
+                <GovernanceActionDialog confirmLabel="Reject company" description={`Reject ${row.display_name}. This blocks production access until reactivated.`} disabled={busy !== null} onConfirm={(reason) => runAction(row, "reject", reason)} reasonRequired title={`Reject ${row.display_name}?`} variant="destructive">
+                  <Button disabled={busy !== null} size="sm" variant="outline"><X className="size-4" />Reject</Button>
+                </GovernanceActionDialog>
               </> : null}
-              {row.status === "active" ? <Button disabled={busy !== null} size="sm" variant="destructive" onClick={() => void runAction(row, "suspend")}><PauseCircle className="size-4" />Suspend</Button> : null}
-              {row.status === "suspended" || row.status === "rejected" ? <Button disabled={busy !== null} size="sm" onClick={() => void runAction(row, "reactivate")}><RotateCcw className="size-4" />Activate</Button> : null}
-              <Button size="sm" variant="ghost" onClick={() => unavailableDelete(row)}><Trash2 className="size-4" />Delete</Button>
+              {row.status === "active" ? (
+                <GovernanceActionDialog confirmLabel="Suspend company" description={`Suspend ${row.display_name}. Company users and technicians should no longer be treated as production-active.`} disabled={busy !== null} onConfirm={(reason) => runAction(row, "suspend", reason)} reasonRequired title={`Suspend ${row.display_name}?`} variant="destructive">
+                  <Button disabled={busy !== null} size="sm" variant="destructive"><PauseCircle className="size-4" />Suspend</Button>
+                </GovernanceActionDialog>
+              ) : null}
+              {row.status === "suspended" || row.status === "rejected" || row.status === "closed" ? (
+                <GovernanceActionDialog confirmLabel="Activate company" description={`Reactivate ${row.display_name} for production access.`} disabled={busy !== null} onConfirm={(reason) => runAction(row, "reactivate", reason)} title={`Activate ${row.display_name}?`}>
+                  <Button disabled={busy !== null} size="sm"><RotateCcw className="size-4" />Activate</Button>
+                </GovernanceActionDialog>
+              ) : null}
+              <GovernanceActionDialog confirmLabel="Delete or archive" description={`If ${row.display_name} has no linked records, it will be deleted. If linked records exist, it will be archived instead.`} disabled={busy !== null} onConfirm={(reason) => deleteOrArchive(row, reason)} reasonRequired title={`Delete or archive ${row.display_name}?`} variant="destructive">
+                <Button disabled={busy !== null} size="sm" variant="ghost"><Trash2 className="size-4" />Delete</Button>
+              </GovernanceActionDialog>
             </div>
           ])}
         />

@@ -8,9 +8,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   const { id, action } = await context.params;
   if (!ACTIONS.has(action)) return NextResponse.json({ detail: "Invalid action" }, { status: 400 });
+  const body = await request.json().catch(() => ({}));
   const response = await fetch(`${apiBase}/api/admin/organizations/${encodeURIComponent(id)}/${action}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
     cache: "no-store"
   });
   return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
