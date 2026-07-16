@@ -43,7 +43,7 @@
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline and completed-job history are wired **and deployed** (production migrations through `0024` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting and agreement management are wired **and deployed** (production migrations through `0034` applied); production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
@@ -54,25 +54,9 @@
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
-| CI | `[x]` | Local gates green — current verification (2026-07-13) API `160 passed, 1 skipped`; migration chain validates through `0024`; shared typecheck and all four production builds pass |
+| CI | `[x]` | Local gates green — current financial verification (2026-07-16) targeted API financial/settlement batch `9 passed`; migration applied through `0034`; shared typecheck plus provider and technician production builds pass |
 
-Current production migration head: **`0024_gs_more_tunables`** (applied 2026-06-21; chains
-`0021_tech_doc_defaults → 0022_technician_invites → 0023_global_settings → 0024`). `0022` adds
-technician invites; `0023` adds the `global_settings` runtime-settings table and seeds
-`dispatch_offer_ttl_seconds=300`; `0024` migrates five more env-only tunables into `global_settings`
-(`dispatch_cutover_global_off`, `token_action_max`/`_window_seconds`, `login_max_failures`/`login_window_seconds`)
-— all DB-backed and runtime-editable via the admin API (verified live: `alembic_version=0024`, all six
-rows present, both CHECK constraints in place).
-`0011`–`0018` plus `0016` (affiliation fields + exclusive guard + backfill), `0017`
-(affiliation history), `0018` (technician photo status), `0019` (organization status
-enum), `0020` (technician documents) and `0021` (technician_documents defaults repair)
-are live. **Deploy note:** the workforce + company-signup + technician-documents
-**code** (affiliation eligibility/invite/photo, org onboarding, the technician-documents
-bug fixes, type selection, view/download, and Ops review) is **deployed** — Vercel
-`cluexp-intake` auto-deploys to production on push to `main`; tip commit `882664f` is
-READY in production, and `python-multipart` is in the deployed image. The
-`private-technician-docs` Storage bucket exists. An authenticated end-to-end runtime
-smoke is still recommended (the build sandbox can't reach prod to verify).
+Current production migration head: **`0034_settlement_periods`** (applied 2026-07-16; verified live via Alembic `current`). This includes `0029` service catalog, `0030` organization capabilities, `0031` financial closeout settings and item type catalog, `0032` job closeout reports, `0033` technician agreements, and `0034` settlement periods. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; live route smoke after commit `8bcbdb2` confirmed the new protected financial endpoints are deployed/auth-gated and read-only authenticated API smoke passed for provider financial settings, provider settlements, settlement periods, and technician settlements.
 
 ## Product Backlog & Release Map
 
@@ -582,10 +566,11 @@ affiliation foundation; model in [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3.)
 
 ## 9. Immediate Work Order
 
-Provider-managed dispatch (§3.4), the field-integrity core (§4), and the tenant-scoped
-recovery workspace (§5) are **code-complete** and merged. Production migration head is
-`0024_gs_more_tunables` (applied 2026-06-21); the workforce + company-signup +
-technician-documents code is deployed (`cluexp-intake` auto-deploys on push to `main`).
+Provider-managed dispatch (§3.4), the field-integrity core (§4), the tenant-scoped
+recovery workspace (§5), and the operational financial closeout/settlement records (§6) are
+**code-complete** and merged. Production migration head is `0034_settlement_periods`
+(applied 2026-07-16); the workforce, company-signup, technician-documents and financial
+records code is deployed (`cluexp-intake` auto-deploys on push to `main`).
 Remaining work to a meaningful pilot is operational, not new code:
 
 1. **Runtime-smoke the advisory-payment / live-tracking work:** PR #39 (merge `808f108`, tip
