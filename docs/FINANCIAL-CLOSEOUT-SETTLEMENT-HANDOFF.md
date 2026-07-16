@@ -839,7 +839,36 @@ Remaining production gates:
 1. Customer-facing receipt confirmation polish for the itemized receipt.
 2. Formal settlement dispute workflow.
 3. Console audit/support surfaces for closeout, agreements, settlement periods, and adjustments.
-4. Production deployment/migration/click-through QA for the financial workflow.
-5. Optional later payment/payroll integration if ClueXP will move money.
+4. Authenticated browser click-through QA for the financial workflow.
+
+Completed release gates:
+
+- Production migrations through `0034_settlement_periods` were applied on 2026-07-16.
+- Live read-only API smoke passed for provider financial settings, provider settlements, settlement periods, and technician settlements.
+- Protected production routes are deployed and auth-gated.
+
+## Future discussion: real payment and payroll integration
+
+The next financial discussion should be treated as a separate product/infrastructure decision, not a continuation of the operational settlement-record workflow.
+
+Questions to decide before implementation:
+
+1. Should ClueXP only record settlements, or should ClueXP initiate real money movement?
+2. If money movement is in scope, should it cover customer card payments, technician payouts, or both?
+3. Which provider is merchant of record for each customer charge?
+4. Should provider payments use Stripe Connect direct charges, another processor, or provider-owned external systems?
+5. Should technician payout be handled by the provider outside ClueXP, by Stripe/Connect, by payroll software, or by another payout rail?
+6. What bank-account/KYC/KYB onboarding is required for providers and/or technicians?
+7. How should refunds, disputes, chargebacks, failed payouts, reversals, and negative balances be represented?
+8. Will ClueXP charge an application/platform fee later, and if yes, percentage, flat fee, subscription-only, or per-job hybrid?
+9. What reconciliation reports are required between ClueXP records and processor/payroll records?
+10. What audit/legal controls are required before marking any processor-backed payment as captured, transferred, paid, refunded, or disputed?
+
+Initial recommendation for that future phase:
+
+- Keep the current operational settlement system as the source of calculated payable records.
+- Integrate processor/payroll records as a separate ledger layer linked to jobs, closeouts, settlement periods, and provider/technician identities.
+- Do not replace the current closeout/settlement workflow with processor status; processor status should reconcile against it.
+- Keep provider merchant-of-record boundaries unless there is an explicit business decision for ClueXP to become a payment facilitator or payroll actor.
 
 Do not ship UI copy that implies real Stripe capture, provider payouts, or payroll movement until processor-backed flows exist. Until payment processor integration is implemented, label money movement as closeout/settlement records or payable estimates, not completed payouts.
