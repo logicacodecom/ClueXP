@@ -3,7 +3,7 @@
 import type { ServiceCategory } from "@cluexp/api-client";
 import { DEFAULT_SERVICE_CATALOG } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, SkillSelect } from "@cluexp/console-ui";
-import { Check, Copy, Link2, Save, TimerReset } from "lucide-react";
+import { Check, Copy, CreditCard, Link2, Save, TimerReset } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -17,6 +17,32 @@ interface DispatchSettings {
   ack_sla_minutes: DispatchSettingField;
   stalled_minutes: DispatchSettingField;
 }
+
+interface FinancialSettings {
+  max_line_items: DispatchSettingField;
+  tax_rate_basis_points: DispatchSettingField;
+  card_fee_basis_points: DispatchSettingField;
+  card_fee_fixed_cents: DispatchSettingField;
+}
+
+const FINANCIAL_LABELS: Record<keyof FinancialSettings, { label: string; help: string }> = {
+  max_line_items: {
+    label: "Max closeout line items",
+    help: "How many receipt rows a technician may add before customer confirmation."
+  },
+  tax_rate_basis_points: {
+    label: "Tax rate (basis points)",
+    help: "725 means 7.25%. Technicians cannot edit this per job."
+  },
+  card_fee_basis_points: {
+    label: "Card fee percent (basis points)",
+    help: "Applied only to card-like payment methods. 290 means 2.9%."
+  },
+  card_fee_fixed_cents: {
+    label: "Fixed card fee (cents)",
+    help: "Applied only to card-like payment methods. 30 means $0.30."
+  }
+};
 
 const INTAKE_BASE = (process.env.NEXT_PUBLIC_INTAKE_BASE_URL || "https://intake.cluexp.com").replace(/\/$/, "");
 
@@ -42,6 +68,15 @@ export default function SettingsPage() {
   const [capabilityCatalog, setCapabilityCatalog] = useState<ServiceCategory[]>(DEFAULT_SERVICE_CATALOG);
   const [capabilityMessage, setCapabilityMessage] = useState<string | null>(null);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
+  const [financialSettings, setFinancialSettings] = useState<FinancialSettings | null>(null);
+  const [financialInputs, setFinancialInputs] = useState({
+    max_line_items: "",
+    tax_rate_basis_points: "",
+    card_fee_basis_points: "",
+    card_fee_fixed_cents: ""
+  });
+  const [financialMessage, setFinancialMessage] = useState<string | null>(null);
+  const [financialBusy, setFinancialBusy] = useState(false);
 
   async function loadDispatchSettings() {
     try {
@@ -69,9 +104,28 @@ export default function SettingsPage() {
     }
   }
 
+  async function loadFinancialSettings() {
+    try {
+      const response = await fetch("/api/provider/settings/financial", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to load financial settings");
+      const settings = body as FinancialSettings;
+      setFinancialSettings(settings);
+      setFinancialInputs({
+        max_line_items: String(settings.max_line_items.value),
+        tax_rate_basis_points: String(settings.tax_rate_basis_points.value),
+        card_fee_basis_points: String(settings.card_fee_basis_points.value),
+        card_fee_fixed_cents: String(settings.card_fee_fixed_cents.value)
+      });
+    } catch (cause) {
+      setFinancialMessage(cause instanceof Error ? cause.message : "Unable to load financial settings");
+    }
+  }
+
   useEffect(() => {
     void loadDispatchSettings();
     void loadCapabilities();
+    void loadFinancialSettings();
   }, []);
 
   useEffect(() => {
@@ -212,6 +266,65 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveFinancialSettings() {
+    setFinancialBusy(true);
+    setFinancialMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/financial", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          max_line_items: Number(financialInputs.max_line_items),
+          tax_rate_basis_points: Number(financialInputs.tax_rate_basis_points),
+          card_fee_basis_points: Number(financialInputs.card_fee_basis_points),
+          card_fee_fixed_cents: Number(financialInputs.card_fee_fixed_cents)
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save financial settings");
+      const settings = body as FinancialSettings;
+      setFinancialSettings(settings);
+      setFinancialInputs({
+        max_line_items: String(settings.max_line_items.value),
+        tax_rate_basis_points: String(settings.tax_rate_basis_points.value),
+        card_fee_basis_points: String(settings.card_fee_basis_points.value),
+        card_fee_fixed_cents: String(settings.card_fee_fixed_cents.value)
+      });
+      setFinancialMessage("Financial closeout settings saved.");
+    } catch (cause) {
+      setFinancialMessage(cause instanceof Error ? cause.message : "Unable to save financial settings");
+    } finally {
+      setFinancialBusy(false);
+    }
+  }
+
+  async function resetFinancialField(field: keyof FinancialSettings) {
+    setFinancialBusy(true);
+    setFinancialMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/financial", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ [field]: null })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to reset to platform default");
+      const settings = body as FinancialSettings;
+      setFinancialSettings(settings);
+      setFinancialInputs({
+        max_line_items: String(settings.max_line_items.value),
+        tax_rate_basis_points: String(settings.tax_rate_basis_points.value),
+        card_fee_basis_points: String(settings.card_fee_basis_points.value),
+        card_fee_fixed_cents: String(settings.card_fee_fixed_cents.value)
+      });
+      setFinancialMessage("Reverted to the platform default.");
+    } catch (cause) {
+      setFinancialMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
+    } finally {
+      setFinancialBusy(false);
+    }
+  }
+
   return (
     <AppFrame>
       <div className="space-y-6">
@@ -270,6 +383,57 @@ export default function SettingsPage() {
             {capabilityMessage ? <div className="text-sm" role="status">{capabilityMessage}</div> : null}
             <Button disabled={capabilityBusy} onClick={() => void saveCapabilities()} variant="outline">
               <Save className="size-4" />{capabilityBusy ? "Saving…" : "Save service capabilities"}
+            </Button>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><CreditCard className="size-5 text-primary" />Financial closeout defaults</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              These values prepare the future itemized closeout flow. They set receipt calculation defaults only; they do not process charges or pay technicians.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              {(Object.keys(FINANCIAL_LABELS) as Array<keyof FinancialSettings>).map((field) => {
+                const meta = FINANCIAL_LABELS[field];
+                const setting = financialSettings?.[field];
+                return (
+                  <div className="space-y-1.5" key={field}>
+                    <label className="text-sm font-medium" htmlFor={`financial-${field}`}>{meta.label}</label>
+                    <Input
+                      id={`financial-${field}`}
+                      inputMode="numeric"
+                      min={0}
+                      type="number"
+                      value={financialInputs[field]}
+                      onChange={(event) => setFinancialInputs((current) => ({ ...current, [field]: event.target.value }))}
+                    />
+                    <p className="text-xs leading-5 text-muted-foreground">{meta.help}</p>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      {setting?.is_override
+                        ? <>Overridden — platform default is {setting.platform_default}.</>
+                        : <>Using the platform default.</>}
+                      {setting?.is_override ? (
+                        <Button
+                          variant="ghost"
+                          className="h-auto px-1.5 py-0.5 text-xs"
+                          disabled={financialBusy}
+                          onClick={() => void resetFinancialField(field)}
+                        >
+                          <TimerReset className="size-3" />Reset
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {financialMessage ? <div className="text-sm" role="status">{financialMessage}</div> : null}
+            <Button
+              variant="outline"
+              disabled={financialBusy || Object.values(financialInputs).some((value) => !value.trim())}
+              onClick={() => void saveFinancialSettings()}
+            >
+              <Save className="size-4" />{financialBusy ? "Saving…" : "Save financial settings"}
             </Button>
           </CardContent>
         </Card>

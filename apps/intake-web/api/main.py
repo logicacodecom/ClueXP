@@ -244,6 +244,21 @@ def _skill_payload(payload: ServiceSkillPayload) -> dict:
     }
 
 
+def _closeout_item_type_payload(payload: CloseoutItemTypePayload) -> dict:
+    return {
+        "code": _validate_catalog_code(payload.code),
+        "label": payload.label.strip(),
+        "status": _validate_catalog_status(payload.status),
+        "default_taxable": payload.default_taxable,
+        "default_compensation_eligible": payload.default_compensation_eligible,
+        "default_reimbursement_eligible": payload.default_reimbursement_eligible,
+        "requires_provided_by": payload.requires_provided_by,
+        "requires_note": payload.requires_note,
+        "requires_receipt": payload.requires_receipt,
+        "sort_order": payload.sort_order,
+    }
+
+
 def normalize_technician_skills(skills: list[str]) -> list[str]:
     catalog_codes = active_skill_codes()
     normalized = sorted({normalize_skill_code(skill) for skill in skills if skill.strip()})
@@ -380,6 +395,29 @@ class OrganizationLimitsUpdate(BaseModel):
     # default); an int = set this org's override.
     max_users: int | None = None
     max_technicians: int | None = None
+
+
+class ProviderFinancialSettingsUpdate(BaseModel):
+    # Absent = leave unchanged; null = clear the override (revert to platform
+    # default); an int = set this org's override. Percentage rates are basis
+    # points: 725 = 7.25%.
+    max_line_items: int | None = None
+    tax_rate_basis_points: int | None = None
+    card_fee_basis_points: int | None = None
+    card_fee_fixed_cents: int | None = None
+
+
+class CloseoutItemTypePayload(BaseModel):
+    code: str
+    label: str
+    status: str = "active"
+    default_taxable: bool = True
+    default_compensation_eligible: bool = False
+    default_reimbursement_eligible: bool = False
+    requires_provided_by: bool = False
+    requires_note: bool = False
+    requires_receipt: bool = False
+    sort_order: int = 100
 
 
 class ProviderDocumentRequest(BaseModel):
@@ -2512,12 +2550,26 @@ async def public_service_catalog() -> dict[str, Any]:
     return {"categories": await store.list_service_catalog(active_only=True)}
 
 
+@app.get("/closeout-item-types")
+async def public_closeout_item_types() -> dict[str, Any]:
+    """Active closeout line-item taxonomy for future receipt builders."""
+    return {"item_types": await store.list_closeout_item_types(active_only=True)}
+
+
 @app.get("/admin/service-catalog")
 async def admin_service_catalog(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
     return {"categories": await store.list_service_catalog(active_only=False)}
+
+
+@app.get("/admin/closeout-item-types")
+async def admin_closeout_item_types(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return {"item_types": await store.list_closeout_item_types(active_only=False)}
 
 
 @app.put("/admin/service-catalog/categories/{category_code}")
@@ -2547,6 +2599,19 @@ async def admin_upsert_service_skill(
         return await store.upsert_service_skill(data, updated_by=session.get("user", {}).get("id"))
     except KeyError:
         raise HTTPException(status_code=404, detail="Category does not exist.") from None
+
+
+@app.put("/admin/closeout-item-types/{item_type_code}")
+async def admin_upsert_closeout_item_type(
+    item_type_code: str,
+    payload: CloseoutItemTypePayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    data = _closeout_item_type_payload(payload)
+    if data["code"] != _validate_catalog_code(item_type_code):
+        raise HTTPException(status_code=422, detail="Item type code in path and body must match.")
+    return await store.upsert_closeout_item_type(data, updated_by=session.get("user", {}).get("id"))
 
 
 @app.patch("/admin/global-settings/{key}")
@@ -2683,6 +2748,65 @@ async def update_provider_capabilities(
         updated_by=session.get("user", {}).get("id"),
     )
     return {"skills": saved, "catalog": await store.list_service_catalog(active_only=True)}
+
+
+# --- provider financial closeout settings -----------------------------------
+# These are intentionally org-overridable runtime settings. Platform admins set
+# sane defaults in global_settings; a provider_admin may tune their company's tax
+# rate and maximum closeout detail without changing code.
+_FINANCIAL_SETTING_FIELDS = {
+    "max_line_items": "closeout_max_line_items",
+    "tax_rate_basis_points": "closeout_default_tax_rate_basis_points",
+    "card_fee_basis_points": "closeout_card_fee_basis_points",
+    "card_fee_fixed_cents": "closeout_card_fee_fixed_cents",
+}
+
+
+async def _resolve_financial_settings(org_id: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field, key in _FINANCIAL_SETTING_FIELDS.items():
+        override = await store.get_organization_setting(org_id, key)
+        platform_default = await runtime_settings.resolve(store, key)
+        result[field] = {
+            "value": override["value"] if override else platform_default,
+            "is_override": override is not None,
+            "platform_default": platform_default,
+        }
+    return result
+
+
+@app.get("/provider/settings/financial")
+async def get_provider_financial_settings(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    return await _resolve_financial_settings(org_id)
+
+
+@app.patch("/provider/settings/financial")
+async def update_provider_financial_settings(
+    payload: ProviderFinancialSettingsUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    sent = payload.model_dump(exclude_unset=True)
+    if not sent:
+        raise HTTPException(status_code=422, detail="No financial settings provided")
+
+    actor_id = session.get("user", {}).get("id")
+    for field, value in sent.items():
+        key = _FINANCIAL_SETTING_FIELDS[field]
+        if value is None:
+            await store.delete_organization_setting(org_id, key)
+            continue
+        try:
+            runtime_settings.coerce_and_validate(key, value)
+        except runtime_settings.SettingValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        spec = runtime_settings.SETTINGS[key]
+        await store.upsert_organization_setting(org_id, key, value, spec.value_type, actor_id)
+    return await _resolve_financial_settings(org_id)
 
 
 @app.get("/provider/users")

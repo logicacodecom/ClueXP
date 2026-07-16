@@ -155,6 +155,46 @@ SETTINGS: dict[str, SettingSpec] = {
         validate=_int_range(1, 500),
         org_overridable=True,
     ),
+    # --- per-provider financial closeout defaults (0031) ---
+    "closeout_max_line_items": SettingSpec(
+        key="closeout_max_line_items",
+        value_type="integer",
+        description="Max line items a technician may add to a job closeout.",
+        env="CLOSEOUT_MAX_LINE_ITEMS",
+        fallback=20,
+        validate=_int_range(1, 100),
+        org_overridable=True,
+    ),
+    "closeout_default_tax_rate_basis_points": SettingSpec(
+        key="closeout_default_tax_rate_basis_points",
+        value_type="integer",
+        description="Default provider tax rate for closeout calculations, stored "
+        "in basis points (725 = 7.25%).",
+        env="CLOSEOUT_DEFAULT_TAX_RATE_BASIS_POINTS",
+        fallback=0,
+        validate=_int_range(0, 2500),
+        org_overridable=True,
+    ),
+    "closeout_card_fee_basis_points": SettingSpec(
+        key="closeout_card_fee_basis_points",
+        value_type="integer",
+        description="Default card processing fee percentage for closeout "
+        "calculations, stored in basis points.",
+        env="CLOSEOUT_CARD_FEE_BASIS_POINTS",
+        fallback=0,
+        validate=_int_range(0, 2500),
+        org_overridable=True,
+    ),
+    "closeout_card_fee_fixed_cents": SettingSpec(
+        key="closeout_card_fee_fixed_cents",
+        value_type="integer",
+        description="Default fixed card processing fee in cents for closeout "
+        "calculations.",
+        env="CLOSEOUT_CARD_FEE_FIXED_CENTS",
+        fallback=0,
+        validate=_int_range(0, 10_000),
+        org_overridable=True,
+    ),
 }
 
 

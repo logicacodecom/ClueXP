@@ -46,6 +46,7 @@ from api.dispatch import (
     resolve_dispatch_state,
 )
 from api import config
+from api.closeout_catalog import default_closeout_item_types
 from api.service_catalog import default_service_catalog
 from api import settings as runtime_settings
 from api.schema import Ticket
@@ -155,6 +156,12 @@ class Store:
         raise NotImplementedError
 
     async def upsert_service_skill(self, data: dict, updated_by: str | None = None) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_closeout_item_types(self, active_only: bool = False) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def upsert_closeout_item_type(self, data: dict, updated_by: str | None = None) -> dict:  # pragma: no cover
         raise NotImplementedError
 
     async def list_organization_capabilities(self, organization_id: str) -> list[str]:  # pragma: no cover
@@ -687,6 +694,7 @@ class InMemoryStore(Store):
         self._organization_settings: dict[tuple[str, str], dict] = {}
         self._service_categories: dict[str, dict] = {}
         self._service_skills: dict[str, dict] = {}
+        self._closeout_item_types: dict[str, dict] = {}
         self._organization_capabilities: dict[str, set[str]] = {}
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
@@ -696,6 +704,8 @@ class InMemoryStore(Store):
                     **skill,
                     "category_code": cat["code"],
                 }
+        for item_type in default_closeout_item_types():
+            self._closeout_item_types[item_type["code"]] = dict(item_type)
         self._organization_capabilities["org-metro"] = {
             skill["code"]
             for skill in self._service_skills.values()
@@ -2257,6 +2267,19 @@ class InMemoryStore(Store):
         self._service_skills[data["code"]] = row
         return dict(row)
 
+    async def list_closeout_item_types(self, active_only: bool = False) -> list[dict]:
+        rows = sorted(self._closeout_item_types.values(), key=lambda r: (r.get("sort_order", 100), r["code"]))
+        return [dict(row) for row in rows if not active_only or row.get("status") == "active"]
+
+    async def upsert_closeout_item_type(self, data: dict, updated_by: str | None = None) -> dict:
+        row = {
+            **data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": updated_by,
+        }
+        self._closeout_item_types[data["code"]] = row
+        return dict(row)
+
     async def list_organization_capabilities(self, organization_id: str) -> list[str]:
         return sorted(self._organization_capabilities.get(str(organization_id), set()))
 
@@ -2458,6 +2481,27 @@ class PostgresStore(Store):
                 "create index if not exists idx_organization_capabilities_active"
                 " on organization_capabilities (organization_id, status, skill_code)"
             )
+            await conn.execute(
+                "create table if not exists closeout_item_types ("
+                "  code text primary key,"
+                "  label text not null,"
+                "  status text not null default 'active'"
+                "    check (status in ('draft','active','deprecated')),"
+                "  default_taxable boolean not null default true,"
+                "  default_compensation_eligible boolean not null default false,"
+                "  default_reimbursement_eligible boolean not null default false,"
+                "  requires_provided_by boolean not null default false,"
+                "  requires_note boolean not null default false,"
+                "  requires_receipt boolean not null default false,"
+                "  sort_order integer not null default 100,"
+                "  updated_at timestamptz not null default now(),"
+                "  updated_by uuid"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_closeout_item_types_status"
+                " on closeout_item_types (status, sort_order, code)"
+            )
             for category in default_service_catalog():
                 await conn.execute(
                     "insert into service_categories (code, label, status, sort_order)"
@@ -2480,6 +2524,27 @@ class PostgresStore(Store):
                             skill["sort_order"],
                         ),
                     )
+            for item_type in default_closeout_item_types():
+                await conn.execute(
+                    "insert into closeout_item_types"
+                    " (code, label, status, default_taxable,"
+                    "  default_compensation_eligible, default_reimbursement_eligible,"
+                    "  requires_provided_by, requires_note, requires_receipt, sort_order)"
+                    " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " on conflict (code) do nothing",
+                    (
+                        item_type["code"],
+                        item_type["label"],
+                        item_type["status"],
+                        item_type["default_taxable"],
+                        item_type["default_compensation_eligible"],
+                        item_type["default_reimbursement_eligible"],
+                        item_type["requires_provided_by"],
+                        item_type["requires_note"],
+                        item_type["requires_receipt"],
+                        item_type["sort_order"],
+                    ),
+                )
             await conn.execute(
                 "insert into organization_capabilities (organization_id, skill_code, status)"
                 " select o.id, s.code, 'active'"
@@ -6654,6 +6719,77 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return self._service_skill_row(row)
+
+    @staticmethod
+    def _closeout_item_type_row(row: tuple) -> dict:
+        return {
+            "code": row[0],
+            "label": row[1],
+            "status": row[2],
+            "default_taxable": row[3],
+            "default_compensation_eligible": row[4],
+            "default_reimbursement_eligible": row[5],
+            "requires_provided_by": row[6],
+            "requires_note": row[7],
+            "requires_receipt": row[8],
+            "sort_order": row[9],
+            "updated_at": row[10].isoformat() if row[10] else None,
+            "updated_by": str(row[11]) if row[11] else None,
+        }
+
+    _CLOSEOUT_ITEM_TYPE_COLS = (
+        "code, label, status, default_taxable, default_compensation_eligible,"
+        " default_reimbursement_eligible, requires_provided_by, requires_note,"
+        " requires_receipt, sort_order, updated_at, updated_by"
+    )
+
+    async def list_closeout_item_types(self, active_only: bool = False) -> list[dict]:
+        where = " where status = 'active'" if active_only else ""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._CLOSEOUT_ITEM_TYPE_COLS} from closeout_item_types{where}"
+                " order by sort_order, code"
+            )
+            rows = await cur.fetchall()
+        return [self._closeout_item_type_row(r) for r in rows]
+
+    async def upsert_closeout_item_type(self, data: dict, updated_by: str | None = None) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into closeout_item_types"
+                " (code, label, status, default_taxable, default_compensation_eligible,"
+                "  default_reimbursement_eligible, requires_provided_by, requires_note,"
+                "  requires_receipt, sort_order, updated_by, updated_at)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
+                " on conflict (code) do update set"
+                "   label = excluded.label,"
+                "   status = excluded.status,"
+                "   default_taxable = excluded.default_taxable,"
+                "   default_compensation_eligible = excluded.default_compensation_eligible,"
+                "   default_reimbursement_eligible = excluded.default_reimbursement_eligible,"
+                "   requires_provided_by = excluded.requires_provided_by,"
+                "   requires_note = excluded.requires_note,"
+                "   requires_receipt = excluded.requires_receipt,"
+                "   sort_order = excluded.sort_order,"
+                "   updated_by = excluded.updated_by,"
+                "   updated_at = now()"
+                f" returning {self._CLOSEOUT_ITEM_TYPE_COLS}",
+                (
+                    data["code"],
+                    data["label"],
+                    data["status"],
+                    data["default_taxable"],
+                    data["default_compensation_eligible"],
+                    data["default_reimbursement_eligible"],
+                    data["requires_provided_by"],
+                    data["requires_note"],
+                    data["requires_receipt"],
+                    data["sort_order"],
+                    str(updated_by) if updated_by else None,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._closeout_item_type_row(row)
 
     async def list_organization_capabilities(self, organization_id: str) -> list[str]:
         async with await self._connect() as conn:

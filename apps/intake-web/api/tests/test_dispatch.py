@@ -3184,6 +3184,128 @@ def test_dispatch_settings_requires_dispatch_org():
     assert r.status_code == 403
 
 
+def test_financial_settings_default_override_and_clear():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": f"fin_{uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["provider_admin"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    body = client.get("/provider/settings/financial", headers=H).json()
+    assert body == {
+        "max_line_items": {"value": 20, "is_override": False, "platform_default": 20},
+        "tax_rate_basis_points": {"value": 0, "is_override": False, "platform_default": 0},
+        "card_fee_basis_points": {"value": 0, "is_override": False, "platform_default": 0},
+        "card_fee_fixed_cents": {"value": 0, "is_override": False, "platform_default": 0},
+    }
+
+    r = client.patch(
+        "/provider/settings/financial",
+        json={
+            "max_line_items": 30,
+            "tax_rate_basis_points": 725,
+            "card_fee_basis_points": 290,
+            "card_fee_fixed_cents": 30,
+        },
+        headers=H,
+    )
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    assert saved["max_line_items"] == {"value": 30, "is_override": True, "platform_default": 20}
+    assert saved["tax_rate_basis_points"]["value"] == 725
+    assert saved["card_fee_basis_points"]["value"] == 290
+    assert saved["card_fee_fixed_cents"]["value"] == 30
+
+    cleared = client.patch(
+        "/provider/settings/financial",
+        json={"card_fee_fixed_cents": None},
+        headers=H,
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["card_fee_fixed_cents"] == {"value": 0, "is_override": False, "platform_default": 0}
+
+
+def test_financial_settings_authz_and_validation():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    dispatcher = str(uuid4())
+    _seed_dispatcher(app_store, dispatcher, org)
+    dispatcher_access = create_access_token({"sub": dispatcher, "id": dispatcher, "roles": ["dispatcher"]})
+    H = {"Authorization": f"Bearer {dispatcher_access}"}
+    client = TestClient(app)
+
+    # Dispatchers can read the effective settings but cannot mutate provider financial policy.
+    assert client.get("/provider/settings/financial", headers=H).status_code == 200
+    assert client.patch("/provider/settings/financial", json={"max_line_items": 10}, headers=H).status_code == 403
+
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"fin_admin_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    admin_access = create_access_token({"sub": admin, "id": admin, "roles": ["provider_admin"]})
+    AH = {"Authorization": f"Bearer {admin_access}"}
+    assert client.patch("/provider/settings/financial", json={}, headers=AH).status_code == 422
+    assert client.patch("/provider/settings/financial", json={"max_line_items": 101}, headers=AH).status_code == 422
+    assert client.patch("/provider/settings/financial", json={"tax_rate_basis_points": 2501}, headers=AH).status_code == 422
+    assert client.patch("/provider/settings/financial", json={"card_fee_fixed_cents": -1}, headers=AH).status_code == 422
+
+
+def test_closeout_item_type_catalog_admin_managed():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin = _settings_user(app_store, ["platform_admin"])
+    dispatcher = _settings_user(app_store, ["dispatcher"])
+    client = TestClient(app)
+
+    def hdr(uid, roles):
+        return {"Authorization": f"Bearer {create_access_token({'sub': uid, 'id': uid, 'roles': roles})}"}
+
+    public = client.get("/closeout-item-types")
+    assert public.status_code == 200
+    assert any(row["code"] == "key_code_purchase" for row in public.json()["item_types"])
+
+    denied = client.get("/admin/closeout-item-types", headers=hdr(dispatcher, ["dispatcher"]))
+    assert denied.status_code == 403
+
+    listed = client.get("/admin/closeout-item-types", headers=hdr(admin, ["platform_admin"]))
+    assert listed.status_code == 200
+    key_code = next(row for row in listed.json()["item_types"] if row["code"] == "key_code_purchase")
+    assert key_code["requires_provided_by"] is True
+    assert key_code["requires_receipt"] is True
+    assert key_code["default_compensation_eligible"] is False
+
+    updated = client.put(
+        "/admin/closeout-item-types/key_code_purchase",
+        json={**key_code, "label": "Key code / PIN purchase", "sort_order": 101},
+        headers=hdr(admin, ["platform_admin"]),
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["label"] == "Key code / PIN purchase"
+
+    mismatch = client.put(
+        "/admin/closeout-item-types/key_code_purchase",
+        json={**key_code, "code": "other"},
+        headers=hdr(admin, ["platform_admin"]),
+    )
+    assert mismatch.status_code == 422
+
+
 # --- self-service account: identity update + password change ----------------
 def _seed_full_user(app_store, uid, *, email="orig@cluexp.test", phone=None, password="orig-pw-123"):
     from api.auth import hash_password
