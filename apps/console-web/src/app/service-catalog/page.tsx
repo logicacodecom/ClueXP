@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
 
 const STATUSES: ServiceCatalogStatus[] = ["draft", "active", "deprecated"];
+type SkillForm = ServiceSkill & { category_code: string };
 
 function emptyCategoryForm() {
   return { code: "", label: "", status: "draft" as ServiceCatalogStatus, sort_order: 100 };
@@ -28,6 +29,8 @@ export default function ServiceCatalogPage() {
   const [selectedCategory, setSelectedCategory] = useState("locksmith");
   const [categoryForm, setCategoryForm] = useState(emptyCategoryForm());
   const [skillForm, setSkillForm] = useState(emptySkillForm());
+  const [editingSkillCode, setEditingSkillCode] = useState<string | null>(null);
+  const [skillEditForm, setSkillEditForm] = useState<SkillForm | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -54,6 +57,8 @@ export default function ServiceCatalogPage() {
 
   useEffect(() => {
     if (currentCategory) setSkillForm(emptySkillForm(currentCategory.code));
+    setEditingSkillCode(null);
+    setSkillEditForm(null);
   }, [currentCategory?.code]);
 
   async function saveCategory(category: Pick<ServiceCategory, "code" | "label" | "status" | "sort_order">) {
@@ -78,7 +83,7 @@ export default function ServiceCatalogPage() {
     }
   }
 
-  async function saveSkill(skill: ServiceSkill & { category_code: string }) {
+  async function saveSkill(skill: SkillForm, options: { resetAddForm?: boolean; closeEditor?: boolean } = {}) {
     setBusy(`skill:${skill.code}`);
     setMessage(null);
     try {
@@ -90,13 +95,22 @@ export default function ServiceCatalogPage() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to save skill");
       setMessage("Service skill saved.");
-      setSkillForm(emptySkillForm(skill.category_code));
+      if (options.resetAddForm) setSkillForm(emptySkillForm(skill.category_code));
+      if (options.closeEditor) {
+        setEditingSkillCode(null);
+        setSkillEditForm(null);
+      }
       await refresh();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to save skill");
     } finally {
       setBusy(null);
     }
+  }
+
+  function beginEditSkill(skill: ServiceSkill, categoryCode: string) {
+    setEditingSkillCode(skill.code);
+    setSkillEditForm({ ...skill, category_code: categoryCode });
   }
 
   return (
@@ -172,16 +186,51 @@ export default function ServiceCatalogPage() {
                 <div className="grid gap-3 md:grid-cols-2">
                   {currentCategory.skills.map((skill) => (
                     <div className="rounded-md border border-border p-3" key={skill.code}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="font-medium">{skill.label}</div>
-                          <div className="text-xs text-muted-foreground">{skill.code}</div>
+                      {editingSkillCode === skill.code && skillEditForm ? (
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-medium">Edit skill</div>
+                              <div className="text-xs text-muted-foreground">{skill.code}</div>
+                            </div>
+                            <Badge variant={skillEditForm.status === "active" ? "success" : skillEditForm.status === "draft" ? "outline" : "neutral"}>{skillEditForm.status}</Badge>
+                          </div>
+                          <Input value={skillEditForm.label} onChange={(event) => setSkillEditForm((prev) => prev ? ({ ...prev, label: event.target.value }) : prev)} />
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={skillEditForm.status} onChange={(event) => setSkillEditForm((prev) => prev ? ({ ...prev, status: event.target.value as ServiceCatalogStatus }) : prev)}>
+                              {STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                            </select>
+                            <label className="flex min-h-10 items-center gap-2 rounded-md border border-border px-3 text-sm">
+                              <input checked={skillEditForm.requires_verification} onChange={(event) => setSkillEditForm((prev) => prev ? ({ ...prev, requires_verification: event.target.checked }) : prev)} type="checkbox" />
+                              Verification
+                            </label>
+                            <Input min={1} type="number" value={skillEditForm.sort_order} onChange={(event) => setSkillEditForm((prev) => prev ? ({ ...prev, sort_order: Number(event.target.value) }) : prev)} />
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button disabled={!skillEditForm.label || busy !== null} onClick={() => void saveSkill(skillEditForm, { closeEditor: true })} size="sm">
+                              <Save className="size-4" />Save changes
+                            </Button>
+                            <Button disabled={busy !== null} onClick={() => { setEditingSkillCode(null); setSkillEditForm(null); }} size="sm" variant="outline">
+                              Cancel
+                            </Button>
+                          </div>
                         </div>
-                        <Badge variant={skill.status === "active" ? "success" : skill.status === "draft" ? "outline" : "neutral"}>{skill.status}</Badge>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Badge variant={skill.requires_verification ? "warn" : "outline"}>{skill.requires_verification ? "Verification required" : "No extra verification"}</Badge>
-                        {STATUSES.map((status) => (
+                      ) : (
+                        <>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-medium">{skill.label}</div>
+                              <div className="text-xs text-muted-foreground">{skill.code}</div>
+                            </div>
+                            <Badge variant={skill.status === "active" ? "success" : skill.status === "draft" ? "outline" : "neutral"}>{skill.status}</Badge>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Badge variant={skill.requires_verification ? "warn" : "outline"}>{skill.requires_verification ? "Verification required" : "No extra verification"}</Badge>
+                            <Badge variant="outline">Order {skill.sort_order}</Badge>
+                            <Button disabled={busy !== null} onClick={() => beginEditSkill(skill, currentCategory.code)} size="sm" variant="outline">
+                              Edit
+                            </Button>
+                            {STATUSES.map((status) => (
                           <Button
                             disabled={busy !== null || skill.status === status}
                             key={status}
@@ -191,8 +240,10 @@ export default function ServiceCatalogPage() {
                           >
                             Set {status}
                           </Button>
-                        ))}
-                      </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -212,7 +263,7 @@ export default function ServiceCatalogPage() {
                     </label>
                     <Input min={1} type="number" value={skillForm.sort_order} onChange={(event) => setSkillForm((prev) => ({ ...prev, sort_order: Number(event.target.value) }))} />
                   </div>
-                  <Button disabled={!skillForm.code || !skillForm.label || busy !== null} onClick={() => void saveSkill(skillForm)}>
+                  <Button disabled={!skillForm.code || !skillForm.label || busy !== null} onClick={() => void saveSkill(skillForm, { resetAddForm: true })}>
                     <Save className="size-4" />Save skill
                   </Button>
                 </div>
