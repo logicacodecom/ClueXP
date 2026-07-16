@@ -423,6 +423,23 @@ class ProviderTechnicianAgreementUpdate(BaseModel):
     rules: dict[str, Any] = {}
 
 
+class SettlementPeriodCreateRequest(BaseModel):
+    label: str | None = None
+    period_start: str | None = None
+    period_end: str | None = None
+    technician_id: UUID | None = None
+    note: str | None = None
+
+
+class SettlementActionRequest(BaseModel):
+    note: str | None = None
+
+
+class SettlementAdjustmentRequest(BaseModel):
+    amount_cents: int
+    reason: str
+
+
 class CloseoutItemTypePayload(BaseModel):
     code: str
     label: str
@@ -3829,6 +3846,122 @@ async def provider_settlements(
         )
         return Response(content=body + "\n", media_type="text/csv")
     return rows
+
+
+def _settlement_csv(rows: list[dict[str, Any]]) -> str:
+    columns = [
+        "job_id", "technician_id", "technician_display_name", "status", "finished_at",
+        "agreement_status", "cut_basis_points", "customer_total_cents", "tax_cents",
+        "card_fee_cents", "tip_cents", "commissionable_cents",
+        "company_provided_items_cents", "tech_reimbursement_cents",
+        "tech_service_payout_cents", "tech_tip_cents", "tech_payout_cents",
+        "company_retained_cents",
+    ]
+    return "\n".join(
+        [",".join(columns)]
+        + [",".join(_csv_escape(row.get(col)) for col in columns) for row in rows]
+    ) + "\n"
+
+
+@app.post("/provider/settlement-periods")
+async def create_provider_settlement_period(
+    payload: SettlementPeriodCreateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    data = payload.model_dump(mode="json")
+    if data.get("period_start") and data.get("period_end") and data["period_start"] > data["period_end"]:
+        raise HTTPException(status_code=422, detail="Period start must be before period end.")
+    return await store.create_provider_settlement_period(
+        org_id, data, created_by=session.get("user", {}).get("id")
+    )
+
+
+@app.get("/provider/settlement-periods")
+async def list_provider_settlement_periods(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    org_id = _require_dispatch_org(session)
+    return await store.list_provider_settlement_periods(org_id)
+
+
+@app.get("/provider/settlement-periods/{period_id}", response_model=None)
+async def get_provider_settlement_period(
+    period_id: UUID,
+    format: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any] | Response:
+    org_id = _require_dispatch_org(session)
+    period = await store.get_provider_settlement_period(org_id, period_id)
+    if period is None:
+        raise HTTPException(status_code=404, detail="Settlement period not found")
+    if format == "csv":
+        return Response(content=_settlement_csv(period.get("rows", [])), media_type="text/csv")
+    return period
+
+
+@app.post("/provider/settlement-periods/{period_id}/lock")
+async def lock_provider_settlement_period(
+    period_id: UUID,
+    payload: SettlementActionRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    try:
+        period = await store.lock_provider_settlement_period(
+            org_id, period_id, actor_id=session.get("user", {}).get("id"), note=payload.note
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Only draft settlement periods can be locked.")
+    if period is None:
+        raise HTTPException(status_code=404, detail="Settlement period not found")
+    return period
+
+
+@app.post("/provider/settlement-periods/{period_id}/paid")
+async def mark_provider_settlement_period_paid(
+    period_id: UUID,
+    payload: SettlementActionRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    try:
+        period = await store.mark_provider_settlement_period_paid(
+            org_id, period_id, actor_id=session.get("user", {}).get("id"), note=payload.note
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Only locked settlement periods can be marked paid.")
+    if period is None:
+        raise HTTPException(status_code=404, detail="Settlement period not found")
+    return period
+
+
+@app.post("/provider/settlement-periods/{period_id}/adjustments")
+async def add_provider_settlement_adjustment(
+    period_id: UUID,
+    payload: SettlementAdjustmentRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    reason = payload.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="Adjustment reason is required.")
+    org_id = _require_dispatch_org(session)
+    try:
+        period = await store.add_provider_settlement_adjustment(
+            org_id,
+            period_id,
+            {"amount_cents": payload.amount_cents, "reason": reason[:280]},
+            actor_id=session.get("user", {}).get("id"),
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Adjustments can only be added to draft settlement periods.")
+    if period is None:
+        raise HTTPException(status_code=404, detail="Settlement period not found")
+    return period
 
 
 _ASSIGNED_LADDER = [STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS]

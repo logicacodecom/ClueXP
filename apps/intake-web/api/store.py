@@ -158,6 +158,38 @@ def calculate_settlement(job: dict, agreement: dict | None) -> dict:
     }
 
 
+def _settlement_period_totals(rows: list[dict], adjustments: list[dict] | None = None) -> dict:
+    adjustments = adjustments or []
+    total_adjustments = sum(int(item.get("amount_cents") or 0) for item in adjustments)
+    return {
+        "job_count": len(rows),
+        "customer_total_cents": sum(int(row.get("customer_total_cents") or 0) for row in rows),
+        "tax_cents": sum(int(row.get("tax_cents") or 0) for row in rows),
+        "card_fee_cents": sum(int(row.get("card_fee_cents") or 0) for row in rows),
+        "tech_payout_cents": sum(int(row.get("tech_payout_cents") or 0) for row in rows),
+        "company_retained_cents": sum(int(row.get("company_retained_cents") or 0) for row in rows),
+        "adjustment_cents": total_adjustments,
+        "final_tech_payout_cents": sum(int(row.get("tech_payout_cents") or 0) for row in rows) + total_adjustments,
+    }
+
+
+def _settlement_row_in_period(row: dict, data: dict) -> bool:
+    technician_id = data.get("technician_id")
+    if technician_id and str(row.get("technician_id")) != str(technician_id):
+        return False
+    start = data.get("period_start")
+    end = data.get("period_end")
+    finished_at = row.get("finished_at")
+    if not finished_at:
+        return True
+    day = str(finished_at)[:10]
+    if start and day < str(start):
+        return False
+    if end and day > str(end):
+        return False
+    return True
+
+
 def _new_tracking_token() -> str:
     """Secure, URL-safe customer capability token (~256 bits). Powers the
     /t/{token} tracking + confirm/review/dispute link; never logged."""
@@ -768,6 +800,36 @@ class Store:
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def create_provider_settlement_period(
+        self, org_id: str, data: dict, *, created_by: str | None = None
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_provider_settlement_periods(
+        self, org_id: str, *, limit: int = 50
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_provider_settlement_period(
+        self, org_id: str, period_id: UUID
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def lock_provider_settlement_period(
+        self, org_id: str, period_id: UUID, *, actor_id: str | None = None, note: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def mark_provider_settlement_period_paid(
+        self, org_id: str, period_id: UUID, *, actor_id: str | None = None, note: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def add_provider_settlement_adjustment(
+        self, org_id: str, period_id: UUID, data: dict, *, actor_id: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100
     ) -> list[dict]:  # pragma: no cover
@@ -818,6 +880,7 @@ class InMemoryStore(Store):
         self._closeout_item_types: dict[str, dict] = {}
         self._job_closeouts: dict[str, dict] = {}
         self._technician_agreements: dict[tuple[str, str], dict] = {}
+        self._settlement_periods: dict[str, dict] = {}
         self._organization_capabilities: dict[str, set[str]] = {}
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
@@ -2090,6 +2153,81 @@ class InMemoryStore(Store):
             out.append(calculate_settlement(row, agreement))
         return out
 
+    async def create_provider_settlement_period(
+        self, org_id: str, data: dict, *, created_by: str | None = None
+    ) -> dict:
+        rows = [
+            row for row in await self.list_provider_settlements(org_id, limit=1000)
+            if _settlement_row_in_period(row, data)
+        ]
+        now = datetime.now(timezone.utc).isoformat()
+        period_id = str(uuid4())
+        period = {
+            "id": period_id, "organization_id": str(org_id), "status": "draft",
+            "period_start": data.get("period_start"), "period_end": data.get("period_end"),
+            "technician_id": data.get("technician_id"),
+            "label": data.get("label") or f"Settlement {data.get('period_start') or ''} – {data.get('period_end') or ''}".strip(),
+            "created_by": created_by, "created_at": now, "updated_at": now,
+            "locked_at": None, "locked_by": None, "paid_at": None, "paid_by": None,
+            "note": data.get("note"), "rows": [dict(row) for row in rows], "adjustments": [],
+        }
+        period.update(_settlement_period_totals(period["rows"], period["adjustments"]))
+        self._settlement_periods[period_id] = period
+        return dict(period)
+
+    async def list_provider_settlement_periods(self, org_id: str, *, limit: int = 50) -> list[dict]:
+        rows = [
+            {k: v for k, v in period.items() if k not in {"rows", "adjustments"}}
+            for period in self._settlement_periods.values()
+            if str(period.get("organization_id")) == str(org_id)
+        ]
+        rows.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return rows[:limit]
+
+    async def get_provider_settlement_period(self, org_id: str, period_id: UUID) -> dict | None:
+        period = self._settlement_periods.get(str(period_id))
+        if period is None or str(period.get("organization_id")) != str(org_id):
+            return None
+        period.update(_settlement_period_totals(period.get("rows", []), period.get("adjustments", [])))
+        return {**period, "rows": [dict(row) for row in period.get("rows", [])], "adjustments": [dict(a) for a in period.get("adjustments", [])]}
+
+    async def lock_provider_settlement_period(self, org_id: str, period_id: UUID, *, actor_id: str | None = None, note: str | None = None) -> dict | None:
+        period = await self.get_provider_settlement_period(org_id, period_id)
+        if period is None:
+            return None
+        if period["status"] != "draft":
+            raise ValueError("invalid_status")
+        period["status"] = "locked"; period["locked_at"] = datetime.now(timezone.utc).isoformat()
+        period["locked_by"] = actor_id; period["note"] = note or period.get("note"); period["updated_at"] = period["locked_at"]
+        self._settlement_periods[str(period_id)] = period
+        return await self.get_provider_settlement_period(org_id, period_id)
+
+    async def mark_provider_settlement_period_paid(self, org_id: str, period_id: UUID, *, actor_id: str | None = None, note: str | None = None) -> dict | None:
+        period = await self.get_provider_settlement_period(org_id, period_id)
+        if period is None:
+            return None
+        if period["status"] != "locked":
+            raise ValueError("invalid_status")
+        period["status"] = "paid"; period["paid_at"] = datetime.now(timezone.utc).isoformat()
+        period["paid_by"] = actor_id; period["note"] = note or period.get("note"); period["updated_at"] = period["paid_at"]
+        self._settlement_periods[str(period_id)] = period
+        return await self.get_provider_settlement_period(org_id, period_id)
+
+    async def add_provider_settlement_adjustment(self, org_id: str, period_id: UUID, data: dict, *, actor_id: str | None = None) -> dict | None:
+        period = await self.get_provider_settlement_period(org_id, period_id)
+        if period is None:
+            return None
+        if period["status"] != "draft":
+            raise ValueError("invalid_status")
+        period.setdefault("adjustments", []).append({
+            "id": str(uuid4()), "amount_cents": int(data.get("amount_cents") or 0),
+            "reason": data.get("reason"), "created_by": actor_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        period.update(_settlement_period_totals(period.get("rows", []), period.get("adjustments", [])))
+        self._settlement_periods[str(period_id)] = period
+        return await self.get_provider_settlement_period(org_id, period_id)
+
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100
     ) -> list[dict]:
@@ -2942,6 +3080,60 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_technician_agreements_org_tech"
                 " on technician_agreements (organization_id, technician_id, status)"
+            )
+            await conn.execute(
+                "create table if not exists settlement_periods ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  organization_id uuid not null references organizations(id) on delete cascade,"
+                "  status text not null default 'draft' check (status in ('draft','locked','paid','void')),"
+                "  label text not null,"
+                "  period_start date,"
+                "  period_end date,"
+                "  technician_id uuid references technicians(id),"
+                "  job_count integer not null default 0,"
+                "  customer_total_cents integer not null default 0,"
+                "  tax_cents integer not null default 0,"
+                "  card_fee_cents integer not null default 0,"
+                "  tech_payout_cents integer not null default 0,"
+                "  company_retained_cents integer not null default 0,"
+                "  adjustment_cents integer not null default 0,"
+                "  final_tech_payout_cents integer not null default 0,"
+                "  note text,"
+                "  created_by uuid references users(id),"
+                "  locked_by uuid references users(id),"
+                "  paid_by uuid references users(id),"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  locked_at timestamptz,"
+                "  paid_at timestamptz"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists settlement_period_jobs ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  settlement_period_id uuid not null references settlement_periods(id) on delete cascade,"
+                "  job_id uuid not null,"
+                "  technician_id uuid,"
+                "  row_snapshot jsonb not null,"
+                "  tech_payout_cents integer not null default 0,"
+                "  company_retained_cents integer not null default 0,"
+                "  created_at timestamptz not null default now(),"
+                "  unique (settlement_period_id, job_id)"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists settlement_adjustments ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  settlement_period_id uuid not null references settlement_periods(id) on delete cascade,"
+                "  amount_cents integer not null,"
+                "  reason text not null,"
+                "  created_by uuid references users(id),"
+                "  created_at timestamptz not null default now()"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_settlement_periods_org_status"
+                " on settlement_periods (organization_id, status, created_at desc)"
             )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
@@ -5073,6 +5265,142 @@ class PostgresStore(Store):
             agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), UUID(str(tech_id)))
             out.append(calculate_settlement(row, agreement))
         return out
+
+    @staticmethod
+    def _period_summary(row: tuple) -> dict:
+        return {
+            "id": str(row[0]), "organization_id": str(row[1]), "status": row[2], "label": row[3],
+            "period_start": row[4].isoformat() if row[4] else None,
+            "period_end": row[5].isoformat() if row[5] else None,
+            "technician_id": str(row[6]) if row[6] else None,
+            "job_count": row[7], "customer_total_cents": row[8], "tax_cents": row[9],
+            "card_fee_cents": row[10], "tech_payout_cents": row[11],
+            "company_retained_cents": row[12], "adjustment_cents": row[13],
+            "final_tech_payout_cents": row[14], "note": row[15],
+            "created_by": str(row[16]) if row[16] else None,
+            "locked_by": str(row[17]) if row[17] else None,
+            "paid_by": str(row[18]) if row[18] else None,
+            "created_at": row[19].isoformat() if row[19] else None,
+            "updated_at": row[20].isoformat() if row[20] else None,
+            "locked_at": row[21].isoformat() if row[21] else None,
+            "paid_at": row[22].isoformat() if row[22] else None,
+        }
+
+    async def _refresh_settlement_period_totals(self, conn, period_id: str) -> None:
+        await conn.execute(
+            "update settlement_periods sp set job_count = coalesce(j.job_count, 0),"
+            " customer_total_cents = coalesce(j.customer_total_cents, 0),"
+            " tax_cents = coalesce(j.tax_cents, 0), card_fee_cents = coalesce(j.card_fee_cents, 0),"
+            " tech_payout_cents = coalesce(j.tech_payout_cents, 0),"
+            " company_retained_cents = coalesce(j.company_retained_cents, 0),"
+            " adjustment_cents = coalesce(a.adjustment_cents, 0),"
+            " final_tech_payout_cents = coalesce(j.tech_payout_cents, 0) + coalesce(a.adjustment_cents, 0),"
+            " updated_at = now()"
+            " from (select count(*)::int job_count,"
+            " coalesce(sum((row_snapshot->>'customer_total_cents')::int),0)::int customer_total_cents,"
+            " coalesce(sum((row_snapshot->>'tax_cents')::int),0)::int tax_cents,"
+            " coalesce(sum((row_snapshot->>'card_fee_cents')::int),0)::int card_fee_cents,"
+            " coalesce(sum(tech_payout_cents),0)::int tech_payout_cents,"
+            " coalesce(sum(company_retained_cents),0)::int company_retained_cents"
+            " from settlement_period_jobs where settlement_period_id = %s) j,"
+            " (select coalesce(sum(amount_cents),0)::int adjustment_cents"
+            " from settlement_adjustments where settlement_period_id = %s) a where sp.id = %s",
+            (period_id, period_id, period_id),
+        )
+
+    async def create_provider_settlement_period(self, org_id: str, data: dict, *, created_by: str | None = None) -> dict:
+        from psycopg.types.json import Jsonb
+        rows = [row for row in await self.list_provider_settlements(org_id, limit=1000) if _settlement_row_in_period(row, data)]
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into settlement_periods (organization_id, label, period_start, period_end, technician_id, note, created_by)"
+                " values (%s, %s, %s, %s, %s, %s, %s) returning id",
+                (str(org_id), data.get("label") or f"Settlement {data.get('period_start') or ''} – {data.get('period_end') or ''}".strip(),
+                 data.get("period_start"), data.get("period_end"), data.get("technician_id"), data.get("note"), str(created_by) if created_by else None),
+            )
+            period_id = str((await cur.fetchone())[0])
+            for row in rows:
+                await conn.execute(
+                    "insert into settlement_period_jobs (settlement_period_id, job_id, technician_id, row_snapshot, tech_payout_cents, company_retained_cents)"
+                    " values (%s, %s, %s, %s, %s, %s) on conflict (settlement_period_id, job_id) do nothing",
+                    (period_id, row["job_id"], row.get("technician_id"), Jsonb(row), row.get("tech_payout_cents") or 0, row.get("company_retained_cents") or 0),
+                )
+            await self._refresh_settlement_period_totals(conn, period_id)
+        return await self.get_provider_settlement_period(org_id, UUID(period_id)) or {}
+
+    async def list_provider_settlement_periods(self, org_id: str, *, limit: int = 50) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, organization_id, status, label, period_start, period_end, technician_id,"
+                " job_count, customer_total_cents, tax_cents, card_fee_cents, tech_payout_cents,"
+                " company_retained_cents, adjustment_cents, final_tech_payout_cents, note,"
+                " created_by, locked_by, paid_by, created_at, updated_at, locked_at, paid_at"
+                " from settlement_periods where organization_id = %s order by created_at desc limit %s",
+                (str(org_id), limit),
+            )
+            rows = await cur.fetchall()
+        return [self._period_summary(row) for row in rows]
+
+    async def get_provider_settlement_period(self, org_id: str, period_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, organization_id, status, label, period_start, period_end, technician_id,"
+                " job_count, customer_total_cents, tax_cents, card_fee_cents, tech_payout_cents,"
+                " company_retained_cents, adjustment_cents, final_tech_payout_cents, note,"
+                " created_by, locked_by, paid_by, created_at, updated_at, locked_at, paid_at"
+                " from settlement_periods where id = %s and organization_id = %s",
+                (str(period_id), str(org_id)),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            period = self._period_summary(row)
+            cur = await conn.execute("select row_snapshot from settlement_period_jobs where settlement_period_id = %s order by created_at, job_id", (str(period_id),))
+            period["rows"] = [r[0] for r in await cur.fetchall()]
+            cur = await conn.execute("select id, amount_cents, reason, created_by, created_at from settlement_adjustments where settlement_period_id = %s order by created_at", (str(period_id),))
+            period["adjustments"] = [{"id": str(r[0]), "amount_cents": r[1], "reason": r[2], "created_by": str(r[3]) if r[3] else None, "created_at": r[4].isoformat() if r[4] else None} for r in await cur.fetchall()]
+        return period
+
+    async def lock_provider_settlement_period(self, org_id: str, period_id: UUID, *, actor_id: str | None = None, note: str | None = None) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update settlement_periods set status = 'locked', locked_at = now(), locked_by = %s, note = coalesce(%s, note), updated_at = now()"
+                " where id = %s and organization_id = %s and status = 'draft' returning id",
+                (str(actor_id) if actor_id else None, note, str(period_id), str(org_id)),
+            )
+            if not await cur.fetchone():
+                if await self.get_provider_settlement_period(org_id, period_id) is None:
+                    return None
+                raise ValueError("invalid_status")
+        return await self.get_provider_settlement_period(org_id, period_id)
+
+    async def mark_provider_settlement_period_paid(self, org_id: str, period_id: UUID, *, actor_id: str | None = None, note: str | None = None) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update settlement_periods set status = 'paid', paid_at = now(), paid_by = %s, note = coalesce(%s, note), updated_at = now()"
+                " where id = %s and organization_id = %s and status = 'locked' returning id",
+                (str(actor_id) if actor_id else None, note, str(period_id), str(org_id)),
+            )
+            if not await cur.fetchone():
+                if await self.get_provider_settlement_period(org_id, period_id) is None:
+                    return None
+                raise ValueError("invalid_status")
+        return await self.get_provider_settlement_period(org_id, period_id)
+
+    async def add_provider_settlement_adjustment(self, org_id: str, period_id: UUID, data: dict, *, actor_id: str | None = None) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute("select status from settlement_periods where id = %s and organization_id = %s", (str(period_id), str(org_id)))
+            row = await cur.fetchone()
+            if not row:
+                return None
+            if row[0] != "draft":
+                raise ValueError("invalid_status")
+            await conn.execute(
+                "insert into settlement_adjustments (settlement_period_id, amount_cents, reason, created_by) values (%s, %s, %s, %s)",
+                (str(period_id), int(data.get("amount_cents") or 0), data["reason"], str(actor_id) if actor_id else None),
+            )
+            await self._refresh_settlement_period_totals(conn, str(period_id))
+        return await self.get_provider_settlement_period(org_id, period_id)
 
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100

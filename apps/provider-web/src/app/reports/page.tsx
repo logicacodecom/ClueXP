@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow
 } from "@cluexp/console-ui";
-import { Download, RefreshCw } from "lucide-react";
+import { Download, Lock, Plus, RefreshCw, Wallet } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -41,6 +41,24 @@ interface SettlementRow {
   company_retained_cents: number;
 }
 
+interface SettlementPeriod {
+  id: string;
+  status: "draft" | "locked" | "paid" | "void";
+  label: string;
+  period_start: string | null;
+  period_end: string | null;
+  technician_id: string | null;
+  job_count: number;
+  customer_total_cents: number;
+  tech_payout_cents: number;
+  adjustment_cents: number;
+  final_tech_payout_cents: number;
+  company_retained_cents: number;
+  note?: string | null;
+  rows?: SettlementRow[];
+  adjustments?: Array<{ id: string; amount_cents: number; reason: string; created_at: string | null }>;
+}
+
 function money(cents: number): string {
   return `$${((cents || 0) / 100).toFixed(2)}`;
 }
@@ -53,17 +71,25 @@ function formatDate(iso: string | null): string {
 
 export default function ReportsPage() {
   const [rows, setRows] = useState<SettlementRow[]>([]);
+  const [periods, setPeriods] = useState<SettlementPeriod[]>([]);
+  const [selectedPeriod, setSelectedPeriod] = useState<SettlementPeriod | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
+  const [createForm, setCreateForm] = useState({ label: "", period_start: "", period_end: "" });
+  const [adjustment, setAdjustment] = useState({ amount: "", reason: "" });
 
   const load = useCallback(async () => {
     setStatus("loading");
     setMessage(null);
     try {
       const response = await fetch("/api/provider/settlements", { cache: "no-store" });
+      const periodsResponse = await fetch("/api/provider/settlement-periods", { cache: "no-store" });
       const body = await response.json().catch(() => ({}));
+      const periodsBody = await periodsResponse.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to load settlements");
+      if (!periodsResponse.ok) throw new Error(periodsBody.detail || "Unable to load settlement periods");
       setRows(Array.isArray(body) ? body : []);
+      setPeriods(Array.isArray(periodsBody) ? periodsBody : []);
       setStatus("ready");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to load settlements");
@@ -81,6 +107,71 @@ export default function ReportsPage() {
     retained: acc.retained + row.company_retained_cents,
     reimbursement: acc.reimbursement + row.tech_reimbursement_cents,
   }), { customer: 0, tech: 0, retained: 0, reimbursement: 0 }), [rows]);
+
+  async function createPeriod() {
+    setMessage(null);
+    const response = await fetch("/api/provider/settlement-periods", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        label: createForm.label || undefined,
+        period_start: createForm.period_start || undefined,
+        period_end: createForm.period_end || undefined
+      })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to create settlement period");
+      return;
+    }
+    setCreateForm({ label: "", period_start: "", period_end: "" });
+    setSelectedPeriod(body as SettlementPeriod);
+    await load();
+  }
+
+  async function loadPeriod(id: string) {
+    const response = await fetch(`/api/provider/settlement-periods/${encodeURIComponent(id)}`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to load settlement period");
+      return;
+    }
+    setSelectedPeriod(body as SettlementPeriod);
+  }
+
+  async function periodAction(action: "lock" | "paid") {
+    if (!selectedPeriod) return;
+    const response = await fetch(`/api/provider/settlement-periods/${encodeURIComponent(selectedPeriod.id)}/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note: selectedPeriod.note || undefined })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to update settlement period");
+      return;
+    }
+    setSelectedPeriod(body as SettlementPeriod);
+    await load();
+  }
+
+  async function addAdjustment() {
+    if (!selectedPeriod) return;
+    const amount = Math.round(Number.parseFloat(adjustment.amount || "0") * 100);
+    const response = await fetch(`/api/provider/settlement-periods/${encodeURIComponent(selectedPeriod.id)}/adjustments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount_cents: amount, reason: adjustment.reason })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(body.detail || "Unable to add adjustment");
+      return;
+    }
+    setAdjustment({ amount: "", reason: "" });
+    setSelectedPeriod(body as SettlementPeriod);
+    await load();
+  }
 
   return (
     <AppFrame>
@@ -105,6 +196,84 @@ export default function ReportsPage() {
           <StatCard label="Tech reimbursements" value={money(totals.reimbursement)} />
           <StatCard label="Company retained" value={money(totals.retained)} />
         </div>
+
+        <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+          <Card>
+            <CardHeader><CardTitle>Create settlement period</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">Create a draft snapshot from the current settlement rows. Lock it after review; mark paid only after external payment is completed.</p>
+              <input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Label, e.g. July 1–15 settlements" value={createForm.label} onChange={(e) => setCreateForm((f) => ({ ...f, label: e.target.value }))} />
+              <div className="grid gap-2 md:grid-cols-2">
+                <label className="space-y-1 text-xs font-semibold text-muted-foreground">Start<input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={createForm.period_start} onChange={(e) => setCreateForm((f) => ({ ...f, period_start: e.target.value }))} /></label>
+                <label className="space-y-1 text-xs font-semibold text-muted-foreground">End<input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={createForm.period_end} onChange={(e) => setCreateForm((f) => ({ ...f, period_end: e.target.value }))} /></label>
+              </div>
+              <Button onClick={() => void createPeriod()}><Plus className="size-4" />Create draft period</Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Settlement periods</CardTitle></CardHeader>
+            <CardContent>
+              {periods.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No settlement periods yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {periods.map((period) => (
+                    <button
+                      className={`w-full rounded-md border p-3 text-left transition ${selectedPeriod?.id === period.id ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
+                      key={period.id}
+                      type="button"
+                      onClick={() => void loadPeriod(period.id)}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold">{period.label}</span>
+                        <Badge variant={period.status === "paid" ? "success" : period.status === "locked" ? "warn" : "outline"}>{period.status}</Badge>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">{period.job_count} jobs · payout {money(period.final_tech_payout_cents)}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {selectedPeriod ? (
+          <Card>
+            <CardHeader><CardTitle>Period review: {selectedPeriod.label}</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                <StatCard label="Jobs" value={String(selectedPeriod.job_count)} />
+                <StatCard label="Tech payout" value={money(selectedPeriod.tech_payout_cents)} />
+                <StatCard label="Adjustments" value={money(selectedPeriod.adjustment_cents)} />
+                <StatCard label="Final payout" value={money(selectedPeriod.final_tech_payout_cents)} />
+              </div>
+              {selectedPeriod.status === "draft" ? (
+                <div className="grid gap-2 md:grid-cols-[160px_1fr_auto]">
+                  <input className="rounded-md border border-border bg-background px-3 py-2 text-sm" inputMode="decimal" placeholder="Adjustment $" value={adjustment.amount} onChange={(e) => setAdjustment((a) => ({ ...a, amount: e.target.value }))} />
+                  <input className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Required reason" value={adjustment.reason} onChange={(e) => setAdjustment((a) => ({ ...a, reason: e.target.value }))} />
+                  <Button variant="outline" onClick={() => void addAdjustment()}>Add adjustment</Button>
+                </div>
+              ) : null}
+              {(selectedPeriod.adjustments ?? []).length > 0 ? (
+                <div className="rounded-md border border-border">
+                  {(selectedPeriod.adjustments ?? []).map((item) => (
+                    <div className="flex items-center justify-between gap-3 border-b border-border p-3 text-sm last:border-b-0" key={item.id}>
+                      <span>{item.reason}</span>
+                      <strong>{money(item.amount_cents)}</strong>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <Button asChild variant="outline"><a href={`/api/provider/settlement-periods/${selectedPeriod.id}?format=csv`}><Download className="size-4" />Export period CSV</a></Button>
+                {selectedPeriod.status === "draft" ? <Button onClick={() => void periodAction("lock")}><Lock className="size-4" />Lock period</Button> : null}
+                {selectedPeriod.status === "locked" ? <Button onClick={() => void periodAction("paid")}><Wallet className="size-4" />Mark paid</Button> : null}
+              </div>
+              <p className="text-xs text-muted-foreground">Locked and paid periods use the saved row snapshots. Later agreement edits or closeout corrections do not alter this period.</p>
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card>
           <CardHeader><CardTitle>Settlement ledger</CardTitle></CardHeader>
