@@ -636,6 +636,12 @@ class Store:
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
+    async def record_job_closeout(self, closeout: dict) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_job_closeout(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        return None
+
     async def get_payment_reports(self, job_id: UUID) -> dict:  # pragma: no cover
         raise NotImplementedError
 
@@ -695,6 +701,7 @@ class InMemoryStore(Store):
         self._service_categories: dict[str, dict] = {}
         self._service_skills: dict[str, dict] = {}
         self._closeout_item_types: dict[str, dict] = {}
+        self._job_closeouts: dict[str, dict] = {}
         self._organization_capabilities: dict[str, set[str]] = {}
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
@@ -1583,6 +1590,7 @@ class InMemoryStore(Store):
             }
         dest = getattr(self, "_job_loc", {}).get(jid)
         payment = getattr(self, "_payments", {}).get((jid, "technician"))
+        closeout = await self.get_job_closeout(UUID(jid))
         # Blind tracking: remove dispatch internals
         return {
             "state": state,
@@ -1593,6 +1601,7 @@ class InMemoryStore(Store):
             "assignment": assignment,
             "destination": ({"lat": dest[0], "lng": dest[1]} if (may_show_live_tracking(status) and dest) else None),
             "payment": ({"amount": payment["amount"], "currency": payment.get("currency", "USD"), "method": payment["method"]} if payment else None),
+            "closeout": closeout,
         }
 
     # --- fulfillment cutover (Sprint 3) — minimal in-memory backing for tests ---
@@ -1868,6 +1877,25 @@ class InMemoryStore(Store):
         payments[(str(job_id), reported_by)] = rec
         return rec
 
+    async def record_job_closeout(self, closeout: dict) -> dict:
+        jid = str(closeout["job_id"])
+        now = datetime.now(timezone.utc).isoformat()
+        rec = {
+            **closeout,
+            "job_id": jid,
+            "reported_at": now,
+            "updated_at": now,
+            "line_items": [dict(item) for item in closeout.get("line_items", [])],
+        }
+        self._job_closeouts[jid] = rec
+        return dict(rec)
+
+    async def get_job_closeout(self, job_id: UUID) -> dict | None:
+        rec = self._job_closeouts.get(str(job_id))
+        if rec is None:
+            return None
+        return {**rec, "line_items": [dict(item) for item in rec.get("line_items", [])]}
+
     async def get_payment_reports(self, job_id: UUID) -> dict:
         payments = getattr(self, "_payments", {})
         return {
@@ -1895,6 +1923,7 @@ class InMemoryStore(Store):
                 "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
                 "review": await self.get_job_review(UUID(jid)),
                 "payments": await self.get_payment_reports(UUID(jid)),
+                "closeout": await self.get_job_closeout(UUID(jid)),
             })
         return out[:limit]
 
@@ -1913,6 +1942,7 @@ class InMemoryStore(Store):
                 "id": jid, "status": status,
                 "review": await self.get_job_review(UUID(jid)),
                 "payments": await self.get_payment_reports(UUID(jid)),
+                "closeout": await self.get_job_closeout(UUID(jid)),
             })
         return out[:limit]
 
@@ -2667,6 +2697,56 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_job_payment_reports_job"
                 " on job_payment_reports (job_id)"
+            )
+            await conn.execute(
+                "create table if not exists job_closeout_reports ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  job_id uuid not null references jobs(id) on delete cascade,"
+                "  reported_by text not null check (reported_by in ('technician')),"
+                "  currency text not null default 'USD',"
+                "  method text not null,"
+                "  subtotal_cents integer not null check (subtotal_cents >= 0),"
+                "  taxable_subtotal_cents integer not null check (taxable_subtotal_cents >= 0),"
+                "  tax_rate_basis_points integer not null check (tax_rate_basis_points >= 0),"
+                "  tax_cents integer not null check (tax_cents >= 0),"
+                "  tip_cents integer not null check (tip_cents >= 0),"
+                "  card_fee_basis_points integer not null check (card_fee_basis_points >= 0),"
+                "  card_fee_fixed_cents integer not null check (card_fee_fixed_cents >= 0),"
+                "  card_fee_cents integer not null check (card_fee_cents >= 0),"
+                "  total_cents integer not null check (total_cents >= 0),"
+                "  no_tax_reason text,"
+                "  settings_snapshot jsonb not null default '{}',"
+                "  reported_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  unique (job_id, reported_by)"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists job_closeout_line_items ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  closeout_id uuid not null references job_closeout_reports(id) on delete cascade,"
+                "  job_id uuid not null references jobs(id) on delete cascade,"
+                "  line_number integer not null,"
+                "  item_type_code text not null references closeout_item_types(code),"
+                "  description text not null,"
+                "  quantity numeric(10,2) not null check (quantity > 0),"
+                "  unit_amount_cents integer not null check (unit_amount_cents >= 0),"
+                "  line_total_cents integer not null check (line_total_cents >= 0),"
+                "  taxable boolean not null default true,"
+                "  provided_by text check (provided_by in ('company','technician','customer','third_party')),"
+                "  compensation_eligible boolean not null default false,"
+                "  reimbursement_eligible boolean not null default false,"
+                "  note text,"
+                "  unique (closeout_id, line_number)"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_job_closeout_reports_job"
+                " on job_closeout_reports (job_id)"
+            )
+            await conn.execute(
+                "create index if not exists idx_job_closeout_line_items_job"
+                " on job_closeout_line_items (job_id, closeout_id)"
             )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
@@ -3514,6 +3594,7 @@ class PostgresStore(Store):
             prow = await pcur.fetchone()
             if prow:
                 payment = {"amount": float(prow[0]), "currency": prow[1], "method": prow[2]}
+            closeout = (await self._closeouts_for(conn, [str(ticket_id)])).get(str(ticket_id))
         from api.dispatch import TERMINAL_STATUSES
         # Blind tracking: remove dispatch internals (attempts, offers, expiry)
         # Customer sees only: searching / matched / failed (Uber-style)
@@ -3534,6 +3615,7 @@ class PostgresStore(Store):
                 else None
             ),
             "payment": payment,
+            "closeout": closeout,
         }
 
     async def _safe_assignment(
@@ -4549,6 +4631,157 @@ class PostgresStore(Store):
             "reported_at": row[3].isoformat() if row[3] else None,
         }
 
+    async def record_job_closeout(self, closeout: dict) -> dict:
+        from psycopg.types.json import Jsonb
+
+        job_id = str(closeout["job_id"])
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into job_closeout_reports"
+                " (job_id, reported_by, currency, method, subtotal_cents,"
+                "  taxable_subtotal_cents, tax_rate_basis_points, tax_cents,"
+                "  tip_cents, card_fee_basis_points, card_fee_fixed_cents,"
+                "  card_fee_cents, total_cents, no_tax_reason, settings_snapshot)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " on conflict (job_id, reported_by) do update set"
+                "   currency = excluded.currency, method = excluded.method,"
+                "   subtotal_cents = excluded.subtotal_cents,"
+                "   taxable_subtotal_cents = excluded.taxable_subtotal_cents,"
+                "   tax_rate_basis_points = excluded.tax_rate_basis_points,"
+                "   tax_cents = excluded.tax_cents, tip_cents = excluded.tip_cents,"
+                "   card_fee_basis_points = excluded.card_fee_basis_points,"
+                "   card_fee_fixed_cents = excluded.card_fee_fixed_cents,"
+                "   card_fee_cents = excluded.card_fee_cents,"
+                "   total_cents = excluded.total_cents,"
+                "   no_tax_reason = excluded.no_tax_reason,"
+                "   settings_snapshot = excluded.settings_snapshot,"
+                "   reported_at = now(), updated_at = now()"
+                " returning id",
+                (
+                    job_id,
+                    closeout.get("reported_by", "technician"),
+                    closeout.get("currency", "USD"),
+                    closeout["method"],
+                    closeout["subtotal_cents"],
+                    closeout["taxable_subtotal_cents"],
+                    closeout["tax_rate_basis_points"],
+                    closeout["tax_cents"],
+                    closeout["tip_cents"],
+                    closeout["card_fee_basis_points"],
+                    closeout["card_fee_fixed_cents"],
+                    closeout["card_fee_cents"],
+                    closeout["total_cents"],
+                    closeout.get("no_tax_reason"),
+                    Jsonb(closeout.get("settings_snapshot") or {}),
+                ),
+            )
+            row = await cur.fetchone()
+            closeout_id = row[0]
+            await conn.execute("delete from job_closeout_line_items where closeout_id = %s", (closeout_id,))
+            for item in closeout.get("line_items", []):
+                await conn.execute(
+                    "insert into job_closeout_line_items"
+                    " (closeout_id, job_id, line_number, item_type_code, description,"
+                    "  quantity, unit_amount_cents, line_total_cents, taxable,"
+                    "  provided_by, compensation_eligible, reimbursement_eligible, note)"
+                    " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        closeout_id,
+                        job_id,
+                        item["line_number"],
+                        item["item_type_code"],
+                        item["description"],
+                        item["quantity"],
+                        item["unit_amount_cents"],
+                        item["line_total_cents"],
+                        item["taxable"],
+                        item.get("provided_by"),
+                        item.get("compensation_eligible", False),
+                        item.get("reimbursement_eligible", False),
+                        item.get("note"),
+                    ),
+                )
+        saved = await self.get_job_closeout(UUID(job_id))
+        return saved or closeout
+
+    @staticmethod
+    def _closeout_report_row(row: tuple, line_items: list[dict]) -> dict:
+        return {
+            "id": str(row[0]),
+            "job_id": str(row[1]),
+            "reported_by": row[2],
+            "currency": row[3],
+            "method": row[4],
+            "subtotal_cents": row[5],
+            "taxable_subtotal_cents": row[6],
+            "tax_rate_basis_points": row[7],
+            "tax_cents": row[8],
+            "tip_cents": row[9],
+            "card_fee_basis_points": row[10],
+            "card_fee_fixed_cents": row[11],
+            "card_fee_cents": row[12],
+            "total_cents": row[13],
+            "no_tax_reason": row[14],
+            "settings_snapshot": row[15] or {},
+            "reported_at": row[16].isoformat() if row[16] else None,
+            "updated_at": row[17].isoformat() if row[17] else None,
+            "line_items": line_items,
+        }
+
+    @staticmethod
+    def _closeout_line_row(row: tuple) -> dict:
+        return {
+            "line_number": row[0],
+            "item_type_code": row[1],
+            "description": row[2],
+            "quantity": float(row[3]),
+            "unit_amount_cents": row[4],
+            "line_total_cents": row[5],
+            "taxable": row[6],
+            "provided_by": row[7],
+            "compensation_eligible": row[8],
+            "reimbursement_eligible": row[9],
+            "note": row[10],
+        }
+
+    async def get_job_closeout(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            reports = await self._closeouts_for(conn, [str(job_id)])
+        return reports.get(str(job_id))
+
+    async def _closeouts_for(self, conn, job_ids: list[str]) -> dict[str, dict]:
+        if not job_ids:
+            return {}
+        cur = await conn.execute(
+            "select id, job_id, reported_by, currency, method, subtotal_cents,"
+            " taxable_subtotal_cents, tax_rate_basis_points, tax_cents, tip_cents,"
+            " card_fee_basis_points, card_fee_fixed_cents, card_fee_cents,"
+            " total_cents, no_tax_reason, settings_snapshot, reported_at, updated_at"
+            " from job_closeout_reports"
+            " where job_id = any(%s) and reported_by = 'technician'",
+            (job_ids,),
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            return {}
+        closeout_ids = [str(r[0]) for r in rows]
+        line_cur = await conn.execute(
+            "select closeout_id, line_number, item_type_code, description, quantity,"
+            " unit_amount_cents, line_total_cents, taxable, provided_by,"
+            " compensation_eligible, reimbursement_eligible, note"
+            " from job_closeout_line_items"
+            " where closeout_id = any(%s)"
+            " order by closeout_id, line_number",
+            (closeout_ids,),
+        )
+        lines: dict[str, list[dict]] = {cid: [] for cid in closeout_ids}
+        for line in await line_cur.fetchall():
+            lines[str(line[0])].append(self._closeout_line_row(line[1:]))
+        return {
+            str(row[1]): self._closeout_report_row(row, lines.get(str(row[0]), []))
+            for row in rows
+        }
+
     async def _payments_for(self, conn, job_ids: list[str]) -> dict[str, dict]:
         """job_id -> {'technician': {...}|None, 'customer': {...}|None}."""
         out: dict[str, dict] = {jid: {"technician": None, "customer": None} for jid in job_ids}
@@ -4606,7 +4839,9 @@ class PostgresStore(Store):
                 params + (list(statuses), limit),
             )
             rows = await cur.fetchall()
-            payments = await self._payments_for(conn, [str(r[0]) for r in rows])
+            job_ids = [str(r[0]) for r in rows]
+            payments = await self._payments_for(conn, job_ids)
+            closeouts = await self._closeouts_for(conn, job_ids)
         return [
             {
                 "id": str(r[0]), "status": r[1], "address": r[2], "situation": r[3],
@@ -4621,6 +4856,7 @@ class PostgresStore(Store):
                     if r[9] is not None else None
                 ),
                 "payments": payments.get(str(r[0]), {"technician": None, "customer": None}),
+                "closeout": closeouts.get(str(r[0])),
             }
             for r in rows
         ]

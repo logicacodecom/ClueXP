@@ -2025,6 +2025,152 @@ def test_collection_validation_and_ownership():
         app_store.get_user_session = _orig
 
 
+def test_structured_closeout_calculates_receipt_and_tracking():
+    from api.main import store as app_store
+
+    org, tech_uid, jid, token = str(uuid4()), str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_IN_PROGRESS
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = token
+    asyncio.run(app_store.upsert_organization_setting(org, "closeout_default_tax_rate_basis_points", 700, "integer"))
+    asyncio.run(app_store.upsert_organization_setting(org, "closeout_card_fee_basis_points", 300, "integer"))
+    asyncio.run(app_store.upsert_organization_setting(org, "closeout_card_fee_fixed_cents", 30, "integer"))
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        payload = {
+            "method": "credit_card",
+            "tip_amount": 20,
+            "line_items": [
+                {
+                    "item_type_code": "service_fee",
+                    "description": "Service",
+                    "quantity": 1,
+                    "unit_amount": 100,
+                    "taxable": True,
+                },
+                {
+                    "item_type_code": "key_code_purchase",
+                    "description": "Key code",
+                    "quantity": 1,
+                    "unit_amount": 25,
+                    "taxable": False,
+                    "provided_by": "technician",
+                    "note": "Nastf code purchase",
+                },
+            ],
+        }
+        response = client.post(
+            f"/jobs/{jid}/collection",
+            json=payload,
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        closeout = body["closeout"]
+        assert closeout["subtotal_cents"] == 12500
+        assert closeout["taxable_subtotal_cents"] == 10000
+        assert closeout["tax_cents"] == 700
+        assert closeout["tip_cents"] == 2000
+        assert closeout["card_fee_cents"] == 486
+        assert closeout["total_cents"] == 15686
+        assert body["payment"]["amount"] == 156.86
+        assert closeout["line_items"][1]["provided_by"] == "technician"
+
+        app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+        tracking = client.get(f"/t/{token}")
+        assert tracking.status_code == 200, tracking.text
+        assert tracking.json()["closeout"]["total_cents"] == 15686
+        assert tracking.json()["payment"]["amount"] == 156.86
+    finally:
+        app_store.get_user_session = _orig
+
+
+def test_structured_closeout_respects_max_line_items():
+    from api.main import store as app_store
+
+    org, tech_uid, jid = str(uuid4()), str(uuid4()), str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_IN_PROGRESS
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    asyncio.run(app_store.upsert_organization_setting(org, "closeout_max_line_items", 1, "integer"))
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        response = client.post(
+            f"/jobs/{jid}/collection",
+            json={
+                "method": "cash",
+                "line_items": [
+                    {"item_type_code": "service_fee", "description": "Service", "unit_amount": 10},
+                    {"item_type_code": "labor", "description": "Labor", "unit_amount": 20},
+                ],
+            },
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert response.status_code == 422
+        assert "at most 1 line items" in response.text
+    finally:
+        app_store.get_user_session = _orig
+
+
+def test_structured_closeout_requires_part_source_and_note():
+    from api.main import store as app_store
+
+    tech_uid, jid = str(uuid4()), str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_IN_PROGRESS
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        response = client.post(
+            f"/jobs/{jid}/collection",
+            json={
+                "method": "cash",
+                "line_items": [
+                    {
+                        "item_type_code": "key_code_purchase",
+                        "description": "Key code",
+                        "unit_amount": 25,
+                    },
+                ],
+            },
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert response.status_code == 422
+        assert "requires provided_by" in response.text
+
+        response = client.post(
+            f"/jobs/{jid}/collection",
+            json={
+                "method": "cash",
+                "line_items": [
+                    {
+                        "item_type_code": "key_code_purchase",
+                        "description": "Key code",
+                        "unit_amount": 25,
+                        "provided_by": "company",
+                    },
+                ],
+            },
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert response.status_code == 422
+        assert "requires a note" in response.text
+    finally:
+        app_store.get_user_session = _orig
+
+
 def test_provider_job_history_scoped_and_enriched():
     org = str(uuid4())
     client, app_store, token = _client_for_dispatcher(org)

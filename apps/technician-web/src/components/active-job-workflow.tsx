@@ -32,6 +32,50 @@ const PAYMENT_METHODS: Array<{ value: string; label: string }> = [
   { value: "other", label: "Other" }
 ];
 
+const CLOSEOUT_ITEM_TYPES: Array<{ value: string; label: string; requiresProvidedBy?: boolean; requiresNote?: boolean; taxable?: boolean }> = [
+  { value: "service_fee", label: "Service fee", taxable: true },
+  { value: "labor", label: "Labor", taxable: true },
+  { value: "diagnostic", label: "Diagnostic", taxable: true },
+  { value: "physical_part", label: "Physical part", requiresProvidedBy: true, taxable: true },
+  { value: "hardware", label: "Hardware", requiresProvidedBy: true, taxable: true },
+  { value: "key_blank", label: "Key blank", requiresProvidedBy: true, taxable: true },
+  { value: "remote_fob", label: "Remote / fob", requiresProvidedBy: true, taxable: true },
+  { value: "key_code_purchase", label: "Key code purchase", requiresProvidedBy: true, requiresNote: true, taxable: false },
+  { value: "programming_token", label: "Programming token", requiresProvidedBy: true, requiresNote: true, taxable: false },
+  { value: "third_party_service", label: "Third-party service", requiresProvidedBy: true, requiresNote: true, taxable: false },
+  { value: "other", label: "Other", requiresProvidedBy: true, requiresNote: true, taxable: true }
+];
+
+type CloseoutLineDraft = {
+  id: string;
+  item_type_code: string;
+  description: string;
+  quantity: string;
+  unit_amount: string;
+  taxable: boolean;
+  provided_by: string;
+  note: string;
+};
+
+function newCloseoutLine(itemType = "service_fee"): CloseoutLineDraft {
+  const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === itemType) ?? CLOSEOUT_ITEM_TYPES[0];
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    item_type_code: spec.value,
+    description: spec.label,
+    quantity: "1",
+    unit_amount: "",
+    taxable: spec.taxable ?? true,
+    provided_by: "",
+    note: ""
+  };
+}
+
+function moneyValue(value: string): number {
+  const amount = Number.parseFloat(value);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
 export type TechnicianJob = {
   id: string;
   status: "assigned" | "en_route" | "arrived" | "in_progress" | "completed_pending_customer";
@@ -97,8 +141,9 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [issueKind, setIssueKind] = useState<string | null>(null);
   const [issueReason, setIssueReason] = useState("");
   const [issueDone, setIssueDone] = useState(false);
-  const [collectAmount, setCollectAmount] = useState("");
   const [collectMethod, setCollectMethod] = useState("");
+  const [tipAmount, setTipAmount] = useState("");
+  const [closeoutLines, setCloseoutLines] = useState<CloseoutLineDraft[]>(() => [newCloseoutLine()]);
   const [collectDone, setCollectDone] = useState(false);
   const copy = statusCopy(job.status);
   const currentIndex = stages.findIndex((stage) => stage.status === job.status);
@@ -244,15 +289,26 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   }
 
   async function reportCollection() {
-    const amount = Number.parseFloat(collectAmount);
-    if (!collectMethod || !Number.isFinite(amount) || amount < 0 || busy) return;
+    const lineItems = closeoutLines.map((line) => ({
+      item_type_code: line.item_type_code,
+      description: line.description.trim(),
+      quantity: Number.parseFloat(line.quantity || "1"),
+      unit_amount: moneyValue(line.unit_amount),
+      taxable: line.taxable,
+      provided_by: line.provided_by || undefined,
+      note: line.note.trim() || undefined
+    }));
+    const hasInvalidLine = lineItems.some((line) =>
+      !line.description || !Number.isFinite(line.quantity) || line.quantity <= 0 || line.unit_amount < 0
+    );
+    if (!collectMethod || hasInvalidLine || busy) return;
     setBusy(true);
     setError(null);
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/collection`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ amount, method: collectMethod })
+        body: JSON.stringify({ method: collectMethod, tip_amount: moneyValue(tipAmount), line_items: lineItems })
       });
       const body = await response.json().catch(() => ({}));
       if (response.status === 401) { window.location.assign("/signin"); return; }
@@ -264,6 +320,28 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       setBusy(false);
     }
   }
+
+  function updateCloseoutLine(id: string, patch: Partial<CloseoutLineDraft>) {
+    setCloseoutLines((current) => current.map((line) => {
+      if (line.id !== id) return line;
+      const next = { ...line, ...patch };
+      if (patch.item_type_code) {
+        const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === patch.item_type_code);
+        if (spec) {
+          next.description = spec.label;
+          next.taxable = spec.taxable ?? true;
+          if (!spec.requiresProvidedBy) next.provided_by = "";
+          if (!spec.requiresNote) next.note = "";
+        }
+      }
+      return next;
+    }));
+  }
+
+  const closeoutSubtotal = closeoutLines.reduce((sum, line) => {
+    const qty = Number.parseFloat(line.quantity || "1");
+    return sum + (Number.isFinite(qty) ? qty : 0) * moneyValue(line.unit_amount);
+  }, 0);
 
   async function advance() {
     const target = nextStatus(job.status);
@@ -448,16 +526,110 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
               </p>
             ) : (
               <>
-                <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Payment collected</p>
-                <p className="mt-1 text-sm leading-5 text-muted">Record how much you collected and how. Logged to the job history for reconciliation against what the customer reports.</p>
+                <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Closeout receipt</p>
+                <p className="mt-1 text-sm leading-5 text-muted">Break down labor, service fees, parts, codes, tip, and payment method. Tax and card fees are calculated by company settings.</p>
+                <div className="mt-3 space-y-3">
+                  {closeoutLines.map((line, index) => {
+                    const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
+                    return (
+                      <div className="border border-border bg-card/70 p-3" key={line.id}>
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Line {index + 1}</p>
+                          {closeoutLines.length > 1 ? (
+                            <button
+                              className="text-xs font-black text-danger"
+                              type="button"
+                              onClick={() => setCloseoutLines((current) => current.filter((item) => item.id !== line.id))}
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                        </div>
+                        <div className="mt-2 grid grid-cols-1 gap-2">
+                          <select
+                            className="w-full border border-border bg-card px-3 py-2 text-sm"
+                            value={line.item_type_code}
+                            onChange={(e) => updateCloseoutLine(line.id, { item_type_code: e.target.value })}
+                            aria-label={`Line ${index + 1} item type`}
+                          >
+                            {CLOSEOUT_ITEM_TYPES.map((item) => (<option key={item.value} value={item.value}>{item.label}</option>))}
+                          </select>
+                          <input
+                            className="w-full border border-border bg-card px-3 py-2 text-sm"
+                            placeholder="Description"
+                            value={line.description}
+                            onChange={(e) => updateCloseoutLine(line.id, { description: e.target.value })}
+                            aria-label={`Line ${index + 1} description`}
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              inputMode="decimal"
+                              className="w-full border border-border bg-card px-3 py-2 text-sm"
+                              placeholder="Qty"
+                              value={line.quantity}
+                              onChange={(e) => updateCloseoutLine(line.id, { quantity: e.target.value.replace(/[^0-9.]/g, "") })}
+                              aria-label={`Line ${index + 1} quantity`}
+                            />
+                            <input
+                              inputMode="decimal"
+                              className="w-full border border-border bg-card px-3 py-2 text-sm"
+                              placeholder="Amount"
+                              value={line.unit_amount}
+                              onChange={(e) => updateCloseoutLine(line.id, { unit_amount: e.target.value.replace(/[^0-9.]/g, "") })}
+                              aria-label={`Line ${index + 1} amount`}
+                            />
+                          </div>
+                          <label className="flex items-center gap-2 text-xs font-bold text-muted">
+                            <input
+                              checked={line.taxable}
+                              onChange={(e) => updateCloseoutLine(line.id, { taxable: e.target.checked })}
+                              type="checkbox"
+                            />
+                            Taxable
+                          </label>
+                          {spec.requiresProvidedBy ? (
+                            <select
+                              className="w-full border border-border bg-card px-3 py-2 text-sm"
+                              value={line.provided_by}
+                              onChange={(e) => updateCloseoutLine(line.id, { provided_by: e.target.value })}
+                              aria-label={`Line ${index + 1} provided by`}
+                            >
+                              <option value="">Provided by…</option>
+                              <option value="company">Company</option>
+                              <option value="technician">Technician</option>
+                              <option value="customer">Customer</option>
+                              <option value="third_party">Third party</option>
+                            </select>
+                          ) : null}
+                          {spec.requiresNote ? (
+                            <input
+                              className="w-full border border-border bg-card px-3 py-2 text-sm"
+                              placeholder="Required note"
+                              value={line.note}
+                              onChange={(e) => updateCloseoutLine(line.id, { note: e.target.value })}
+                              aria-label={`Line ${index + 1} note`}
+                            />
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button
+                  className="touch-target mt-3 min-h-10 w-full border border-border bg-card-strong text-sm font-black"
+                  type="button"
+                  onClick={() => setCloseoutLines((current) => [...current, newCloseoutLine()])}
+                >
+                  Add line item
+                </button>
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <input
                     inputMode="decimal"
                     className="w-full border border-border bg-card px-3 py-2 text-sm"
-                    placeholder="Amount (USD)"
-                    value={collectAmount}
-                    onChange={(e) => setCollectAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                    aria-label="Amount collected"
+                    placeholder="Tip (optional)"
+                    value={tipAmount}
+                    onChange={(e) => setTipAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                    aria-label="Tip amount"
                   />
                   <select
                     className="w-full border border-border bg-card px-3 py-2 text-sm"
@@ -469,9 +641,12 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
                     {PAYMENT_METHODS.map((m) => (<option key={m.value} value={m.value}>{m.label}</option>))}
                   </select>
                 </div>
+                <p className="mt-2 text-xs font-semibold text-muted">
+                  Subtotal before tax/fees: ${closeoutSubtotal.toFixed(2)}
+                </p>
                 <button
                   className="touch-target mt-2 min-h-11 w-full bg-primary font-black text-primary-foreground disabled:opacity-50"
-                  disabled={busy || !collectMethod || !collectAmount}
+                  disabled={busy || !collectMethod || closeoutLines.some((line) => !line.description.trim() || !line.unit_amount)}
                   onClick={() => void reportCollection()}
                   type="button"
                 >

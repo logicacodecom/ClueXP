@@ -520,8 +520,11 @@ class CustomerReviewRequest(BaseModel):
 
 
 class PaymentReportRequest(BaseModel):
-    amount: float
+    amount: float | None = None
     method: str
+    line_items: list[dict[str, Any]] | None = None
+    tip_amount: float = 0
+    no_tax_reason: str | None = None
     # MVP is USD-only: advisory totals are summed/displayed as a single dollar figure.
     # The field is fixed server-side; a client-supplied value is ignored.
 
@@ -3230,6 +3233,146 @@ def _validate_payment(payload: PaymentReportRequest) -> tuple[float, str]:
     return round(float(payload.amount), 2), method
 
 
+_CARD_METHODS = {"credit_card", "debit_card", "apple_pay", "google_pay"}
+
+
+def _money_cents(value: Any, field: str) -> int:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{field} must be a valid amount")
+    if numeric < 0:
+        raise HTTPException(status_code=422, detail=f"{field} must be zero or greater")
+    if numeric > 1_000_000:
+        raise HTTPException(status_code=422, detail=f"{field} is implausibly large")
+    return int(round(numeric * 100))
+
+
+async def _effective_financial_settings(org_id: str | None) -> dict[str, int]:
+    keys = {
+        "max_line_items": "closeout_max_line_items",
+        "tax_rate_basis_points": "closeout_default_tax_rate_basis_points",
+        "card_fee_basis_points": "closeout_card_fee_basis_points",
+        "card_fee_fixed_cents": "closeout_card_fee_fixed_cents",
+    }
+    result: dict[str, int] = {}
+    for field, key in keys.items():
+        value = (
+            await runtime_settings.resolve_org(store, org_id, key)
+            if org_id
+            else await runtime_settings.resolve(store, key)
+        )
+        result[field] = int(value)
+    return result
+
+
+async def _build_closeout_report(
+    *,
+    job_id: UUID,
+    payload: PaymentReportRequest,
+    lifecycle: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    method = normalize_payment_method(payload.method)
+    if method is None:
+        raise HTTPException(status_code=422, detail="Unknown payment method")
+    org_id = lifecycle.get("fulfillment_org_id") or lifecycle.get("customer_owner_org_id")
+    settings = await _effective_financial_settings(str(org_id) if org_id else None)
+    item_types = {
+        item["code"]: item
+        for item in await store.list_closeout_item_types(active_only=True)
+    }
+    raw_items = payload.line_items
+    if not raw_items:
+        if payload.amount is None:
+            raise HTTPException(status_code=422, detail="Closeout requires at least one line item or amount")
+        raw_items = [{
+            "item_type_code": "service_fee",
+            "description": "Service",
+            "quantity": 1,
+            "unit_amount": payload.amount,
+        }]
+    if len(raw_items) < 1:
+        raise HTTPException(status_code=422, detail="Closeout requires at least one line item")
+    if len(raw_items) > settings["max_line_items"]:
+        raise HTTPException(status_code=422, detail=f"Closeout allows at most {settings['max_line_items']} line items")
+
+    lines: list[dict[str, Any]] = []
+    subtotal_cents = 0
+    taxable_subtotal_cents = 0
+    for idx, raw in enumerate(raw_items, start=1):
+        item_type_code = _validate_catalog_code(str(raw.get("item_type_code") or raw.get("type") or "service_fee"))
+        item_type = item_types.get(item_type_code)
+        if item_type is None:
+            raise HTTPException(status_code=422, detail=f"Invalid closeout item type: {item_type_code}")
+        description = str(raw.get("description") or item_type["label"]).strip()
+        if not description:
+            raise HTTPException(status_code=422, detail="Line item description is required")
+        try:
+            quantity = float(raw.get("quantity", 1))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="Line item quantity must be numeric")
+        if quantity <= 0 or quantity > 999:
+            raise HTTPException(status_code=422, detail="Line item quantity must be greater than zero")
+        unit_cents = _money_cents(raw.get("unit_amount", raw.get("unit_price", raw.get("amount"))), "Line item amount")
+        line_cents = int(round(unit_cents * quantity))
+        taxable = bool(raw.get("taxable", item_type.get("default_taxable", True)))
+        provided_by = raw.get("provided_by")
+        if item_type.get("requires_provided_by") and provided_by not in {"company", "technician", "customer", "third_party"}:
+            raise HTTPException(status_code=422, detail=f"{item_type['label']} requires provided_by")
+        note = (str(raw.get("note") or "").strip() or None)
+        if item_type.get("requires_note") and not note:
+            raise HTTPException(status_code=422, detail=f"{item_type['label']} requires a note")
+        subtotal_cents += line_cents
+        if taxable:
+            taxable_subtotal_cents += line_cents
+        lines.append({
+            "line_number": idx,
+            "item_type_code": item_type_code,
+            "description": description[:160],
+            "quantity": quantity,
+            "unit_amount_cents": unit_cents,
+            "line_total_cents": line_cents,
+            "taxable": taxable,
+            "provided_by": provided_by,
+            "compensation_eligible": bool(item_type.get("default_compensation_eligible", False)),
+            "reimbursement_eligible": bool(item_type.get("default_reimbursement_eligible", False)),
+            "note": note[:280] if note else None,
+        })
+
+    tip_cents = _money_cents(payload.tip_amount or 0, "Tip")
+    tax_cents = int(round(taxable_subtotal_cents * settings["tax_rate_basis_points"] / 10_000))
+    if taxable_subtotal_cents > 0 and settings["tax_rate_basis_points"] == 0 and payload.no_tax_reason:
+        no_tax_reason = payload.no_tax_reason.strip()[:200]
+    else:
+        no_tax_reason = None
+    card_fee_base_cents = subtotal_cents + tax_cents + tip_cents
+    card_fee_cents = (
+        int(round(card_fee_base_cents * settings["card_fee_basis_points"] / 10_000))
+        + settings["card_fee_fixed_cents"]
+        if method in _CARD_METHODS
+        else 0
+    )
+    total_cents = subtotal_cents + tax_cents + tip_cents + card_fee_cents
+    return {
+        "job_id": str(job_id),
+        "reported_by": "technician",
+        "currency": "USD",
+        "method": method,
+        "line_items": lines,
+        "subtotal_cents": subtotal_cents,
+        "taxable_subtotal_cents": taxable_subtotal_cents,
+        "tax_rate_basis_points": settings["tax_rate_basis_points"],
+        "tax_cents": tax_cents,
+        "tip_cents": tip_cents,
+        "card_fee_basis_points": settings["card_fee_basis_points"] if method in _CARD_METHODS else 0,
+        "card_fee_fixed_cents": settings["card_fee_fixed_cents"] if method in _CARD_METHODS else 0,
+        "card_fee_cents": card_fee_cents,
+        "total_cents": total_cents,
+        "no_tax_reason": no_tax_reason,
+        "settings_snapshot": settings,
+    }, method
+
+
 @app.post("/t/{token}/dispute")
 async def dispute_by_token(token: str, payload: DisputeRequest) -> dict[str, Any]:
     """Customer reports an issue: completed_pending_customer → disputed. A human
@@ -3465,7 +3608,6 @@ async def report_collection(
     tech = session.get("technician")
     if not tech:
         raise HTTPException(status_code=409, detail="Technician profile is required")
-    amount, method = _validate_payment(payload)
     lifecycle = await store.get_job_lifecycle(job_id)
     if lifecycle is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -3476,11 +3618,16 @@ async def report_collection(
             status_code=409,
             detail="Collection can only be reported while the job is in progress or completed.",
         )
+    closeout, method = await _build_closeout_report(job_id=job_id, payload=payload, lifecycle=lifecycle)
+    saved_closeout = await store.record_job_closeout(closeout)
     report = await store.record_payment_report(
-        job_id=job_id, reported_by="technician", amount=amount, method=method,
+        job_id=job_id,
+        reported_by="technician",
+        amount=round(float(saved_closeout["total_cents"]) / 100, 2),
+        method=method,
         currency="USD",
     )
-    return {"status": "recorded", "payment": report}
+    return {"status": "recorded", "payment": report, "closeout": saved_closeout}
 
 
 @app.get("/technician/jobs/history")

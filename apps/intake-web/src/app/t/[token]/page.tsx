@@ -46,6 +46,29 @@ interface PaymentView {
   method: string;
 }
 
+interface CloseoutLineView {
+  line_number: number;
+  item_type_code: string;
+  description: string;
+  quantity: number;
+  unit_amount_cents: number;
+  line_total_cents: number;
+  taxable: boolean;
+  provided_by?: string | null;
+  note?: string | null;
+}
+
+interface CloseoutView {
+  currency: string;
+  method: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  tip_cents: number;
+  card_fee_cents: number;
+  total_cents: number;
+  line_items: CloseoutLineView[];
+}
+
 interface TrackingResponse {
   ticket_id: string;
   token: string;
@@ -57,6 +80,7 @@ interface TrackingResponse {
   assignment: DispatchAssignment | null;
   destination: { lat: number; lng: number } | null;
   payment: PaymentView | null;
+  closeout: CloseoutView | null;
   guards: TicketGuards;
   customer_actions: {
     can_cancel: boolean;
@@ -119,6 +143,11 @@ function paymentMethodLabel(method: string, locale: string): string {
   const entry = PAYMENT_METHOD_LABELS[method];
   if (!entry) return method;
   return locale === "es" ? entry.es : entry.en;
+}
+
+function moneyFromCents(cents: number, currency = "USD"): string {
+  const amount = (cents || 0) / 100;
+  return currency === "USD" ? `$${amount.toFixed(2)}` : `${currency} ${amount.toFixed(2)}`;
 }
 
 function TopBar() {
@@ -203,6 +232,7 @@ export default function TokenTrackingPage() {
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [destination, setDestination] = useState<{ lat: number; lng: number } | null>(null);
   const [payment, setPayment] = useState<PaymentView | null>(null);
+  const [closeout, setCloseout] = useState<CloseoutView | null>(null);
   const [arrivalPin, setArrivalPin] = useState<string | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
 
@@ -350,6 +380,7 @@ export default function TokenTrackingPage() {
       setAssignment(data.assignment);
       setDestination(data.destination ?? null);
       setPayment(data.payment ?? null);
+      setCloseout(data.closeout ?? null);
       setCustomerActions(data.customer_actions ?? emptyCustomerActions);
       setDispatchPhone(data.dispatch_phone ?? null);
 
@@ -970,7 +1001,58 @@ export default function TokenTrackingPage() {
           <AgentMessage support={localeText.completed_pending_customer.support}>
             {localeText.completed_pending_customer.title}
           </AgentMessage>
-          {payment ? (
+          {closeout ? (
+            <div className="panel">
+              <p className="panel-title">
+                {locale === "es" ? "Recibo" : "Receipt"}
+              </p>
+              <div className="stack">
+                {closeout.line_items.map((item) => (
+                  <div className="row" key={`${item.line_number}-${item.item_type_code}`} style={{ justifyContent: "space-between", gap: 12 }}>
+                    <span className="fine" style={{ flex: 1 }}>
+                      {item.description}
+                      {item.quantity !== 1 ? ` × ${item.quantity}` : ""}
+                    </span>
+                    <strong>{moneyFromCents(item.line_total_cents, closeout.currency)}</strong>
+                  </div>
+                ))}
+                <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+                  <span className="fine">{locale === "es" ? "Subtotal" : "Subtotal"}</span>
+                  <strong>{moneyFromCents(closeout.subtotal_cents, closeout.currency)}</strong>
+                </div>
+                {closeout.tax_cents > 0 ? (
+                  <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+                    <span className="fine">{locale === "es" ? "Impuesto" : "Tax"}</span>
+                    <strong>{moneyFromCents(closeout.tax_cents, closeout.currency)}</strong>
+                  </div>
+                ) : null}
+                {closeout.tip_cents > 0 ? (
+                  <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+                    <span className="fine">{locale === "es" ? "Propina" : "Tip"}</span>
+                    <strong>{moneyFromCents(closeout.tip_cents, closeout.currency)}</strong>
+                  </div>
+                ) : null}
+                {closeout.card_fee_cents > 0 ? (
+                  <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+                    <span className="fine">{locale === "es" ? "Cargo de tarjeta" : "Card fee"}</span>
+                    <strong>{moneyFromCents(closeout.card_fee_cents, closeout.currency)}</strong>
+                  </div>
+                ) : null}
+              </div>
+              <div className="big-number">
+                {moneyFromCents(closeout.total_cents, closeout.currency)}
+              </div>
+              <p className="fine">
+                {locale === "es" ? "Método: " : "Method: "}
+                {paymentMethodLabel(closeout.method, locale)}
+              </p>
+              <p className="fine">
+                {locale === "es"
+                  ? "Al confirmar que el trabajo está completo, usted reconoce este recibo."
+                  : "By confirming the job is complete, you acknowledge this receipt."}
+              </p>
+            </div>
+          ) : payment ? (
             <div className="panel">
               <p className="panel-title">
                 {locale === "es" ? "Pago" : "Payment"}
