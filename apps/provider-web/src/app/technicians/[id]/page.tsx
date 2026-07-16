@@ -11,7 +11,7 @@ import {
   StatCard,
   skillLabel
 } from "@cluexp/console-ui";
-import { ArrowLeft, Ban, DollarSign, FileText, Save, ShieldCheck, Star, Users, UserMinus, XCircle } from "lucide-react";
+import { ArrowLeft, Ban, DollarSign, FileText, Plus, Save, ShieldCheck, Star, Trash2, Users, UserMinus, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -75,6 +75,19 @@ interface Agreement {
   rules: { skill_cuts?: Record<string, number>; category_cuts?: Record<string, number>; targets?: unknown[] };
 }
 
+type SkillCutDraft = { skill_code: string; cut_percent: string };
+type ServiceHourDraft = { day: string; enabled: boolean; start: string; end: string };
+
+const DAYS: Array<{ key: string; label: string }> = [
+  { key: "mon", label: "Mon" },
+  { key: "tue", label: "Tue" },
+  { key: "wed", label: "Wed" },
+  { key: "thu", label: "Thu" },
+  { key: "fri", label: "Fri" },
+  { key: "sat", label: "Sat" },
+  { key: "sun", label: "Sun" }
+];
+
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -95,6 +108,47 @@ function dollarsToCents(value: string): number {
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
 }
 
+function skillCutsToRows(cuts: Record<string, number> | undefined): SkillCutDraft[] {
+  return Object.entries(cuts ?? {}).map(([skill_code, basisPoints]) => ({
+    skill_code,
+    cut_percent: (basisPoints / 100).toString()
+  }));
+}
+
+function rowsToSkillCuts(rows: SkillCutDraft[]): Record<string, number> {
+  return rows.reduce<Record<string, number>>((acc, row) => {
+    const code = row.skill_code.trim();
+    if (!code) return acc;
+    const percent = Number(row.cut_percent || 0);
+    if (!Number.isFinite(percent)) return acc;
+    acc[code] = Math.round(percent * 100);
+    return acc;
+  }, {});
+}
+
+function serviceHoursToRows(hours: Record<string, unknown> | undefined): ServiceHourDraft[] {
+  return DAYS.map((day) => {
+    const raw = (hours ?? {})[day.key];
+    if (raw && typeof raw === "object") {
+      const value = raw as { start?: unknown; end?: unknown; enabled?: unknown };
+      return {
+        day: day.key,
+        enabled: value.enabled !== false,
+        start: typeof value.start === "string" ? value.start : "08:00",
+        end: typeof value.end === "string" ? value.end : "18:00"
+      };
+    }
+    return { day: day.key, enabled: false, start: "08:00", end: "18:00" };
+  });
+}
+
+function rowsToServiceHours(rows: ServiceHourDraft[]): Record<string, { start: string; end: string; enabled: boolean }> {
+  return rows.reduce<Record<string, { start: string; end: string; enabled: boolean }>>((acc, row) => {
+    acc[row.day] = { start: row.start, end: row.end, enabled: row.enabled };
+    return acc;
+  }, {});
+}
+
 export default function ProviderTechnicianProfilePage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -111,10 +165,10 @@ export default function ProviderTechnicianProfilePage() {
     minimum_payout: "0.00",
     flat_job_bonus: "0.00",
     counties: "",
-    zipcodes: "",
-    service_hours: "{}",
-    skill_cuts: "{}"
+    zipcodes: ""
   });
+  const [skillCutRows, setSkillCutRows] = useState<SkillCutDraft[]>([]);
+  const [serviceHourRows, setServiceHourRows] = useState<ServiceHourDraft[]>(serviceHoursToRows({}));
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/technicians/${params.id}`, { cache: "no-store" });
@@ -136,10 +190,10 @@ export default function ProviderTechnicianProfilePage() {
         minimum_payout: centsToDollars(agreement.minimum_payout_cents),
         flat_job_bonus: centsToDollars(agreement.flat_job_bonus_cents),
         counties: agreement.service_area_counties.join(", "),
-        zipcodes: agreement.service_area_zipcodes.join(", "),
-        service_hours: JSON.stringify(agreement.service_hours ?? {}, null, 2),
-        skill_cuts: JSON.stringify(agreement.rules?.skill_cuts ?? {}, null, 2)
+        zipcodes: agreement.service_area_zipcodes.join(", ")
       });
+      setSkillCutRows(skillCutsToRows(agreement.rules?.skill_cuts));
+      setServiceHourRows(serviceHoursToRows(agreement.service_hours));
     }
     setStatus("ready");
   }, [params.id]);
@@ -183,14 +237,8 @@ export default function ProviderTechnicianProfilePage() {
     setBusy(true);
     setMessage(null);
     try {
-      let serviceHours: Record<string, unknown>;
-      let skillCuts: Record<string, number>;
-      try {
-        serviceHours = JSON.parse(agreementDraft.service_hours || "{}");
-        skillCuts = JSON.parse(agreementDraft.skill_cuts || "{}");
-      } catch {
-        throw new Error("Service hours and skill cuts must be valid JSON.");
-      }
+      const serviceHours = rowsToServiceHours(serviceHourRows);
+      const skillCuts = rowsToSkillCuts(skillCutRows);
       const response = await fetch(`/api/technicians/${technician.id}/agreement`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -217,6 +265,18 @@ export default function ProviderTechnicianProfilePage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function updateSkillCut(index: number, patch: Partial<SkillCutDraft>) {
+    setSkillCutRows((rows) => rows.map((row, i) => i === index ? { ...row, ...patch } : row));
+  }
+
+  function removeSkillCut(index: number) {
+    setSkillCutRows((rows) => rows.filter((_, i) => i !== index));
+  }
+
+  function updateServiceHour(day: string, patch: Partial<ServiceHourDraft>) {
+    setServiceHourRows((rows) => rows.map((row) => row.day === day ? { ...row, ...patch } : row));
   }
 
   const pending = technician?.affiliation.is_pending_invite ?? false;
@@ -376,15 +436,94 @@ export default function ProviderTechnicianProfilePage() {
                     <input className="w-full rounded-md border border-border bg-background px-3 py-2" placeholder="32801, 32803" value={agreementDraft.zipcodes} onChange={(e) => setAgreementDraft((d) => ({ ...d, zipcodes: e.target.value }))} />
                   </label>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="space-y-1 text-sm font-medium">
-                    Skill cut overrides JSON
-                    <textarea className="min-h-28 w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs" value={agreementDraft.skill_cuts} onChange={(e) => setAgreementDraft((d) => ({ ...d, skill_cuts: e.target.value }))} />
-                  </label>
-                  <label className="space-y-1 text-sm font-medium">
-                    Service hours JSON
-                    <textarea className="min-h-28 w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs" value={agreementDraft.service_hours} onChange={(e) => setAgreementDraft((d) => ({ ...d, service_hours: e.target.value }))} />
-                  </label>
+                <div className="grid gap-4 lg:grid-cols-[1.05fr_.95fr]">
+                  <div className="rounded-lg border border-border bg-card/40 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold">Skill-specific cuts</h3>
+                        <p className="mt-1 text-xs text-muted-foreground">Override the default service cut for selected skills only.</p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setSkillCutRows((rows) => [...rows, { skill_code: technician.skills[0] ?? "", cut_percent: agreementDraft.default_labor_cut_percent }])}
+                      >
+                        <Plus className="size-4" />Add skill
+                      </Button>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {skillCutRows.length === 0 ? (
+                        <p className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">No overrides. The default service cut applies to every skill.</p>
+                      ) : skillCutRows.map((row, index) => (
+                        <div className="grid gap-2 rounded-md border border-border bg-background p-2 md:grid-cols-[1fr_120px_auto]" key={`${row.skill_code}-${index}`}>
+                          <label className="space-y-1 text-xs font-medium text-muted-foreground">
+                            Skill
+                            <input
+                              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                              list="technician-skills"
+                              placeholder="locksmith.vehicle_key_programming"
+                              value={row.skill_code}
+                              onChange={(e) => updateSkillCut(index, { skill_code: e.target.value })}
+                            />
+                          </label>
+                          <label className="space-y-1 text-xs font-medium text-muted-foreground">
+                            Cut %
+                            <input
+                              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                              inputMode="decimal"
+                              value={row.cut_percent}
+                              onChange={(e) => updateSkillCut(index, { cut_percent: e.target.value })}
+                            />
+                          </label>
+                          <Button type="button" variant="outline" onClick={() => removeSkillCut(index)} aria-label="Remove skill cut">
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    <datalist id="technician-skills">
+                      {technician.skills.map((skill) => <option key={skill} value={skill}>{skillLabel(skill)}</option>)}
+                    </datalist>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-card/40 p-3">
+                    <h3 className="text-sm font-semibold">Service hours</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">Used for dispatch guidance and agreement review. It does not change the technician-owned availability toggle.</p>
+                    <div className="mt-3 space-y-2">
+                      {serviceHourRows.map((row) => {
+                        const day = DAYS.find((item) => item.key === row.day);
+                        return (
+                          <div className="grid grid-cols-[68px_1fr_1fr] items-center gap-2 rounded-md border border-border bg-background p-2" key={row.day}>
+                            <label className="flex items-center gap-2 text-sm font-medium">
+                              <input
+                                checked={row.enabled}
+                                className="size-4"
+                                type="checkbox"
+                                onChange={(e) => updateServiceHour(row.day, { enabled: e.target.checked })}
+                              />
+                              {day?.label ?? row.day}
+                            </label>
+                            <input
+                              aria-label={`${day?.label ?? row.day} start time`}
+                              className="rounded-md border border-border bg-background px-2 py-2 text-sm disabled:opacity-45"
+                              disabled={!row.enabled}
+                              type="time"
+                              value={row.start}
+                              onChange={(e) => updateServiceHour(row.day, { start: e.target.value })}
+                            />
+                            <input
+                              aria-label={`${day?.label ?? row.day} end time`}
+                              className="rounded-md border border-border bg-background px-2 py-2 text-sm disabled:opacity-45"
+                              disabled={!row.enabled}
+                              type="time"
+                              value={row.end}
+                              onChange={(e) => updateServiceHour(row.day, { end: e.target.value })}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-xs text-muted-foreground">Parts and key-code purchases are excluded from commission; tech-provided eligible items become reimbursement lines in settlement reports.</p>

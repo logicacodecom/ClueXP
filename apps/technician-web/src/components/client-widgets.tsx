@@ -2,7 +2,7 @@
 
 import { technicianAppProfile } from "@cluexp/api-client";
 import type { TechnicianAppProfile } from "@cluexp/api-client";
-import { BriefcaseBusiness, LogOut, Map, MessageCircle, Timer, UserRound } from "lucide-react";
+import { BriefcaseBusiness, LogOut, Map, MessageCircle, Timer, UserRound, WalletCards } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -12,7 +12,7 @@ const navItems: Array<{ href: string; label: string; icon: LucideIcon }> = [
   { href: "/jobs", label: "Home", icon: BriefcaseBusiness },
   { href: "/map", label: "Map", icon: Map },
   { href: "/messages", label: "Messages", icon: MessageCircle },
-  { href: "/activity", label: "Activity", icon: Timer },
+  { href: "/earnings", label: "Earnings", icon: WalletCards },
   { href: "/profile", label: "Account", icon: UserRound }
 ];
 

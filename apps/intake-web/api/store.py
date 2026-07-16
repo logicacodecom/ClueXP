@@ -800,6 +800,11 @@ class Store:
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def list_technician_settlements(
+        self, technician_id: UUID, *, limit: int = 100
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
     async def create_provider_settlement_period(
         self, org_id: str, data: dict, *, created_by: str | None = None
     ) -> dict:  # pragma: no cover
@@ -988,6 +993,7 @@ class InMemoryStore(Store):
         user = self.users.get(user_id)
         if not user:
             return None
+        tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == str(user_id)), None)
         return {
             "user": {
                 "id": user["id"],
@@ -998,6 +1004,24 @@ class InMemoryStore(Store):
             "roles": user["roles"],
             "active_organization_id": user["active_organization_id"],
             "organization_name": user["organization_name"],
+            "technician": (
+                {
+                    "id": str(tech["id"]),
+                    "status": tech.get("status"),
+                    "vetting_status": tech.get("vetting_status"),
+                    "is_available": tech.get("is_available", True),
+                    "display_name": tech.get("display_name"),
+                    "phone": tech.get("phone"),
+                    "skills": list(tech.get("skills") or []),
+                    "service_area_radius_km": tech.get("service_area_radius_km"),
+                    "approved": tech.get("status") == "active" and tech.get("vetting_status") == "verified",
+                    "photo_url": tech.get("profile_photo_url"),
+                    "photo_status": tech.get("profile_photo_status") or "none",
+                    "affiliations": [],
+                }
+                if tech
+                else None
+            ),
         }
 
     async def list_pending_registrations(self) -> list[dict]:
@@ -2153,6 +2177,32 @@ class InMemoryStore(Store):
             out.append(calculate_settlement(row, agreement))
         return out
 
+    async def list_technician_settlements(self, technician_id: UUID, *, limit: int = 100) -> dict:
+        rows = []
+        for row in await self.get_technician_job_history(technician_id, limit=limit):
+            org_id = row.get("fulfillment_org_id") or row.get("customer_owner_org_id")
+            if not org_id or not row.get("closeout"):
+                continue
+            agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), technician_id)
+            settlement = calculate_settlement(row, agreement)
+            settlement["organization_id"] = str(org_id)
+            rows.append(settlement)
+        period_rows = []
+        for period in getattr(self, "_settlement_periods", {}).values():
+            for row in period.get("rows", []):
+                if str(row.get("technician_id")) == str(technician_id):
+                    period_rows.append({
+                        "settlement_period_id": period["id"],
+                        "status": period["status"],
+                        "label": period["label"],
+                        "period_start": period.get("period_start"),
+                        "period_end": period.get("period_end"),
+                        "locked_at": period.get("locked_at"),
+                        "paid_at": period.get("paid_at"),
+                        "row": dict(row),
+                    })
+        return {"live": rows, "period_rows": period_rows}
+
     async def create_provider_settlement_period(
         self, org_id: str, data: dict, *, created_by: str | None = None
     ) -> dict:
@@ -2244,6 +2294,9 @@ class InMemoryStore(Store):
                 "review": await self.get_job_review(UUID(jid)),
                 "payments": await self.get_payment_reports(UUID(jid)),
                 "closeout": await self.get_job_closeout(UUID(jid)),
+                "fulfillment_org_id": getattr(self, "_job_fulfillment_org", {}).get(jid),
+                "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
+                "fulfillment_technician_id": tid,
             })
         return out[:limit]
 
@@ -5214,6 +5267,7 @@ class PostgresStore(Store):
                 "select j.id, j.status, j.address, j.situation, j.urgency, j.created_at,"
                 " coalesce(j.confirmed_at, j.closed_at, j.cancelled_at, j.disputed_at, j.updated_at),"
                 " j.fulfillment_technician_id, t.display_name, j.access_type,"
+                " j.fulfillment_org_id, j.customer_owner_org_id,"
                 " r.rating, r.comment, r.created_at"
                 " from jobs j"
                 " left join technicians t on t.id = j.fulfillment_technician_id"
@@ -5238,10 +5292,12 @@ class PostgresStore(Store):
                 "fulfillment_technician_id": str(r[7]) if r[7] else None,
                 "technician_display_name": r[8],
                 "access_type": r[9],
+                "fulfillment_org_id": str(r[10]) if r[10] else None,
+                "customer_owner_org_id": str(r[11]) if r[11] else None,
                 "review": (
-                    {"rating": r[10], "comment": r[11],
-                     "created_at": r[12].isoformat() if r[12] else None}
-                    if r[10] is not None else None
+                    {"rating": r[12], "comment": r[13],
+                     "created_at": r[14].isoformat() if r[14] else None}
+                    if r[12] is not None else None
                 ),
                 "payments": payments.get(str(r[0]), {"technician": None, "customer": None}),
                 "closeout": closeouts.get(str(r[0])),
@@ -5265,6 +5321,42 @@ class PostgresStore(Store):
             agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), UUID(str(tech_id)))
             out.append(calculate_settlement(row, agreement))
         return out
+
+    async def list_technician_settlements(self, technician_id: UUID, *, limit: int = 100) -> dict:
+        live = []
+        for row in await self.get_technician_job_history(technician_id, limit=limit):
+            org_id = row.get("fulfillment_org_id") or row.get("customer_owner_org_id")
+            if not org_id or not row.get("closeout"):
+                continue
+            agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), technician_id)
+            settlement = calculate_settlement(row, agreement)
+            settlement["organization_id"] = str(org_id)
+            live.append(settlement)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select sp.id, sp.status, sp.label, sp.period_start, sp.period_end,"
+                " sp.locked_at, sp.paid_at, spj.row_snapshot"
+                " from settlement_period_jobs spj"
+                " join settlement_periods sp on sp.id = spj.settlement_period_id"
+                " where spj.technician_id = %s"
+                " order by sp.created_at desc, spj.created_at desc limit %s",
+                (str(technician_id), limit),
+            )
+            rows = await cur.fetchall()
+        period_rows = [
+            {
+                "settlement_period_id": str(r[0]),
+                "status": r[1],
+                "label": r[2],
+                "period_start": r[3].isoformat() if r[3] else None,
+                "period_end": r[4].isoformat() if r[4] else None,
+                "locked_at": r[5].isoformat() if r[5] else None,
+                "paid_at": r[6].isoformat() if r[6] else None,
+                "row": r[7],
+            }
+            for r in rows
+        ]
+        return {"live": live, "period_rows": period_rows}
 
     @staticmethod
     def _period_summary(row: tuple) -> dict:

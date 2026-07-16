@@ -3747,6 +3747,20 @@ async def technician_job_history(
     return await store.get_technician_job_history(UUID(tech["id"]))
 
 
+@app.get("/technician/settlements")
+async def technician_settlements(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """The signed-in technician's settlement estimates and provider-approved
+    settlement period rows. This is technician-scoped and does not expose other
+    technicians or company-retained amounts beyond the technician's own rows."""
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    return await store.list_technician_settlements(UUID(tech["id"]))
+
+
 @app.post("/provider/jobs/{job_id}/arrival/override")
 async def provider_override_arrival(
     job_id: UUID,

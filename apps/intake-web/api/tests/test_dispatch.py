@@ -3158,6 +3158,8 @@ def test_provider_settlement_excludes_parts_and_reimburses_tech_items():
     app_store._job_org[jid] = org
     app_store._job_tech = getattr(app_store, "_job_tech", {})
     app_store._job_tech[jid] = tid
+    app_store._job_fulfillment_org = getattr(app_store, "_job_fulfillment_org", {})
+    app_store._job_fulfillment_org[jid] = org
     app_store._job_access_type = getattr(app_store, "_job_access_type", {})
     app_store._job_access_type[jid] = "locksmith.vehicle_key_programming"
 
@@ -3245,8 +3247,14 @@ def test_settlement_period_locks_snapshot_and_status_flow():
         "display_name": "Provider Admin", "password_hash": "",
         "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
     }
+    app_store.users[tid] = {
+        "id": tid, "email": f"tech_{tid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Org Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
     client = TestClient(app)
     H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+    TH = {"Authorization": f"Bearer {create_access_token({'sub': tid, 'id': tid, 'roles': ['technician']})}"}
 
     agreement = {
         "status": "active",
@@ -3317,6 +3325,12 @@ def test_settlement_period_locks_snapshot_and_status_flow():
     assert client.post(f"/provider/settlement-periods/{period_id}/paid", json={}, headers=H).status_code == 409
     csv = client.get(f"/provider/settlement-periods/{period_id}?format=csv", headers=H)
     assert csv.status_code == 200 and "tech_payout_cents" in csv.text
+    tech_view = client.get("/technician/settlements", headers=TH)
+    assert tech_view.status_code == 200, tech_view.text
+    tech_body = tech_view.json()
+    assert tech_body["live"][0]["tech_payout_cents"] == 10000
+    assert tech_body["period_rows"][0]["status"] == "paid"
+    assert tech_body["period_rows"][0]["row"]["tech_payout_cents"] == 7000
 
 
 def test_provider_team_membership_add_remove_and_affiliation_required():

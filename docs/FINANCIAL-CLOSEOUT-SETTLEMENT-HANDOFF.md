@@ -4,19 +4,24 @@ Date: 2026-07-16
 
 Audience: Codex / Claude implementation agents.
 
-Status: Product discussion completed. Do not treat the current advisory payment report as production financial infrastructure. This document captures the agreed production target and task breakdown for later implementation.
+Status: Product discussion completed and first production-record implementation landed. Do not treat the operational closeout/settlement records as payment infrastructure: ClueXP still does not authorize, capture, refund, transfer, or payroll funds. This document now captures both the implemented scope and the remaining gates.
 
 ## Current repo state to verify before implementing
 
-The current product only supports a technician-reported advisory collection amount and payment method.
+As of 2026-07-16, the repo supports operational financial records:
 
-- `job_payment_reports` stores one advisory amount/method per job/reporter.
-- `/jobs/{job_id}/collection` accepts only `{ amount, method }`.
-- Customer confirmation acknowledges that reported amount.
-- Provider and technician history sum/display the technician-reported amount.
-- Existing docs state that real payment authorization/capture/refund/settlement are unbuilt.
+- `/jobs/{job_id}/collection` accepts itemized closeout payloads and the server calculates subtotal, tax, tip, card fee, and total.
+- Provider financial defaults are configurable with platform fallback settings.
+- Platform admins manage the closeout item type catalog.
+- Provider admins manage provider-tech agreement rules scoped to the affiliation/company, not the global technician profile.
+- Settlement rows calculate technician payout, reimbursement, and provider retained amount while excluding parts/items from commission.
+- Settlement periods snapshot rows and move through `draft → locked → paid`.
+- Provider reports export live settlement rows and settlement-period snapshots to CSV.
+- Technician app exposes own earnings/settlement status through a technician-scoped endpoint.
 
-Implementation agents must verify current code before editing because some discussion-draft files may exist in the working tree. Do not assume any draft code is accepted unless this handoff or a later human instruction explicitly says so.
+Still unbuilt: processor-backed payment authorization/capture/refund, provider bank onboarding, payroll/payout execution, and processor reconciliation. UI copy must continue to state that "paid" means the provider marked external payment complete.
+
+Implementation agents must verify current code before editing because financial state has moved quickly. Do not redo closeout/settlement records unless a later human instruction explicitly asks for redesign.
 
 ## Product goal
 
@@ -816,16 +821,25 @@ Add frontend/type/build verification for all touched apps.
 
 Production scope is large. Implement in controlled vertical slices, but keep the production model from the start.
 
+Completed in the first implementation slice:
+
 1. Data model and settings foundation.
 2. Item type catalog.
 3. Structured closeout create/read and server calculations.
 4. Technician closeout UI.
-5. Customer receipt confirmation UI.
-6. Compensation agreements and rules.
-7. Settlement calculation snapshots.
-8. Provider settlement approval/reporting.
-9. CSV exports.
-10. Adjustments/disputes/batches.
-11. Console audit/support surfaces.
+5. Compensation agreements and rules, including service area and service hours.
+6. Settlement calculation snapshots.
+7. Provider settlement approval/reporting.
+8. CSV exports.
+9. Provider-side adjustments before lock.
+10. Technician earnings/settlement-status view.
+
+Remaining production gates:
+
+1. Customer-facing receipt confirmation polish for the itemized receipt.
+2. Formal settlement dispute workflow.
+3. Console audit/support surfaces for closeout, agreements, settlement periods, and adjustments.
+4. Production deployment/migration/click-through QA for the financial workflow.
+5. Optional later payment/payroll integration if ClueXP will move money.
 
 Do not ship UI copy that implies real Stripe capture, provider payouts, or payroll movement until processor-backed flows exist. Until payment processor integration is implemented, label money movement as closeout/settlement records or payable estimates, not completed payouts.

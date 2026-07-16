@@ -52,7 +52,7 @@
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
-| Technician-reported collection | `[~]` advisory only | Technician-reported amount/method and finished-job history are implemented in code (`0015`); these are advisory operational records — **no real payment processing, no authorization hold, no capture, refund, payout or settlement**. Customer acknowledges by confirming completion |
+| Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
 | Notifications | `[ ]` | No production SMS/email/push delivery |
 | CI | `[x]` | Local gates green — current verification (2026-07-13) API `160 passed, 1 skipped`; migration chain validates through `0024`; shared typecheck and all four production builds pass |
 
@@ -322,7 +322,7 @@ Full row-by-row detail and the one open gap (auto-close timer) are in
 [`PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md) §7.1.
 
 **Pilot disclosures (must be stated, no screen may claim otherwise):** no real payment
-(advisory technician-reported collection only); no SMS/email/push delivery (the customer token
+processing or processor-backed payout (financial closeout and settlement are operational records only); no SMS/email/push delivery (the customer token
 link and offer alerts depend on foreground PWA / polling / manual operations); **foreground**
 location push (~25s while `en_route`/`arrived`/`in_progress`) with no dependable background/native
 GPS — **not** Uber-style continuous tracking; **dispatch is performed by the provider company, not ClueXP.**
@@ -497,8 +497,10 @@ Four distinct payment events — keep them separate:
 The dispatch pivot does not change the capture trigger: final capture occurs at
 `completed_confirmed`, never at dispatcher assignment.
 
-- [~] Advisory technician-reported collection amount/method and finished-job
-  history are implemented (`0015`), but remain non-ledger operational records.
+- [~] Itemized closeout, provider financial settings, provider-tech agreements,
+  settlement calculations, approval periods, CSV export, and technician earnings
+  visibility are implemented as operational records. They remain non-processor,
+  non-bank-transfer records until payment/payroll integration exists.
 - [x] Merchant of record decided: each provider charges its own customers; ClueXP does not collect
   or settle provider funds. Initial implementation takes no application fee.
 - [ ] Provider-owned Stripe Connect onboarding/status (`stripe_account_id`, `charges_enabled`,
