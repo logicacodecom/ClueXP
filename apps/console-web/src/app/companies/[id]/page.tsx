@@ -2,6 +2,7 @@
 
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, EmptyState, Input, PageHeader } from "@cluexp/console-ui";
 import { Building2 } from "lucide-react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../../frame";
@@ -284,8 +285,11 @@ export default function CompanyDetailPage() {
         <div>
           <h2 className="mb-3 text-lg font-semibold">Members</h2>
           <DataTable
-            columns={["Name", "Email", "Role", "Status"]}
-            rows={detail.members.map((m) => [m.display_name, m.email || m.phone || "—", m.role.replaceAll("_", " "), m.status])}
+            columns={["Name", "Email", "Role", "Status", ""]}
+            rows={detail.members.map((m) => [
+              m.display_name, m.email || m.phone || "—", m.role.replaceAll("_", " "), m.status,
+              <Link className="text-sm font-medium text-primary hover:underline" href={`/users/${m.id}`} key={`${m.id}-view`}>Manage</Link>
+            ])}
           />
         </div>
         <div>

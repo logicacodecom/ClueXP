@@ -204,6 +204,33 @@ class Store:
     async def get_technician_admin_detail(self, technician_id: UUID) -> dict | None:  # pragma: no cover
         return None
 
+    # --- console: platform-wide user directory (company staff + platform admins) ---
+    async def list_company_users_admin(self, organization_id: UUID | None = None) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def list_platform_admins(self) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def get_user_admin_detail(self, user_id: UUID) -> dict | None:  # pragma: no cover
+        return None
+
+    async def set_user_account_status(self, user_id: UUID, status: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def update_organization_member_role(
+        self, user_id: UUID, organization_id: UUID, role: str
+    ) -> dict | None:  # pragma: no cover
+        return None
+
+    async def delete_or_archive_user(self, user_id: UUID, *, reason: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def create_platform_admin(self, data: dict) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def count_active_platform_admins(self) -> int:  # pragma: no cover
+        return 0
+
     # --- console/provider: org membership + tenant-limit enforcement ---
     async def list_organization_members(self, organization_id: UUID) -> list[dict]:  # pragma: no cover
         return []
@@ -1875,6 +1902,32 @@ class InMemoryStore(Store):
     async def get_technician_admin_detail(self, technician_id: UUID) -> dict | None:
         return None
 
+    async def list_company_users_admin(self, organization_id: UUID | None = None) -> list[dict]:
+        return []
+
+    async def list_platform_admins(self) -> list[dict]:
+        return []
+
+    async def get_user_admin_detail(self, user_id: UUID) -> dict | None:
+        return None
+
+    async def set_user_account_status(self, user_id: UUID, status: str) -> dict | None:
+        return None
+
+    async def update_organization_member_role(
+        self, user_id: UUID, organization_id: UUID, role: str
+    ) -> dict | None:
+        return None
+
+    async def delete_or_archive_user(self, user_id: UUID, *, reason: str) -> dict | None:
+        return None
+
+    async def create_platform_admin(self, data: dict) -> dict:
+        raise NotImplementedError("platform admin creation requires the Postgres store")
+
+    async def count_active_platform_admins(self) -> int:
+        return 0
+
     # --- console/provider: org membership + tenant-limit enforcement ---
     async def list_organization_members(self, organization_id: UUID) -> list[dict]:
         oid = str(organization_id)
@@ -2230,7 +2283,7 @@ class PostgresStore(Store):
             await conn.execute(
                 "create table if not exists governance_events ("
                 "  id uuid primary key default gen_random_uuid(),"
-                "  entity_type text not null check (entity_type in ('organization','technician')),"
+                "  entity_type text not null check (entity_type in ('organization','technician','user')),"
                 "  entity_id uuid not null,"
                 "  action text not null,"
                 "  reason text,"
@@ -4697,6 +4750,176 @@ class PostgresStore(Store):
         technician["affiliations"] = affiliations
         technician["documents"] = await self.list_technician_documents(technician_id)
         return technician
+
+    async def list_company_users_admin(self, organization_id: UUID | None = None) -> list[dict]:
+        oid = str(organization_id) if organization_id else None
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select u.id, u.display_name, u.email, u.phone, u.status,"
+                " m.role, m.organization_id, o.display_name, u.created_at"
+                " from user_organization_memberships m"
+                " join users u on u.id = m.user_id"
+                " join organizations o on o.id = m.organization_id"
+                " where %s::uuid is null or m.organization_id = %s"
+                " order by u.created_at desc",
+                (oid, oid),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "display_name": r[1], "email": r[2], "phone": r[3], "status": r[4],
+                "role": r[5], "organization_id": str(r[6]), "organization_name": r[7],
+                "created_at": r[8].isoformat() if r[8] else None,
+            }
+            for r in rows
+        ]
+
+    async def list_platform_admins(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select u.id, u.display_name, u.email, u.phone, u.status, u.created_at"
+                " from user_roles r join users u on u.id = r.user_id"
+                " where r.role = 'platform_admin'"
+                " order by u.created_at desc"
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "display_name": r[1], "email": r[2], "phone": r[3],
+                "status": r[4], "created_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ]
+
+    async def get_user_admin_detail(self, user_id: UUID) -> dict | None:
+        uid = str(user_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, email, phone, status, created_at from users where id = %s",
+                (uid,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            cur = await conn.execute(
+                "select role from user_roles where user_id = %s order by role", (uid,)
+            )
+            roles = [r[0] for r in await cur.fetchall()]
+            cur = await conn.execute(
+                "select m.organization_id, o.display_name, m.role, m.status"
+                " from user_organization_memberships m join organizations o on o.id = m.organization_id"
+                " where m.user_id = %s order by m.created_at",
+                (uid,),
+            )
+            memberships = [
+                {"organization_id": str(r[0]), "organization_name": r[1], "role": r[2], "status": r[3]}
+                for r in await cur.fetchall()
+            ]
+        return {
+            "id": str(row[0]), "display_name": row[1], "email": row[2], "phone": row[3],
+            "status": row[4], "created_at": row[5].isoformat() if row[5] else None,
+            "roles": roles, "memberships": memberships,
+        }
+
+    async def set_user_account_status(self, user_id: UUID, status: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update users set status = %s, updated_at = now() where id = %s"
+                " returning id, display_name, email, phone, status",
+                (status, str(user_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "email": row[2], "phone": row[3], "status": row[4]}
+
+    async def update_organization_member_role(
+        self, user_id: UUID, organization_id: UUID, role: str
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update user_organization_memberships set role = %s"
+                " where user_id = %s and organization_id = %s"
+                " returning user_id, organization_id, role",
+                (role, str(user_id), str(organization_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"user_id": str(row[0]), "organization_id": str(row[1]), "role": row[2]}
+
+    async def delete_or_archive_user(self, user_id: UUID, *, reason: str) -> dict | None:
+        """Delete if nothing depends on this account; otherwise archive (status
+        set to 'archived', same login-blocking effect as suspend) so audit
+        history and admin-less-company integrity are preserved."""
+        uid = str(user_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute("select id, display_name from users where id = %s", (uid,))
+            user = await cur.fetchone()
+            if not user:
+                return None
+            cur = await conn.execute("select count(*) from governance_events where actor_id = %s", (uid,))
+            governance_refs = int((await cur.fetchone())[0])
+            cur = await conn.execute(
+                "select count(*) from user_organization_memberships m"
+                " where m.user_id = %s and m.role = 'provider_admin' and m.status = 'active'"
+                " and not exists ("
+                "   select 1 from user_organization_memberships m2"
+                "   where m2.organization_id = m.organization_id and m2.user_id <> m.user_id"
+                "   and m2.role = 'provider_admin' and m2.status = 'active'"
+                " )",
+                (uid,),
+            )
+            sole_admin_orgs = int((await cur.fetchone())[0])
+            references = {"governance_events": governance_refs, "sole_admin_of_companies": sole_admin_orgs}
+            total = sum(references.values())
+            if total == 0:
+                await conn.execute("delete from users where id = %s", (uid,))
+                return {"id": uid, "display_name": user[1], "action": "deleted", "references": references, "reason": reason}
+            cur = await conn.execute(
+                "update users set status = 'archived', updated_at = now() where id = %s"
+                " returning id, display_name, status",
+                (uid,),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "display_name": row[1], "status": row[2],
+            "action": "archived", "references": references, "reason": reason,
+        }
+
+    async def create_platform_admin(self, data: dict) -> dict:
+        email = (data.get("email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
+        pw_hash = hash_password(data["password"])
+        async with await self._connect() as conn:
+            if email:
+                cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
+                if await cur.fetchone():
+                    raise ValueError("email_taken")
+            if phone:
+                cur = await conn.execute("select 1 from users where phone = %s", (phone,))
+                if await cur.fetchone():
+                    raise ValueError("phone_taken")
+            cur = await conn.execute(
+                "insert into users (email, phone, password_hash, display_name, status)"
+                " values (%s, %s, %s, %s, 'active') returning id",
+                (email, phone, pw_hash, data["display_name"]),
+            )
+            user_id = (await cur.fetchone())[0]
+            await conn.execute(
+                "insert into user_roles (user_id, role) values (%s, 'platform_admin') on conflict do nothing",
+                (user_id,),
+            )
+        return {"id": str(user_id), "display_name": data["display_name"], "email": email, "phone": phone, "role": "platform_admin"}
+
+    async def count_active_platform_admins(self) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from user_roles r join users u on u.id = r.user_id"
+                " where r.role = 'platform_admin' and u.status = 'active'"
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def list_organization_members(self, organization_id: UUID) -> list[dict]:
         async with await self._connect() as conn:

@@ -1,6 +1,5 @@
 "use client";
 
-import { LanguageSettings } from "@cluexp/app-core";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
 import { Check, Copy, Link2, Save, TimerReset } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -176,7 +175,6 @@ export default function SettingsPage() {
   return (
     <AppFrame>
       <div className="space-y-6">
-        <LanguageSettings className="rounded-md border border-border bg-card p-6" />
         <Card>
           <CardHeader><CardTitle className="flex items-center gap-2"><Link2 className="size-5 text-primary" />Your intake link</CardTitle></CardHeader>
           <CardContent className="space-y-3">

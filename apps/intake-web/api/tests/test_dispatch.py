@@ -3246,6 +3246,63 @@ def test_admin_org_and_tech_directories_require_platform_admin():
     assert client.get(f"/admin/technicians/{uuid4()}", headers=H).status_code == 404
 
 
+def test_admin_users_directories_require_platform_admin():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    dispatcher_uid = str(uuid4())
+    _seed_dispatcher(app_store, dispatcher_uid, str(uuid4()))
+    dispatcher_token = create_access_token({"sub": dispatcher_uid, "id": dispatcher_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    other_uid = str(uuid4())
+
+    get_routes = [
+        ("GET", "/admin/users"),
+        ("GET", "/admin/users?scope=platform"),
+        ("GET", f"/admin/users/{other_uid}"),
+    ]
+    mutate_routes = [
+        ("PATCH", f"/admin/users/{other_uid}", {"display_name": "New Name"}),
+        ("POST", f"/admin/users/{other_uid}/suspend", {"reason": "left the company"}),
+        ("POST", f"/admin/users/{other_uid}/reactivate", {}),
+        ("DELETE", f"/admin/users/{other_uid}", {"reason": "duplicate entry"}),
+        ("POST", "/admin/users", {"display_name": "New Admin", "password": "supersecret1", "email": "new-admin@cluexp.test"}),
+    ]
+    for method, path in get_routes:
+        unauth = client.request(method, path)
+        assert unauth.status_code == 401, path
+        forbidden = client.request(method, path, headers={"Authorization": f"Bearer {dispatcher_token}"})
+        assert forbidden.status_code == 403, path
+    for method, path, body in mutate_routes:
+        unauth = client.request(method, path, json=body)
+        assert unauth.status_code == 401, path
+        forbidden = client.request(method, path, json=body, headers={"Authorization": f"Bearer {dispatcher_token}"})
+        assert forbidden.status_code == 403, path
+
+    admin_uid = str(uuid4())
+    _seed_platform_admin(app_store, admin_uid)
+    admin_token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
+    H = {"Authorization": f"Bearer {admin_token}"}
+    # In-memory store has no cross-org user directory (Postgres-only, same
+    # convention as the organizations/technicians directories above); the
+    # point here is the permission gate + graceful empty/404 response.
+    assert client.get("/admin/users", headers=H).json() == {"users": []}
+    assert client.get("/admin/users?scope=platform", headers=H).json() == {"users": []}
+    assert client.get("/admin/users?scope=bogus", headers=H).status_code == 422
+    assert client.get(f"/admin/users/{other_uid}", headers=H).status_code == 404
+    assert client.patch(f"/admin/users/{other_uid}", json={"display_name": "New Name"}, headers=H).status_code == 404
+    assert client.post(f"/admin/users/{other_uid}/reactivate", json={}, headers=H).status_code == 404
+    # Suspend/delete require a reason before anything else runs.
+    assert client.post(f"/admin/users/{other_uid}/suspend", json={}, headers=H).status_code == 422
+    assert client.request("DELETE", f"/admin/users/{other_uid}", json={}, headers=H).status_code == 422
+    # A platform admin can never suspend or delete their own account.
+    self_suspend = client.post(f"/admin/users/{admin_uid}/suspend", json={"reason": "testing"}, headers=H)
+    assert self_suspend.status_code == 409
+    self_delete = client.request("DELETE", f"/admin/users/{admin_uid}", json={"reason": "testing"}, headers=H)
+    assert self_delete.status_code == 409
+
+
 def test_admin_can_suspend_and_reactivate_technician():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

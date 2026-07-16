@@ -189,24 +189,27 @@ export function LanguageSettings({ className }: { className?: string }) {
   const { locale, setLocale, t } = useLocale();
   return (
     <section className={className}>
-      <div className="mb-3">
-        <h2 className="text-lg font-semibold">{t("language")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Used across this account on supported ClueXP apps.</p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {supportedLocales.map((item) => (
-          <button
-            aria-pressed={locale === item}
-            className={`min-h-12 rounded-md border px-4 text-left text-sm font-semibold transition-colors ${
-              locale === item ? "border-primary bg-primary/10 text-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground"
-            }`}
-            key={item}
-            onClick={() => setLocale(item)}
-            type="button"
-          >
-            {item === "en" ? t("english") : t("spanish")}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">{t("language")}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Used across this account on supported ClueXP apps.</p>
+        </div>
+        <div aria-label={t("language")} className="inline-flex shrink-0 rounded-full border border-border bg-secondary p-1" role="radiogroup">
+          {supportedLocales.map((item) => (
+            <button
+              aria-checked={locale === item}
+              className={`min-h-9 rounded-full px-4 text-sm font-medium transition-colors ${
+                locale === item ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+              }`}
+              key={item}
+              onClick={() => setLocale(item)}
+              role="radio"
+              type="button"
+            >
+              {item === "en" ? t("english") : t("spanish")}
+            </button>
+          ))}
+        </div>
       </div>
     </section>
   );

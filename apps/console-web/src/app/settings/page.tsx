@@ -1,7 +1,6 @@
 "use client";
 
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, PageHeader } from "@cluexp/console-ui";
-import { LanguageSettings } from "@cluexp/app-core";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -54,9 +53,8 @@ export default function SettingsPage() {
 
   return (
     <AppFrame>
-      <PageHeader kicker="Platform" title="Settings" description="Language preferences and platform-wide defaults for new companies." />
+      <PageHeader kicker="Platform" title="Settings" description="Platform-wide defaults for new companies." />
       <div className="space-y-6">
-        <LanguageSettings className="rounded-md border border-border bg-card p-6" />
         <Card>
           <CardHeader>
             <CardTitle>Tenant limit defaults</CardTitle>

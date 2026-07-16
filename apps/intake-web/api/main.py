@@ -332,6 +332,20 @@ class AdminActionRequest(BaseModel):
     reason: str | None = None
 
 
+class AdminUserProfileUpdateRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    role: str | None = None  # organization-membership role; ignored for platform admins
+
+
+class PlatformAdminCreateRequest(BaseModel):
+    display_name: str
+    password: str
+    email: str | None = None
+    phone: str | None = None
+
+
 class JobStatusUpdateRequest(BaseModel):
     status: str
 
@@ -1096,6 +1110,155 @@ async def admin_download_technician_document(
     except Exception:
         raise HTTPException(status_code=502, detail="Could not issue a download URL")
     return {"download_url": url}
+
+
+async def _guard_platform_admin_self_and_last(
+    session: dict[str, Any], user_id: UUID, *, action: str
+) -> None:
+    """A platform_admin may never suspend/delete their own account (avoids
+    accidental or malicious self-lockout), and the platform must always keep
+    at least one active platform_admin able to sign in."""
+    if str(session["user"].get("id")) == str(user_id):
+        raise HTTPException(status_code=409, detail=f"You cannot {action} your own account.")
+    detail = await store.get_user_admin_detail(user_id)
+    if detail and "platform_admin" in (detail.get("roles") or []) and detail.get("status") == "active":
+        remaining = await store.count_active_platform_admins()
+        if remaining <= 1:
+            raise HTTPException(status_code=409, detail="At least one active platform admin must remain.")
+
+
+@app.get("/admin/users")
+async def admin_list_users(
+    scope: str = "company",
+    organization_id: UUID | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Platform console directory. scope=company is dispatcher/provider_admin
+    company staff (optionally filtered to one organization); scope=platform is
+    the platform_admin roster — a distinct role, not org-scoped."""
+    require_any_role(session, {"platform_admin"})
+    if scope == "platform":
+        return {"users": await store.list_platform_admins()}
+    if scope != "company":
+        raise HTTPException(status_code=422, detail="scope must be 'company' or 'platform'")
+    return {"users": await store.list_company_users_admin(organization_id)}
+
+
+@app.get("/admin/users/{user_id}")
+async def admin_get_user(
+    user_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    detail = await store.get_user_admin_detail(user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return detail
+
+
+@app.patch("/admin/users/{user_id}")
+async def admin_update_user(
+    user_id: UUID,
+    payload: AdminUserProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    data = payload.model_dump(exclude_unset=True, exclude={"role"})
+    result = await store.update_user_profile(str(user_id), data)
+    if result == "email_taken":
+        raise HTTPException(status_code=409, detail="Email is already in use")
+    if result == "phone_taken":
+        raise HTTPException(status_code=409, detail="Phone is already in use")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.role is not None:
+        detail = await store.get_user_admin_detail(user_id)
+        memberships = (detail or {}).get("memberships") or []
+        if not memberships:
+            raise HTTPException(status_code=409, detail="This account has no company membership to assign a role to")
+        if payload.role not in PROVIDER_USER_ROLES:
+            raise HTTPException(status_code=422, detail=f"role must be one of {sorted(PROVIDER_USER_ROLES)}")
+        await store.update_organization_member_role(user_id, UUID(memberships[0]["organization_id"]), payload.role)
+    return await store.get_user_admin_detail(user_id)
+
+
+@app.post("/admin/users/{user_id}/suspend")
+async def suspend_user(
+    user_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    reason = (payload.reason if payload else None) or ""
+    if len(reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A suspension reason is required.")
+    await _guard_platform_admin_self_and_last(session, user_id, action="suspend")
+    result = await store.set_user_account_status(user_id, "suspended")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    result["reason"] = reason.strip()[:280]
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id, action="suspend",
+        reason=result["reason"], metadata={"status": result.get("status")},
+    )
+    return result
+
+
+@app.post("/admin/users/{user_id}/reactivate")
+async def reactivate_user(
+    user_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    result = await store.set_user_account_status(user_id, "active")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    reason = (payload.reason if payload else None) or None
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id, action="reactivate",
+        reason=reason.strip()[:280] if reason else None, metadata={"status": result.get("status")},
+    )
+    return result
+
+
+@app.delete("/admin/users/{user_id}")
+async def admin_delete_or_archive_user(
+    user_id: UUID,
+    payload: AdminActionRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A delete/archive reason is required.")
+    await _guard_platform_admin_self_and_last(session, user_id, action="delete")
+    result = await store.delete_or_archive_user(user_id, reason=reason[:280])
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    action = {"deleted": "delete", "archived": "archive"}.get(str(result.get("action")), str(result.get("action")))
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id, action=action,
+        reason=result.get("reason"), metadata={"status": result.get("status"), "references": result.get("references")},
+    )
+    return result
+
+
+@app.post("/admin/users")
+async def admin_create_platform_admin(
+    payload: PlatformAdminCreateRequest, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    """Console-initiated platform-admin account creation. There is no
+    self-signup for this role — an existing platform_admin is the only way a
+    new one gets created."""
+    require_any_role(session, {"platform_admin"})
+    if not payload.email and not payload.phone:
+        raise HTTPException(status_code=422, detail="Email or phone is required")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    try:
+        return await store.create_platform_admin(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 # Registered after the literal /admin/technicians/... routes above (photos,
