@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from math import acos, cos, radians, sin
 from typing import Any
 
+from api.service_catalog import normalize_skill_code
+
 EARTH_RADIUS_KM = 6371.0
 
 
@@ -43,13 +45,14 @@ def rank_candidates(
     """
     access = job.get("access_type")
     # null / "other" access_type → no skill gate (any available tech is eligible).
-    skill_needed = access if access and access != "other" else None
+    skill_needed = normalize_skill_code(access) if access and access != "other" else None
     j_lat, j_lng = job.get("lat"), job.get("lng")
     candidates: list[dict[str, Any]] = []
     for tech in technicians:
         if not tech.get("is_available"):
             continue
-        if skill_needed is not None and skill_needed not in (tech.get("skills") or []):
+        tech_skills = set(tech.get("skills") or [])
+        if skill_needed is not None and skill_needed not in tech_skills and access not in tech_skills:
             continue
         dist = haversine_km(
             j_lat, j_lng,

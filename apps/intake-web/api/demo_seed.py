@@ -31,6 +31,7 @@ import secrets
 from typing import Any
 
 from api.schema import AccessType, Situation, Ticket, TicketStatus, Urgency
+from api.service_catalog import normalize_skill_code
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Canonical vocabulary — one place, derived from the schema enums
@@ -38,9 +39,21 @@ from api.schema import AccessType, Situation, Ticket, TicketStatus, Urgency
 
 # The dispatchable access types that map 1:1 to a technician skill. "other" is a
 # no-skill-gate access type (see rank_candidates) so it is intentionally excluded.
-VALID_SKILLS: frozenset[str] = frozenset(
+VALID_ACCESS_TYPES: frozenset[str] = frozenset(
     {AccessType.HOME.value, AccessType.BUSINESS.value, AccessType.CAR.value}
-)  # -> {"home", "business", "vehicle"}
+)
+
+VALID_SKILLS: frozenset[str] = frozenset(
+    {
+        "locksmith.residential_lockout",
+        "locksmith.commercial_lockout",
+        "locksmith.vehicle_lockout",
+        "locksmith.broken_key",
+        "locksmith.rekey",
+        "locksmith.smart_lock",
+        "locksmith.vehicle_key_programming",
+    }
+)
 
 # Aliases that have historically been confused with the canonical tokens. The
 # `car`/`auto` -> `vehicle` mapping is the specific bug guard called out in the brief.
@@ -58,20 +71,28 @@ _SKILL_ALIASES: dict[str, str] = {
 
 
 def normalize_skill(token: str) -> str:
-    """Map a skill/access token to the canonical dispatch vocabulary.
+    """Map a technician skill token to the canonical service-catalog leaf code.
 
-    Guarantees a technician's stored skills speak the exact same vocabulary the
-    dispatch engine compares against, so a ``car`` job can never miss a ``vehicle``
-    technician (the regression the brief warns about). Raises on an unknown token
-    rather than silently storing a value dispatch will never match.
+    Raises on an unknown token rather than silently storing a value dispatch will
+    never match.
     """
-    key = (token or "").strip().lower()
+    key = normalize_skill_code(token)
     if key in VALID_SKILLS:
+        return key
+    raise ValueError(
+        f"Unknown skill/access token {token!r}; expected one of {sorted(VALID_SKILLS)} "
+        f"or a known alias ({sorted(_SKILL_ALIASES)})."
+    )
+
+
+def normalize_access_type(token: str) -> str:
+    key = (token or "").strip().lower()
+    if key in VALID_ACCESS_TYPES:
         return key
     if key in _SKILL_ALIASES:
         return _SKILL_ALIASES[key]
     raise ValueError(
-        f"Unknown skill/access token {token!r}; expected one of {sorted(VALID_SKILLS)} "
+        f"Unknown access token {token!r}; expected one of {sorted(VALID_ACCESS_TYPES)} "
         f"or a known alias ({sorted(_SKILL_ALIASES)})."
     )
 
@@ -207,7 +228,7 @@ def build_demo_ticket(job: dict[str, Any]) -> Ticket:
     rehydrates (``Ticket.model_validate``) — the same contract live intake writes.
     The access type is normalized so e.g. the "car" alias becomes ``"vehicle"``.
     """
-    access = normalize_skill(job["access_type"])  # canonical, e.g. "vehicle"
+    access = normalize_access_type(job["access_type"])  # canonical, e.g. "vehicle"
     payload: dict[str, Any] = {
         "status": TicketStatus.PARTIAL.value,
         "trust_state": "intake",
@@ -579,7 +600,7 @@ async def seed_florida_demo_jobs(conn, *, org_id: str, channel_id: str) -> dict[
         ticket = build_demo_ticket(job)
         payload = ticket.model_dump(mode="json")
         payload["demo_seed_ref"] = job["ref"]  # idempotency marker
-        access = normalize_skill(job["access_type"])
+        access = normalize_access_type(job["access_type"])
         token = secrets.token_urlsafe(24)
 
         await conn.execute(

@@ -1,4 +1,5 @@
 export * from "./types";
+export * from "./service-catalog";
 
 // Fulfillment cutover (Sprint 3) - API client functions for customer tracking
 

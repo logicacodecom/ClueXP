@@ -1047,7 +1047,7 @@ def test_http_update_my_profile_validates_and_persists():
         assert app_store.users[uid]["display_name"] == "New Name"
         assert app_store.users[uid]["phone"] == "5551112222"
         tech = next(t for t in app_store._technicians if t["id"] == uid)
-        assert tech["skills"] == ["business", "vehicle"]
+        assert tech["skills"] == ["locksmith.commercial_lockout", "locksmith.vehicle_lockout"]
         assert tech["service_area_radius_km"] == 30
 
         # Too-short display name → 422.
@@ -1077,6 +1077,78 @@ def test_http_update_my_profile_validates_and_persists():
             headers={"Authorization": f"Bearer {token}"},
         )
         assert bad_skill.status_code == 422
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_admin_service_catalog_skill_becomes_profile_valid():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    admin_id = str(uuid4())
+    tech_id = str(uuid4())
+    app_store.users[admin_id] = {
+        "id": admin_id, "email": "catalog_admin@cluexp.test", "phone": None,
+        "display_name": "Catalog Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store.users[tech_id] = {
+        "id": tech_id, "email": "catalog_tech@cluexp.test", "phone": "5552223333",
+        "display_name": "Catalog Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tech_id, "status": "active", "vetting_status": "verified",
+        "display_name": "Catalog Tech", "phone": "5552223333",
+        "skills": [], "service_area_radius_km": 15,
+    })
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        session = await _orig_session(user_id)
+        if session and user_id == tech_id:
+            session["technician"] = {
+                "id": tech_id,
+                "approved": True,
+                "status": "active",
+                "vetting_status": "verified",
+            }
+        return session
+
+    app_store.get_user_session = _patched_session
+    client = TestClient(app)
+    admin_token = create_access_token({"sub": admin_id, "id": admin_id, "roles": ["platform_admin"]})
+    tech_token = create_access_token({"sub": tech_id, "id": tech_id, "roles": ["technician"]})
+    try:
+        category = client.put(
+            "/admin/service-catalog/categories/hvac_test",
+            json={"code": "hvac_test", "label": "HVAC Test", "status": "active", "sort_order": 900},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert category.status_code == 200, category.text
+        skill = client.put(
+            "/admin/service-catalog/skills/hvac_test.diagnostics",
+            json={
+                "code": "hvac_test.diagnostics",
+                "category_code": "hvac_test",
+                "label": "Diagnostics",
+                "status": "active",
+                "requires_verification": True,
+                "sort_order": 10,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert skill.status_code == 200, skill.text
+        update = client.patch(
+            "/technicians/me/profile",
+            json={"skills": ["hvac_test.diagnostics"]},
+            headers={"Authorization": f"Bearer {tech_token}"},
+        )
+        assert update.status_code == 200, update.text
+        tech = next(t for t in app_store._technicians if t["id"] == tech_id)
+        assert tech["skills"] == ["hvac_test.diagnostics"]
     finally:
         app_store.get_user_session = _orig_session
 

@@ -1,7 +1,7 @@
 """Smoke tests for the demo seed/reset data (pure — no database required).
 
 These guard the demo brief's hard requirements without a live DB:
-- the skill vocabulary is exactly the dispatch vocabulary (no `car` vs `vehicle`);
+- the job access vocabulary and technician skill vocabulary are normalized separately;
 - every demo job's `detail` payload rehydrates as a valid Ticket;
 - the dispatch engine actually matches a Florida "vehicle" job to a Florida tech
   (the regression the brief calls out), and would NOT if `car` were stored;
@@ -16,23 +16,27 @@ from api.dispatch import rank_candidates
 from api.schema import AccessType, Ticket
 
 
-def test_skill_vocabulary_is_dispatch_vocabulary():
-    # Canonical skills == dispatchable access-type values (home/business/vehicle).
-    assert demo_seed.VALID_SKILLS == {
+def test_skill_vocabulary_is_service_catalog_vocabulary():
+    assert demo_seed.VALID_ACCESS_TYPES == {
         AccessType.HOME.value,
         AccessType.BUSINESS.value,
         AccessType.CAR.value,
     }
+    assert "car" not in demo_seed.VALID_ACCESS_TYPES
+    assert "vehicle" in demo_seed.VALID_ACCESS_TYPES
     assert "car" not in demo_seed.VALID_SKILLS
-    assert "vehicle" in demo_seed.VALID_SKILLS
+    assert "locksmith.vehicle_lockout" in demo_seed.VALID_SKILLS
+    assert "locksmith.vehicle_key_programming" in demo_seed.VALID_SKILLS
 
 
-def test_normalize_skill_maps_car_alias_to_vehicle():
-    assert demo_seed.normalize_skill("car") == "vehicle"
-    assert demo_seed.normalize_skill("auto") == "vehicle"
-    assert demo_seed.normalize_skill("VEHICLE") == "vehicle"
-    assert demo_seed.normalize_skill("commercial") == "business"
-    assert demo_seed.normalize_skill("residential") == "home"
+def test_normalizers_map_aliases_to_the_right_vocabularies():
+    assert demo_seed.normalize_access_type("car") == "vehicle"
+    assert demo_seed.normalize_access_type("commercial") == "business"
+    assert demo_seed.normalize_skill("car") == "locksmith.vehicle_lockout"
+    assert demo_seed.normalize_skill("auto") == "locksmith.vehicle_lockout"
+    assert demo_seed.normalize_skill("VEHICLE") == "locksmith.vehicle_lockout"
+    assert demo_seed.normalize_skill("commercial") == "locksmith.commercial_lockout"
+    assert demo_seed.normalize_skill("residential") == "locksmith.residential_lockout"
     with pytest.raises(ValueError):
         demo_seed.normalize_skill("spaceship")
 
@@ -48,7 +52,7 @@ def test_demo_jobs_build_valid_tickets_with_canonical_access():
         ticket = demo_seed.build_demo_ticket(job)
         assert isinstance(ticket, Ticket)
         # access_type value never leaks the "car" alias.
-        assert ticket.access_type.value in demo_seed.VALID_SKILLS
+        assert ticket.access_type.value in demo_seed.VALID_ACCESS_TYPES
         # round-trips through the persisted form.
         Ticket.model_validate(ticket.model_dump(mode="json"))
 
@@ -69,21 +73,20 @@ def test_vehicle_job_matches_a_vehicle_technician():
     techs = [_tech_row(t) for t in demo_seed.FLORIDA_TECHNICIANS]
     car_job = next(j for j in demo_seed.FLORIDA_DEMO_JOBS if j["ref"] == "florida-job-2")
     job = {
-        "access_type": demo_seed.normalize_skill(car_job["access_type"]),  # "vehicle"
+        "access_type": demo_seed.normalize_access_type(car_job["access_type"]),  # "vehicle"
         "lat": car_job["lat"],
         "lng": car_job["lng"],
     }
     ranked = rank_candidates(job, techs)
     assert ranked, "a vehicle job must match at least one vehicle technician"
-    assert all("vehicle" in c["skills"] for c in ranked)
+    assert all("locksmith.vehicle_lockout" in c["skills"] for c in ranked)
 
 
 def test_car_vocabulary_would_not_match_proving_normalization_matters():
-    """If we (wrongly) stored the job access as 'car', dispatch would find nobody —
-    which is exactly why normalize_skill exists."""
+    """The dispatch engine now normalizes legacy job aliases defensively too."""
     techs = [_tech_row(t) for t in demo_seed.FLORIDA_TECHNICIANS]
     bad_job = {"access_type": "car", "lat": 27.9555, "lng": -82.5240}
-    assert rank_candidates(bad_job, techs) == []
+    assert rank_candidates(bad_job, techs)
 
 
 def test_seed_identifiers_are_stable():

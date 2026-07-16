@@ -22,6 +22,7 @@ from api.geocode import geocode, places_autocomplete
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
+from api.service_catalog import active_skill_codes, normalize_skill_code
 from api import settings as runtime_settings
 from api.dispatch import (
     STATUS_ARRIVED,
@@ -183,20 +184,83 @@ class TechnicianRegisterRequest(BaseModel):
     invite_token: str | None = None
 
 
-TECHNICIAN_SKILL_CATALOG = {
-    "vehicle",
-    "home",
-    "business",
-    "broken_key",
-    "rekey",
-    "smart_lock",
-    "key_programming",
-}
+CATALOG_STATUS_VALUES = {"draft", "active", "deprecated"}
+
+
+class ServiceCategoryPayload(BaseModel):
+    code: str
+    label: str
+    status: str = "draft"
+    sort_order: int = 100
+
+
+class ServiceSkillPayload(BaseModel):
+    code: str
+    label: str
+    category_code: str
+    status: str = "draft"
+    requires_verification: bool = False
+    sort_order: int = 100
+
+
+def _validate_catalog_code(code: str) -> str:
+    normalized = code.strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Catalog code is required.")
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-.")
+    if any(ch not in allowed for ch in normalized):
+        raise HTTPException(status_code=422, detail="Catalog code may only contain lowercase letters, numbers, dots, underscores, and hyphens.")
+    return normalized
+
+
+def _validate_catalog_status(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized not in CATALOG_STATUS_VALUES:
+        raise HTTPException(status_code=422, detail="Catalog status must be draft, active, or deprecated.")
+    return normalized
+
+
+def _category_payload(payload: ServiceCategoryPayload) -> dict:
+    return {
+        "code": _validate_catalog_code(payload.code),
+        "label": payload.label.strip(),
+        "status": _validate_catalog_status(payload.status),
+        "sort_order": payload.sort_order,
+    }
+
+
+def _skill_payload(payload: ServiceSkillPayload) -> dict:
+    code = _validate_catalog_code(payload.code)
+    category_code = _validate_catalog_code(payload.category_code)
+    if not code.startswith(f"{category_code}."):
+        raise HTTPException(status_code=422, detail="Skill code must be namespaced under its category, e.g. locksmith.rekey.")
+    return {
+        "code": code,
+        "label": payload.label.strip(),
+        "category_code": category_code,
+        "status": _validate_catalog_status(payload.status),
+        "requires_verification": payload.requires_verification,
+        "sort_order": payload.sort_order,
+    }
 
 
 def normalize_technician_skills(skills: list[str]) -> list[str]:
-    normalized = sorted({skill.strip().lower() for skill in skills if skill.strip()})
-    unknown = [skill for skill in normalized if skill not in TECHNICIAN_SKILL_CATALOG]
+    catalog_codes = active_skill_codes()
+    normalized = sorted({normalize_skill_code(skill) for skill in skills if skill.strip()})
+    unknown = [skill for skill in normalized if skill not in catalog_codes]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid technician skill: {', '.join(unknown)}",
+        )
+    return normalized
+
+
+async def validate_technician_skills(skills: list[str]) -> list[str]:
+    catalog = await store.list_service_catalog(active_only=True)
+    catalog_codes = active_skill_codes(catalog)
+    normalized = sorted({normalize_skill_code(skill) for skill in skills if skill.strip()})
+    unknown = [skill for skill in normalized if skill not in catalog_codes]
     if unknown:
         raise HTTPException(
             status_code=422,
@@ -601,7 +665,7 @@ async def register_technician(payload: TechnicianRegisterRequest) -> AuthRespons
     if len(payload.password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
     data = payload.model_dump()
-    data["skills"] = normalize_technician_skills(payload.skills)
+    data["skills"] = await validate_technician_skills(payload.skills)
     try:
         session = await store.register_technician(data)
     except ValueError as exc:
@@ -951,7 +1015,7 @@ async def admin_update_technician(
     require_any_role(session, {"platform_admin"})
     data = payload.model_dump(exclude_unset=True)
     if data.get("skills") is not None:
-        data["skills"] = normalize_technician_skills(data["skills"])
+        data["skills"] = await validate_technician_skills(data["skills"])
     try:
         result = await store.update_technician_profile(technician_id, data)
     except ValueError as exc:
@@ -995,7 +1059,7 @@ async def admin_create_technician(
     if len(payload.password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
     data = payload.model_dump()
-    data["skills"] = normalize_technician_skills(payload.skills)
+    data["skills"] = await validate_technician_skills(payload.skills)
     data["invite_token"] = None
     try:
         return await store.register_technician(data)
@@ -1857,7 +1921,7 @@ async def update_my_profile(
         if len(data["phone"]) < 7:
             raise HTTPException(status_code=422, detail="Enter a valid phone number")
     if "skills" in data:
-        data["skills"] = normalize_technician_skills(data["skills"])
+        data["skills"] = await validate_technician_skills(data["skills"])
     radius = data.get("service_area_radius_km")
     if radius is not None and not 1 <= radius <= 250:
         raise HTTPException(status_code=422, detail="Service radius must be between 1 and 250 km")
@@ -2222,11 +2286,12 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
         active_job = await store.get_technician_active_job(tech["id"])
         skills = tech.get("skills") or []
         access_type = job.get("access_type")
+        skill_needed = normalize_skill_code(access_type) if access_type else None
         enriched.append({
             "id": tech["id"],
             "display_name": tech.get("display_name"),
             "skills": skills,
-            "skills_match": access_type in skills if access_type else True,
+            "skills_match": (skill_needed in skills or access_type in skills) if skill_needed else True,
             "dist_km": round(dist, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
@@ -2268,7 +2333,8 @@ async def _send_targeted_offer(
     is_busy = (await store.get_technician_active_job(tech["id"])) is not None
     skills = tech.get("skills") or []
     access_type = job.get("access_type")
-    skills_match = (access_type in skills) if access_type else True
+    skill_needed = normalize_skill_code(access_type) if access_type else None
+    skills_match = (skill_needed in skills or access_type in skills) if skill_needed else True
     override_flags: list[str] = []
     if not is_online:
         override_flags.append("offline or location stale")
@@ -2392,6 +2458,49 @@ async def admin_list_global_settings(
     secrets (DB CHECK), so every row is safe to return."""
     require_any_role(session, {"platform_admin"})
     return {"settings": await store.list_global_settings()}
+
+
+@app.get("/service-catalog")
+async def public_service_catalog() -> dict[str, Any]:
+    """Active service catalog for signup/profile selectors."""
+    return {"categories": await store.list_service_catalog(active_only=True)}
+
+
+@app.get("/admin/service-catalog")
+async def admin_service_catalog(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    return {"categories": await store.list_service_catalog(active_only=False)}
+
+
+@app.put("/admin/service-catalog/categories/{category_code}")
+async def admin_upsert_service_category(
+    category_code: str,
+    payload: ServiceCategoryPayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    data = _category_payload(payload)
+    if data["code"] != _validate_catalog_code(category_code):
+        raise HTTPException(status_code=422, detail="Category code in path and body must match.")
+    return await store.upsert_service_category(data, updated_by=session.get("user", {}).get("id"))
+
+
+@app.put("/admin/service-catalog/skills/{skill_code:path}")
+async def admin_upsert_service_skill(
+    skill_code: str,
+    payload: ServiceSkillPayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    data = _skill_payload(payload)
+    if data["code"] != _validate_catalog_code(skill_code):
+        raise HTTPException(status_code=422, detail="Skill code in path and body must match.")
+    try:
+        return await store.upsert_service_skill(data, updated_by=session.get("user", {}).get("id"))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Category does not exist.") from None
 
 
 @app.patch("/admin/global-settings/{key}")

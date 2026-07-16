@@ -46,6 +46,7 @@ from api.dispatch import (
     resolve_dispatch_state,
 )
 from api import config
+from api.service_catalog import default_service_catalog
 from api import settings as runtime_settings
 from api.schema import Ticket
 
@@ -145,6 +146,15 @@ class Store:
     async def upsert_global_setting(
         self, key: str, value: object, value_type: str, updated_by: str | None = None
     ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_service_catalog(self, active_only: bool = False) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def upsert_service_category(self, data: dict, updated_by: str | None = None) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def upsert_service_skill(self, data: dict, updated_by: str | None = None) -> dict:  # pragma: no cover
         raise NotImplementedError
 
     # --- organization_settings: per-provider overrides of org_overridable keys ---
@@ -667,6 +677,16 @@ class InMemoryStore(Store):
         }
         # Per-org overrides of org_overridable settings: (organization_id, key) -> row.
         self._organization_settings: dict[tuple[str, str], dict] = {}
+        self._service_categories: dict[str, dict] = {}
+        self._service_skills: dict[str, dict] = {}
+        for category in default_service_catalog():
+            cat = {k: v for k, v in category.items() if k != "skills"}
+            self._service_categories[cat["code"]] = cat
+            for skill in category.get("skills", []):
+                self._service_skills[skill["code"]] = {
+                    **skill,
+                    "category_code": cat["code"],
+                }
         password_hash = hash_password(DEMO_PASSWORD, salt="cluexp-demo-salt")
         self.users: dict[str, dict] = {
             "usr_platform_demo": {
@@ -2188,6 +2208,41 @@ class InMemoryStore(Store):
         self._global_settings[key] = row
         return dict(row)
 
+    async def list_service_catalog(self, active_only: bool = False) -> list[dict]:
+        categories = sorted(self._service_categories.values(), key=lambda c: (c.get("sort_order", 100), c["code"]))
+        result: list[dict] = []
+        for category in categories:
+            if active_only and category.get("status") != "active":
+                continue
+            skills = [
+                dict(skill)
+                for skill in sorted(self._service_skills.values(), key=lambda s: (s.get("sort_order", 100), s["code"]))
+                if skill.get("category_code") == category["code"]
+                and (not active_only or skill.get("status") == "active")
+            ]
+            result.append({**category, "skills": skills})
+        return result
+
+    async def upsert_service_category(self, data: dict, updated_by: str | None = None) -> dict:
+        row = {
+            **data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": updated_by,
+        }
+        self._service_categories[data["code"]] = row
+        return {**row, "skills": [s for s in self._service_skills.values() if s.get("category_code") == data["code"]]}
+
+    async def upsert_service_skill(self, data: dict, updated_by: str | None = None) -> dict:
+        if data["category_code"] not in self._service_categories:
+            raise KeyError(data["category_code"])
+        row = {
+            **data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": updated_by,
+        }
+        self._service_skills[data["code"]] = row
+        return dict(row)
+
     async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:
         row = self._organization_settings.get((str(organization_id), key))
         return dict(row) if row is not None else None
@@ -2337,6 +2392,56 @@ class PostgresStore(Store):
                 " ('login_window_seconds', '900'::jsonb, 'integer', false, true)"
                 " on conflict (key) do nothing"
             )
+            await conn.execute(
+                "create table if not exists service_categories ("
+                "  code text primary key,"
+                "  label text not null,"
+                "  status text not null default 'draft'"
+                "    check (status in ('draft','active','deprecated')),"
+                "  sort_order integer not null default 100,"
+                "  updated_at timestamptz not null default now(),"
+                "  updated_by uuid"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists service_skills ("
+                "  code text primary key,"
+                "  category_code text not null references service_categories(code),"
+                "  label text not null,"
+                "  status text not null default 'draft'"
+                "    check (status in ('draft','active','deprecated')),"
+                "  requires_verification boolean not null default false,"
+                "  sort_order integer not null default 100,"
+                "  updated_at timestamptz not null default now(),"
+                "  updated_by uuid"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_service_skills_category"
+                " on service_skills (category_code, sort_order, code)"
+            )
+            for category in default_service_catalog():
+                await conn.execute(
+                    "insert into service_categories (code, label, status, sort_order)"
+                    " values (%s, %s, %s, %s)"
+                    " on conflict (code) do nothing",
+                    (category["code"], category["label"], category["status"], category["sort_order"]),
+                )
+                for skill in category.get("skills", []):
+                    await conn.execute(
+                        "insert into service_skills"
+                        " (code, category_code, label, status, requires_verification, sort_order)"
+                        " values (%s, %s, %s, %s, %s, %s)"
+                        " on conflict (code) do nothing",
+                        (
+                            skill["code"],
+                            category["code"],
+                            skill["label"],
+                            skill["status"],
+                            skill["requires_verification"],
+                            skill["sort_order"],
+                        ),
+                    )
             await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
             # Fulfillment cutover (migration 0010) — additive columns. Repeated here
             # as add-column-if-not-exists so the live API is resilient if it boots
@@ -6395,6 +6500,114 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return self._global_setting_row(row)
+
+    @staticmethod
+    def _service_category_row(row: tuple) -> dict:
+        return {
+            "code": row[0],
+            "label": row[1],
+            "status": row[2],
+            "sort_order": row[3],
+            "updated_at": row[4].isoformat() if row[4] else None,
+            "updated_by": str(row[5]) if row[5] else None,
+            "skills": [],
+        }
+
+    @staticmethod
+    def _service_skill_row(row: tuple) -> dict:
+        return {
+            "code": row[0],
+            "category_code": row[1],
+            "label": row[2],
+            "status": row[3],
+            "requires_verification": row[4],
+            "sort_order": row[5],
+            "updated_at": row[6].isoformat() if row[6] else None,
+            "updated_by": str(row[7]) if row[7] else None,
+        }
+
+    async def list_service_catalog(self, active_only: bool = False) -> list[dict]:
+        category_where = " where status = 'active'" if active_only else ""
+        skill_where = " where status = 'active'" if active_only else ""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select code, label, status, sort_order, updated_at, updated_by"
+                f" from service_categories{category_where}"
+                " order by sort_order, code"
+            )
+            category_rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select code, category_code, label, status, requires_verification,"
+                " sort_order, updated_at, updated_by"
+                f" from service_skills{skill_where}"
+                " order by sort_order, code"
+            )
+            skill_rows = await cur.fetchall()
+        categories = {row[0]: self._service_category_row(row) for row in category_rows}
+        for row in skill_rows:
+            skill = self._service_skill_row(row)
+            category = categories.get(skill["category_code"])
+            if category is not None:
+                category["skills"].append(skill)
+        return list(categories.values())
+
+    async def upsert_service_category(self, data: dict, updated_by: str | None = None) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into service_categories (code, label, status, sort_order, updated_by, updated_at)"
+                " values (%s, %s, %s, %s, %s, now())"
+                " on conflict (code) do update set"
+                "   label = excluded.label,"
+                "   status = excluded.status,"
+                "   sort_order = excluded.sort_order,"
+                "   updated_by = excluded.updated_by,"
+                "   updated_at = now()"
+                " returning code, label, status, sort_order, updated_at, updated_by",
+                (
+                    data["code"],
+                    data["label"],
+                    data["status"],
+                    data["sort_order"],
+                    str(updated_by) if updated_by else None,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._service_category_row(row)
+
+    async def upsert_service_skill(self, data: dict, updated_by: str | None = None) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select 1 from service_categories where code = %s",
+                (data["category_code"],),
+            )
+            if await cur.fetchone() is None:
+                raise KeyError(data["category_code"])
+            cur = await conn.execute(
+                "insert into service_skills"
+                " (code, category_code, label, status, requires_verification, sort_order, updated_by, updated_at)"
+                " values (%s, %s, %s, %s, %s, %s, %s, now())"
+                " on conflict (code) do update set"
+                "   category_code = excluded.category_code,"
+                "   label = excluded.label,"
+                "   status = excluded.status,"
+                "   requires_verification = excluded.requires_verification,"
+                "   sort_order = excluded.sort_order,"
+                "   updated_by = excluded.updated_by,"
+                "   updated_at = now()"
+                " returning code, category_code, label, status, requires_verification,"
+                " sort_order, updated_at, updated_by",
+                (
+                    data["code"],
+                    data["category_code"],
+                    data["label"],
+                    data["status"],
+                    data["requires_verification"],
+                    data["sort_order"],
+                    str(updated_by) if updated_by else None,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._service_skill_row(row)
 
     async def get_organization_setting(self, organization_id: str, key: str) -> dict | None:
         async with await self._connect() as conn:
