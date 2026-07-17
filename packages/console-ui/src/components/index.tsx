@@ -98,7 +98,7 @@ export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  group?: "Operations" | "Workforce" | "Reports" | "Admin";
+  group?: "Operations" | "Workforce" | "Financial" | "Reports" | "Admin";
   cluexpOnly?: boolean;
 }
 
@@ -302,7 +302,7 @@ export function Sidebar({
   onToggle: () => void;
   surfaceLabel: string;
 }) {
-  const groups = ["Operations", "Workforce", "Reports", "Admin"] as const;
+  const groups = ["Operations", "Workforce", "Financial", "Reports", "Admin"] as const;
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200 lg:flex", collapsed ? "w-[76px]" : "w-[264px]")}>
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">

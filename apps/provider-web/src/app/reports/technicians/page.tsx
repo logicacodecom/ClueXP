@@ -16,11 +16,12 @@ import {
   TableHeader,
   TableRow
 } from "@cluexp/console-ui";
-import { ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../../frame";
-import { buildPeriodQuery, money, SettlementValue, techLabel, type TechnicianSummary } from "./shared";
+import { exportRowsToExcel } from "./excel";
+import { AffiliationTag, buildPeriodQuery, money, SettlementValue, techLabel, type TechnicianSummary } from "./shared";
 
 export default function TechnicianReportPage() {
   const router = useRouter();
@@ -58,6 +59,37 @@ export default function TechnicianReportPage() {
 
   const periodQuery = useMemo(() => buildPeriodQuery(applied.start, applied.end), [applied]);
 
+  const exportExcel = useCallback(() => {
+    void exportRowsToExcel(
+      rows.map((row) => ({
+        technician: techLabel(row),
+        not_active: row.affiliation_ended ? "yes" : "no",
+        jobs: row.job_count,
+        collected: row.customer_total_cents / 100,
+        avg_per_job: row.average_job_cents / 100,
+        average_rating: row.average_rating ?? "",
+        review_count: row.review_count,
+        tech_cut: row.tech_payout_cents / 100,
+        company_cut: row.company_retained_cents / 100,
+        settlement_value: row.settlement_value_cents / 100,
+      })),
+      [
+        { key: "technician", header: "Technician", width: 24 },
+        { key: "not_active", header: "Not active", width: 12 },
+        { key: "jobs", header: "Jobs", width: 8 },
+        { key: "collected", header: "Collected ($)", width: 14 },
+        { key: "avg_per_job", header: "Avg / job ($)", width: 14 },
+        { key: "average_rating", header: "Avg rating", width: 12 },
+        { key: "review_count", header: "Reviews", width: 10 },
+        { key: "tech_cut", header: "Tech cut ($)", width: 14 },
+        { key: "company_cut", header: "Company cut ($)", width: 16 },
+        { key: "settlement_value", header: "Settlement value ($)", width: 20 },
+      ],
+      "technician-financial-report",
+      "By technician"
+    );
+  }, [rows]);
+
   return (
     <AppFrame>
       <div className="space-y-6">
@@ -65,7 +97,12 @@ export default function TechnicianReportPage() {
           kicker="Finance"
           title="Technician financial report"
           description="Per-technician totals for the period: volume, cuts, reviews, and the settlement balance. Green means the company owes the technician; red means the technician collected cash and owes the company."
-          actions={<Button variant="outline" onClick={() => void load(applied.start, applied.end)}><RefreshCw className="size-4" />Refresh</Button>}
+          actions={
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => void load(applied.start, applied.end)}><RefreshCw className="size-4" />Refresh</Button>
+              <Button variant="outline" onClick={exportExcel} disabled={rows.length === 0}><FileSpreadsheet className="size-4" />Export Excel</Button>
+            </div>
+          }
         />
 
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
@@ -123,9 +160,9 @@ export default function TechnicianReportPage() {
                         onClick={() => router.push(`/reports/technicians/${row.technician_id}${periodQuery}`)}
                       >
                         <TableCell>
-                          <div className="flex items-center gap-2 font-medium">
+                          <div className="flex flex-wrap items-center gap-2 font-medium">
                             {techLabel(row)}
-                            {row.affiliation_ended ? <Badge variant="neutral">ended</Badge> : null}
+                            <AffiliationTag ended={row.affiliation_ended} endedAt={row.affiliation_ended_at} />
                             {row.agreement_statuses.includes("missing") ? <Badge variant="danger">no agreement</Badge> : null}
                           </div>
                         </TableCell>

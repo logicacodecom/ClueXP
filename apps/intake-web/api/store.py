@@ -197,6 +197,7 @@ def aggregate_settlements_by_technician(rows: list[dict]) -> list[dict]:
             "technician_id": key,
             "technician_display_name": None,
             "affiliation_ended": bool(row.get("affiliation_ended")),
+            "affiliation_ended_at": row.get("affiliation_ended_at"),
             "job_count": 0,
             "customer_total_cents": 0,
             "tech_payout_cents": 0,
@@ -1392,20 +1393,21 @@ class InMemoryStore(Store):
 
     async def get_provider_technician_agreement_for_reporting(
         self, organization_id: UUID, technician_id: UUID
-    ) -> tuple[dict | None, bool]:
+    ) -> tuple[dict | None, bool, str | None]:
         """Reporting variant: no open-affiliation gate, so historical rows for a
         tech who left keep their last-known terms instead of collapsing to zero.
-        Returns (agreement | None, affiliation_ended)."""
+        Returns (agreement | None, affiliation_ended, affiliation_ended_at)."""
         affs = [a for a in getattr(self, "_affiliations", [])
                 if str(a.get("organization_id")) == str(organization_id)
                 and str(a.get("technician_id")) == str(technician_id)]
         ended = bool(affs) and all(a.get("ended_at") is not None for a in affs)
+        ended_at = max((a["ended_at"] for a in affs if a.get("ended_at")), default=None) if ended else None
         row = getattr(self, "_technician_agreements", {}).get((str(organization_id), str(technician_id)))
         if row is not None:
-            return dict(row), ended
+            return dict(row), ended, ended_at
         if affs:
-            return _default_agreement(str(organization_id), str(technician_id)), ended
-        return None, False
+            return _default_agreement(str(organization_id), str(technician_id)), ended, ended_at
+        return None, False, None
 
     async def upsert_provider_technician_agreement(
         self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None
@@ -2259,11 +2261,12 @@ class InMemoryStore(Store):
             closeout = row.get("closeout")
             if not tech_id or not closeout:
                 continue
-            agreement, affiliation_ended = await self.get_provider_technician_agreement_for_reporting(
+            agreement, affiliation_ended, affiliation_ended_at = await self.get_provider_technician_agreement_for_reporting(
                 UUID(str(org_id)), UUID(str(tech_id))
             )
             settlement = calculate_settlement(row, agreement)
             settlement["affiliation_ended"] = affiliation_ended
+            settlement["affiliation_ended_at"] = affiliation_ended_at
             if _settlement_row_in_period(settlement, filters):
                 out.append(settlement)
         return out
@@ -5415,7 +5418,7 @@ class PostgresStore(Store):
     ) -> list[dict]:
         rows = await self.get_provider_job_history(org_id, limit=limit)
         filters = {"technician_id": technician_id, "period_start": period_start, "period_end": period_end}
-        agreements: dict[str, tuple[dict | None, bool]] = {}
+        agreements: dict[str, tuple[dict | None, bool, str | None]] = {}
         out = []
         for row in rows:
             tech_id = row.get("fulfillment_technician_id")
@@ -5426,9 +5429,10 @@ class PostgresStore(Store):
                 agreements[key] = await self.get_provider_technician_agreement_for_reporting(
                     UUID(str(org_id)), UUID(key)
                 )
-            agreement, affiliation_ended = agreements[key]
+            agreement, affiliation_ended, affiliation_ended_at = agreements[key]
             settlement = calculate_settlement(row, agreement)
             settlement["affiliation_ended"] = affiliation_ended
+            settlement["affiliation_ended_at"] = affiliation_ended_at
             if _settlement_row_in_period(settlement, filters):
                 out.append(settlement)
         return out
@@ -7211,17 +7215,17 @@ class PostgresStore(Store):
 
     async def get_provider_technician_agreement_for_reporting(
         self, organization_id: UUID, technician_id: UUID
-    ) -> tuple[dict | None, bool]:
+    ) -> tuple[dict | None, bool, str | None]:
         """Reporting variant: no open-affiliation gate, so historical rows for a
         tech who left keep their last-known terms instead of collapsing to zero.
-        Returns (agreement | None, affiliation_ended)."""
+        Returns (agreement | None, affiliation_ended, affiliation_ended_at)."""
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select count(*)::int, count(*) filter (where ended_at is null)::int"
+                "select count(*)::int, count(*) filter (where ended_at is null)::int, max(ended_at)"
                 " from organization_technicians where organization_id = %s and technician_id = %s",
                 (str(organization_id), str(technician_id)),
             )
-            total_affs, open_affs = await cur.fetchone()
+            total_affs, open_affs, last_ended_at = await cur.fetchone()
             cur = await conn.execute(
                 "select id, organization_id, technician_id, status, effective_from, effective_until,"
                 " default_labor_cut_basis_points, tip_policy, tip_cut_basis_points,"
@@ -7233,9 +7237,10 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         ended = total_affs > 0 and open_affs == 0
+        ended_at = last_ended_at.isoformat() if ended and last_ended_at else None
         if row is None and total_affs == 0:
-            return None, False
-        return self._agreement_row(row, organization_id, technician_id), ended
+            return None, False, None
+        return self._agreement_row(row, organization_id, technician_id), ended, ended_at
 
     async def upsert_provider_technician_agreement(
         self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None

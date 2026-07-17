@@ -3480,9 +3480,11 @@ def test_settlements_by_technician_endpoint_filters_and_ex_tech_agreement():
     assert row["tech_payout_cents"] == 6000
     assert row["agreement_status"] == "active"
     assert row["affiliation_ended"] is True
+    assert row["affiliation_ended_at"] == "2026-01-01T00:00:00+00:00"
     group = next(g for g in client.get("/provider/settlements/by-technician", headers=H).json()
                  if g["technician_id"] == tid)
     assert group["affiliation_ended"] is True
+    assert group["affiliation_ended_at"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_settlement_period_does_not_double_assign_already_settled_jobs():
