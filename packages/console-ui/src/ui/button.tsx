@@ -17,7 +17,9 @@ const buttonVariants = cva(
           "border border-border bg-transparent text-foreground hover:bg-accent hover:text-accent-foreground",
         ghost: "text-foreground hover:bg-accent hover:text-accent-foreground",
         destructive:
-          "border border-destructive/40 bg-destructive/15 text-destructive hover:bg-destructive/25"
+          "border border-destructive/40 bg-destructive/15 text-destructive hover:bg-destructive/25",
+        success:
+          "border border-success/40 bg-success/15 text-success hover:bg-success/25"
       },
       size: {
         default: "h-9 px-4",

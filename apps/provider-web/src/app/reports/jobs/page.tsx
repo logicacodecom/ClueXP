@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow
 } from "@cluexp/console-ui";
-import { FileSpreadsheet, RefreshCw } from "lucide-react";
+import { FileSpreadsheet } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../../frame";
 import { exportRowsToExcel } from "../technicians/excel";
@@ -109,12 +109,6 @@ export default function JobsReportPage() {
           kicker="Finance"
           title="Settlement report by job"
           description="Closeout-derived settlement rows: technician payout, reimbursement, company retained amount, customer review, and the signed settlement balance. Click a job for the full breakdown."
-          actions={
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => void load(applied.start, applied.end)}><RefreshCw className="size-4" />Refresh</Button>
-              <Button variant="outline" onClick={exportExcel} disabled={rows.length === 0}><FileSpreadsheet className="size-4" />Export Excel</Button>
-            </div>
-          }
         />
 
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
@@ -127,10 +121,11 @@ export default function JobsReportPage() {
             <label className="space-y-1 text-xs font-semibold text-muted-foreground">End
               <input className="block rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={period.end} onChange={(e) => setPeriod((p) => ({ ...p, end: e.target.value }))} />
             </label>
-            <Button onClick={() => setApplied({ ...period })}>Apply period</Button>
+            <Button onClick={() => setApplied({ ...period })}>Apply</Button>
             {(applied.start || applied.end) ? (
               <Button variant="outline" onClick={() => { setPeriod({ start: "", end: "" }); setApplied({ start: "", end: "" }); }}>Clear</Button>
             ) : null}
+            <Button className="ml-auto" variant="success" onClick={exportExcel} disabled={rows.length === 0}><FileSpreadsheet className="size-4" />Export Excel</Button>
           </CardContent>
         </Card>
 
