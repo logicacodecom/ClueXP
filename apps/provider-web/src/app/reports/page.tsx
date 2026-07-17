@@ -41,6 +41,11 @@ interface SettlementRow {
   company_retained_cents: number;
 }
 
+interface TechnicianOption {
+  id: string;
+  display_name: string | null;
+}
+
 interface SettlementPeriod {
   id: string;
   status: "draft" | "locked" | "paid" | "void";
@@ -72,11 +77,17 @@ function formatDate(iso: string | null): string {
 export default function ReportsPage() {
   const [rows, setRows] = useState<SettlementRow[]>([]);
   const [periods, setPeriods] = useState<SettlementPeriod[]>([]);
+  const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState<SettlementPeriod | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
-  const [createForm, setCreateForm] = useState({ label: "", period_start: "", period_end: "" });
+  const [createForm, setCreateForm] = useState({ label: "", period_start: "", period_end: "", technician_id: "" });
   const [adjustment, setAdjustment] = useState({ amount: "", reason: "" });
+
+  const technicianName = useCallback(
+    (id: string | null) => technicians.find((t) => t.id === id)?.display_name ?? id?.slice(0, 8) ?? "—",
+    [technicians]
+  );
 
   const load = useCallback(async () => {
     setStatus("loading");
@@ -84,12 +95,15 @@ export default function ReportsPage() {
     try {
       const response = await fetch("/api/provider/settlements", { cache: "no-store" });
       const periodsResponse = await fetch("/api/provider/settlement-periods", { cache: "no-store" });
+      const techsResponse = await fetch("/api/technicians", { cache: "no-store" });
       const body = await response.json().catch(() => ({}));
       const periodsBody = await periodsResponse.json().catch(() => ({}));
+      const techsBody = await techsResponse.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to load settlements");
       if (!periodsResponse.ok) throw new Error(periodsBody.detail || "Unable to load settlement periods");
       setRows(Array.isArray(body) ? body : []);
       setPeriods(Array.isArray(periodsBody) ? periodsBody : []);
+      setTechnicians(Array.isArray(techsBody.technicians) ? techsBody.technicians : []);
       setStatus("ready");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to load settlements");
@@ -116,7 +130,8 @@ export default function ReportsPage() {
       body: JSON.stringify({
         label: createForm.label || undefined,
         period_start: createForm.period_start || undefined,
-        period_end: createForm.period_end || undefined
+        period_end: createForm.period_end || undefined,
+        technician_id: createForm.technician_id || undefined
       })
     });
     const body = await response.json().catch(() => ({}));
@@ -124,7 +139,7 @@ export default function ReportsPage() {
       setMessage(body.detail || "Unable to create settlement period");
       return;
     }
-    setCreateForm({ label: "", period_start: "", period_end: "" });
+    setCreateForm({ label: "", period_start: "", period_end: "", technician_id: "" });
     setSelectedPeriod(body as SettlementPeriod);
     await load();
   }
@@ -203,6 +218,15 @@ export default function ReportsPage() {
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">Create a draft snapshot from the current settlement rows. Lock it after review; mark paid only after external payment is completed.</p>
               <input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Label, e.g. July 1–15 settlements" value={createForm.label} onChange={(e) => setCreateForm((f) => ({ ...f, label: e.target.value }))} />
+              <label className="block space-y-1 text-xs font-semibold text-muted-foreground">
+                Technician
+                <select className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" value={createForm.technician_id} onChange={(e) => setCreateForm((f) => ({ ...f, technician_id: e.target.value }))}>
+                  <option value="">All technicians</option>
+                  {technicians.map((tech) => (
+                    <option key={tech.id} value={tech.id}>{tech.display_name ?? tech.id.slice(0, 8)}</option>
+                  ))}
+                </select>
+              </label>
               <div className="grid gap-2 md:grid-cols-2">
                 <label className="space-y-1 text-xs font-semibold text-muted-foreground">Start<input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={createForm.period_start} onChange={(e) => setCreateForm((f) => ({ ...f, period_start: e.target.value }))} /></label>
                 <label className="space-y-1 text-xs font-semibold text-muted-foreground">End<input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={createForm.period_end} onChange={(e) => setCreateForm((f) => ({ ...f, period_end: e.target.value }))} /></label>
@@ -229,7 +253,7 @@ export default function ReportsPage() {
                         <span className="font-semibold">{period.label}</span>
                         <Badge variant={period.status === "paid" ? "success" : period.status === "locked" ? "warn" : "outline"}>{period.status}</Badge>
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">{period.job_count} jobs · payout {money(period.final_tech_payout_cents)}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{period.technician_id ? technicianName(period.technician_id) : "All technicians"} · {period.job_count} jobs · payout {money(period.final_tech_payout_cents)}</div>
                     </button>
                   ))}
                 </div>

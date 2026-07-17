@@ -3333,6 +3333,62 @@ def test_settlement_period_locks_snapshot_and_status_flow():
     assert tech_body["period_rows"][0]["row"]["tech_payout_cents"] == 7000
 
 
+def test_settlement_period_does_not_double_assign_already_settled_jobs():
+    """A job captured by one settlement period must not be picked up by a
+    second period (e.g. an overlapping or blank-filter period), which would
+    otherwise let the same job's payout be locked/paid out twice."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid, jid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tid
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+    app_store._job_access_type[jid] = "locksmith.vehicle_key_programming"
+
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"dedupe_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+
+    agreement = {
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    assert client.patch(f"/provider/technicians/{tid}/agreement", json=agreement, headers=H).status_code == 200
+    asyncio.run(app_store.record_job_closeout({
+        "job_id": jid, "reported_by": "technician", "currency": "USD", "method": "cash",
+        "subtotal_cents": 10000, "taxable_subtotal_cents": 10000, "tax_rate_basis_points": 0,
+        "tax_cents": 0, "tip_cents": 0, "card_fee_basis_points": 0, "card_fee_fixed_cents": 0,
+        "card_fee_cents": 0, "total_cents": 10000, "settings_snapshot": {},
+        "line_items": [
+            {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": 10000, "line_total_cents": 10000, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+        ],
+    }))
+
+    first = client.post("/provider/settlement-periods", json={"label": "First"}, headers=H)
+    assert first.status_code == 200, first.text
+    assert first.json()["job_count"] == 1
+
+    second = client.post("/provider/settlement-periods", json={"label": "Second"}, headers=H)
+    assert second.status_code == 200, second.text
+    assert second.json()["job_count"] == 0
+    assert second.json()["final_tech_payout_cents"] == 0
+
+
 def test_provider_team_membership_add_remove_and_affiliation_required():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

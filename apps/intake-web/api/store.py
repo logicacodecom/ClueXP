@@ -2206,9 +2206,15 @@ class InMemoryStore(Store):
     async def create_provider_settlement_period(
         self, org_id: str, data: dict, *, created_by: str | None = None
     ) -> dict:
+        already_settled = {
+            row.get("job_id")
+            for period in self._settlement_periods.values()
+            if str(period.get("organization_id")) == str(org_id)
+            for row in period.get("rows", [])
+        }
         rows = [
             row for row in await self.list_provider_settlements(org_id, limit=1000)
-            if _settlement_row_in_period(row, data)
+            if row.get("job_id") not in already_settled and _settlement_row_in_period(row, data)
         ]
         now = datetime.now(timezone.utc).isoformat()
         period_id = str(uuid4())
@@ -5402,8 +5408,19 @@ class PostgresStore(Store):
 
     async def create_provider_settlement_period(self, org_id: str, data: dict, *, created_by: str | None = None) -> dict:
         from psycopg.types.json import Jsonb
-        rows = [row for row in await self.list_provider_settlements(org_id, limit=1000) if _settlement_row_in_period(row, data)]
+        candidate_rows = [row for row in await self.list_provider_settlements(org_id, limit=1000) if _settlement_row_in_period(row, data)]
         async with await self._connect() as conn:
+            # ponytail: app-level dedup, not a DB constraint -- a race between two
+            # concurrent creates could still double-assign a job. Add a unique
+            # index on (organization_id, job_id) if that ever shows up in practice.
+            cur = await conn.execute(
+                "select spj.job_id from settlement_period_jobs spj"
+                " join settlement_periods sp on sp.id = spj.settlement_period_id"
+                " where sp.organization_id = %s",
+                (str(org_id),),
+            )
+            already_settled = {str(r[0]) for r in await cur.fetchall()}
+            rows = [row for row in candidate_rows if str(row["job_id"]) not in already_settled]
             cur = await conn.execute(
                 "insert into settlement_periods (organization_id, label, period_start, period_end, technician_id, note, created_by)"
                 " values (%s, %s, %s, %s, %s, %s, %s) returning id",
