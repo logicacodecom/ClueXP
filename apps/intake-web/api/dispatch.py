@@ -345,6 +345,13 @@ def normalize_payment_method(value: str | None) -> str | None:
     return token if token in PAYMENT_METHODS else None
 
 
+# Methods the company processes and collects on (a card fee applies, funds land
+# with the company). Everything else in PAYMENT_METHODS is a peer-to-peer/cash
+# method the technician collects directly from the customer -- relevant both to
+# closeout card-fee calculation and to settlement direction (who owes whom).
+CARD_PAYMENT_METHODS = frozenset({"credit_card", "debit_card", "apple_pay", "google_pay"})
+
+
 def can_report_collection(status: str | None) -> bool:
     """True if the assigned technician may report what they collected — only once
     service is underway or completion is pending (not before arrival)."""

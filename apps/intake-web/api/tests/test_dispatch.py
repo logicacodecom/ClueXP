@@ -3333,6 +3333,158 @@ def test_settlement_period_locks_snapshot_and_status_flow():
     assert tech_body["period_rows"][0]["row"]["tech_payout_cents"] == 7000
 
 
+def test_settlement_value_direction_by_payment_method():
+    """Card = company collected -> positive (company owes tech). Cash-like =
+    tech collected the full total -> negative (tech owes company margin + tax)."""
+    from api.store import calculate_settlement
+
+    agreement = {
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    lines = [{"line_total_cents": 10000, "compensation_eligible": True, "reimbursement_eligible": False, "provided_by": None}]
+
+    card = calculate_settlement({"closeout": {
+        "method": "credit_card", "line_items": lines,
+        "total_cents": 11350, "tax_cents": 1000, "card_fee_cents": 350, "tip_cents": 0,
+    }}, agreement)
+    assert card["tech_payout_cents"] == 6000
+    assert card["settlement_value_cents"] == 6000
+    assert card["payment_method"] == "credit_card"
+
+    cash = calculate_settlement({"closeout": {
+        "method": "cash", "line_items": lines,
+        "total_cents": 11000, "tax_cents": 1000, "card_fee_cents": 0, "tip_cents": 0,
+    }}, agreement)
+    assert cash["tech_payout_cents"] == 6000
+    # Tech holds $110 and keeps $60: owes back $40 margin + $10 tax = $50.
+    assert cash["settlement_value_cents"] == -5000
+
+    no_method = calculate_settlement({"closeout": {
+        "line_items": lines, "total_cents": 11000, "tax_cents": 1000, "card_fee_cents": 0, "tip_cents": 0,
+    }}, agreement)
+    assert no_method["settlement_value_cents"] == 6000
+
+
+def test_aggregate_settlements_by_technician():
+    from api.store import aggregate_settlements_by_technician
+
+    rows = [
+        {"technician_id": "t1", "technician_display_name": "Ann", "affiliation_ended": False,
+         "customer_total_cents": 10000, "tech_payout_cents": 6000, "company_retained_cents": 4000,
+         "settlement_value_cents": 6000, "agreement_status": "active", "review": {"rating": 5}},
+        {"technician_id": "t1", "technician_display_name": "Ann", "affiliation_ended": False,
+         "customer_total_cents": 20000, "tech_payout_cents": 12000, "company_retained_cents": 8000,
+         "settlement_value_cents": -8000, "agreement_status": "active", "review": {"rating": 4}},
+        {"technician_id": "t2", "technician_display_name": None, "affiliation_ended": True,
+         "customer_total_cents": 5000, "tech_payout_cents": 2500, "company_retained_cents": 2500,
+         "settlement_value_cents": -2500, "agreement_status": "missing", "review": None},
+    ]
+    out = aggregate_settlements_by_technician(rows)
+    assert [g["technician_id"] for g in out] == ["t1", "t2"]
+    ann = out[0]
+    assert ann["job_count"] == 2
+    assert ann["customer_total_cents"] == 30000
+    assert ann["average_job_cents"] == 15000
+    assert ann["settlement_value_cents"] == -2000
+    assert ann["company_owes_tech_cents"] == 6000
+    assert ann["tech_owes_company_cents"] == 8000
+    assert ann["review_count"] == 2 and ann["average_rating"] == 4.5
+    assert ann["agreement_statuses"] == ["active"]
+    other = out[1]
+    assert other["affiliation_ended"] is True
+    assert other["review_count"] == 0 and other["average_rating"] is None
+
+
+def test_settlements_by_technician_endpoint_filters_and_ex_tech_agreement():
+    """End-to-end: the by-technician aggregate endpoint, date/tech filters on
+    /provider/settlements, and the ex-affiliated tech keeping last-known terms."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid, jid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tid
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+    app_store._job_access_type[jid] = "locksmith.vehicle_key_programming"
+
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"bytech_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+
+    agreement = {
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    assert client.patch(f"/provider/technicians/{tid}/agreement", json=agreement, headers=H).status_code == 200
+    asyncio.run(app_store.record_job_closeout({
+        "job_id": jid, "reported_by": "technician", "currency": "USD", "method": "cash",
+        "subtotal_cents": 10000, "taxable_subtotal_cents": 10000, "tax_rate_basis_points": 0,
+        "tax_cents": 0, "tip_cents": 0, "card_fee_basis_points": 0, "card_fee_fixed_cents": 0,
+        "card_fee_cents": 0, "total_cents": 10000, "settings_snapshot": {},
+        "line_items": [
+            {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": 10000, "line_total_cents": 10000, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+        ],
+    }))
+
+    summary = client.get("/provider/settlements/by-technician", headers=H)
+    assert summary.status_code == 200, summary.text
+    group = next(g for g in summary.json() if g["technician_id"] == tid)
+    assert group["job_count"] == 1
+    assert group["tech_payout_cents"] == 6000
+    # Cash job: tech collected $100, keeps $60, owes $40 back.
+    assert group["settlement_value_cents"] == -4000
+    assert group["tech_owes_company_cents"] == 4000
+    assert group["affiliation_ended"] is False
+
+    filtered = client.get(f"/provider/settlements?technician_id={uuid4()}", headers=H)
+    assert filtered.status_code == 200 and all(r["technician_id"] != tid for r in filtered.json())
+    assert client.get("/provider/settlements?period_start=not-a-date", headers=H).status_code == 422
+    assert client.get(
+        "/provider/settlements?period_start=2030-02-01&period_end=2030-01-01", headers=H
+    ).status_code == 422
+    # Rows with no finished_at are included regardless of period (R5 convention);
+    # actual date narrowing is covered by _settlement_row_in_period below.
+    future = client.get("/provider/settlements/by-technician?period_start=2030-01-01", headers=H)
+    assert future.status_code == 200
+    assert any(g["technician_id"] == tid for g in future.json())
+    from api.store import _settlement_row_in_period
+    dated = {"technician_id": tid, "finished_at": "2026-07-01T12:00:00+00:00"}
+    assert _settlement_row_in_period(dated, {"period_start": "2026-07-01", "period_end": "2026-07-01"})
+    assert not _settlement_row_in_period(dated, {"period_start": "2026-07-02"})
+    assert not _settlement_row_in_period(dated, {"period_end": "2026-06-30"})
+
+    # End the affiliation: reporting rows keep the last-known 60% cut and flag it.
+    for aff in app_store._affiliations:
+        if aff["organization_id"] == org and aff["technician_id"] == tid:
+            aff["ended_at"] = "2026-01-01T00:00:00+00:00"
+    rows = client.get("/provider/settlements", headers=H).json()
+    row = next(r for r in rows if r["job_id"] == jid)
+    assert row["cut_basis_points"] == 6000
+    assert row["tech_payout_cents"] == 6000
+    assert row["agreement_status"] == "active"
+    assert row["affiliation_ended"] is True
+    group = next(g for g in client.get("/provider/settlements/by-technician", headers=H).json()
+                 if g["technician_id"] == tid)
+    assert group["affiliation_ended"] is True
+
+
 def test_settlement_period_does_not_double_assign_already_settled_jobs():
     """A job captured by one settlement period must not be picked up by a
     second period (e.g. an overlapping or blank-filter period), which would

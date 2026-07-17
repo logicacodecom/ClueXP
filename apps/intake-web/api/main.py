@@ -25,6 +25,7 @@ from api import config
 from api.service_catalog import active_skill_codes, normalize_skill_code
 from api import settings as runtime_settings
 from api.dispatch import (
+    CARD_PAYMENT_METHODS,
     STATUS_ARRIVED,
     STATUS_ASSIGNED,
     STATUS_CANCELLED,
@@ -46,7 +47,7 @@ from api.dispatch import (
     select_candidates,
     to_db_policy,
 )
-from api.store import make_store
+from api.store import aggregate_settlements_by_technician, make_store
 from api.schema import (
     AccessType,
     CancellationPolicy,
@@ -3337,9 +3338,6 @@ def _validate_payment(payload: PaymentReportRequest) -> tuple[float, str]:
     return round(float(payload.amount), 2), method
 
 
-_CARD_METHODS = {"credit_card", "debit_card", "apple_pay", "google_pay"}
-
-
 def _money_cents(value: Any, field: str) -> int:
     try:
         numeric = float(value)
@@ -3453,7 +3451,7 @@ async def _build_closeout_report(
     card_fee_cents = (
         int(round(card_fee_base_cents * settings["card_fee_basis_points"] / 10_000))
         + settings["card_fee_fixed_cents"]
-        if method in _CARD_METHODS
+        if method in CARD_PAYMENT_METHODS
         else 0
     )
     total_cents = subtotal_cents + tax_cents + tip_cents + card_fee_cents
@@ -3468,8 +3466,8 @@ async def _build_closeout_report(
         "tax_rate_basis_points": settings["tax_rate_basis_points"],
         "tax_cents": tax_cents,
         "tip_cents": tip_cents,
-        "card_fee_basis_points": settings["card_fee_basis_points"] if method in _CARD_METHODS else 0,
-        "card_fee_fixed_cents": settings["card_fee_fixed_cents"] if method in _CARD_METHODS else 0,
+        "card_fee_basis_points": settings["card_fee_basis_points"] if method in CARD_PAYMENT_METHODS else 0,
+        "card_fee_fixed_cents": settings["card_fee_fixed_cents"] if method in CARD_PAYMENT_METHODS else 0,
         "card_fee_cents": card_fee_cents,
         "total_cents": total_cents,
         "no_tax_reason": no_tax_reason,
@@ -3835,31 +3833,60 @@ def _csv_escape(value: Any) -> str:
     return text
 
 
+def _parse_report_date(value: str | None, field: str) -> str | None:
+    if not value:
+        return None
+    from datetime import date
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{field} must be a YYYY-MM-DD date")
+
+
+def _report_period(period_start: str | None, period_end: str | None) -> tuple[str | None, str | None]:
+    start = _parse_report_date(period_start, "period_start")
+    end = _parse_report_date(period_end, "period_end")
+    if start and end and start > end:
+        raise HTTPException(status_code=422, detail="Period start must be before period end.")
+    return start, end
+
+
 @app.get("/provider/settlements", response_model=None)
 async def provider_settlements(
     format: str | None = None,
+    technician_id: UUID | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
     session: dict[str, Any] = Depends(require_session),
 ) -> list[dict[str, Any]] | Response:
     """Provider settlement rows derived from technician closeouts and the
     provider-tech agreement. Parts/items are excluded from commission and
-    tech-provided reimbursable items are separated for settlement."""
+    tech-provided reimbursable items are separated for settlement. Optional
+    technician/date filters power the per-technician financial report."""
     org_id = _require_dispatch_org(session)
-    rows = await store.list_provider_settlements(org_id)
+    start, end = _report_period(period_start, period_end)
+    rows = await store.list_provider_settlements(
+        org_id, technician_id=str(technician_id) if technician_id else None,
+        period_start=start, period_end=end,
+    )
     if format == "csv":
-        columns = [
-            "job_id", "technician_id", "technician_display_name", "status", "finished_at",
-            "agreement_status", "cut_basis_points", "customer_total_cents", "tax_cents",
-            "card_fee_cents", "tip_cents", "commissionable_cents",
-            "company_provided_items_cents", "tech_reimbursement_cents",
-            "tech_service_payout_cents", "tech_tip_cents", "tech_payout_cents",
-            "company_retained_cents",
-        ]
-        body = "\n".join(
-            [",".join(columns)]
-            + [",".join(_csv_escape(row.get(col)) for col in columns) for row in rows]
-        )
-        return Response(content=body + "\n", media_type="text/csv")
+        return Response(content=_settlement_csv(rows), media_type="text/csv")
     return rows
+
+
+@app.get("/provider/settlements/by-technician")
+async def provider_settlements_by_technician(
+    period_start: str | None = None,
+    period_end: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """One aggregate row per technician (affiliated or not) over the period:
+    volumes, cuts, reviews, and the signed settlement balance (positive =
+    company owes tech, negative = tech collected and owes the company)."""
+    org_id = _require_dispatch_org(session)
+    start, end = _report_period(period_start, period_end)
+    rows = await store.list_provider_settlements(org_id, period_start=start, period_end=end, limit=1000)
+    return aggregate_settlements_by_technician(rows)
 
 
 def _settlement_csv(rows: list[dict[str, Any]]) -> str:
@@ -3869,7 +3896,7 @@ def _settlement_csv(rows: list[dict[str, Any]]) -> str:
         "card_fee_cents", "tip_cents", "commissionable_cents",
         "company_provided_items_cents", "tech_reimbursement_cents",
         "tech_service_payout_cents", "tech_tip_cents", "tech_payout_cents",
-        "company_retained_cents",
+        "company_retained_cents", "payment_method", "settlement_value_cents",
     ]
     return "\n".join(
         [",".join(columns)]

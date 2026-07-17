@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 
 from api.auth import hash_password, verify_password
 from api.dispatch import (
+    CARD_PAYMENT_METHODS,
     STATUS_ARRIVED,
     STATUS_ASSIGNED,
     STATUS_CANCELLED,
@@ -132,6 +133,15 @@ def calculate_settlement(job: dict, agreement: dict | None) -> dict:
     card_fee_cents = int(closeout.get("card_fee_cents") or 0)
     tech_payout_cents = service_payout_cents + tech_reimbursement_cents + tech_tip_cents
     company_retained_cents = total_cents - tax_cents - card_fee_cents - tech_payout_cents
+    payment_method = closeout.get("method")
+    # Card/digital methods are company-processed: the company holds the funds and
+    # owes the tech their cut (positive). Cash/P2P methods (venmo, zelle, ...) are
+    # collected by the technician directly, so the balance flips: the tech is
+    # holding the full total and owes the company everything above their payout.
+    collected_by_technician = bool(payment_method) and payment_method not in CARD_PAYMENT_METHODS
+    settlement_value_cents = (
+        -(total_cents - tech_payout_cents) if collected_by_technician else tech_payout_cents
+    )
     return {
         "job_id": job.get("id") or closeout.get("job_id"),
         "technician_id": job.get("fulfillment_technician_id"),
@@ -154,6 +164,10 @@ def calculate_settlement(job: dict, agreement: dict | None) -> dict:
         "tech_tip_cents": tech_tip_cents,
         "tech_payout_cents": tech_payout_cents,
         "company_retained_cents": company_retained_cents,
+        "payment_method": payment_method,
+        "settlement_value_cents": settlement_value_cents,
+        "review": job.get("review"),
+        "payments": job.get("payments"),
         "closeout": closeout,
     }
 
@@ -171,6 +185,54 @@ def _settlement_period_totals(rows: list[dict], adjustments: list[dict] | None =
         "adjustment_cents": total_adjustments,
         "final_tech_payout_cents": sum(int(row.get("tech_payout_cents") or 0) for row in rows) + total_adjustments,
     }
+
+
+def aggregate_settlements_by_technician(rows: list[dict]) -> list[dict]:
+    """Group settlement rows into one summary per technician for the master
+    financial report. Pure function over rows from list_provider_settlements."""
+    groups: dict[str, dict] = {}
+    for row in rows:
+        key = str(row.get("technician_id"))
+        group = groups.setdefault(key, {
+            "technician_id": key,
+            "technician_display_name": None,
+            "affiliation_ended": bool(row.get("affiliation_ended")),
+            "job_count": 0,
+            "customer_total_cents": 0,
+            "tech_payout_cents": 0,
+            "company_retained_cents": 0,
+            "settlement_value_cents": 0,
+            "company_owes_tech_cents": 0,
+            "tech_owes_company_cents": 0,
+            "review_count": 0,
+            "_rating_sum": 0,
+            "agreement_statuses": set(),
+        })
+        group["technician_display_name"] = group["technician_display_name"] or row.get("technician_display_name")
+        group["job_count"] += 1
+        group["customer_total_cents"] += int(row.get("customer_total_cents") or 0)
+        group["tech_payout_cents"] += int(row.get("tech_payout_cents") or 0)
+        group["company_retained_cents"] += int(row.get("company_retained_cents") or 0)
+        value = int(row.get("settlement_value_cents") or 0)
+        group["settlement_value_cents"] += value
+        if value >= 0:
+            group["company_owes_tech_cents"] += value
+        else:
+            group["tech_owes_company_cents"] += -value
+        rating = (row.get("review") or {}).get("rating")
+        if rating is not None:
+            group["review_count"] += 1
+            group["_rating_sum"] += rating
+        group["agreement_statuses"].add(row.get("agreement_status") or "missing")
+    out = []
+    for group in groups.values():
+        rating_sum = group.pop("_rating_sum")
+        group["average_rating"] = round(rating_sum / group["review_count"], 1) if group["review_count"] else None
+        group["average_job_cents"] = int(round(group["customer_total_cents"] / group["job_count"])) if group["job_count"] else 0
+        group["agreement_statuses"] = sorted(group["agreement_statuses"])
+        out.append(group)
+    out.sort(key=lambda item: item["customer_total_cents"], reverse=True)
+    return out
 
 
 def _settlement_row_in_period(row: dict, data: dict) -> bool:
@@ -796,7 +858,9 @@ class Store:
         raise NotImplementedError
 
     async def list_provider_settlements(
-        self, org_id: str, *, limit: int = 100
+        self, org_id: str, *, technician_id: str | None = None,
+        period_start: str | None = None, period_end: str | None = None,
+        limit: int = 100,
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -1325,6 +1389,23 @@ class InMemoryStore(Store):
             return None
         row = self._technician_agreements.get((str(organization_id), str(technician_id)))
         return dict(row) if row is not None else _default_agreement(str(organization_id), str(technician_id))
+
+    async def get_provider_technician_agreement_for_reporting(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> tuple[dict | None, bool]:
+        """Reporting variant: no open-affiliation gate, so historical rows for a
+        tech who left keep their last-known terms instead of collapsing to zero.
+        Returns (agreement | None, affiliation_ended)."""
+        affs = [a for a in getattr(self, "_affiliations", [])
+                if str(a.get("organization_id")) == str(organization_id)
+                and str(a.get("technician_id")) == str(technician_id)]
+        ended = bool(affs) and all(a.get("ended_at") is not None for a in affs)
+        row = getattr(self, "_technician_agreements", {}).get((str(organization_id), str(technician_id)))
+        if row is not None:
+            return dict(row), ended
+        if affs:
+            return _default_agreement(str(organization_id), str(technician_id)), ended
+        return None, False
 
     async def upsert_provider_technician_agreement(
         self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None
@@ -2165,16 +2246,26 @@ class InMemoryStore(Store):
             })
         return out[:limit]
 
-    async def list_provider_settlements(self, org_id: str, *, limit: int = 100) -> list[dict]:
+    async def list_provider_settlements(
+        self, org_id: str, *, technician_id: str | None = None,
+        period_start: str | None = None, period_end: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
         rows = await self.get_provider_job_history(org_id, limit=limit)
+        filters = {"technician_id": technician_id, "period_start": period_start, "period_end": period_end}
         out = []
         for row in rows:
             tech_id = row.get("fulfillment_technician_id")
             closeout = row.get("closeout")
             if not tech_id or not closeout:
                 continue
-            agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), UUID(str(tech_id)))
-            out.append(calculate_settlement(row, agreement))
+            agreement, affiliation_ended = await self.get_provider_technician_agreement_for_reporting(
+                UUID(str(org_id)), UUID(str(tech_id))
+            )
+            settlement = calculate_settlement(row, agreement)
+            settlement["affiliation_ended"] = affiliation_ended
+            if _settlement_row_in_period(settlement, filters):
+                out.append(settlement)
         return out
 
     async def list_technician_settlements(self, technician_id: UUID, *, limit: int = 100) -> dict:
@@ -5317,15 +5408,29 @@ class PostgresStore(Store):
             (str(org_id), str(org_id)), limit,
         )
 
-    async def list_provider_settlements(self, org_id: str, *, limit: int = 100) -> list[dict]:
+    async def list_provider_settlements(
+        self, org_id: str, *, technician_id: str | None = None,
+        period_start: str | None = None, period_end: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
         rows = await self.get_provider_job_history(org_id, limit=limit)
+        filters = {"technician_id": technician_id, "period_start": period_start, "period_end": period_end}
+        agreements: dict[str, tuple[dict | None, bool]] = {}
         out = []
         for row in rows:
             tech_id = row.get("fulfillment_technician_id")
             if not tech_id or not row.get("closeout"):
                 continue
-            agreement = await self.get_provider_technician_agreement(UUID(str(org_id)), UUID(str(tech_id)))
-            out.append(calculate_settlement(row, agreement))
+            key = str(tech_id)
+            if key not in agreements:
+                agreements[key] = await self.get_provider_technician_agreement_for_reporting(
+                    UUID(str(org_id)), UUID(key)
+                )
+            agreement, affiliation_ended = agreements[key]
+            settlement = calculate_settlement(row, agreement)
+            settlement["affiliation_ended"] = affiliation_ended
+            if _settlement_row_in_period(settlement, filters):
+                out.append(settlement)
         return out
 
     async def list_technician_settlements(self, technician_id: UUID, *, limit: int = 100) -> dict:
@@ -7103,6 +7208,34 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return self._agreement_row(row, organization_id, technician_id)
+
+    async def get_provider_technician_agreement_for_reporting(
+        self, organization_id: UUID, technician_id: UUID
+    ) -> tuple[dict | None, bool]:
+        """Reporting variant: no open-affiliation gate, so historical rows for a
+        tech who left keep their last-known terms instead of collapsing to zero.
+        Returns (agreement | None, affiliation_ended)."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*)::int, count(*) filter (where ended_at is null)::int"
+                " from organization_technicians where organization_id = %s and technician_id = %s",
+                (str(organization_id), str(technician_id)),
+            )
+            total_affs, open_affs = await cur.fetchone()
+            cur = await conn.execute(
+                "select id, organization_id, technician_id, status, effective_from, effective_until,"
+                " default_labor_cut_basis_points, tip_policy, tip_cut_basis_points,"
+                " card_fee_policy, minimum_payout_cents, flat_job_bonus_cents,"
+                " service_area_counties, service_area_zipcodes, service_hours, rules,"
+                " created_at, updated_at, updated_by"
+                " from technician_agreements where organization_id = %s and technician_id = %s",
+                (str(organization_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        ended = total_affs > 0 and open_affs == 0
+        if row is None and total_affs == 0:
+            return None, False
+        return self._agreement_row(row, organization_id, technician_id), ended
 
     async def upsert_provider_technician_agreement(
         self, organization_id: UUID, technician_id: UUID, data: dict, *, updated_by: str | None = None

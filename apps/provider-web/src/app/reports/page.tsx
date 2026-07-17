@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow
 } from "@cluexp/console-ui";
-import { Download, Lock, Plus, RefreshCw, Wallet } from "lucide-react";
+import { Download, Lock, Plus, RefreshCw, Users, Wallet } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -197,6 +197,7 @@ export default function ReportsPage() {
           description="Closeout-derived settlement rows for technician payout, reimbursement, company retained amount, and spreadsheet export."
           actions={
             <div className="flex flex-wrap gap-2">
+              <Button asChild variant="outline"><a href="/reports/technicians"><Users className="size-4" />By technician</a></Button>
               <Button variant="outline" onClick={() => void load()}><RefreshCw className="size-4" />Refresh</Button>
               <Button asChild><a href="/api/provider/settlements?format=csv"><Download className="size-4" />Export CSV</a></Button>
             </div>
