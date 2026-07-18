@@ -22,7 +22,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../../frame";
 import { exportRowsToExcel } from "./excel";
 import { LogPaymentModal } from "./payment-modal";
-import { AffiliationTag, buildPeriodQuery, money, SettlementValue, techLabel, type TechnicianSummary } from "./shared";
+import { AffiliationTag, buildPeriodQuery, money, OutstandingBalance, SettlementValue, techLabel, type TechnicianSummary } from "./shared";
 
 export default function TechnicianReportPage() {
   const router = useRouter();
@@ -74,6 +74,7 @@ export default function TechnicianReportPage() {
         tech_cut: row.tech_payout_cents / 100,
         company_cut: row.company_retained_cents / 100,
         settlement_value: row.settlement_value_cents / 100,
+        outstanding_all_time: (row.balance?.net_outstanding_cents ?? 0) / 100,
       })),
       [
         { key: "technician", header: "Technician", width: 24 },
@@ -86,6 +87,7 @@ export default function TechnicianReportPage() {
         { key: "tech_cut", header: "Tech cut ($)", width: 14 },
         { key: "company_cut", header: "Company cut ($)", width: 16 },
         { key: "settlement_value", header: "Settlement value ($)", width: 20 },
+        { key: "outstanding_all_time", header: "Outstanding all time ($)", width: 22 },
       ],
       "technician-financial-report",
       "By technician"
@@ -146,6 +148,7 @@ export default function TechnicianReportPage() {
                       <TableHead className="text-right">Tech cut</TableHead>
                       <TableHead className="text-right">Company cut</TableHead>
                       <TableHead className="text-right">Settlement</TableHead>
+                      <TableHead className="text-right">Outstanding (all time)</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
@@ -169,6 +172,7 @@ export default function TechnicianReportPage() {
                         <TableCell>{row.review_count > 0 ? `${row.average_rating?.toFixed(1)} ★ (${row.review_count})` : "—"}</TableCell>
                         <TableCell className="text-right">{money(row.tech_payout_cents)}</TableCell>
                         <TableCell className="text-right">{money(row.company_retained_cents)}</TableCell>
+                        <TableCell className="text-right"><SettlementValue cents={row.settlement_value_cents} /></TableCell>
                         <TableCell className="text-right">
                           <button
                             className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition hover:bg-accent"
@@ -176,7 +180,11 @@ export default function TechnicianReportPage() {
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setPayTechnicianId(row.technician_id); }}
                           >
-                            <SettlementValue cents={row.settlement_value_cents} />
+                            {row.balance && row.balance.net_outstanding_cents === 0 && row.balance.pending_tech_to_company_cents === 0 ? (
+                              <span className="text-muted-foreground">$0.00 · Settled ✓</span>
+                            ) : (
+                              <OutstandingBalance balance={row.balance} />
+                            )}
                             <Wallet className="size-4 text-muted-foreground" />
                           </button>
                         </TableCell>
