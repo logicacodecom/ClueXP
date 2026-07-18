@@ -3459,11 +3459,12 @@ def test_settlements_by_technician_endpoint_filters_and_ex_tech_agreement():
     assert client.get(
         "/provider/settlements?period_start=2030-02-01&period_end=2030-01-01", headers=H
     ).status_code == 422
-    # Rows with no finished_at are included regardless of period (R5 convention);
-    # actual date narrowing is covered by _settlement_row_in_period below.
+    # The seeded job now carries a real finished_at (the closeout's reported_at,
+    # recorded "now"), so a period starting in 2030 correctly excludes it --
+    # date narrowing is covered directly by _settlement_row_in_period below.
     future = client.get("/provider/settlements/by-technician?period_start=2030-01-01", headers=H)
     assert future.status_code == 200
-    assert any(g["technician_id"] == tid for g in future.json())
+    assert not any(g["technician_id"] == tid for g in future.json())
     from api.store import _settlement_row_in_period
     dated = {"technician_id": tid, "finished_at": "2026-07-01T12:00:00+00:00"}
     assert _settlement_row_in_period(dated, {"period_start": "2026-07-01", "period_end": "2026-07-01"})
@@ -4630,3 +4631,452 @@ def test_admin_org_and_tech_create_endpoints_gate_on_platform_admin():
     assert client.post("/admin/technicians", json=tech_payload).status_code == 401
     assert client.post("/admin/technicians", json=tech_payload,
                         headers={"Authorization": f"Bearer {dispatcher_token}"}).status_code == 403
+
+
+# --- GET /provider/financial-overview -------------------------------------
+
+def _overview_row(**overrides):
+    """A minimal synthetic settlement row -- only the fields
+    build_financial_overview actually reads."""
+    row = {
+        "technician_id": "tech-1", "technician_display_name": "Ann",
+        "skill_code": "locksmith.vehicle_lockout", "payment_method": "credit_card",
+        "customer_total_cents": 10000, "commissionable_cents": 8000,
+        "company_provided_items_cents": 0, "tech_reimbursement_cents": 0,
+        "tech_payout_cents": 4800, "company_retained_cents": 5200,
+        "tax_cents": 700, "tip_cents": 0, "card_fee_cents": 0,
+        "finished_at": "2026-06-15T10:00:00+00:00",
+        "closeout": {"line_items": []},
+        "affiliation_ended": False, "affiliation_ended_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_build_financial_overview_month_trend_and_undated_rows():
+    """Pure aggregation: explicit range returns every intersecting month
+    (including zero-value ones), undated rows count in period metrics but are
+    excluded from the trend, and no-range defaults to the trailing 6 months."""
+    from api.store import build_financial_overview
+
+    dated_may = _overview_row(finished_at="2026-05-03T00:00:00+00:00", customer_total_cents=10000)
+    dated_july = _overview_row(finished_at="2026-07-20T00:00:00+00:00", customer_total_cents=20000)
+    undated = _overview_row(finished_at=None, customer_total_cents=5000)
+    rows = [dated_may, dated_july, undated]
+
+    result = build_financial_overview(
+        rows, rows, [], [],
+        period_start="2026-05-01", period_end="2026-07-31",
+        skill_labels={}, item_labels={},
+    )
+    assert [m["month"] for m in result["monthly_trend"]] == ["2026-05", "2026-06", "2026-07"]
+    by_month = {m["month"]: m for m in result["monthly_trend"]}
+    assert by_month["2026-05"]["customer_collected_cents"] == 10000
+    assert by_month["2026-06"]["customer_collected_cents"] == 0  # zero-value month still present
+    assert by_month["2026-07"]["customer_collected_cents"] == 20000
+    # Undated row counts toward period metrics job_count/collected...
+    assert result["period_metrics"]["job_count"] == 3
+    assert result["period_metrics"]["customer_collected_cents"] == 35000
+    assert result["period"]["undated_job_count"] == 1
+    # ...but never appears in any month bucket (35000 total minus the trend's 30000 == the undated row).
+    assert sum(m["customer_collected_cents"] for m in result["monthly_trend"]) == 30000
+
+    # No explicit range -> trailing 6 calendar months ending "now".
+    from datetime import datetime as _datetime, timezone as _timezone
+    no_range = build_financial_overview(rows, rows, [], [], period_start=None, period_end=None, skill_labels={}, item_labels={})
+    assert len(no_range["monthly_trend"]) == 6
+    assert no_range["monthly_trend"][-1]["month"] == _datetime.now(_timezone.utc).strftime("%Y-%m")
+
+
+def test_financial_overview_no_truncation_with_many_jobs():
+    """The old by-technician endpoint caps job history at 1000/2000; the new
+    overview must not silently truncate at 100, 500, or any other page size."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid = str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._technician_agreements[(org, tid)] = {
+        "id": str(uuid4()), "organization_id": org, "technician_id": tid,
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"bulk_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+
+    job_count = 150
+    for _ in range(job_count):
+        jid = str(uuid4())
+        app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+        app_store._job_org[jid] = org
+        app_store._job_tech[jid] = tid
+        app_store._job_access_type[jid] = "locksmith.vehicle_lockout"
+        asyncio.run(app_store.record_job_closeout({
+            "job_id": jid, "reported_by": "technician", "currency": "USD", "method": "credit_card",
+            "subtotal_cents": 10000, "taxable_subtotal_cents": 10000, "tax_rate_basis_points": 0,
+            "tax_cents": 0, "tip_cents": 0, "card_fee_basis_points": 0, "card_fee_fixed_cents": 0,
+            "card_fee_cents": 0, "total_cents": 10000, "settings_snapshot": {},
+            "line_items": [
+                {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": 10000, "line_total_cents": 10000, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+            ],
+        }))
+
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+    response = client.get("/provider/financial-overview", headers=H)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["period_metrics"]["job_count"] == job_count
+    assert body["period_metrics"]["customer_collected_cents"] == job_count * 10000
+    assert body["period_metrics"]["tech_payout_cents"] == job_count * 6000
+    # Sanity: the OLD capped endpoint would have truncated at 100 here (kept as
+    # a regression witness, not asserted against -- it's known-capped by design).
+    capped = client.get("/provider/settlements/by-technician", headers=H).json()
+    assert capped[0]["job_count"] <= job_count  # documents the cap exists; overview must not inherit it
+    assert body["period_metrics"]["job_count"] >= capped[0]["job_count"]
+
+
+def test_financial_overview_tenant_isolation():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid, _jid, _admin, H, _TH = _seed_settlement_payment_org(app_store)
+    client = TestClient(app)
+    own = client.get("/provider/financial-overview", headers=H).json()
+    assert own["period_metrics"]["job_count"] == 1
+
+    other_admin = str(uuid4())
+    app_store.users[other_admin] = {
+        "id": other_admin, "email": f"rival_{other_admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Rival Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": str(uuid4()), "organization_name": "Rival",
+    }
+    OH = {"Authorization": f"Bearer {create_access_token({'sub': other_admin, 'id': other_admin, 'roles': ['provider_admin']})}"}
+    other = client.get("/provider/financial-overview", headers=OH).json()
+    assert other["period_metrics"]["job_count"] == 0
+    assert other["position"]["owed_to_technicians_cents"] == 0
+    assert other["top_balances"] == []
+
+
+def test_financial_overview_payment_status_treatment():
+    """Only confirmed payments move position; pending is reported separately;
+    rejected and voided never affect the balance at all."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org, tid, _jid, _admin, H, TH = _seed_settlement_payment_org(app_store)
+    client = TestClient(app)
+
+    baseline = client.get("/provider/financial-overview", headers=H).json()
+    baseline_owed_by = baseline["position"]["owed_by_technicians_cents"]
+    assert baseline_owed_by == 4000  # $100 cash job, 60% cut -> tech owes $40
+
+    confirmed = client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "technician_to_company",
+        "amount_cents": 1000, "payment_method": "cash",
+    }, headers=H).json()
+    pending = client.post("/technician/payments", json={
+        "organization_id": org, "amount_cents": 1500, "payment_method": "zelle",
+    }, headers=TH).json()
+    rejected_source = client.post("/technician/payments", json={
+        "organization_id": org, "amount_cents": 999, "payment_method": "cash",
+    }, headers=TH).json()
+    client.post(f"/provider/settlement-payments/{rejected_source['id']}/reject", json={"reason": "duplicate"}, headers=H)
+    voided_source = client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "technician_to_company",
+        "amount_cents": 500, "payment_method": "cash",
+    }, headers=H).json()
+    client.post(f"/provider/settlement-payments/{voided_source['id']}/void", json={"reason": "mistake"}, headers=H)
+
+    after = client.get("/provider/financial-overview", headers=H).json()
+    # Confirmed $10 reduces the $40 debt to $30; the rejected $9.99 and voided $5 never applied.
+    assert after["position"]["owed_by_technicians_cents"] == 3000
+    # Pending $15 is visible but has not further reduced the balance.
+    assert after["position"]["pending_confirmation_cents"] == 1500
+    assert after["position"]["pending_confirmation_count"] == 1
+    assert after["attention"]["pending_payments_count"] == 1
+
+    client.post(f"/provider/settlement-payments/{pending['id']}/confirm", json={}, headers=H)
+    final = client.get("/provider/financial-overview", headers=H).json()
+    assert final["position"]["owed_by_technicians_cents"] == 1500  # 3000 - 1500
+    assert final["position"]["pending_confirmation_cents"] == 0
+    assert final["attention"]["pending_payments_count"] == 0
+
+
+def test_financial_overview_directional_balances_not_netted():
+    """Two technicians on opposite sides of the ledger: the org-wide totals must
+    show both directions in full, never netted into a single number that could
+    hide one side (a $1000 debt and a $1000 credit are NOT 'balanced out')."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"net_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+
+    def seed_tech_job(tid: str, method: str):
+        _seed_org_tech(app_store, org, tid)
+        _seed_affiliation(app_store, org, tid)
+        app_store._technician_agreements[(org, tid)] = {
+            "id": str(uuid4()), "organization_id": org, "technician_id": tid,
+            "status": "active", "default_labor_cut_basis_points": 6000,
+            "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+            "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+            "flat_job_bonus_cents": 0, "rules": {},
+        }
+        jid = str(uuid4())
+        app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+        app_store._job_org[jid] = org
+        app_store._job_tech[jid] = tid
+        app_store._job_access_type[jid] = "locksmith.vehicle_lockout"
+        asyncio.run(app_store.record_job_closeout({
+            "job_id": jid, "reported_by": "technician", "currency": "USD", "method": method,
+            "subtotal_cents": 10000, "taxable_subtotal_cents": 10000, "tax_rate_basis_points": 0,
+            "tax_cents": 0, "tip_cents": 0, "card_fee_basis_points": 0, "card_fee_fixed_cents": 0,
+            "card_fee_cents": 0, "total_cents": 10000, "settings_snapshot": {},
+            "line_items": [
+                {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": 10000, "line_total_cents": 10000, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+            ],
+        }))
+
+    tech_owed_by_company = str(uuid4())  # card job -> company owes them $60
+    tech_owing_company = str(uuid4())    # cash job -> they owe company $40
+    seed_tech_job(tech_owed_by_company, "credit_card")
+    seed_tech_job(tech_owing_company, "cash")
+
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+    body = client.get("/provider/financial-overview", headers=H).json()
+    assert body["position"]["owed_to_technicians_cents"] == 6000
+    assert body["position"]["owed_by_technicians_cents"] == 4000
+    tech_ids_in_balances = {b["technician_id"] for b in body["top_balances"]}
+    assert tech_ids_in_balances == {tech_owed_by_company, tech_owing_company}
+    by_id = {b["technician_id"]: b for b in body["top_balances"]}
+    assert by_id[tech_owed_by_company]["balance"]["net_outstanding_cents"] == 6000
+    assert by_id[tech_owing_company]["balance"]["net_outstanding_cents"] == -4000
+
+
+def test_financial_overview_job_type_method_and_reimbursable_aggregation():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid = str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._technician_agreements[(org, tid)] = {
+        "id": str(uuid4()), "organization_id": org, "technician_id": tid,
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"agg_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+
+    rekey_job = str(uuid4())
+    app_store._job_status[rekey_job] = STATUS_COMPLETED_CONFIRMED
+    app_store._job_org[rekey_job] = org
+    app_store._job_tech[rekey_job] = tid
+    app_store._job_access_type[rekey_job] = "locksmith.rekey"
+    asyncio.run(app_store.record_job_closeout({
+        "job_id": rekey_job, "reported_by": "technician", "currency": "USD", "method": "cash",
+        "subtotal_cents": 13500, "taxable_subtotal_cents": 13500, "tax_rate_basis_points": 0,
+        "tax_cents": 0, "tip_cents": 0, "card_fee_basis_points": 0, "card_fee_fixed_cents": 0,
+        "card_fee_cents": 0, "total_cents": 13500, "settings_snapshot": {},
+        "line_items": [
+            {"line_number": 1, "item_type_code": "service_fee", "description": "Rekey labor", "quantity": 1, "unit_amount_cents": 8000, "line_total_cents": 8000, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+            {"line_number": 2, "item_type_code": "cylinder", "description": "Replacement cylinder", "quantity": 1, "unit_amount_cents": 4000, "line_total_cents": 4000, "taxable": True, "provided_by": "company", "compensation_eligible": False, "reimbursement_eligible": True, "note": None},
+            {"line_number": 3, "item_type_code": "key_blank", "description": "Key blank tech bought", "quantity": 1, "unit_amount_cents": 1500, "line_total_cents": 1500, "taxable": True, "provided_by": "technician", "compensation_eligible": False, "reimbursement_eligible": True, "note": None},
+        ],
+    }))
+
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+    body = client.get("/provider/financial-overview", headers=H).json()
+
+    job_types = {jt["skill_code"]: jt for jt in body["job_types"]}
+    assert "locksmith.rekey" in job_types
+    assert job_types["locksmith.rekey"]["job_count"] == 1
+    assert job_types["locksmith.rekey"]["customer_collected_cents"] == 13500
+    assert job_types["locksmith.rekey"]["label"] == "Rekey"  # resolved from the service catalog
+
+    methods = {m["payment_method"]: m for m in body["customer_payment_methods"]}
+    assert methods["cash"]["job_count"] == 1
+    assert methods["cash"]["collected_by_technician"] is True
+
+    # Company-provided reimbursable items are a company cost, not money owed
+    # back to the technician -- they must never appear in this ranking.
+    reimbursables = {i["item_type_code"]: i for i in body["top_reimbursable_item_types"]}
+    assert "cylinder" not in reimbursables
+    assert reimbursables["key_blank"]["amount_cents"] == 1500
+
+    composition = body["revenue_composition"]
+    assert composition["commissionable_labor_cents"] == 8000
+    assert composition["company_provided_items_cents"] == 4000  # cylinder still tracked here
+    assert composition["technician_provided_reimbursables_cents"] == 1500
+
+
+def test_financial_overview_historical_technician_still_represented():
+    """An ex-affiliated technician with an outstanding balance still appears in
+    top_balances/technician_collection -- their history doesn't vanish just
+    because they're no longer active."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org, tid, _jid, _admin, H, _TH = _seed_settlement_payment_org(app_store)
+    for aff in app_store._affiliations:
+        if aff["organization_id"] == org and aff["technician_id"] == tid:
+            aff["ended_at"] = "2026-01-01T00:00:00+00:00"
+
+    client = TestClient(app)
+    body = client.get("/provider/financial-overview", headers=H).json()
+    assert len(body["top_balances"]) == 1
+    assert body["top_balances"][0]["technician_id"] == tid
+    assert body["top_balances"][0]["affiliation_ended"] is True
+    assert body["top_balances"][0]["affiliation_ended_at"] == "2026-01-01T00:00:00+00:00"
+    assert any(t["technician_id"] == tid for t in body["technician_collection"])
+
+
+def test_financial_overview_permissions_and_date_validation():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid, _jid, admin, H, TH = _seed_settlement_payment_org(app_store)
+    client = TestClient(app)
+
+    dispatcher = str(uuid4())
+    app_store.users[dispatcher] = {
+        "id": dispatcher, "email": f"ov_disp_{dispatcher[:8]}@cluexp.test", "phone": None,
+        "display_name": "Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    DH = {"Authorization": f"Bearer {create_access_token({'sub': dispatcher, 'id': dispatcher, 'roles': ['dispatcher']})}"}
+    assert client.get("/provider/financial-overview", headers=DH).status_code == 200
+
+    # Technician role has no provider organization -> can't reach a provider endpoint.
+    assert client.get("/provider/financial-overview", headers=TH).status_code == 403
+    assert client.get("/provider/financial-overview").status_code == 401
+    assert client.get("/provider/financial-overview?period_start=not-a-date", headers=H).status_code == 422
+    assert client.get(
+        "/provider/financial-overview?period_start=2030-02-01&period_end=2030-01-01", headers=H
+    ).status_code == 422
+
+
+def test_financial_overview_in_memory_finished_at_endpoint():
+    """Endpoint-level (not just pure-aggregation) proof that in-memory jobs now
+    carry a real finished_at: dated jobs land in the correct monthly bucket and
+    respect period_start/period_end, while a genuinely undated job (no tracked
+    lifecycle timestamp and no closeout reported_at) still counts toward
+    period_metrics/undated_job_count without ever being fabricated a date."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid = str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._technician_agreements[(org, tid)] = {
+        "id": str(uuid4()), "organization_id": org, "technician_id": tid,
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"dated_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+
+    def seed_job(total_cents: int) -> str:
+        jid = str(uuid4())
+        app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+        app_store._job_org[jid] = org
+        app_store._job_tech[jid] = tid
+        app_store._job_access_type[jid] = "locksmith.vehicle_lockout"
+        asyncio.run(app_store.record_job_closeout({
+            "job_id": jid, "reported_by": "technician", "currency": "USD", "method": "credit_card",
+            "subtotal_cents": total_cents, "taxable_subtotal_cents": total_cents, "tax_rate_basis_points": 0,
+            "tax_cents": 0, "tip_cents": 0, "card_fee_basis_points": 0, "card_fee_fixed_cents": 0,
+            "card_fee_cents": 0, "total_cents": total_cents, "settings_snapshot": {},
+            "line_items": [
+                {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": total_cents, "line_total_cents": total_cents, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+            ],
+        }))
+        return jid
+
+    march_job = seed_job(10000)
+    may_job = seed_job(20000)
+    undated_job = seed_job(30000)
+
+    # Real lifecycle timestamps, as set_job_status would have recorded them --
+    # this is the same _job_timestamps mechanism the store now populates on
+    # every real status transition, not a bypass of it.
+    app_store._job_timestamps = getattr(app_store, "_job_timestamps", {})
+    app_store._job_timestamps[march_job] = {"confirmed_at": "2026-03-15T10:00:00+00:00", "updated_at": "2026-03-15T10:00:00+00:00"}
+    app_store._job_timestamps[may_job] = {"confirmed_at": "2026-05-20T09:00:00+00:00", "updated_at": "2026-05-20T09:00:00+00:00"}
+    # Genuinely undated: no tracked timestamp, and strip the closeout's own
+    # reported_at so the fallback chain has truly nothing to resolve -- this
+    # must never be fabricated a date.
+    app_store._job_closeouts[undated_job].pop("reported_at", None)
+
+    client = TestClient(app)
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+
+    # Wide range spanning March-May: all three jobs count toward period metrics,
+    # but only the two dated jobs land in monthly_trend, in the correct months.
+    wide = client.get("/provider/financial-overview?period_start=2026-03-01&period_end=2026-05-31", headers=H).json()
+    assert wide["period_metrics"]["job_count"] == 3
+    assert wide["period_metrics"]["customer_collected_cents"] == 60000
+    assert wide["period"]["undated_job_count"] == 1
+    by_month = {m["month"]: m for m in wide["monthly_trend"]}
+    assert by_month["2026-03"]["customer_collected_cents"] == 10000
+    assert by_month["2026-04"]["customer_collected_cents"] == 0
+    assert by_month["2026-05"]["customer_collected_cents"] == 20000
+    assert sum(m["customer_collected_cents"] for m in wide["monthly_trend"]) == 30000  # undated job excluded
+
+    # Narrow range covering only March: the May job (dated, out of range) is
+    # excluded from period_metrics entirely; the undated job still counts
+    # (existing _settlement_row_in_period convention: unknown-date rows are
+    # never filtered out, since there's nothing to compare).
+    narrow = client.get("/provider/financial-overview?period_start=2026-03-01&period_end=2026-03-31", headers=H).json()
+    assert narrow["period_metrics"]["job_count"] == 2  # march_job + undated_job
+    assert narrow["period_metrics"]["customer_collected_cents"] == 40000  # 10000 + 30000, NOT the may job's 20000
+    assert narrow["period"]["undated_job_count"] == 1

@@ -3935,6 +3935,22 @@ async def provider_settlements_by_technician(
     return groups
 
 
+@app.get("/provider/financial-overview")
+async def provider_financial_overview(
+    period_start: str | None = None,
+    period_end: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Aggregated Financial Overview dashboard. Unlike /provider/settlements and
+    /provider/settlements/by-technician (both capped report endpoints), this
+    walks the organization's COMPLETE settlement/payment/period history with no
+    row-count cap -- see store.get_provider_financial_overview. The response is
+    aggregates only; it never ships a raw, unbounded ledger to the browser."""
+    org_id = _require_dispatch_org(session)
+    start, end = _report_period(period_start, period_end)
+    return await store.get_provider_financial_overview(org_id, period_start=start, period_end=end)
+
+
 _SETTLEMENT_PAYMENT_STATUSES = {"pending", "confirmed", "rejected", "voided"}
 _SETTLEMENT_PAYMENT_DIRECTIONS = {"company_to_technician", "technician_to_company"}
 

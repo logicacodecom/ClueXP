@@ -287,6 +287,23 @@ export function MockAuthBoundary({
   );
 }
 
+/** The one nav item that should render as "active" for a given path. A route
+ * matches when it equals activePath exactly or is a path-segment ancestor of
+ * it (activePath === href || activePath.startsWith(href + "/")) -- plain
+ * startsWith(href) would wrongly match "/financial-other" against "/financial"
+ * and, worse, match every item whose href is a prefix of the current path at
+ * once. Only the longest matching href wins, so exactly one item lights up
+ * even when routes nest (e.g. "/financial" and "/financial/payments" both
+ * technically match "/financial/payments", but only the latter should). */
+function resolveActiveNavHref(nav: NavItem[], activePath: string): string | null {
+  let best: string | null = null;
+  for (const item of nav) {
+    const matches = activePath === item.href || activePath.startsWith(`${item.href}/`);
+    if (matches && (best === null || item.href.length > best.length)) best = item.href;
+  }
+  return best;
+}
+
 export function Sidebar({
   activePath = "/dashboard",
   collapsed,
@@ -303,6 +320,7 @@ export function Sidebar({
   surfaceLabel: string;
 }) {
   const groups = ["Operations", "Workforce", "Financial", "Reports", "Admin"] as const;
+  const activeHref = resolveActiveNavHref(nav, activePath);
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200 lg:flex", collapsed ? "w-[76px]" : "w-[264px]")}>
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
@@ -321,7 +339,7 @@ export function Sidebar({
             <div className="mb-5" key={group}>
               {!collapsed ? <div className="mb-2 px-2 text-[11px] font-semibold uppercase text-muted-foreground">{group}</div> : null}
               <div className="space-y-1">
-                {items.map((item) => <SidebarItem activePath={activePath} collapsed={collapsed} item={item} key={item.href} />)}
+                {items.map((item) => <SidebarItem active={item.href === activeHref} collapsed={collapsed} item={item} key={item.href} />)}
               </div>
             </div>
           );
@@ -337,9 +355,8 @@ export function Sidebar({
   );
 }
 
-function SidebarItem({ activePath, collapsed, item }: { activePath: string; collapsed: boolean; item: NavItem }) {
+function SidebarItem({ active, collapsed, item }: { active: boolean; collapsed: boolean; item: NavItem }) {
   const Icon = item.icon;
-  const active = activePath === item.href || (item.href !== "/" && activePath.startsWith(item.href));
   const link = (
     <Link
       className={cn(
@@ -396,6 +413,7 @@ export function Topbar({
   const orgLabel = session?.active_organization_id
     ? (session.organization_name ?? "Organization")
     : "All network tenants";
+  const activeHref = resolveActiveNavHref(nav, activePath);
   return (
     <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center gap-3 border-b border-border bg-background/85 px-4 py-3 backdrop-blur md:px-6">
       <DropdownMenu>
@@ -406,7 +424,7 @@ export function Topbar({
           <DropdownMenuLabel>Console navigation</DropdownMenuLabel>
           {nav.map((item) => {
             const Icon = item.icon;
-            const active = activePath === item.href || (item.href !== "/" && activePath.startsWith(item.href));
+            const active = item.href === activeHref;
             return (
               <DropdownMenuItem asChild key={item.href}>
                 <Link className={cn(active && "text-primary")} href={item.href}>

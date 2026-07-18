@@ -16,9 +16,9 @@ import {
   SETTLEMENT_PAYMENT_METHODS,
   SettlementValue,
   techLabel,
+  type PayableTechnician,
   type PaymentBalance,
-  type PaymentDirection,
-  type TechnicianSummary
+  type PaymentDirection
 } from "./shared";
 
 /** Balance after a hypothetical payment: paying one side only reduces that
@@ -40,7 +40,7 @@ export interface LogPaymentModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Selectable technicians; when exactly one is passed the selector is locked. */
-  technicians: TechnicianSummary[];
+  technicians: PayableTechnician[];
   preselectedTechnicianId?: string | null;
   /** The report period the user was looking at — recorded as source context only. */
   sourcePeriod?: { start: string; end: string };

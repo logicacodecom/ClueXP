@@ -14,7 +14,7 @@ function TechnicianDetailRoute() {
       technicianId={params.id}
       onTechnicianChange={(id) => {
         const qs = searchParams.toString();
-        router.push(`/reports/technicians/${id}${qs ? `?${qs}` : ""}`);
+        router.push(`/financial/technicians/${id}${qs ? `?${qs}` : ""}`);
       }}
     />
   );

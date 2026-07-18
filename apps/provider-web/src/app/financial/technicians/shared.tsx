@@ -9,6 +9,19 @@ export interface PaymentBalance {
   net_outstanding_cents: number;
 }
 
+/** The minimal shape LogPaymentModal actually needs -- just enough to label a
+ * technician and show/act on their balance. TechnicianSummary satisfies this
+ * structurally, but so does the leaner row shape the Financial Overview's
+ * top_balances array returns, without needing to fetch a whole separate
+ * (capped) by-technician report just to populate the modal. */
+export interface PayableTechnician {
+  technician_id: string;
+  technician_display_name: string | null;
+  affiliation_ended: boolean;
+  affiliation_ended_at: string | null;
+  balance?: PaymentBalance;
+}
+
 export interface TechnicianSummary {
   technician_id: string;
   technician_display_name: string | null;

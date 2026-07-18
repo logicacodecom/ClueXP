@@ -2,7 +2,7 @@
 
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { Receipt, UserRound, Users as UsersIcon, Wallet } from "lucide-react";
+import { Layers, LineChart, Receipt, Users as UsersIcon, Wallet } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -26,19 +26,22 @@ export function AppFrame({ children }: { children: ReactNode }) {
   if (loading) return <div className="min-h-screen bg-background" aria-busy="true" />;
   if (error) return <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">{error}</main>;
   if (!session || gatedHere) return null;
-  const mappedNav = defaultNav.map((item) =>
-    item.label === "Technicians" ? { ...item, href: "/technicians" } : item
-  );
+  // "Reports" is dropped from the default nav entirely -- Financial (below)
+  // replaces it as the provider's reporting home.
+  const mappedNav = defaultNav
+    .filter((item) => item.href !== "/reports")
+    .map((item) => (item.label === "Technicians" ? { ...item, href: "/technicians" } : item));
   const reportsNav = defaultNav.find((item) => item.href === "/reports") ?? defaultNav[0];
   const adminNav = defaultNav.find((item) => item.href === "/settings") ?? defaultNav[0];
   const providerNav = [
     ...mappedNav,
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
-    { ...reportsNav, label: "Completed", href: "/completed" },
-    { ...reportsNav, label: "All Technicians", href: "/reports/technicians", icon: UsersIcon, group: "Financial" as const },
-    { ...reportsNav, label: "By Tech", href: "/reports/technicians/by-tech", icon: UserRound, group: "Financial" as const },
-    { ...reportsNav, label: "By Job", href: "/reports/jobs", icon: Receipt, group: "Financial" as const },
-    { ...reportsNav, label: "Payments", href: "/reports/payments", icon: Wallet, group: "Financial" as const },
+    { ...defaultNav[0], label: "Completed", href: "/completed" },
+    { ...reportsNav, label: "Overview", href: "/financial", icon: LineChart, group: "Financial" as const },
+    { ...reportsNav, label: "Technicians", href: "/financial/technicians", icon: UsersIcon, group: "Financial" as const },
+    { ...reportsNav, label: "Jobs", href: "/financial/jobs", icon: Receipt, group: "Financial" as const },
+    { ...reportsNav, label: "Payments", href: "/financial/payments", icon: Wallet, group: "Financial" as const },
+    { ...reportsNav, label: "Settlement runs", href: "/financial/settlements", icon: Layers, group: "Financial" as const },
     ...(session.user.roles.includes("provider_admin") ? [{ ...adminNav, label: "Users", href: "/users" }] : []),
   ];
   return (

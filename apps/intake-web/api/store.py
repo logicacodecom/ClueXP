@@ -270,6 +270,280 @@ def compute_settlement_payment_balance(settlement_group: dict | None, payments: 
     }
 
 
+async def _skill_label_map(store) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for category in await store.list_service_catalog():
+        for skill in category.get("skills", []) or []:
+            labels[skill["code"]] = skill["label"]
+    return labels
+
+
+async def _item_type_label_map(store) -> dict[str, str]:
+    return {item["code"]: item["label"] for item in await store.list_closeout_item_types()}
+
+
+def _humanize_code(code: str) -> str:
+    return code.rsplit(".", 1)[-1].replace("_", " ").title()
+
+
+def _month_key(iso: str | None) -> str | None:
+    return str(iso)[:7] if iso else None
+
+
+def _month_range(period_start: str | None, period_end: str | None) -> list[str]:
+    """Inclusive list of 'YYYY-MM' strings. An explicit range returns every month
+    it intersects (including zero-value months); no range returns the trailing
+    six calendar months ending this month."""
+    def add_month(year: int, month: int, delta: int) -> tuple[int, int]:
+        idx = year * 12 + (month - 1) + delta
+        y, m0 = divmod(idx, 12)
+        return y, m0 + 1
+
+    if period_start or period_end:
+        start_y, start_m = (int(x) for x in (period_start or period_end)[:7].split("-"))
+        end_y, end_m = (int(x) for x in (period_end or period_start)[:7].split("-"))
+    else:
+        today = datetime.now(timezone.utc).date()
+        end_y, end_m = today.year, today.month
+        start_y, start_m = add_month(end_y, end_m, -5)
+
+    months = []
+    y, m = start_y, start_m
+    while (y, m) <= (end_y, end_m):
+        months.append(f"{y:04d}-{m:02d}")
+        y, m = add_month(y, m, 1)
+    return months
+
+
+def build_financial_overview(
+    all_time_rows: list[dict],
+    period_rows: list[dict],
+    payments: list[dict],
+    periods: list[dict],
+    *,
+    period_start: str | None,
+    period_end: str | None,
+    skill_labels: dict[str, str],
+    item_labels: dict[str, str],
+) -> dict:
+    """Pure aggregation backing GET /provider/financial-overview.
+
+    Callers are responsible for supplying the COMPLETE org-scoped dataset --
+    this function never truncates, samples, or caps; every row passed in is
+    counted. `all_time_rows` drives balances/attention/collection (never
+    period-filtered, per the all-time balance rule); `period_rows` drives
+    period_metrics/trend/insights (already filtered by the caller via
+    `_settlement_row_in_period`, so undated rows are included exactly as that
+    existing convention dictates)."""
+    undated_rows = [r for r in period_rows if not r.get("finished_at")]
+    dated_rows = [r for r in period_rows if r.get("finished_at")]
+
+    job_count = len(period_rows)
+    customer_collected = sum(int(r.get("customer_total_cents") or 0) for r in period_rows)
+    tech_payout = sum(int(r.get("tech_payout_cents") or 0) for r in period_rows)
+    tech_reimbursement = sum(int(r.get("tech_reimbursement_cents") or 0) for r in period_rows)
+    company_retained = sum(int(r.get("company_retained_cents") or 0) for r in period_rows)
+
+    # --- monthly trend: dated rows only ---
+    month_keys = _month_range(period_start, period_end)
+    trend_buckets = {
+        m: {"customer_collected_cents": 0, "tech_payout_cents": 0, "company_retained_cents": 0}
+        for m in month_keys
+    }
+    for row in dated_rows:
+        bucket = trend_buckets.get(_month_key(row.get("finished_at")))
+        if bucket is None:
+            continue  # outside the requested/derived window
+        bucket["customer_collected_cents"] += int(row.get("customer_total_cents") or 0)
+        bucket["tech_payout_cents"] += int(row.get("tech_payout_cents") or 0)
+        bucket["company_retained_cents"] += int(row.get("company_retained_cents") or 0)
+    monthly_trend = [{"month": m, **trend_buckets[m]} for m in month_keys]
+
+    # --- revenue by job type: top 6 + Other ---
+    by_skill: dict[str, dict] = {}
+    for row in period_rows:
+        code = row.get("skill_code") or "unclassified"
+        bucket = by_skill.setdefault(code, {
+            "job_count": 0, "customer_collected_cents": 0,
+            "tech_payout_cents": 0, "company_retained_cents": 0,
+        })
+        bucket["job_count"] += 1
+        bucket["customer_collected_cents"] += int(row.get("customer_total_cents") or 0)
+        bucket["tech_payout_cents"] += int(row.get("tech_payout_cents") or 0)
+        bucket["company_retained_cents"] += int(row.get("company_retained_cents") or 0)
+    ranked_skills = sorted(by_skill.items(), key=lambda kv: kv[1]["customer_collected_cents"], reverse=True)
+    job_types = []
+    other_skill = {"job_count": 0, "customer_collected_cents": 0, "tech_payout_cents": 0, "company_retained_cents": 0}
+    for i, (code, bucket) in enumerate(ranked_skills):
+        if i < 6:
+            label = "Unclassified" if code == "unclassified" else skill_labels.get(code, _humanize_code(code))
+            job_types.append({"skill_code": code, "label": label, **bucket})
+        else:
+            for k in other_skill:
+                other_skill[k] += bucket[k]
+    if other_skill["job_count"] > 0:
+        job_types.append({"skill_code": "other", "label": "Other", **other_skill})
+
+    # --- customer payment methods (who physically collects, per calculate_settlement's
+    # own rule: no recorded method defaults to company-collected, never technician) ---
+    by_method: dict[str, dict] = {}
+    for row in period_rows:
+        raw_method = row.get("payment_method")
+        method_key = raw_method or "unknown"
+        bucket = by_method.setdefault(method_key, {
+            "job_count": 0, "customer_collected_cents": 0,
+            "company_retained_cents": 0, "card_fee_cents": 0,
+            "collected_by_technician": bool(raw_method) and raw_method not in CARD_PAYMENT_METHODS,
+        })
+        bucket["job_count"] += 1
+        bucket["customer_collected_cents"] += int(row.get("customer_total_cents") or 0)
+        bucket["company_retained_cents"] += int(row.get("company_retained_cents") or 0)
+        bucket["card_fee_cents"] += int(row.get("card_fee_cents") or 0)
+    customer_payment_methods = [
+        {"payment_method": method, **bucket}
+        for method, bucket in sorted(by_method.items(), key=lambda kv: kv[1]["customer_collected_cents"], reverse=True)
+    ]
+
+    # --- revenue composition (period-scoped) ---
+    company_provided_items = sum(int(r.get("company_provided_items_cents") or 0) for r in period_rows)
+    tax_total = sum(int(r.get("tax_cents") or 0) for r in period_rows)
+    tip_total = sum(int(r.get("tip_cents") or 0) for r in period_rows)
+    card_fee_total = sum(int(r.get("card_fee_cents") or 0) for r in period_rows)
+    commissionable_labor = sum(int(r.get("commissionable_cents") or 0) for r in period_rows)
+    composition_accounted = commissionable_labor + company_provided_items + tech_reimbursement + tax_total + tip_total + card_fee_total
+    other_non_commissionable = max(0, customer_collected - composition_accounted)
+    revenue_composition = {
+        "commissionable_labor_cents": commissionable_labor,
+        "company_provided_items_cents": company_provided_items,
+        "technician_provided_reimbursables_cents": tech_reimbursement,
+        "tax_cents": tax_total,
+        "tip_cents": tip_total,
+        "card_fee_cents": card_fee_total,
+        "other_non_commissionable_cents": other_non_commissionable,
+    }
+
+    # --- top reimbursable item types (period-scoped, from closeout line items) ---
+    # Only technician-provided items are money owed BACK to the tech (matches
+    # calculate_settlement's tech_reimbursement_cents rule exactly). Company-
+    # provided reimbursable items are a cost the company already covered --
+    # they belong in company_provided_items_cents above, not this ranking.
+    reimbursable_totals: dict[str, int] = {}
+    for row in period_rows:
+        for line in ((row.get("closeout") or {}).get("line_items") or []):
+            if line.get("reimbursement_eligible") and line.get("provided_by") == "technician":
+                code = line.get("item_type_code") or "other"
+                reimbursable_totals[code] = reimbursable_totals.get(code, 0) + int(line.get("line_total_cents") or 0)
+    top_reimbursable_item_types = [
+        {"item_type_code": code, "label": item_labels.get(code, _humanize_code(code)), "amount_cents": amount}
+        for code, amount in sorted(reimbursable_totals.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    ]
+
+    # --- all-time balances (never period-filtered) ---
+    balance_groups = {g["technician_id"]: g for g in aggregate_settlements_by_technician(all_time_rows)}
+    payments_by_tech: dict[str, list[dict]] = {}
+    for p in payments:
+        payments_by_tech.setdefault(str(p.get("technician_id")), []).append(p)
+    all_tech_ids = set(balance_groups) | set(payments_by_tech)
+    tech_balances = {
+        tid: compute_settlement_payment_balance(balance_groups.get(tid), payments_by_tech.get(tid, []))
+        for tid in all_tech_ids
+    }
+
+    owed_to_technicians = sum(b["outstanding_company_to_tech_cents"] for b in tech_balances.values())
+    owed_by_technicians = sum(b["outstanding_tech_to_company_cents"] for b in tech_balances.values())
+    pending_confirmation_cents = sum(b["pending_tech_to_company_cents"] for b in tech_balances.values())
+    pending_confirmation_count = sum(1 for p in payments if p.get("status") == "pending")
+
+    missing_agreement_tech_ids = {
+        tid for tid, g in balance_groups.items() if "missing" in (g.get("agreement_statuses") or [])
+    }
+    locked_settlement_runs_count = sum(1 for p in periods if p.get("status") == "locked")
+
+    # --- collection by technician (period-scoped collection split; all-time balance) ---
+    per_tech_collection: dict[str, dict] = {}
+    for row in period_rows:
+        tid = str(row.get("technician_id"))
+        bucket = per_tech_collection.setdefault(tid, {
+            "technician_id": tid,
+            "technician_display_name": row.get("technician_display_name"),
+            "company_collected_cents": 0,
+            "technician_collected_cents": 0,
+        })
+        if not bucket["technician_display_name"] and row.get("technician_display_name"):
+            bucket["technician_display_name"] = row.get("technician_display_name")
+        amount = int(row.get("customer_total_cents") or 0)
+        raw_method = row.get("payment_method")
+        if bool(raw_method) and raw_method not in CARD_PAYMENT_METHODS:
+            bucket["technician_collected_cents"] += amount
+        else:
+            bucket["company_collected_cents"] += amount
+    technician_collection = []
+    for tid, bucket in per_tech_collection.items():
+        balance = tech_balances.get(tid) or compute_settlement_payment_balance(None, [])
+        technician_collection.append({
+            **bucket,
+            "outstanding_company_to_tech_cents": balance["outstanding_company_to_tech_cents"],
+            "outstanding_tech_to_company_cents": balance["outstanding_tech_to_company_cents"],
+            "pending_confirmation_cents": balance["pending_tech_to_company_cents"],
+        })
+    technician_collection.sort(
+        key=lambda t: t["company_collected_cents"] + t["technician_collected_cents"], reverse=True
+    )
+    technician_collection = technician_collection[:8]
+
+    # --- top outstanding balances (all-time, non-zero, historical techs included) ---
+    ranked_balances = sorted(
+        (tid for tid in tech_balances if tech_balances[tid]["net_outstanding_cents"] != 0),
+        key=lambda tid: abs(tech_balances[tid]["net_outstanding_cents"]),
+        reverse=True,
+    )[:5]
+    top_balances = [
+        {
+            "technician_id": tid,
+            "technician_display_name": (balance_groups.get(tid) or {}).get("technician_display_name"),
+            "affiliation_ended": bool((balance_groups.get(tid) or {}).get("affiliation_ended", False)),
+            "affiliation_ended_at": (balance_groups.get(tid) or {}).get("affiliation_ended_at"),
+            "balance": tech_balances[tid],
+        }
+        for tid in ranked_balances
+    ]
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": {
+            "start": period_start,
+            "end": period_end,
+            "undated_job_count": len(undated_rows),
+        },
+        "period_metrics": {
+            "job_count": job_count,
+            "customer_collected_cents": customer_collected,
+            "tech_payout_cents": tech_payout,
+            "tech_reimbursement_cents": tech_reimbursement,
+            "company_retained_cents": company_retained,
+            "average_job_cents": int(round(customer_collected / job_count)) if job_count else 0,
+        },
+        "position": {
+            "owed_to_technicians_cents": owed_to_technicians,
+            "owed_by_technicians_cents": owed_by_technicians,
+            "pending_confirmation_cents": pending_confirmation_cents,
+            "pending_confirmation_count": pending_confirmation_count,
+        },
+        "attention": {
+            "pending_payments_count": pending_confirmation_count,
+            "settlement_activity_missing_agreement_count": len(missing_agreement_tech_ids),
+            "locked_settlement_runs_count": locked_settlement_runs_count,
+        },
+        "monthly_trend": monthly_trend,
+        "job_types": job_types,
+        "customer_payment_methods": customer_payment_methods,
+        "technician_collection": technician_collection,
+        "revenue_composition": revenue_composition,
+        "top_reimbursable_item_types": top_reimbursable_item_types,
+        "top_balances": top_balances,
+    }
+
+
 def _settlement_payment_in_filters(payment: dict, filters: dict) -> bool:
     technician_id = filters.get("technician_id")
     if technician_id and str(payment.get("technician_id")) != str(technician_id):
@@ -895,8 +1169,13 @@ class Store:
         raise NotImplementedError
 
     async def get_provider_job_history(
-        self, org_id: str, *, limit: int = 100
+        self, org_id: str, *, limit: int = 100, offset: int = 0
     ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_provider_financial_overview(
+        self, org_id: str, *, period_start: str | None = None, period_end: str | None = None
+    ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
     async def get_provider_technician_agreement(
@@ -927,7 +1206,7 @@ class Store:
         raise NotImplementedError
 
     async def list_provider_settlement_periods(
-        self, org_id: str, *, limit: int = 50
+        self, org_id: str, *, limit: int = 50, offset: int = 0
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -960,7 +1239,7 @@ class Store:
     async def list_settlement_payments(
         self, org_id: str, *, technician_id: str | None = None,
         status: str | None = None, period_start: str | None = None,
-        period_end: str | None = None, limit: int = 500,
+        period_end: str | None = None, limit: int = 500, offset: int = 0,
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -2174,6 +2453,7 @@ class InMemoryStore(Store):
         if self._job_status.get(jid) not in expected_statuses:
             return None
         self._job_status[jid] = target_status
+        self._stamp_job_timestamps(jid, {"cancelled_at"} if target_status == STATUS_CANCELLED else set())
         if clear_technician:
             getattr(self, "_job_tech", {}).pop(jid, None)
         for o in getattr(self, "_offers", {}).values():
@@ -2223,6 +2503,21 @@ class InMemoryStore(Store):
         offers[rec["id"]] = rec
         return rec
 
+    def _stamp_job_timestamps(self, jid: str, columns: set[str]) -> None:
+        """Coalesce-set lifecycle timestamp columns (first write wins, mirroring
+        Postgres's `coalesce(col, now())`) and always bump updated_at (mirroring
+        Postgres's unconditional `updated_at = now()`). Backs get_provider_job_
+        history's finished_at, which reads these the same way the Postgres
+        history query reads its real columns."""
+        timestamps = getattr(self, "_job_timestamps", None)
+        if timestamps is None:
+            timestamps = self._job_timestamps = {}
+        now = datetime.now(timezone.utc).isoformat()
+        record = timestamps.setdefault(jid, {})
+        for col in columns:
+            record.setdefault(col, now)
+        record["updated_at"] = now
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -2236,6 +2531,11 @@ class InMemoryStore(Store):
         if expected_current is not None and self._job_status.get(jid) != expected_current:
             return None
         self._job_status[jid] = new_status
+        cols = set(extra_timestamps or [])
+        ts_col = STATUS_TIMESTAMP_COLUMN.get(new_status)
+        if ts_col:
+            cols.add(ts_col)
+        self._stamp_job_timestamps(jid, cols)
         return {"id": jid, "status": new_status}
 
     async def cancel_job(
@@ -2246,6 +2546,7 @@ class InMemoryStore(Store):
         if self._job_status.get(jid) != current_status:
             return None
         self._job_status[jid] = STATUS_CANCELLED
+        self._stamp_job_timestamps(jid, {"cancelled_at", "closed_at"})
         for o in getattr(self, "_offers", {}).values():
             if o.get("job_id") == jid and o.get("status") == "offered":
                 o["status"] = "superseded"
@@ -2313,7 +2614,22 @@ class InMemoryStore(Store):
                 return review
         return None
 
-    async def get_provider_job_history(self, org_id: str, *, limit: int = 100) -> list[dict]:
+    def _resolve_job_finished_at(self, jid: str, closeout: dict | None) -> str | None:
+        """Mirrors the Postgres history query's
+        coalesce(confirmed_at, closed_at, cancelled_at, disputed_at, updated_at).
+        A job that transitioned through set_job_status/cancel_job/recover_job has
+        real tracked timestamps; a job whose status was set by directly poking
+        _job_status (bypassing the store API -- historically how this test suite
+        seeded jobs) has none, so fall back to the closeout's reported_at: a real
+        timestamp of when the closeout was recorded, not a fabricated date."""
+        record = getattr(self, "_job_timestamps", {}).get(jid)
+        if record:
+            for col in ("confirmed_at", "closed_at", "cancelled_at", "disputed_at", "updated_at"):
+                if record.get(col):
+                    return record[col]
+        return (closeout or {}).get("reported_at")
+
+    async def get_provider_job_history(self, org_id: str, *, limit: int = 100, offset: int = 0) -> list[dict]:
         statuses = getattr(self, "_job_status", {})
         out = []
         for jid, status in statuses.items():
@@ -2321,6 +2637,7 @@ class InMemoryStore(Store):
                 continue
             if org_id is not None and str(getattr(self, "_job_org", {}).get(jid)) != str(org_id):
                 continue
+            closeout = await self.get_job_closeout(UUID(jid))
             out.append({
                 "id": jid, "status": status,
                 "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
@@ -2328,9 +2645,43 @@ class InMemoryStore(Store):
                 "access_type": getattr(self, "_job_access_type", {}).get(jid),
                 "review": await self.get_job_review(UUID(jid)),
                 "payments": await self.get_payment_reports(UUID(jid)),
-                "closeout": await self.get_job_closeout(UUID(jid)),
+                "closeout": closeout,
+                "finished_at": self._resolve_job_finished_at(jid, closeout),
             })
-        return out[:limit]
+        return out[offset:offset + limit]
+
+    async def _all_provider_job_history(self, org_id: str) -> list[dict]:
+        """Every job in the org's history, unbounded (a dict scan -- no page cap to fall afoul of)."""
+        return await self.get_provider_job_history(org_id, limit=len(getattr(self, "_job_status", {})) + 1)
+
+    async def _all_settlement_payments(self, org_id: str) -> list[dict]:
+        return await self.list_settlement_payments(org_id, limit=len(getattr(self, "_settlement_payments", {})) + 1)
+
+    async def _all_settlement_periods(self, org_id: str) -> list[dict]:
+        return await self.list_provider_settlement_periods(org_id, limit=len(getattr(self, "_settlement_periods", {})) + 1)
+
+    async def _settlement_rows_from_history(self, org_id: str, job_rows: list[dict]) -> list[dict]:
+        """Job-history rows -> settlement rows (agreement-applied, affiliation-stamped),
+        with no period/technician filtering. Shared by list_provider_settlements (which
+        filters afterward) and the financial overview (which needs the unfiltered set)."""
+        agreements: dict[str, tuple[dict | None, bool, str | None]] = {}
+        out = []
+        for row in job_rows:
+            tech_id = row.get("fulfillment_technician_id")
+            closeout = row.get("closeout")
+            if not tech_id or not closeout:
+                continue
+            key = str(tech_id)
+            if key not in agreements:
+                agreements[key] = await self.get_provider_technician_agreement_for_reporting(
+                    UUID(str(org_id)), UUID(key)
+                )
+            agreement, affiliation_ended, affiliation_ended_at = agreements[key]
+            settlement = calculate_settlement(row, agreement)
+            settlement["affiliation_ended"] = affiliation_ended
+            settlement["affiliation_ended_at"] = affiliation_ended_at
+            out.append(settlement)
+        return out
 
     async def list_provider_settlements(
         self, org_id: str, *, technician_id: str | None = None,
@@ -2338,22 +2689,26 @@ class InMemoryStore(Store):
         limit: int = 100,
     ) -> list[dict]:
         rows = await self.get_provider_job_history(org_id, limit=limit)
+        settlements = await self._settlement_rows_from_history(org_id, rows)
         filters = {"technician_id": technician_id, "period_start": period_start, "period_end": period_end}
-        out = []
-        for row in rows:
-            tech_id = row.get("fulfillment_technician_id")
-            closeout = row.get("closeout")
-            if not tech_id or not closeout:
-                continue
-            agreement, affiliation_ended, affiliation_ended_at = await self.get_provider_technician_agreement_for_reporting(
-                UUID(str(org_id)), UUID(str(tech_id))
-            )
-            settlement = calculate_settlement(row, agreement)
-            settlement["affiliation_ended"] = affiliation_ended
-            settlement["affiliation_ended_at"] = affiliation_ended_at
-            if _settlement_row_in_period(settlement, filters):
-                out.append(settlement)
-        return out
+        return [s for s in settlements if _settlement_row_in_period(s, filters)]
+
+    async def get_provider_financial_overview(
+        self, org_id: str, *, period_start: str | None = None, period_end: str | None = None
+    ) -> dict:
+        job_rows = await self._all_provider_job_history(org_id)
+        all_time_rows = await self._settlement_rows_from_history(org_id, job_rows)
+        period_filter = {"technician_id": None, "period_start": period_start, "period_end": period_end}
+        period_rows = [r for r in all_time_rows if _settlement_row_in_period(r, period_filter)]
+        payments = await self._all_settlement_payments(org_id)
+        periods = await self._all_settlement_periods(org_id)
+        skill_labels = await _skill_label_map(self)
+        item_labels = await _item_type_label_map(self)
+        return build_financial_overview(
+            all_time_rows, period_rows, payments, periods,
+            period_start=period_start, period_end=period_end,
+            skill_labels=skill_labels, item_labels=item_labels,
+        )
 
     async def list_technician_settlements(self, technician_id: UUID, *, limit: int = 100) -> dict:
         rows = []
@@ -2409,14 +2764,14 @@ class InMemoryStore(Store):
         self._settlement_periods[period_id] = period
         return dict(period)
 
-    async def list_provider_settlement_periods(self, org_id: str, *, limit: int = 50) -> list[dict]:
+    async def list_provider_settlement_periods(self, org_id: str, *, limit: int = 50, offset: int = 0) -> list[dict]:
         rows = [
             {k: v for k, v in period.items() if k not in {"rows", "adjustments"}}
             for period in self._settlement_periods.values()
             if str(period.get("organization_id")) == str(org_id)
         ]
         rows.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-        return rows[:limit]
+        return rows[offset:offset + limit]
 
     async def get_provider_settlement_period(self, org_id: str, period_id: UUID) -> dict | None:
         period = self._settlement_periods.get(str(period_id))
@@ -2504,7 +2859,7 @@ class InMemoryStore(Store):
     async def list_settlement_payments(
         self, org_id: str, *, technician_id: str | None = None,
         status: str | None = None, period_start: str | None = None,
-        period_end: str | None = None, limit: int = 500,
+        period_end: str | None = None, limit: int = 500, offset: int = 0,
     ) -> list[dict]:
         filters = {
             "technician_id": technician_id, "status": status,
@@ -2516,7 +2871,7 @@ class InMemoryStore(Store):
             and _settlement_payment_in_filters(p, filters)
         ]
         rows.sort(key=lambda p: (p.get("paid_on") or "", p.get("created_at") or ""), reverse=True)
-        return rows[:limit]
+        return rows[offset:offset + limit]
 
     def _own_settlement_payment(self, org_id: str, payment_id: UUID) -> dict | None:
         payment = getattr(self, "_settlement_payments", {}).get(str(payment_id))
@@ -5586,7 +5941,7 @@ class PostgresStore(Store):
         }
 
     async def _job_history(
-        self, where: str, params: tuple, limit: int, statuses=HISTORY_STATUSES
+        self, where: str, params: tuple, limit: int, statuses=HISTORY_STATUSES, *, offset: int = 0
     ) -> list[dict]:
         async with await self._connect() as conn:
             cur = await conn.execute(
@@ -5602,8 +5957,8 @@ class PostgresStore(Store):
                 "   where job_id = j.id order by created_at desc limit 1"
                 " ) r on true"
                 " where " + where + " and j.status = any(%s)"
-                " order by 7 desc nulls last limit %s",
-                params + (list(statuses), limit),
+                " order by 7 desc nulls last, j.id limit %s offset %s",
+                params + (list(statuses), limit, offset),
             )
             rows = await cur.fetchall()
             job_ids = [str(r[0]) for r in rows]
@@ -5631,22 +5986,58 @@ class PostgresStore(Store):
             for r in rows
         ]
 
-    async def get_provider_job_history(self, org_id: str, *, limit: int = 100) -> list[dict]:
+    async def get_provider_job_history(self, org_id: str, *, limit: int = 100, offset: int = 0) -> list[dict]:
         return await self._job_history(
             "(j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)",
-            (str(org_id), str(org_id)), limit,
+            (str(org_id), str(org_id)), limit, offset=offset,
         )
 
-    async def list_provider_settlements(
-        self, org_id: str, *, technician_id: str | None = None,
-        period_start: str | None = None, period_end: str | None = None,
-        limit: int = 100,
-    ) -> list[dict]:
-        rows = await self.get_provider_job_history(org_id, limit=limit)
-        filters = {"technician_id": technician_id, "period_start": period_start, "period_end": period_end}
+    _FINANCIAL_OVERVIEW_PAGE_SIZE = 1000
+
+    async def _all_provider_job_history(self, org_id: str) -> list[dict]:
+        """Every job in the org's history, unbounded -- paginated internally so a
+        single dashboard aggregation never silently truncates at a page size."""
+        page_size = self._FINANCIAL_OVERVIEW_PAGE_SIZE
+        out: list[dict] = []
+        offset = 0
+        while True:
+            page = await self.get_provider_job_history(org_id, limit=page_size, offset=offset)
+            out.extend(page)
+            if len(page) < page_size:
+                return out
+            offset += page_size
+
+    async def _all_settlement_payments(self, org_id: str) -> list[dict]:
+        page_size = self._FINANCIAL_OVERVIEW_PAGE_SIZE
+        out: list[dict] = []
+        offset = 0
+        while True:
+            page = await self.list_settlement_payments(org_id, limit=page_size, offset=offset)
+            out.extend(page)
+            if len(page) < page_size:
+                return out
+            offset += page_size
+
+    async def _all_settlement_periods(self, org_id: str) -> list[dict]:
+        page_size = self._FINANCIAL_OVERVIEW_PAGE_SIZE
+        out: list[dict] = []
+        offset = 0
+        while True:
+            page = await self.list_provider_settlement_periods(org_id, limit=page_size, offset=offset)
+            out.extend(page)
+            if len(page) < page_size:
+                return out
+            offset += page_size
+
+    async def _settlement_rows_from_history(self, org_id: str, job_rows: list[dict]) -> list[dict]:
+        """Job-history rows -> settlement rows (agreement-applied, affiliation-stamped),
+        with no period/technician filtering. Shared by list_provider_settlements (which
+        filters afterward) and the financial overview (which needs the unfiltered set).
+        Agreement lookups are cached per technician within the call -- one lookup per
+        distinct technician, not per job, however many rows are being processed."""
         agreements: dict[str, tuple[dict | None, bool, str | None]] = {}
         out = []
-        for row in rows:
+        for row in job_rows:
             tech_id = row.get("fulfillment_technician_id")
             if not tech_id or not row.get("closeout"):
                 continue
@@ -5659,9 +6050,35 @@ class PostgresStore(Store):
             settlement = calculate_settlement(row, agreement)
             settlement["affiliation_ended"] = affiliation_ended
             settlement["affiliation_ended_at"] = affiliation_ended_at
-            if _settlement_row_in_period(settlement, filters):
-                out.append(settlement)
+            out.append(settlement)
         return out
+
+    async def list_provider_settlements(
+        self, org_id: str, *, technician_id: str | None = None,
+        period_start: str | None = None, period_end: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        rows = await self.get_provider_job_history(org_id, limit=limit)
+        settlements = await self._settlement_rows_from_history(org_id, rows)
+        filters = {"technician_id": technician_id, "period_start": period_start, "period_end": period_end}
+        return [s for s in settlements if _settlement_row_in_period(s, filters)]
+
+    async def get_provider_financial_overview(
+        self, org_id: str, *, period_start: str | None = None, period_end: str | None = None
+    ) -> dict:
+        job_rows = await self._all_provider_job_history(org_id)
+        all_time_rows = await self._settlement_rows_from_history(org_id, job_rows)
+        period_filter = {"technician_id": None, "period_start": period_start, "period_end": period_end}
+        period_rows = [r for r in all_time_rows if _settlement_row_in_period(r, period_filter)]
+        payments = await self._all_settlement_payments(org_id)
+        periods = await self._all_settlement_periods(org_id)
+        skill_labels = await _skill_label_map(self)
+        item_labels = await _item_type_label_map(self)
+        return build_financial_overview(
+            all_time_rows, period_rows, payments, periods,
+            period_start=period_start, period_end=period_end,
+            skill_labels=skill_labels, item_labels=item_labels,
+        )
 
     async def list_technician_settlements(self, technician_id: UUID, *, limit: int = 100) -> dict:
         live = []
@@ -5772,15 +6189,15 @@ class PostgresStore(Store):
             await self._refresh_settlement_period_totals(conn, period_id)
         return await self.get_provider_settlement_period(org_id, UUID(period_id)) or {}
 
-    async def list_provider_settlement_periods(self, org_id: str, *, limit: int = 50) -> list[dict]:
+    async def list_provider_settlement_periods(self, org_id: str, *, limit: int = 50, offset: int = 0) -> list[dict]:
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, organization_id, status, label, period_start, period_end, technician_id,"
                 " job_count, customer_total_cents, tax_cents, card_fee_cents, tech_payout_cents,"
                 " company_retained_cents, adjustment_cents, final_tech_payout_cents, note,"
                 " created_by, locked_by, paid_by, created_at, updated_at, locked_at, paid_at"
-                " from settlement_periods where organization_id = %s order by created_at desc limit %s",
-                (str(org_id), limit),
+                " from settlement_periods where organization_id = %s order by created_at desc, id limit %s offset %s",
+                (str(org_id), limit, offset),
             )
             rows = await cur.fetchall()
         return [self._period_summary(row) for row in rows]
@@ -5914,7 +6331,7 @@ class PostgresStore(Store):
     async def list_settlement_payments(
         self, org_id: str, *, technician_id: str | None = None,
         status: str | None = None, period_start: str | None = None,
-        period_end: str | None = None, limit: int = 500,
+        period_end: str | None = None, limit: int = 500, offset: int = 0,
     ) -> list[dict]:
         where = ["sp.organization_id = %s"]
         params: list = [str(org_id)]
@@ -5935,8 +6352,8 @@ class PostgresStore(Store):
                 f"select {self._SETTLEMENT_PAYMENT_COLUMNS} from settlement_payments sp"
                 " left join technicians t on t.id = sp.technician_id"
                 " where " + " and ".join(where) +
-                " order by sp.paid_on desc, sp.created_at desc limit %s",
-                (*params, limit),
+                " order by sp.paid_on desc, sp.created_at desc, sp.id limit %s offset %s",
+                (*params, limit, offset),
             )
             rows = await cur.fetchall()
         return [self._settlement_payment_row(r) for r in rows]

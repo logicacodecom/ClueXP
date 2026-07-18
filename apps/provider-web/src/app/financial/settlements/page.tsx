@@ -18,7 +18,7 @@ import {
 } from "@cluexp/console-ui";
 import { Download, Lock, Plus, RefreshCw, Users, Wallet } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppFrame } from "../frame";
+import { AppFrame } from "../../frame";
 
 interface SettlementRow {
   job_id: string;
@@ -74,7 +74,13 @@ function formatDate(iso: string | null): string {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
 }
 
-export default function ReportsPage() {
+// Honest status wording: "paid" is a manually-set batch flag, not proof money
+// moved -- that proof lives in the payment ledger (Financial -> Payments).
+const RUN_STATUS_LABEL: Record<string, string> = {
+  draft: "Draft", locked: "Locked — approval snapshot", paid: "Marked paid — see ledger", void: "Void",
+};
+
+export default function SettlementRunsPage() {
   const [rows, setRows] = useState<SettlementRow[]>([]);
   const [periods, setPeriods] = useState<SettlementPeriod[]>([]);
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
@@ -193,11 +199,11 @@ export default function ReportsPage() {
       <div className="space-y-6">
         <PageHeader
           kicker="Finance"
-          title="Settlement reports"
-          description="Closeout-derived settlement rows for technician payout, reimbursement, company retained amount, and spreadsheet export."
+          title="Settlement runs"
+          description="Optional payroll-batch snapshots: freeze a set of settlement rows for review, adjustment, and export. A run's status describes the approval batch — it is not proof that a payment moved. Actual money movement is tracked in Financial → Payments."
           actions={
             <div className="flex flex-wrap gap-2">
-              <Button asChild variant="outline"><a href="/reports/technicians"><Users className="size-4" />By technician</a></Button>
+              <Button asChild variant="outline"><a href="/financial/technicians"><Users className="size-4" />By technician</a></Button>
               <Button variant="outline" onClick={() => void load()}><RefreshCw className="size-4" />Refresh</Button>
               <Button asChild><a href="/api/provider/settlements?format=csv"><Download className="size-4" />Export CSV</a></Button>
             </div>
@@ -215,9 +221,9 @@ export default function ReportsPage() {
 
         <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
           <Card>
-            <CardHeader><CardTitle>Create settlement period</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Create settlement run</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">Create a draft snapshot from the current settlement rows. Lock it after review; mark paid only after external payment is completed.</p>
+              <p className="text-sm text-muted-foreground">Create a draft snapshot from the current settlement rows. Lock it after review. Marking it paid records the batch's status only — log the actual payment in Financial → Payments.</p>
               <input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Label, e.g. July 1–15 settlements" value={createForm.label} onChange={(e) => setCreateForm((f) => ({ ...f, label: e.target.value }))} />
               <label className="block space-y-1 text-xs font-semibold text-muted-foreground">
                 Technician
@@ -232,15 +238,15 @@ export default function ReportsPage() {
                 <label className="space-y-1 text-xs font-semibold text-muted-foreground">Start<input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={createForm.period_start} onChange={(e) => setCreateForm((f) => ({ ...f, period_start: e.target.value }))} /></label>
                 <label className="space-y-1 text-xs font-semibold text-muted-foreground">End<input className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" type="date" value={createForm.period_end} onChange={(e) => setCreateForm((f) => ({ ...f, period_end: e.target.value }))} /></label>
               </div>
-              <Button onClick={() => void createPeriod()}><Plus className="size-4" />Create draft period</Button>
+              <Button onClick={() => void createPeriod()}><Plus className="size-4" />Create draft run</Button>
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Settlement periods</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Settlement runs</CardTitle></CardHeader>
             <CardContent>
               {periods.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No settlement periods yet.</p>
+                <p className="text-sm text-muted-foreground">No settlement runs yet.</p>
               ) : (
                 <div className="space-y-2">
                   {periods.map((period) => (
@@ -252,7 +258,7 @@ export default function ReportsPage() {
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="font-semibold">{period.label}</span>
-                        <Badge variant={period.status === "paid" ? "success" : period.status === "locked" ? "warn" : "outline"}>{period.status}</Badge>
+                        <Badge variant={period.status === "paid" ? "success" : period.status === "locked" ? "warn" : "outline"}>{RUN_STATUS_LABEL[period.status] ?? period.status}</Badge>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">{period.technician_id ? technicianName(period.technician_id) : "All technicians"} · {period.job_count} jobs · payout {money(period.final_tech_payout_cents)}</div>
                     </button>
@@ -265,7 +271,7 @@ export default function ReportsPage() {
 
         {selectedPeriod ? (
           <Card>
-            <CardHeader><CardTitle>Period review: {selectedPeriod.label}</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Run review: {selectedPeriod.label}</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-3 md:grid-cols-4">
                 <StatCard label="Jobs" value={String(selectedPeriod.job_count)} />
@@ -291,12 +297,12 @@ export default function ReportsPage() {
                 </div>
               ) : null}
               <div className="flex flex-wrap gap-2">
-                <Button asChild variant="outline"><a href={`/api/provider/settlement-periods/${selectedPeriod.id}?format=csv`}><Download className="size-4" />Export period CSV</a></Button>
-                {selectedPeriod.status === "draft" ? <Button onClick={() => void periodAction("lock")}><Lock className="size-4" />Lock period</Button> : null}
+                <Button asChild variant="outline"><a href={`/api/provider/settlement-periods/${selectedPeriod.id}?format=csv`}><Download className="size-4" />Export run CSV</a></Button>
+                {selectedPeriod.status === "draft" ? <Button onClick={() => void periodAction("lock")}><Lock className="size-4" />Lock run</Button> : null}
                 {selectedPeriod.status === "locked" ? <Button onClick={() => void periodAction("paid")}><Wallet className="size-4" />Mark paid</Button> : null}
               </div>
-              <p className="text-xs text-muted-foreground">Locked and paid periods use the saved row snapshots. Later agreement edits or closeout corrections do not alter this period.</p>
-              <p className="text-xs text-muted-foreground">“Mark paid” updates the batch status only. Record the actual money movement in <a className="underline" href="/reports/payments">Financial → Payments</a> so the technician’s outstanding balance stays accurate.</p>
+              <p className="text-xs text-muted-foreground">Locked and paid runs use the saved row snapshots — later agreement edits or closeout corrections do not alter them. Locking approves the batch for accounting review; it is not proof of payment.</p>
+              <p className="text-xs text-muted-foreground">“Mark paid” updates this run's status only — it does not create a payment record. Log the actual payment in <a className="underline" href="/financial/payments">Financial → Payments</a>, whose confirmed entries are the source of truth for money movement.</p>
             </CardContent>
           </Card>
         ) : null}

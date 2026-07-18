@@ -34,7 +34,7 @@ import {
 } from "./shared";
 
 export interface TechnicianDetailReportProps {
-  technicianId: string | null;
+  technicianId: string;
   onTechnicianChange: (id: string) => void;
 }
 
@@ -62,16 +62,12 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
       if (!summaryResponse.ok) throw new Error(summaryBody.detail || "Unable to load technician report");
       setSummaries(Array.isArray(summaryBody) ? summaryBody : []);
 
-      if (technicianId) {
-        const jobsParams = new URLSearchParams(periodQs ? periodQs.slice(1) : "");
-        jobsParams.set("technician_id", technicianId);
-        const jobsResponse = await fetch(`/api/provider/settlements?${jobsParams.toString()}`, { cache: "no-store" });
-        const jobsBody = await jobsResponse.json().catch(() => ({}));
-        if (!jobsResponse.ok) throw new Error(jobsBody.detail || "Unable to load technician jobs");
-        setRows(Array.isArray(jobsBody) ? jobsBody : []);
-      } else {
-        setRows([]);
-      }
+      const jobsParams = new URLSearchParams(periodQs ? periodQs.slice(1) : "");
+      jobsParams.set("technician_id", technicianId);
+      const jobsResponse = await fetch(`/api/provider/settlements?${jobsParams.toString()}`, { cache: "no-store" });
+      const jobsBody = await jobsResponse.json().catch(() => ({}));
+      if (!jobsResponse.ok) throw new Error(jobsBody.detail || "Unable to load technician jobs");
+      setRows(Array.isArray(jobsBody) ? jobsBody : []);
       setStatus("ready");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to load technician report");
@@ -83,12 +79,6 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
     void load(applied.start, applied.end);
   }, [load, applied]);
 
-  // Land on the top earner when no technician is selected yet (the "By Tech"
-  // entry point) instead of showing an empty picker.
-  useEffect(() => {
-    if (!technicianId && summaries.length > 0) onTechnicianChange(summaries[0].technician_id);
-  }, [technicianId, summaries, onTechnicianChange]);
-
   const summary = useMemo(
     () => summaries.find((s) => s.technician_id === technicianId) ?? null,
     [summaries, technicianId]
@@ -96,7 +86,6 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
   // Selector comes from the report itself so ex-affiliated techs stay selectable;
   // the current id is merged in case it has no rows in the applied period.
   const selectorOptions = useMemo(() => {
-    if (!technicianId) return summaries;
     if (summaries.some((s) => s.technician_id === technicianId)) return summaries;
     return [...summaries, {
       technician_id: technicianId,
@@ -130,23 +119,10 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
         { key: "settlement_value", header: "Settlement value ($)", width: 20 },
         { key: "review_rating", header: "Review", width: 10 },
       ],
-      `technician-${technicianId ?? "report"}`,
+      `technician-${technicianId}`,
       "Jobs"
     );
   }, [rows, technicianId]);
-
-  if (!technicianId) {
-    return (
-      <div className="space-y-6">
-        <PageHeader kicker="Finance" title="Technician settlement detail" description="Loading technicians…" />
-        <Card>
-          <CardContent className="pt-6 text-sm text-muted-foreground">
-            {status === "loading" ? "Loading technicians…" : "No technicians with settlement rows yet."}
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -156,7 +132,7 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
         description="Every settled job for the selected technician in the period. Click a job for the full closeout, payment, and review breakdown."
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="outline"><a href={`/reports/technicians${periodQuery}`}><ArrowLeft className="size-4" />All technicians</a></Button>
+            <Button asChild variant="outline"><a href={`/financial/technicians${periodQuery}`}><ArrowLeft className="size-4" />Technicians</a></Button>
             <Button onClick={() => setPayOpen(true)}><Wallet className="size-4" />Log payment</Button>
           </div>
         }

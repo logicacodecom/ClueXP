@@ -157,7 +157,7 @@ export default function TechnicianReportPage() {
                       <TableRow
                         className="cursor-pointer"
                         key={row.technician_id}
-                        onClick={() => router.push(`/reports/technicians/${row.technician_id}${periodQuery}`)}
+                        onClick={() => router.push(`/financial/technicians/${row.technician_id}${periodQuery}`)}
                       >
                         <TableCell>
                           <div className="flex flex-wrap items-center gap-2 font-medium">
