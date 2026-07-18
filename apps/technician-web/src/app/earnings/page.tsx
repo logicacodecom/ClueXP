@@ -1,8 +1,29 @@
 "use client";
 
-import { AlertTriangle, BriefcaseBusiness, CheckCircle2, Clock, RefreshCw, WalletCards } from "lucide-react";
+import { AlertTriangle, BriefcaseBusiness, CheckCircle2, Clock, RefreshCw, Send, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pill, Screen, TechnicianShell } from "@/components/mobile";
+
+const PAYMENT_METHODS = [
+  "cash", "check", "zelle", "cash_app", "venmo", "paypal",
+  "bank_transfer", "other",
+] as const;
+
+type TechPayment = {
+  id: string;
+  organization_id: string;
+  organization_name?: string | null;
+  direction: "company_to_technician" | "technician_to_company";
+  amount_cents: number;
+  payment_method: string;
+  reference_number?: string | null;
+  paid_on: string;
+  note?: string | null;
+  status: "pending" | "confirmed" | "rejected" | "voided";
+  submitted_by_role: "provider" | "technician";
+  rejected_reason?: string | null;
+  void_reason?: string | null;
+};
 
 type SettlementRow = {
   job_id: string;
@@ -61,21 +82,31 @@ function statusTone(status: string): "success" | "warn" | "muted" {
 
 export default function EarningsPage() {
   const [payload, setPayload] = useState<SettlementPayload>({ live: [], period_rows: [] });
+  const [payments, setPayments] = useState<TechPayment[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState({ organization_id: "", amount: "", method: "cash", paid_on: "", reference: "", note: "" });
+  const [formBusy, setFormBusy] = useState(false);
+  const [formMessage, setFormMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState("loading");
     setError(null);
     try {
-      const response = await fetch("/api/settlements", { cache: "no-store" });
-      if (response.status === 401) { window.location.assign("/signin"); return; }
+      const [response, paymentsResponse] = await Promise.all([
+        fetch("/api/settlements", { cache: "no-store" }),
+        fetch("/api/payments", { cache: "no-store" }),
+      ]);
+      if (response.status === 401 || paymentsResponse.status === 401) { window.location.assign("/signin"); return; }
       const body = await response.json().catch(() => ({}));
+      const paymentsBody = await paymentsResponse.json().catch(() => ({}));
       if (!response.ok) throw new Error((body as { detail?: string })?.detail || "Could not load earnings");
+      if (!paymentsResponse.ok) throw new Error((paymentsBody as { detail?: string })?.detail || "Could not load payments");
       setPayload({
         live: Array.isArray(body.live) ? body.live : [],
         period_rows: Array.isArray(body.period_rows) ? body.period_rows : []
       });
+      setPayments(Array.isArray(paymentsBody) ? paymentsBody : []);
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load earnings");
@@ -84,6 +115,54 @@ export default function EarningsPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Companies the technician can register a remittance against: anywhere they
+  // have settlement rows or existing payments.
+  const companies = useMemo(() => {
+    const byId = new Map<string, string | null>();
+    for (const row of payload.live) {
+      if (row.organization_id) byId.set(row.organization_id, null);
+    }
+    for (const payment of payments) {
+      byId.set(payment.organization_id, payment.organization_name ?? byId.get(payment.organization_id) ?? null);
+    }
+    return Array.from(byId.entries()).map(([id, name]) => ({ id, name }));
+  }, [payload.live, payments]);
+
+  useEffect(() => {
+    if (!form.organization_id && companies.length > 0) {
+      setForm((f) => ({ ...f, organization_id: companies[0].id }));
+    }
+  }, [companies, form.organization_id]);
+
+  const registerPayment = useCallback(async () => {
+    setFormMessage(null);
+    const amountCents = Math.round(Number.parseFloat(form.amount || "0") * 100);
+    setFormBusy(true);
+    try {
+      const response = await fetch("/api/payments", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          organization_id: form.organization_id,
+          amount_cents: amountCents,
+          payment_method: form.method,
+          paid_on: form.paid_on || undefined,
+          reference_number: form.reference || undefined,
+          note: form.note || undefined,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error((body as { detail?: string })?.detail || "Could not register payment");
+      setForm((f) => ({ ...f, amount: "", reference: "", note: "" }));
+      setFormMessage("Submitted. Your company will confirm it.");
+      await load();
+    } catch (cause) {
+      setFormMessage(cause instanceof Error ? cause.message : "Could not register payment");
+    } finally {
+      setFormBusy(false);
+    }
+  }, [form, load]);
 
   const stats = useMemo(() => {
     const liveEstimate = payload.live.reduce((sum, row) => sum + (row.tech_payout_cents ?? 0), 0);
@@ -134,6 +213,84 @@ export default function EarningsPage() {
             <p className="mt-1 font-condensed text-2xl font-bold">{money(stats.paid)}</p>
           </div>
         </div>
+
+        <section className="mt-4 rounded-[22px] border border-border bg-card p-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-black leading-tight">Payments</h2>
+              <p className="mt-1 text-sm leading-5 text-muted">
+                Money moved between you and your company. Payments you register stay pending until the company confirms them.
+              </p>
+            </div>
+            <Pill tone="muted" icon={Send}>{payments.length}</Pill>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card-strong p-3">
+            <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Register a payment you made to the company</p>
+            {formMessage ? <p className="mt-2 rounded-xl border border-border bg-card p-2 text-xs font-bold">{formMessage}</p> : null}
+            <div className="mt-3 space-y-2">
+              {companies.length > 1 ? (
+                <select className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm" value={form.organization_id} onChange={(e) => setForm((f) => ({ ...f, organization_id: e.target.value }))}>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name ?? `Company ${c.id.slice(0, 8)}`}</option>
+                  ))}
+                </select>
+              ) : null}
+              <div className="grid grid-cols-2 gap-2">
+                <input className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm" inputMode="decimal" placeholder="Amount $" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} />
+                <input className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm" type="date" value={form.paid_on} onChange={(e) => setForm((f) => ({ ...f, paid_on: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <select className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm" value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}>
+                  {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m.replace(/_/g, " ")}</option>)}
+                </select>
+                <input className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm" placeholder="Reference (optional)" value={form.reference} onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))} />
+              </div>
+              <input className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm" placeholder="Note (optional)" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} />
+              <button
+                className="touch-target w-full rounded-xl bg-primary px-4 py-2 text-sm font-black uppercase text-primary-foreground disabled:opacity-50"
+                disabled={formBusy || !form.organization_id || !form.amount}
+                onClick={() => void registerPayment()}
+                type="button"
+              >
+                Submit for confirmation
+              </button>
+            </div>
+          </div>
+
+          {payments.length > 0 ? (
+            <ul className="mt-3 space-y-2">
+              {payments.map((payment) => (
+                <li className="rounded-2xl border border-border bg-card-strong p-3" key={payment.id}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-black">
+                        {payment.direction === "company_to_technician" ? "Company paid you" : "You paid the company"} · {money(payment.amount_cents)}
+                      </p>
+                      <p className="mt-1 text-xs text-muted">
+                        {date(payment.paid_on)} · {payment.payment_method.replace(/_/g, " ")}
+                        {payment.reference_number ? ` · ref ${payment.reference_number}` : ""}
+                        {payment.organization_name ? ` · ${payment.organization_name}` : ""}
+                      </p>
+                      {payment.status === "rejected" && payment.rejected_reason ? (
+                        <p className="mt-1 text-xs font-bold text-danger">Rejected: {payment.rejected_reason}</p>
+                      ) : null}
+                      {payment.status === "voided" && payment.void_reason ? (
+                        <p className="mt-1 text-xs text-muted">Voided: {payment.void_reason}</p>
+                      ) : null}
+                    </div>
+                    <Pill
+                      tone={payment.status === "confirmed" ? "success" : payment.status === "pending" ? "warn" : "muted"}
+                      icon={payment.status === "confirmed" ? CheckCircle2 : Clock}
+                    >
+                      {payment.status}
+                    </Pill>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
 
         <section className="mt-4 rounded-[22px] border border-border bg-card p-4">
           <div className="mb-3 flex items-start justify-between gap-3">

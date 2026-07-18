@@ -296,6 +296,7 @@ export default function ReportsPage() {
                 {selectedPeriod.status === "locked" ? <Button onClick={() => void periodAction("paid")}><Wallet className="size-4" />Mark paid</Button> : null}
               </div>
               <p className="text-xs text-muted-foreground">Locked and paid periods use the saved row snapshots. Later agreement edits or closeout corrections do not alter this period.</p>
+              <p className="text-xs text-muted-foreground">“Mark paid” updates the batch status only. Record the actual money movement in <a className="underline" href="/reports/payments">Financial → Payments</a> so the technician’s outstanding balance stays accurate.</p>
             </CardContent>
           </Card>
         ) : null}

@@ -15,10 +15,11 @@ import {
   TableHeader,
   TableRow
 } from "@cluexp/console-ui";
-import { ArrowLeft, FileSpreadsheet } from "lucide-react";
+import { ArrowLeft, FileSpreadsheet, Wallet } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { exportRowsToExcel } from "./excel";
+import { LogPaymentModal } from "./payment-modal";
 import {
   AffiliationTag,
   buildPeriodQuery,
@@ -49,6 +50,7 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
+  const [payOpen, setPayOpen] = useState(false);
 
   const load = useCallback(async (start: string, end: string) => {
     setStatus("loading");
@@ -153,7 +155,10 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
         title="Technician settlement detail"
         description="Every settled job for the selected technician in the period. Click a job for the full closeout, payment, and review breakdown."
         actions={
-          <Button asChild variant="outline"><a href={`/reports/technicians${periodQuery}`}><ArrowLeft className="size-4" />All technicians</a></Button>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline"><a href={`/reports/technicians${periodQuery}`}><ArrowLeft className="size-4" />All technicians</a></Button>
+            <Button onClick={() => setPayOpen(true)}><Wallet className="size-4" />Log payment</Button>
+          </div>
         }
       />
 
@@ -193,12 +198,22 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
         <AffiliationTag ended={summary?.affiliation_ended} endedAt={summary?.affiliation_ended_at} />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <StatCard label="Jobs" value={String(summary?.job_count ?? rows.length)} />
         <StatCard label="Collected" value={money(summary?.customer_total_cents ?? 0)} />
         <StatCard label="Tech payout" value={money(summary?.tech_payout_cents ?? 0)} />
         <StatCard label="Reviews" value={summary && summary.review_count > 0 ? `${summary.average_rating?.toFixed(1)} ★ (${summary.review_count})` : "—"} />
+        <StatCard
+          intent={(summary?.balance?.net_outstanding_cents ?? 0) < 0 ? "danger" : "success"}
+          label="Outstanding (all time)"
+          value={money(summary?.balance?.net_outstanding_cents ?? 0)}
+        />
       </div>
+      {summary?.balance && summary.balance.pending_tech_to_company_cents > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {money(summary.balance.pending_tech_to_company_cents)} technician-submitted payment pending confirmation — review it on the Payments page.
+        </p>
+      ) : null}
 
       <Card>
         <CardHeader><CardTitle>Jobs in period</CardTitle></CardHeader>
@@ -252,6 +267,15 @@ export function TechnicianDetailReport({ technicianId, onTechnicianChange }: Tec
           )}
         </CardContent>
       </Card>
+
+      <LogPaymentModal
+        open={payOpen}
+        onOpenChange={setPayOpen}
+        technicians={summary ? [summary] : []}
+        preselectedTechnicianId={technicianId}
+        sourcePeriod={applied}
+        onLogged={() => void load(applied.start, applied.end)}
+      />
     </div>
   );
 }

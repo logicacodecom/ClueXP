@@ -3487,6 +3487,248 @@ def test_settlements_by_technician_endpoint_filters_and_ex_tech_agreement():
     assert group["affiliation_ended_at"] == "2026-01-01T00:00:00+00:00"
 
 
+def test_settlement_payment_balance_math():
+    from api.store import compute_settlement_payment_balance
+
+    group = {"company_owes_tech_cents": 7000, "tech_owes_company_cents": 4700}
+    payments = [
+        {"status": "confirmed", "direction": "company_to_technician", "amount_cents": 5000},
+        {"status": "confirmed", "direction": "technician_to_company", "amount_cents": 700},
+        {"status": "pending", "direction": "technician_to_company", "amount_cents": 2000},
+        {"status": "rejected", "direction": "technician_to_company", "amount_cents": 999},
+        {"status": "voided", "direction": "company_to_technician", "amount_cents": 999},
+    ]
+    balance = compute_settlement_payment_balance(group, payments)
+    assert balance["confirmed_company_to_tech_cents"] == 5000
+    assert balance["confirmed_tech_to_company_cents"] == 700
+    assert balance["pending_tech_to_company_cents"] == 2000
+    assert balance["outstanding_company_to_tech_cents"] == 2000
+    assert balance["outstanding_tech_to_company_cents"] == 4000
+    assert balance["net_outstanding_cents"] == -2000
+    # Overpayment on one side clamps at zero, never manufacturing opposite debt.
+    over = compute_settlement_payment_balance(
+        group, [{"status": "confirmed", "direction": "company_to_technician", "amount_cents": 99999}]
+    )
+    assert over["outstanding_company_to_tech_cents"] == 0
+    assert over["net_outstanding_cents"] == -4700
+    # No settled jobs at all -> flat zero balance.
+    assert compute_settlement_payment_balance(None, [])["net_outstanding_cents"] == 0
+
+
+def _seed_settlement_payment_org(app_store, *, cash_total_cents=10000):
+    """Org + tech + admin + one cash job (tech owes company 40% of total)."""
+    import asyncio as _asyncio
+    from api.auth import create_access_token
+
+    org, tid, jid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_affiliation(app_store, org, tid)
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_CONFIRMED
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tid
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+    app_store._job_access_type[jid] = "locksmith.vehicle_key_programming"
+
+    admin = str(uuid4())
+    app_store.users[admin] = {
+        "id": admin, "email": f"pay_{admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    app_store.users[tid] = {
+        "id": tid, "email": f"paytech_{tid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Org Tech", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._technician_agreements[(org, tid)] = {
+        "id": str(uuid4()), "organization_id": org, "technician_id": tid,
+        "status": "active", "default_labor_cut_basis_points": 6000,
+        "tip_policy": "company_keeps", "tip_cut_basis_points": 0,
+        "card_fee_policy": "company_pays", "minimum_payout_cents": 0,
+        "flat_job_bonus_cents": 0, "rules": {},
+    }
+    _asyncio.run(app_store.record_job_closeout({
+        "job_id": jid, "reported_by": "technician", "currency": "USD", "method": "cash",
+        "subtotal_cents": cash_total_cents, "taxable_subtotal_cents": cash_total_cents,
+        "tax_rate_basis_points": 0, "tax_cents": 0, "tip_cents": 0,
+        "card_fee_basis_points": 0, "card_fee_fixed_cents": 0, "card_fee_cents": 0,
+        "total_cents": cash_total_cents, "settings_snapshot": {},
+        "line_items": [
+            {"line_number": 1, "item_type_code": "service_fee", "description": "Service", "quantity": 1, "unit_amount_cents": cash_total_cents, "line_total_cents": cash_total_cents, "taxable": True, "provided_by": None, "compensation_eligible": True, "reimbursement_eligible": False, "note": None},
+        ],
+    }))
+    H = {"Authorization": f"Bearer {create_access_token({'sub': admin, 'id': admin, 'roles': ['provider_admin']})}"}
+    TH = {"Authorization": f"Bearer {create_access_token({'sub': tid, 'id': tid, 'roles': ['technician']})}"}
+    return org, tid, jid, admin, H, TH
+
+
+def test_settlement_payment_lifecycle_and_balance():
+    """Provider logs confirmed payments, technician submits pending ones, and
+    the all-time outstanding balance only moves on confirmed entries."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org, tid, _jid, _admin, H, TH = _seed_settlement_payment_org(app_store)
+    client = TestClient(app)
+
+    def net_balance():
+        groups = client.get("/provider/settlements/by-technician", headers=H).json()
+        return next(g for g in groups if g["technician_id"] == tid)["balance"]
+
+    # Cash job for $100, tech keeps $60: tech owes company $40 all-time.
+    assert net_balance()["net_outstanding_cents"] == -4000
+
+    created = client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "company_to_technician",
+        "amount_cents": 1000, "payment_method": "Bank Transfer",
+    }, headers=H)
+    assert created.status_code == 200, created.text
+    assert created.json()["status"] == "confirmed"
+    assert created.json()["payment_method"] == "bank_transfer"
+    assert created.json()["submitted_by_role"] == "provider"
+
+    remit = client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "technician_to_company",
+        "amount_cents": 500, "payment_method": "cash", "reference_number": "RCPT-1",
+    }, headers=H)
+    assert remit.status_code == 200, remit.text
+    assert remit.json()["status"] == "confirmed"
+    # company_owes side is 0 here, so the $10 c2t payment clamps; t2c reduces debt.
+    assert net_balance()["net_outstanding_cents"] == -3500
+
+    # Technician submits a remittance: always pending technician_to_company,
+    # even if the client tries to smuggle a direction field.
+    submitted = client.post("/technician/payments", json={
+        "organization_id": org, "amount_cents": 2000, "payment_method": "zelle",
+        "direction": "company_to_technician", "note": "cash drop",
+    }, headers=TH)
+    assert submitted.status_code == 200, submitted.text
+    pending = submitted.json()
+    assert pending["status"] == "pending"
+    assert pending["direction"] == "technician_to_company"
+    assert pending["submitted_by_role"] == "technician"
+    # Pending does NOT move the balance.
+    balance = net_balance()
+    assert balance["net_outstanding_cents"] == -3500
+    assert balance["pending_tech_to_company_cents"] == 2000
+
+    # Confirm -> balance moves.
+    confirmed = client.post(f"/provider/settlement-payments/{pending['id']}/confirm", json={}, headers=H)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "confirmed"
+    assert net_balance()["net_outstanding_cents"] == -1500
+    assert client.post(f"/provider/settlement-payments/{pending['id']}/confirm", json={}, headers=H).status_code == 409
+
+    # Reject flow: second pending entry, rejected with a stored reason; no balance move.
+    second = client.post("/technician/payments", json={
+        "organization_id": org, "amount_cents": 300, "payment_method": "cash",
+    }, headers=TH).json()
+    rejected = client.post(
+        f"/provider/settlement-payments/{second['id']}/reject",
+        json={"reason": "duplicate of RCPT-1"}, headers=H,
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected"
+    assert rejected.json()["rejected_reason"] == "duplicate of RCPT-1"
+    assert net_balance()["net_outstanding_cents"] == -1500
+
+    # Void a confirmed payment: removed from balance, reason stored; pending can't be voided.
+    voided = client.post(
+        f"/provider/settlement-payments/{remit.json()['id']}/void",
+        json={"reason": "entered twice"}, headers=H,
+    )
+    assert voided.status_code == 200, voided.text
+    assert voided.json()["status"] == "voided"
+    assert voided.json()["void_reason"] == "entered twice"
+    assert net_balance()["net_outstanding_cents"] == -2000
+    assert client.post(
+        f"/provider/settlement-payments/{voided.json()['id']}/void",
+        json={"reason": "again"}, headers=H,
+    ).status_code == 409
+
+    # Technician sees their whole history.
+    mine = client.get("/technician/payments", headers=TH).json()
+    assert {p["status"] for p in mine} == {"confirmed", "rejected", "voided"}
+
+    # Validation: bad method / zero amount / short reason.
+    assert client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "company_to_technician",
+        "amount_cents": 100, "payment_method": "bitcoin",
+    }, headers=H).status_code == 422
+    assert client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "company_to_technician",
+        "amount_cents": 0, "payment_method": "cash",
+    }, headers=H).status_code == 422
+    assert client.post(
+        f"/provider/settlement-payments/{created.json()['id']}/void",
+        json={"reason": "x"}, headers=H,
+    ).status_code == 422
+
+    # Filters + CSV.
+    listed = client.get(f"/provider/settlement-payments?status=rejected", headers=H).json()
+    assert [p["id"] for p in listed] == [second["id"]]
+    listed = client.get(f"/provider/settlement-payments?technician_id={uuid4()}", headers=H).json()
+    assert listed == []
+    csv = client.get("/provider/settlement-payments?format=csv", headers=H)
+    assert csv.status_code == 200 and "payment_method" in csv.text
+
+
+def test_settlement_payment_permissions_and_tenant_scoping():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, tid, _jid, _admin, H, TH = _seed_settlement_payment_org(app_store)
+    client = TestClient(app)
+
+    payment = client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "company_to_technician",
+        "amount_cents": 700, "payment_method": "check",
+    }, headers=H).json()
+
+    # Dispatcher: read yes, mutate no.
+    dispatcher = str(uuid4())
+    app_store.users[dispatcher] = {
+        "id": dispatcher, "email": f"disp_{dispatcher[:8]}@cluexp.test", "phone": None,
+        "display_name": "Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    DH = {"Authorization": f"Bearer {create_access_token({'sub': dispatcher, 'id': dispatcher, 'roles': ['dispatcher']})}"}
+    assert client.get("/provider/settlement-payments", headers=DH).status_code == 200
+    assert client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "company_to_technician",
+        "amount_cents": 100, "payment_method": "cash",
+    }, headers=DH).status_code == 403
+    assert client.post(f"/provider/settlement-payments/{payment['id']}/void", json={"reason": "nope"}, headers=DH).status_code == 403
+
+    # Technician token cannot use provider payment routes.
+    assert client.get("/provider/settlement-payments", headers=TH).status_code == 403
+    assert client.post(f"/provider/settlement-payments/{payment['id']}/void", json={"reason": "nope"}, headers=TH).status_code == 403
+
+    # Another org can neither see nor mutate, and cannot pay an unrelated tech.
+    org2_admin = str(uuid4())
+    app_store.users[org2_admin] = {
+        "id": org2_admin, "email": f"other_{org2_admin[:8]}@cluexp.test", "phone": None,
+        "display_name": "Other Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": str(uuid4()), "organization_name": "Rival",
+    }
+    OH = {"Authorization": f"Bearer {create_access_token({'sub': org2_admin, 'id': org2_admin, 'roles': ['provider_admin']})}"}
+    assert client.get("/provider/settlement-payments", headers=OH).json() == []
+    assert client.post(f"/provider/settlement-payments/{payment['id']}/void", json={"reason": "steal"}, headers=OH).status_code == 404
+    assert client.post("/provider/settlement-payments", json={
+        "technician_id": tid, "direction": "company_to_technician",
+        "amount_cents": 100, "payment_method": "cash",
+    }, headers=OH).status_code == 404
+
+    # Technician cannot submit to an org they never worked with.
+    assert client.post("/technician/payments", json={
+        "organization_id": str(uuid4()), "amount_cents": 100, "payment_method": "cash",
+    }, headers=TH).status_code == 404
+
+
 def test_settlement_period_does_not_double_assign_already_settled_jobs():
     """A job captured by one settlement period must not be picked up by a
     second period (e.g. an overlapping or blank-filter period), which would

@@ -1,5 +1,14 @@
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@cluexp/console-ui";
 
+export interface PaymentBalance {
+  confirmed_company_to_tech_cents: number;
+  confirmed_tech_to_company_cents: number;
+  pending_tech_to_company_cents: number;
+  outstanding_company_to_tech_cents: number;
+  outstanding_tech_to_company_cents: number;
+  net_outstanding_cents: number;
+}
+
 export interface TechnicianSummary {
   technician_id: string;
   technician_display_name: string | null;
@@ -16,6 +25,61 @@ export interface TechnicianSummary {
   review_count: number;
   average_rating: number | null;
   agreement_statuses: string[];
+  balance?: PaymentBalance;
+}
+
+export type PaymentDirection = "company_to_technician" | "technician_to_company";
+export type PaymentStatus = "pending" | "confirmed" | "rejected" | "voided";
+
+export interface SettlementPayment {
+  id: string;
+  organization_id: string;
+  technician_id: string;
+  technician_display_name: string | null;
+  settlement_period_id: string | null;
+  source_period_start: string | null;
+  source_period_end: string | null;
+  direction: PaymentDirection;
+  amount_cents: number;
+  payment_method: string;
+  reference_number: string | null;
+  paid_on: string;
+  note: string | null;
+  status: PaymentStatus;
+  submitted_by_role: "provider" | "technician";
+  confirmed_at: string | null;
+  rejected_at: string | null;
+  rejected_reason: string | null;
+  voided_at: string | null;
+  void_reason: string | null;
+  created_at: string | null;
+}
+
+export const SETTLEMENT_PAYMENT_METHODS = [
+  "cash", "check", "zelle", "cash_app", "venmo", "paypal", "apple_pay",
+  "google_pay", "credit_card", "debit_card", "bank_transfer", "payroll", "other",
+] as const;
+
+export function directionLabel(direction: PaymentDirection): string {
+  return direction === "company_to_technician" ? "Company → Technician" : "Technician → Company";
+}
+
+export const PAYMENT_STATUS_VARIANT: Record<PaymentStatus, "warn" | "success" | "danger" | "neutral"> = {
+  pending: "warn", confirmed: "success", rejected: "danger", voided: "neutral",
+};
+
+export function OutstandingBalance({ balance }: { balance: PaymentBalance | undefined }) {
+  if (!balance) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <SettlementValue cents={balance.net_outstanding_cents} />
+      {balance.pending_tech_to_company_cents > 0 ? (
+        <span className="text-xs text-muted-foreground">
+          {money(balance.pending_tech_to_company_cents)} pending confirmation
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 export interface CloseoutLine {

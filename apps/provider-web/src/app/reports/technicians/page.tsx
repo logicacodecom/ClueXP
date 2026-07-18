@@ -16,11 +16,12 @@ import {
   TableHeader,
   TableRow
 } from "@cluexp/console-ui";
-import { ChevronRight, FileSpreadsheet } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, Wallet } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../../frame";
 import { exportRowsToExcel } from "./excel";
+import { LogPaymentModal } from "./payment-modal";
 import { AffiliationTag, buildPeriodQuery, money, SettlementValue, techLabel, type TechnicianSummary } from "./shared";
 
 export default function TechnicianReportPage() {
@@ -30,6 +31,7 @@ export default function TechnicianReportPage() {
   const [applied, setApplied] = useState({ start: "", end: "" });
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
+  const [payTechnicianId, setPayTechnicianId] = useState<string | null>(null);
 
   const load = useCallback(async (start: string, end: string) => {
     setStatus("loading");
@@ -167,7 +169,17 @@ export default function TechnicianReportPage() {
                         <TableCell>{row.review_count > 0 ? `${row.average_rating?.toFixed(1)} ★ (${row.review_count})` : "—"}</TableCell>
                         <TableCell className="text-right">{money(row.tech_payout_cents)}</TableCell>
                         <TableCell className="text-right">{money(row.company_retained_cents)}</TableCell>
-                        <TableCell className="text-right"><SettlementValue cents={row.settlement_value_cents} /></TableCell>
+                        <TableCell className="text-right">
+                          <button
+                            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition hover:bg-accent"
+                            title="Log a payment against this balance"
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setPayTechnicianId(row.technician_id); }}
+                          >
+                            <SettlementValue cents={row.settlement_value_cents} />
+                            <Wallet className="size-4 text-muted-foreground" />
+                          </button>
+                        </TableCell>
                         <TableCell><ChevronRight className="size-4 text-muted-foreground" /></TableCell>
                       </TableRow>
                     ))}
@@ -177,6 +189,15 @@ export default function TechnicianReportPage() {
             )}
           </CardContent>
         </Card>
+
+        <LogPaymentModal
+          open={payTechnicianId !== null}
+          onOpenChange={(open) => { if (!open) setPayTechnicianId(null); }}
+          technicians={rows}
+          preselectedTechnicianId={payTechnicianId}
+          sourcePeriod={applied}
+          onLogged={() => void load(applied.start, applied.end)}
+        />
       </div>
     </AppFrame>
   );

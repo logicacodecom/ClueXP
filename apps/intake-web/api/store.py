@@ -236,6 +236,57 @@ def aggregate_settlements_by_technician(rows: list[dict]) -> list[dict]:
     return out
 
 
+def compute_settlement_payment_balance(settlement_group: dict | None, payments: list[dict]) -> dict:
+    """Outstanding balance for one org<->technician pair.
+
+    settlement_group is the ALL-TIME by-technician aggregate (or None when the
+    tech has no settled jobs); payments are that pair's ledger entries. Only
+    confirmed payments reduce the balance -- pending is surfaced separately and
+    rejected/voided never count. Two one-sided buckets are clamped at zero so an
+    overpayment on one side never manufactures debt on the other."""
+    company_owes = int((settlement_group or {}).get("company_owes_tech_cents") or 0)
+    tech_owes = int((settlement_group or {}).get("tech_owes_company_cents") or 0)
+    confirmed_c2t = sum(
+        int(p.get("amount_cents") or 0) for p in payments
+        if p.get("status") == "confirmed" and p.get("direction") == "company_to_technician"
+    )
+    confirmed_t2c = sum(
+        int(p.get("amount_cents") or 0) for p in payments
+        if p.get("status") == "confirmed" and p.get("direction") == "technician_to_company"
+    )
+    pending_t2c = sum(
+        int(p.get("amount_cents") or 0) for p in payments
+        if p.get("status") == "pending" and p.get("direction") == "technician_to_company"
+    )
+    outstanding_c2t = max(0, company_owes - confirmed_c2t)
+    outstanding_t2c = max(0, tech_owes - confirmed_t2c)
+    return {
+        "confirmed_company_to_tech_cents": confirmed_c2t,
+        "confirmed_tech_to_company_cents": confirmed_t2c,
+        "pending_tech_to_company_cents": pending_t2c,
+        "outstanding_company_to_tech_cents": outstanding_c2t,
+        "outstanding_tech_to_company_cents": outstanding_t2c,
+        "net_outstanding_cents": outstanding_c2t - outstanding_t2c,
+    }
+
+
+def _settlement_payment_in_filters(payment: dict, filters: dict) -> bool:
+    technician_id = filters.get("technician_id")
+    if technician_id and str(payment.get("technician_id")) != str(technician_id):
+        return False
+    status = filters.get("status")
+    if status and payment.get("status") != status:
+        return False
+    day = str(payment.get("paid_on") or "")[:10]
+    start = filters.get("period_start")
+    if start and day < str(start):
+        return False
+    end = filters.get("period_end")
+    if end and day > str(end):
+        return False
+    return True
+
+
 def _settlement_row_in_period(row: dict, data: dict) -> bool:
     technician_id = data.get("technician_id")
     if technician_id and str(row.get("technician_id")) != str(technician_id):
@@ -898,6 +949,39 @@ class Store:
     async def add_provider_settlement_adjustment(
         self, org_id: str, period_id: UUID, data: dict, *, actor_id: str | None = None
     ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_settlement_payment(
+        self, org_id: str, data: dict, *, submitted_by: str | None,
+        submitted_by_role: str, status: str,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_settlement_payments(
+        self, org_id: str, *, technician_id: str | None = None,
+        status: str | None = None, period_start: str | None = None,
+        period_end: str | None = None, limit: int = 500,
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def confirm_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def reject_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None, reason: str
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def void_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None, reason: str
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_settlement_payments(
+        self, technician_id: UUID, *, limit: int = 200
+    ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
     async def get_technician_job_history(
@@ -2378,6 +2462,115 @@ class InMemoryStore(Store):
         self._settlement_periods[str(period_id)] = period
         return await self.get_provider_settlement_period(org_id, period_id)
 
+    def _technician_name(self, technician_id: str | None) -> str | None:
+        tech = next((t for t in getattr(self, "_technicians", [])
+                     if str(t.get("id")) == str(technician_id)), None)
+        return tech.get("display_name") if tech else None
+
+    async def create_settlement_payment(
+        self, org_id: str, data: dict, *, submitted_by: str | None,
+        submitted_by_role: str, status: str,
+    ) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        payment = {
+            "id": str(uuid4()),
+            "organization_id": str(org_id),
+            "technician_id": str(data["technician_id"]),
+            "technician_display_name": self._technician_name(data.get("technician_id")),
+            "settlement_period_id": data.get("settlement_period_id"),
+            "source_period_start": data.get("source_period_start"),
+            "source_period_end": data.get("source_period_end"),
+            "direction": data["direction"],
+            "amount_cents": int(data["amount_cents"]),
+            "payment_method": data["payment_method"],
+            "reference_number": data.get("reference_number"),
+            "paid_on": data["paid_on"],
+            "note": data.get("note"),
+            "status": status,
+            "submitted_by_role": submitted_by_role,
+            "submitted_by": submitted_by,
+            "confirmed_by": submitted_by if status == "confirmed" else None,
+            "confirmed_at": now if status == "confirmed" else None,
+            "rejected_by": None, "rejected_at": None, "rejected_reason": None,
+            "voided_by": None, "voided_at": None, "void_reason": None,
+            "created_at": now, "updated_at": now,
+        }
+        payments = getattr(self, "_settlement_payments", None)
+        if payments is None:
+            payments = self._settlement_payments = {}
+        payments[payment["id"]] = payment
+        return dict(payment)
+
+    async def list_settlement_payments(
+        self, org_id: str, *, technician_id: str | None = None,
+        status: str | None = None, period_start: str | None = None,
+        period_end: str | None = None, limit: int = 500,
+    ) -> list[dict]:
+        filters = {
+            "technician_id": technician_id, "status": status,
+            "period_start": period_start, "period_end": period_end,
+        }
+        rows = [
+            dict(p) for p in getattr(self, "_settlement_payments", {}).values()
+            if str(p.get("organization_id")) == str(org_id)
+            and _settlement_payment_in_filters(p, filters)
+        ]
+        rows.sort(key=lambda p: (p.get("paid_on") or "", p.get("created_at") or ""), reverse=True)
+        return rows[:limit]
+
+    def _own_settlement_payment(self, org_id: str, payment_id: UUID) -> dict | None:
+        payment = getattr(self, "_settlement_payments", {}).get(str(payment_id))
+        if payment is None or str(payment.get("organization_id")) != str(org_id):
+            return None
+        return payment
+
+    async def confirm_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None
+    ) -> dict | None:
+        payment = self._own_settlement_payment(org_id, payment_id)
+        if payment is None:
+            return None
+        if payment["status"] != "pending":
+            raise ValueError("invalid_status")
+        now = datetime.now(timezone.utc).isoformat()
+        payment.update({"status": "confirmed", "confirmed_by": actor_id, "confirmed_at": now, "updated_at": now})
+        return dict(payment)
+
+    async def reject_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None, reason: str
+    ) -> dict | None:
+        payment = self._own_settlement_payment(org_id, payment_id)
+        if payment is None:
+            return None
+        if payment["status"] != "pending":
+            raise ValueError("invalid_status")
+        now = datetime.now(timezone.utc).isoformat()
+        payment.update({"status": "rejected", "rejected_by": actor_id, "rejected_at": now, "rejected_reason": reason, "updated_at": now})
+        return dict(payment)
+
+    async def void_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None, reason: str
+    ) -> dict | None:
+        payment = self._own_settlement_payment(org_id, payment_id)
+        if payment is None:
+            return None
+        if payment["status"] != "confirmed":
+            raise ValueError("invalid_status")
+        now = datetime.now(timezone.utc).isoformat()
+        payment.update({"status": "voided", "voided_by": actor_id, "voided_at": now, "void_reason": reason, "updated_at": now})
+        return dict(payment)
+
+    async def list_technician_settlement_payments(
+        self, technician_id: UUID, *, limit: int = 200
+    ) -> list[dict]:
+        rows = [
+            {**p, "organization_name": None}
+            for p in getattr(self, "_settlement_payments", {}).values()
+            if str(p.get("technician_id")) == str(technician_id)
+        ]
+        rows.sort(key=lambda p: (p.get("paid_on") or "", p.get("created_at") or ""), reverse=True)
+        return rows[:limit]
+
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100
     ) -> list[dict]:
@@ -3287,6 +3480,39 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_settlement_periods_org_status"
                 " on settlement_periods (organization_id, status, created_at desc)"
+            )
+            await conn.execute(
+                "create table if not exists settlement_payments ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  organization_id uuid not null references organizations(id) on delete cascade,"
+                "  technician_id uuid not null references technicians(id),"
+                "  settlement_period_id uuid references settlement_periods(id),"
+                "  source_period_start date,"
+                "  source_period_end date,"
+                "  direction text not null check (direction in ('company_to_technician','technician_to_company')),"
+                "  amount_cents integer not null check (amount_cents > 0),"
+                "  payment_method text not null,"
+                "  reference_number text,"
+                "  paid_on date not null,"
+                "  note text,"
+                "  status text not null default 'pending' check (status in ('pending','confirmed','rejected','voided')),"
+                "  submitted_by_role text not null check (submitted_by_role in ('provider','technician')),"
+                "  submitted_by uuid references users(id),"
+                "  confirmed_by uuid references users(id),"
+                "  confirmed_at timestamptz,"
+                "  rejected_by uuid references users(id),"
+                "  rejected_at timestamptz,"
+                "  rejected_reason text,"
+                "  voided_by uuid references users(id),"
+                "  voided_at timestamptz,"
+                "  void_reason text,"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now()"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_settlement_payments_org_tech"
+                " on settlement_payments (organization_id, technician_id, paid_on desc)"
             )
             await conn.execute("create index if not exists idx_jobs_status on jobs (status)")
             await conn.execute(
@@ -5619,6 +5845,162 @@ class PostgresStore(Store):
             )
             await self._refresh_settlement_period_totals(conn, str(period_id))
         return await self.get_provider_settlement_period(org_id, period_id)
+
+    _SETTLEMENT_PAYMENT_COLUMNS = (
+        "sp.id, sp.organization_id, sp.technician_id, t.display_name,"
+        " sp.settlement_period_id, sp.source_period_start, sp.source_period_end,"
+        " sp.direction, sp.amount_cents, sp.payment_method, sp.reference_number,"
+        " sp.paid_on, sp.note, sp.status, sp.submitted_by_role, sp.submitted_by,"
+        " sp.confirmed_by, sp.confirmed_at, sp.rejected_by, sp.rejected_at, sp.rejected_reason,"
+        " sp.voided_by, sp.voided_at, sp.void_reason, sp.created_at, sp.updated_at"
+    )
+
+    @staticmethod
+    def _settlement_payment_row(r: tuple) -> dict:
+        def _iso(value):
+            return value.isoformat() if value else None
+        return {
+            "id": str(r[0]), "organization_id": str(r[1]), "technician_id": str(r[2]),
+            "technician_display_name": r[3],
+            "settlement_period_id": str(r[4]) if r[4] else None,
+            "source_period_start": _iso(r[5]), "source_period_end": _iso(r[6]),
+            "direction": r[7], "amount_cents": r[8], "payment_method": r[9],
+            "reference_number": r[10], "paid_on": _iso(r[11]), "note": r[12],
+            "status": r[13], "submitted_by_role": r[14],
+            "submitted_by": str(r[15]) if r[15] else None,
+            "confirmed_by": str(r[16]) if r[16] else None, "confirmed_at": _iso(r[17]),
+            "rejected_by": str(r[18]) if r[18] else None, "rejected_at": _iso(r[19]),
+            "rejected_reason": r[20],
+            "voided_by": str(r[21]) if r[21] else None, "voided_at": _iso(r[22]),
+            "void_reason": r[23], "created_at": _iso(r[24]), "updated_at": _iso(r[25]),
+        }
+
+    async def _fetch_settlement_payment(self, conn, org_id: str, payment_id: UUID) -> dict | None:
+        cur = await conn.execute(
+            f"select {self._SETTLEMENT_PAYMENT_COLUMNS} from settlement_payments sp"
+            " left join technicians t on t.id = sp.technician_id"
+            " where sp.id = %s and sp.organization_id = %s",
+            (str(payment_id), str(org_id)),
+        )
+        row = await cur.fetchone()
+        return self._settlement_payment_row(row) if row else None
+
+    async def create_settlement_payment(
+        self, org_id: str, data: dict, *, submitted_by: str | None,
+        submitted_by_role: str, status: str,
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into settlement_payments (organization_id, technician_id, settlement_period_id,"
+                " source_period_start, source_period_end, direction, amount_cents, payment_method,"
+                " reference_number, paid_on, note, status, submitted_by_role, submitted_by,"
+                " confirmed_by, confirmed_at)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
+                " case when %s = 'confirmed' then now() end) returning id",
+                (
+                    str(org_id), str(data["technician_id"]), data.get("settlement_period_id"),
+                    data.get("source_period_start"), data.get("source_period_end"),
+                    data["direction"], int(data["amount_cents"]), data["payment_method"],
+                    data.get("reference_number"), data["paid_on"], data.get("note"),
+                    status, submitted_by_role, str(submitted_by) if submitted_by else None,
+                    str(submitted_by) if submitted_by and status == "confirmed" else None,
+                    status,
+                ),
+            )
+            payment_id = (await cur.fetchone())[0]
+            payment = await self._fetch_settlement_payment(conn, org_id, payment_id)
+        return payment or {}
+
+    async def list_settlement_payments(
+        self, org_id: str, *, technician_id: str | None = None,
+        status: str | None = None, period_start: str | None = None,
+        period_end: str | None = None, limit: int = 500,
+    ) -> list[dict]:
+        where = ["sp.organization_id = %s"]
+        params: list = [str(org_id)]
+        if technician_id:
+            where.append("sp.technician_id = %s")
+            params.append(str(technician_id))
+        if status:
+            where.append("sp.status = %s")
+            params.append(status)
+        if period_start:
+            where.append("sp.paid_on >= %s")
+            params.append(period_start)
+        if period_end:
+            where.append("sp.paid_on <= %s")
+            params.append(period_end)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._SETTLEMENT_PAYMENT_COLUMNS} from settlement_payments sp"
+                " left join technicians t on t.id = sp.technician_id"
+                " where " + " and ".join(where) +
+                " order by sp.paid_on desc, sp.created_at desc limit %s",
+                (*params, limit),
+            )
+            rows = await cur.fetchall()
+        return [self._settlement_payment_row(r) for r in rows]
+
+    async def _transition_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, from_status: str, set_sql: str, params: tuple
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"update settlement_payments set {set_sql}, updated_at = now()"
+                " where id = %s and organization_id = %s and status = %s returning id",
+                (*params, str(payment_id), str(org_id), from_status),
+            )
+            if not await cur.fetchone():
+                if await self._fetch_settlement_payment(conn, org_id, payment_id) is None:
+                    return None
+                raise ValueError("invalid_status")
+            payment = await self._fetch_settlement_payment(conn, org_id, payment_id)
+        return payment
+
+    async def confirm_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None
+    ) -> dict | None:
+        return await self._transition_settlement_payment(
+            org_id, payment_id, from_status="pending",
+            set_sql="status = 'confirmed', confirmed_by = %s, confirmed_at = now()",
+            params=(str(actor_id) if actor_id else None,),
+        )
+
+    async def reject_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None, reason: str
+    ) -> dict | None:
+        return await self._transition_settlement_payment(
+            org_id, payment_id, from_status="pending",
+            set_sql="status = 'rejected', rejected_by = %s, rejected_at = now(), rejected_reason = %s",
+            params=(str(actor_id) if actor_id else None, reason),
+        )
+
+    async def void_settlement_payment(
+        self, org_id: str, payment_id: UUID, *, actor_id: str | None = None, reason: str
+    ) -> dict | None:
+        return await self._transition_settlement_payment(
+            org_id, payment_id, from_status="confirmed",
+            set_sql="status = 'voided', voided_by = %s, voided_at = now(), void_reason = %s",
+            params=(str(actor_id) if actor_id else None, reason),
+        )
+
+    async def list_technician_settlement_payments(
+        self, technician_id: UUID, *, limit: int = 200
+    ) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._SETTLEMENT_PAYMENT_COLUMNS}, o.display_name from settlement_payments sp"
+                " left join technicians t on t.id = sp.technician_id"
+                " left join organizations o on o.id = sp.organization_id"
+                " where sp.technician_id = %s"
+                " order by sp.paid_on desc, sp.created_at desc limit %s",
+                (str(technician_id), limit),
+            )
+            rows = await cur.fetchall()
+        return [
+            {**self._settlement_payment_row(r[:-1]), "organization_name": r[-1]}
+            for r in rows
+        ]
 
     async def get_technician_job_history(
         self, technician_id: UUID, *, limit: int = 100

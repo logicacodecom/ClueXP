@@ -351,6 +351,20 @@ def normalize_payment_method(value: str | None) -> str | None:
 # closeout card-fee calculation and to settlement direction (who owes whom).
 CARD_PAYMENT_METHODS = frozenset({"credit_card", "debit_card", "apple_pay", "google_pay"})
 
+# Methods for company<->technician settlement payments (the payment ledger).
+# Superset of customer payment methods plus rails only used between the
+# company and its technicians (bank transfer, payroll run).
+SETTLEMENT_PAYMENT_METHODS = PAYMENT_METHODS | {"bank_transfer", "payroll"}
+
+
+def normalize_settlement_payment_method(value: str | None) -> str | None:
+    """Canonicalize a settlement-payment method token. Returns None for an
+    unknown method so the caller can 422 -- never guesses."""
+    if not value:
+        return None
+    token = value.strip().lower().replace(" ", "_").replace("-", "_")
+    return token if token in SETTLEMENT_PAYMENT_METHODS else None
+
 
 def can_report_collection(status: str | None) -> bool:
     """True if the assigned technician may report what they collected — only once

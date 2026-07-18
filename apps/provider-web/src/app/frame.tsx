@@ -2,7 +2,7 @@
 
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { Receipt, UserRound, Users as UsersIcon } from "lucide-react";
+import { Receipt, UserRound, Users as UsersIcon, Wallet } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -38,6 +38,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     { ...reportsNav, label: "All Technicians", href: "/reports/technicians", icon: UsersIcon, group: "Financial" as const },
     { ...reportsNav, label: "By Tech", href: "/reports/technicians/by-tech", icon: UserRound, group: "Financial" as const },
     { ...reportsNav, label: "By Job", href: "/reports/jobs", icon: Receipt, group: "Financial" as const },
+    { ...reportsNav, label: "Payments", href: "/reports/payments", icon: Wallet, group: "Financial" as const },
     ...(session.user.roles.includes("provider_admin") ? [{ ...adminNav, label: "Users", href: "/users" }] : []),
   ];
   return (

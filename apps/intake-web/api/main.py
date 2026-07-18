@@ -43,11 +43,16 @@ from api.dispatch import (
     haversine_km,
     may_show_live_tracking,
     normalize_payment_method,
+    normalize_settlement_payment_method,
     normalize_policy,
     select_candidates,
     to_db_policy,
 )
-from api.store import aggregate_settlements_by_technician, make_store
+from api.store import (
+    aggregate_settlements_by_technician,
+    compute_settlement_payment_balance,
+    make_store,
+)
 from api.schema import (
     AccessType,
     CancellationPolicy,
@@ -438,6 +443,32 @@ class SettlementActionRequest(BaseModel):
 
 class SettlementAdjustmentRequest(BaseModel):
     amount_cents: int
+    reason: str
+
+
+class SettlementPaymentCreateRequest(BaseModel):
+    technician_id: UUID
+    direction: str
+    amount_cents: int
+    payment_method: str
+    paid_on: str | None = None
+    reference_number: str | None = None
+    note: str | None = None
+    settlement_period_id: UUID | None = None
+    source_period_start: str | None = None
+    source_period_end: str | None = None
+
+
+class TechnicianPaymentCreateRequest(BaseModel):
+    organization_id: UUID
+    amount_cents: int
+    payment_method: str
+    paid_on: str | None = None
+    reference_number: str | None = None
+    note: str | None = None
+
+
+class SettlementPaymentReasonRequest(BaseModel):
     reason: str
 
 
@@ -3882,11 +3913,236 @@ async def provider_settlements_by_technician(
 ) -> list[dict[str, Any]]:
     """One aggregate row per technician (affiliated or not) over the period:
     volumes, cuts, reviews, and the signed settlement balance (positive =
-    company owes tech, negative = tech collected and owes the company)."""
+    company owes tech, negative = tech collected and owes the company).
+    Each row also carries `balance`: the ALL-TIME payment-ledger position for
+    the pair -- the period filter scopes the report, never the ledger."""
     org_id = _require_dispatch_org(session)
     start, end = _report_period(period_start, period_end)
     rows = await store.list_provider_settlements(org_id, period_start=start, period_end=end, limit=1000)
-    return aggregate_settlements_by_technician(rows)
+    groups = aggregate_settlements_by_technician(rows)
+    all_time_groups = groups if not (start or end) else aggregate_settlements_by_technician(
+        await store.list_provider_settlements(org_id, limit=1000)
+    )
+    all_time_by_tech = {g["technician_id"]: g for g in all_time_groups}
+    payments_by_tech: dict[str, list[dict[str, Any]]] = {}
+    for payment in await store.list_settlement_payments(org_id, limit=2000):
+        payments_by_tech.setdefault(str(payment["technician_id"]), []).append(payment)
+    for group in groups:
+        tid = group["technician_id"]
+        group["balance"] = compute_settlement_payment_balance(
+            all_time_by_tech.get(tid), payments_by_tech.get(tid, [])
+        )
+    return groups
+
+
+_SETTLEMENT_PAYMENT_STATUSES = {"pending", "confirmed", "rejected", "voided"}
+_SETTLEMENT_PAYMENT_DIRECTIONS = {"company_to_technician", "technician_to_company"}
+
+
+def _validate_settlement_payment_fields(
+    amount_cents: int, payment_method: str, paid_on: str | None
+) -> tuple[int, str, str]:
+    """Shared validation for provider- and technician-created ledger entries.
+    Returns (amount_cents, method, paid_on) or raises 422."""
+    if amount_cents <= 0:
+        raise HTTPException(status_code=422, detail="Amount must be greater than zero")
+    if amount_cents > 100_000_000:
+        raise HTTPException(status_code=422, detail="Amount is implausibly large")
+    method = normalize_settlement_payment_method(payment_method)
+    if method is None:
+        raise HTTPException(status_code=422, detail="Unknown payment method")
+    from datetime import date
+    paid = _parse_report_date(paid_on, "paid_on") or date.today().isoformat()
+    return amount_cents, method, paid
+
+
+async def _require_org_technician_relationship(org_id: str, technician_id: UUID) -> None:
+    agreement, _, _ = await store.get_provider_technician_agreement_for_reporting(
+        UUID(str(org_id)), technician_id
+    )
+    if agreement is None:
+        raise HTTPException(status_code=404, detail="Technician has no relationship with this company")
+
+
+@app.get("/provider/settlement-payments", response_model=None)
+async def provider_settlement_payments(
+    technician_id: UUID | None = None,
+    status: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+    format: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]] | Response:
+    """The company<->technician payment ledger: what actually moved, as opposed
+    to settlement periods (what was approved). Date filters apply to paid_on."""
+    org_id = _require_dispatch_org(session)
+    start, end = _report_period(period_start, period_end)
+    if status and status not in _SETTLEMENT_PAYMENT_STATUSES:
+        raise HTTPException(status_code=422, detail="Unknown payment status")
+    rows = await store.list_settlement_payments(
+        org_id, technician_id=str(technician_id) if technician_id else None,
+        status=status, period_start=start, period_end=end,
+    )
+    if format == "csv":
+        columns = [
+            "id", "paid_on", "technician_id", "technician_display_name", "direction",
+            "amount_cents", "payment_method", "reference_number", "status",
+            "submitted_by_role", "note", "settlement_period_id", "created_at",
+            "confirmed_at", "rejected_reason", "void_reason",
+        ]
+        body = "\n".join(
+            [",".join(columns)]
+            + [",".join(_csv_escape(row.get(col)) for col in columns) for row in rows]
+        )
+        return Response(content=body + "\n", media_type="text/csv")
+    return rows
+
+
+@app.post("/provider/settlement-payments")
+async def create_provider_settlement_payment(
+    payload: SettlementPaymentCreateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Provider-logged payment: confirmed immediately, reduces the outstanding
+    balance. Either direction. The wrong entry is voided later, never edited."""
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    if payload.direction not in _SETTLEMENT_PAYMENT_DIRECTIONS:
+        raise HTTPException(status_code=422, detail="Unknown payment direction")
+    amount, method, paid_on = _validate_settlement_payment_fields(
+        payload.amount_cents, payload.payment_method, payload.paid_on
+    )
+    await _require_org_technician_relationship(org_id, payload.technician_id)
+    source_start, source_end = _report_period(payload.source_period_start, payload.source_period_end)
+    return await store.create_settlement_payment(
+        org_id,
+        {
+            "technician_id": str(payload.technician_id),
+            "direction": payload.direction,
+            "amount_cents": amount,
+            "payment_method": method,
+            "paid_on": paid_on,
+            "reference_number": (payload.reference_number or "").strip()[:120] or None,
+            "note": (payload.note or "").strip()[:280] or None,
+            "settlement_period_id": str(payload.settlement_period_id) if payload.settlement_period_id else None,
+            "source_period_start": source_start,
+            "source_period_end": source_end,
+        },
+        submitted_by=session.get("user", {}).get("id"),
+        submitted_by_role="provider",
+        status="confirmed",
+    )
+
+
+@app.post("/provider/settlement-payments/{payment_id}/confirm")
+async def confirm_provider_settlement_payment(
+    payment_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    try:
+        payment = await store.confirm_settlement_payment(
+            org_id, payment_id, actor_id=session.get("user", {}).get("id")
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Only pending payments can be confirmed.")
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return payment
+
+
+@app.post("/provider/settlement-payments/{payment_id}/reject")
+async def reject_provider_settlement_payment(
+    payment_id: UUID,
+    payload: SettlementPaymentReasonRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    reason = payload.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
+    try:
+        payment = await store.reject_settlement_payment(
+            org_id, payment_id, actor_id=session.get("user", {}).get("id"), reason=reason[:280]
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Only pending payments can be rejected.")
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return payment
+
+
+@app.post("/provider/settlement-payments/{payment_id}/void")
+async def void_provider_settlement_payment(
+    payment_id: UUID,
+    payload: SettlementPaymentReasonRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    reason = payload.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A void reason is required.")
+    try:
+        payment = await store.void_settlement_payment(
+            org_id, payment_id, actor_id=session.get("user", {}).get("id"), reason=reason[:280]
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Only confirmed payments can be voided; reject pending ones instead.")
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return payment
+
+
+@app.get("/technician/payments")
+async def technician_payments(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """The signed-in technician's settlement payment history across all their
+    provider relationships, both directions, all statuses."""
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    return await store.list_technician_settlement_payments(UUID(tech["id"]))
+
+
+@app.post("/technician/payments")
+async def create_technician_payment(
+    payload: TechnicianPaymentCreateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Technician-submitted remittance (always technician_to_company). Created
+    PENDING -- it does not reduce the outstanding balance until a provider
+    admin confirms it."""
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    amount, method, paid_on = _validate_settlement_payment_fields(
+        payload.amount_cents, payload.payment_method, payload.paid_on
+    )
+    await _require_org_technician_relationship(str(payload.organization_id), UUID(tech["id"]))
+    return await store.create_settlement_payment(
+        str(payload.organization_id),
+        {
+            "technician_id": tech["id"],
+            "direction": "technician_to_company",
+            "amount_cents": amount,
+            "payment_method": method,
+            "paid_on": paid_on,
+            "reference_number": (payload.reference_number or "").strip()[:120] or None,
+            "note": (payload.note or "").strip()[:280] or None,
+            "settlement_period_id": None,
+            "source_period_start": None,
+            "source_period_end": None,
+        },
+        submitted_by=session.get("user", {}).get("id"),
+        submitted_by_role="technician",
+        status="pending",
+    )
 
 
 def _settlement_csv(rows: list[dict[str, Any]]) -> str:
