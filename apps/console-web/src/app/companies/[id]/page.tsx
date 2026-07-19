@@ -13,6 +13,7 @@ interface LimitField { value: number; is_override: boolean; platform_default: nu
 interface OrganizationDetail {
   id: string; display_name: string; legal_name?: string | null; organization_type: string;
   status: string; subscription_status: string; phone?: string | null; email?: string | null;
+  fulfillment_policy?: string | null;
   created_at?: string | null;
   members: { id: string; display_name: string; email?: string | null; phone?: string | null; role: string; status: string }[];
   technicians: { id: string; display_name: string; technician_status: string; affiliation_status: string; affiliation_type: string }[];
@@ -35,7 +36,7 @@ export default function CompanyDetailPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [limitInputs, setLimitInputs] = useState({ max_users: "", max_technicians: "" });
-  const [profileInputs, setProfileInputs] = useState({ display_name: "", legal_name: "", phone: "", email: "" });
+  const [profileInputs, setProfileInputs] = useState({ display_name: "", legal_name: "", phone: "", email: "", fulfillment_policy: "owner_first_then_network" });
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/organizations/${params.id}`, { cache: "no-store" });
@@ -48,7 +49,8 @@ export default function CompanyDetailPage() {
       display_name: body.display_name || "",
       legal_name: body.legal_name || "",
       phone: body.phone || "",
-      email: body.email || ""
+      email: body.email || "",
+      fulfillment_policy: body.fulfillment_policy || "owner_first_then_network"
     });
   }, [params.id]);
 
@@ -85,7 +87,8 @@ export default function CompanyDetailPage() {
           display_name: profileInputs.display_name.trim(),
           legal_name: profileInputs.legal_name.trim() || null,
           phone: profileInputs.phone.trim() || null,
-          email: profileInputs.email.trim() || null
+          email: profileInputs.email.trim() || null,
+          fulfillment_policy: profileInputs.fulfillment_policy
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -210,6 +213,19 @@ export default function CompanyDetailPage() {
             <label className="block space-y-1.5 font-medium">
               Phone
               <Input value={profileInputs.phone} onChange={(event) => setProfileInputs((prev) => ({ ...prev, phone: event.target.value }))} />
+            </label>
+            <label className="block space-y-1.5 font-medium">
+              Dispatch policy
+              <select
+                className="mt-1 min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm font-normal"
+                value={profileInputs.fulfillment_policy}
+                onChange={(event) => setProfileInputs((prev) => ({ ...prev, fulfillment_policy: event.target.value }))}
+              >
+                <option value="private_owner_only">Only this company&apos;s own technicians</option>
+                <option value="owner_first_then_network">Company technicians first, then the ClueXP network</option>
+                <option value="network_open">Open to the full verified ClueXP network</option>
+              </select>
+              <span className="text-xs font-normal text-muted-foreground">Controls which technicians this company&apos;s jobs can be offered to. Set by ClueXP only.</span>
             </label>
             <div><span className="text-muted-foreground">Type:</span> {detail.organization_type}</div>
             <div><span className="text-muted-foreground">Subscription:</span> {detail.subscription_status}</div>

@@ -141,8 +141,8 @@ def test_profile_request_cannot_change_dispatch_mode():
     client = TestClient(app)
     org = _fresh_org()
     headers = _provider_headers(org)
-    # Set an operational value through the dedicated endpoint.
-    client.patch("/provider/organization/dispatch-policy", headers=headers, json={"dispatch_mode": "platform_managed"})
+    # Seed an operational value directly — providers have no endpoint to set it.
+    app_store._org_record(org)["dispatch_mode"] = "platform_managed"
     # Attempt to change it via the profile request (plus a real profile edit).
     resp = client.patch("/provider/organization", headers=headers, json={
         "display_name": "Metro Key", "dispatch_mode": "organization_managed",

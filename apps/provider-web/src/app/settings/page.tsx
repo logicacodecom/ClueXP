@@ -25,24 +25,46 @@ interface FinancialSettings {
   card_fee_fixed_cents: DispatchSettingField;
 }
 
-const FINANCIAL_LABELS: Record<keyof FinancialSettings, { label: string; help: string }> = {
+// Stored values are integers (basis points / cents) for exact money math, but the
+// UI takes and shows human units — enter 7.25 for 7.25%, 0.30 for $0.30. `scale`
+// converts between the two: stored = round(input * scale), display = stored / scale.
+const FINANCIAL_LABELS: Record<keyof FinancialSettings, { label: string; help: string; scale: number; suffix: string; step: string }> = {
   max_line_items: {
     label: "Max closeout line items",
-    help: "How many receipt rows a technician may add before customer confirmation."
+    help: "How many receipt rows a technician may add before customer confirmation.",
+    scale: 1, suffix: "", step: "1"
   },
   tax_rate_basis_points: {
-    label: "Tax rate (basis points)",
-    help: "725 means 7.25%. Technicians cannot edit this per job."
+    label: "Tax rate (%)",
+    help: "Sales tax applied to closeout receipts. Enter 7.25 for 7.25%. Technicians cannot edit this per job.",
+    scale: 100, suffix: "%", step: "0.01"
   },
   card_fee_basis_points: {
-    label: "Card fee percent (basis points)",
-    help: "Applied only to card-like payment methods. 290 means 2.9%."
+    label: "Card fee (%)",
+    help: "Percentage fee applied only to card-like payment methods. Enter 2.9 for 2.9%.",
+    scale: 100, suffix: "%", step: "0.01"
   },
   card_fee_fixed_cents: {
-    label: "Fixed card fee (cents)",
-    help: "Applied only to card-like payment methods. 30 means $0.30."
+    label: "Fixed card fee ($)",
+    help: "Flat fee applied only to card-like payment methods. Enter 0.30 for $0.30.",
+    scale: 100, suffix: "$", step: "0.01"
   }
 };
+
+function financialToHuman(value: number, field: keyof FinancialSettings): string {
+  const { scale } = FINANCIAL_LABELS[field];
+  return scale === 1 ? String(value) : String(value / scale);
+}
+
+function financialToStored(input: string, field: keyof FinancialSettings): number {
+  return Math.round(Number(input) * FINANCIAL_LABELS[field].scale);
+}
+
+function financialDefaultLabel(value: number, field: keyof FinancialSettings): string {
+  const { scale, suffix } = FINANCIAL_LABELS[field];
+  const human = scale === 1 ? value : value / scale;
+  return suffix === "$" ? `$${human}` : `${human}${suffix}`;
+}
 
 const INTAKE_BASE = (process.env.NEXT_PUBLIC_INTAKE_BASE_URL || "https://intake.cluexp.com").replace(/\/$/, "");
 
@@ -52,16 +74,13 @@ export default function SettingsPage() {
     contact_name: "", contact_title: "", contact_email: "", contact_phone: "",
     address_line1: "", address_line2: "", city: "", region: "", postal_code: "", country_code: "",
     website: "", customer_care_phone: "", google_profile_url: "", google_review_url: "",
-    service_area_radius_km: "", dispatch_mode: "organization_managed",
-    fulfillment_policy: "owner_first_then_network"
+    service_area_radius_km: ""
   });
   const [postalCodes, setPostalCodes] = useState<string[]>([]);
   const [postalInput, setPostalInput] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoBusy, setLogoBusy] = useState(false);
   const [logoMessage, setLogoMessage] = useState<string | null>(null);
-  const [dispatchPolicyBusy, setDispatchPolicyBusy] = useState(false);
-  const [dispatchPolicyMessage, setDispatchPolicyMessage] = useState<string | null>(null);
   const [slug, setSlug] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [intakeMessage, setIntakeMessage] = useState<string | null>(null);
@@ -122,10 +141,10 @@ export default function SettingsPage() {
       const settings = body as FinancialSettings;
       setFinancialSettings(settings);
       setFinancialInputs({
-        max_line_items: String(settings.max_line_items.value),
-        tax_rate_basis_points: String(settings.tax_rate_basis_points.value),
-        card_fee_basis_points: String(settings.card_fee_basis_points.value),
-        card_fee_fixed_cents: String(settings.card_fee_fixed_cents.value)
+        max_line_items: financialToHuman(settings.max_line_items.value, "max_line_items"),
+        tax_rate_basis_points: financialToHuman(settings.tax_rate_basis_points.value, "tax_rate_basis_points"),
+        card_fee_basis_points: financialToHuman(settings.card_fee_basis_points.value, "card_fee_basis_points"),
+        card_fee_fixed_cents: financialToHuman(settings.card_fee_fixed_cents.value, "card_fee_fixed_cents")
       });
     } catch (cause) {
       setFinancialMessage(cause instanceof Error ? cause.message : "Unable to load financial settings");
@@ -166,9 +185,7 @@ export default function SettingsPage() {
         customer_care_phone: organization.customer_care_phone ?? "",
         google_profile_url: organization.google_profile_url ?? "",
         google_review_url: organization.google_review_url ?? "",
-        service_area_radius_km: organization.service_area_radius_km?.toString() ?? "",
-        dispatch_mode: organization.dispatch_mode ?? "organization_managed",
-        fulfillment_policy: organization.fulfillment_policy ?? "owner_first_then_network"
+        service_area_radius_km: organization.service_area_radius_km?.toString() ?? ""
       });
     }).catch((error) => setMessage(error.message));
   }, []);
@@ -242,27 +259,6 @@ export default function SettingsPage() {
       setMessage(cause instanceof Error ? cause.message : "Unable to save company profile");
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function saveDispatchPolicy() {
-    setDispatchPolicyBusy(true);
-    setDispatchPolicyMessage(null);
-    try {
-      const response = await fetch("/api/provider/organization/dispatch-policy", {
-        method: "PATCH", headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          dispatch_mode: form.dispatch_mode,
-          fulfillment_policy: form.fulfillment_policy
-        })
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || "Unable to save dispatch policy");
-      setDispatchPolicyMessage("Dispatch policy saved.");
-    } catch (cause) {
-      setDispatchPolicyMessage(cause instanceof Error ? cause.message : "Unable to save dispatch policy");
-    } finally {
-      setDispatchPolicyBusy(false);
     }
   }
 
@@ -371,10 +367,10 @@ export default function SettingsPage() {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          max_line_items: Number(financialInputs.max_line_items),
-          tax_rate_basis_points: Number(financialInputs.tax_rate_basis_points),
-          card_fee_basis_points: Number(financialInputs.card_fee_basis_points),
-          card_fee_fixed_cents: Number(financialInputs.card_fee_fixed_cents)
+          max_line_items: financialToStored(financialInputs.max_line_items, "max_line_items"),
+          tax_rate_basis_points: financialToStored(financialInputs.tax_rate_basis_points, "tax_rate_basis_points"),
+          card_fee_basis_points: financialToStored(financialInputs.card_fee_basis_points, "card_fee_basis_points"),
+          card_fee_fixed_cents: financialToStored(financialInputs.card_fee_fixed_cents, "card_fee_fixed_cents")
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -382,10 +378,10 @@ export default function SettingsPage() {
       const settings = body as FinancialSettings;
       setFinancialSettings(settings);
       setFinancialInputs({
-        max_line_items: String(settings.max_line_items.value),
-        tax_rate_basis_points: String(settings.tax_rate_basis_points.value),
-        card_fee_basis_points: String(settings.card_fee_basis_points.value),
-        card_fee_fixed_cents: String(settings.card_fee_fixed_cents.value)
+        max_line_items: financialToHuman(settings.max_line_items.value, "max_line_items"),
+        tax_rate_basis_points: financialToHuman(settings.tax_rate_basis_points.value, "tax_rate_basis_points"),
+        card_fee_basis_points: financialToHuman(settings.card_fee_basis_points.value, "card_fee_basis_points"),
+        card_fee_fixed_cents: financialToHuman(settings.card_fee_fixed_cents.value, "card_fee_fixed_cents")
       });
       setFinancialMessage("Financial closeout settings saved.");
     } catch (cause) {
@@ -409,10 +405,10 @@ export default function SettingsPage() {
       const settings = body as FinancialSettings;
       setFinancialSettings(settings);
       setFinancialInputs({
-        max_line_items: String(settings.max_line_items.value),
-        tax_rate_basis_points: String(settings.tax_rate_basis_points.value),
-        card_fee_basis_points: String(settings.card_fee_basis_points.value),
-        card_fee_fixed_cents: String(settings.card_fee_fixed_cents.value)
+        max_line_items: financialToHuman(settings.max_line_items.value, "max_line_items"),
+        tax_rate_basis_points: financialToHuman(settings.tax_rate_basis_points.value, "tax_rate_basis_points"),
+        card_fee_basis_points: financialToHuman(settings.card_fee_basis_points.value, "card_fee_basis_points"),
+        card_fee_fixed_cents: financialToHuman(settings.card_fee_fixed_cents.value, "card_fee_fixed_cents")
       });
       setFinancialMessage("Reverted to the platform default.");
     } catch (cause) {
@@ -541,17 +537,6 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>Dispatch policy</CardTitle></CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-2 text-sm font-medium">Dispatch manager<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.dispatch_mode} onChange={(event) => setForm({ ...form, dispatch_mode: event.target.value })}><option value="organization_managed">Organization managed</option><option value="platform_managed">ClueXP managed</option></select></label>
-            <label className="space-y-2 text-sm font-medium">Fulfillment policy<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.fulfillment_policy} onChange={(event) => setForm({ ...form, fulfillment_policy: event.target.value })}><option value="private_owner_only">Private roster only</option><option value="owner_first_then_network">Roster first, then network</option><option value="network_open">Verified network open</option></select></label>
-            <div className="md:col-span-2 space-y-3">
-              {dispatchPolicyMessage ? <div className="text-sm" role="status">{dispatchPolicyMessage}</div> : null}
-              <Button variant="outline" disabled={dispatchPolicyBusy} onClick={() => void saveDispatchPolicy()}><Save className="size-4" />{dispatchPolicyBusy ? "Saving…" : "Save dispatch policy"}</Button>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
           <CardHeader><CardTitle>Company service capabilities</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
@@ -584,8 +569,9 @@ export default function SettingsPage() {
                     <label className="text-sm font-medium" htmlFor={`financial-${field}`}>{meta.label}</label>
                     <Input
                       id={`financial-${field}`}
-                      inputMode="numeric"
+                      inputMode="decimal"
                       min={0}
+                      step={meta.step}
                       type="number"
                       value={financialInputs[field]}
                       onChange={(event) => setFinancialInputs((current) => ({ ...current, [field]: event.target.value }))}
@@ -593,7 +579,7 @@ export default function SettingsPage() {
                     <p className="text-xs leading-5 text-muted-foreground">{meta.help}</p>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       {setting?.is_override
-                        ? <>Overridden — platform default is {setting.platform_default}.</>
+                        ? <>Overridden — platform default is {financialDefaultLabel(setting.platform_default, field)}.</>
                         : <>Using the platform default.</>}
                       {setting?.is_override ? (
                         <Button

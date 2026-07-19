@@ -425,10 +425,10 @@ def _normalize_postal_list(value: list[str] | None) -> list[str] | None:
 
 class ProviderCompanyProfileUpdateRequest(BaseModel):
     """Provider-editable company profile. Deliberately excludes operational fields
-    (dispatch_mode / fulfillment_policy — see ProviderDispatchPolicyUpdateRequest)
-    and logo_url (set only via the dedicated logo-upload endpoint). Only fields the
-    client actually sends are written (endpoint uses exclude_unset); a sent null or
-    blank string clears the column."""
+    (dispatch_mode / fulfillment_policy — set only by ClueXP admins via the console
+    admin endpoint) and logo_url (set only via the dedicated logo-upload endpoint).
+    Only fields the client actually sends are written (endpoint uses exclude_unset);
+    a sent null or blank string clears the column."""
 
     display_name: str | None = None
     legal_name: str | None = None
@@ -542,14 +542,6 @@ class ProviderCompanyProfileUpdateRequest(BaseModel):
         if value is not None and not 0 < value <= 500:
             raise ValueError("Radius must be between 0 and 500 km")
         return value
-
-
-class ProviderDispatchPolicyUpdateRequest(BaseModel):
-    """Operational dispatch settings — split out of the company-profile request so
-    the profile surface cannot write these."""
-
-    dispatch_mode: str | None = None
-    fulfillment_policy: str | None = None
 
 
 class TeamCreateRequest(BaseModel):
@@ -1279,7 +1271,19 @@ async def admin_update_organization(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     require_any_role(session, {"platform_admin"})
-    result = await store.update_organization_profile(organization_id, payload.model_dump(exclude_unset=True))
+    # Dispatch policy (dispatch_mode / fulfillment_policy) is set ONLY here by
+    # ClueXP admins — providers can't edit it. Validate + map to DB vocabulary.
+    if payload.dispatch_mode and payload.dispatch_mode not in {
+        "organization_managed", "platform_managed"
+    }:
+        raise HTTPException(status_code=422, detail="Invalid dispatch mode")
+    data = payload.model_dump(exclude_unset=True)
+    if payload.fulfillment_policy is not None:
+        db_policy = to_db_policy(payload.fulfillment_policy)
+        if db_policy is None:
+            raise HTTPException(status_code=422, detail="Invalid fulfillment policy")
+        data["fulfillment_policy"] = db_policy  # store the canonical DB vocabulary
+    result = await store.update_organization_profile(organization_id, data)
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
     return result
@@ -1706,29 +1710,6 @@ async def update_provider_organization(
     # null/blank clears that column while untouched fields are left intact.
     data = payload.model_dump(exclude_unset=True)
     result = await store.update_company_profile(organization_id, data)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    return result
-
-
-@app.patch("/provider/organization/dispatch-policy")
-async def update_provider_dispatch_policy(
-    payload: ProviderDispatchPolicyUpdateRequest,
-    session: dict[str, Any] = Depends(require_session),
-) -> dict[str, Any]:
-    """Operational dispatch settings, kept separate from the company profile."""
-    organization_id = _provider_organization_id(session)
-    if payload.dispatch_mode and payload.dispatch_mode not in {
-        "organization_managed", "platform_managed"
-    }:
-        raise HTTPException(status_code=422, detail="Invalid dispatch mode")
-    data = payload.model_dump(exclude_none=True)
-    if payload.fulfillment_policy:
-        db_policy = to_db_policy(payload.fulfillment_policy)
-        if db_policy is None:
-            raise HTTPException(status_code=422, detail="Invalid fulfillment policy")
-        data["fulfillment_policy"] = db_policy  # store the canonical DB vocabulary
-    result = await store.update_organization_profile(organization_id, data)
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
     return result
