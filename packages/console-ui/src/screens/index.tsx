@@ -171,6 +171,7 @@ type OpsJob = {
   address: string | null;
   lat: number | null;
   lng: number | null;
+  detail?: Record<string, unknown>;
   access_type: string | null;
   situation: string | null;
   urgency: string | null;
@@ -184,6 +185,9 @@ type OpsJob = {
   offer_expires_at: string | null;
   last_decline_reason: string | null;
   decline_count: number;
+  photo_count?: number;
+  photo_paths?: string[];
+  photo_urls?: string[];
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL ?? "";
@@ -239,6 +243,26 @@ function riskLabel(risk: QueueRisk): string | null {
   if (risk === "stalled") return "Stalled";
   if (risk === "ack_breached") return "Ack SLA breached";
   return null;
+}
+
+function jobDetailSummary(detail?: Record<string, unknown>): string | null {
+  if (!detail) return null;
+  const notes = typeof detail.additional_details === "string" ? detail.additional_details.trim() : "";
+  const automotive = detail.automotive && typeof detail.automotive === "object" ? detail.automotive as Record<string, unknown> : null;
+  const vehicle = automotive
+    ? [automotive.year, automotive.make, automotive.model, automotive.color]
+        .filter((value) => value != null && String(value).trim())
+        .map(String)
+        .join(" ")
+    : "";
+  const property = detail.property && typeof detail.property === "object" ? detail.property as Record<string, unknown> : null;
+  const propertyHint = property
+    ? [property.property_type, property.lock_type]
+        .filter((value) => value != null && String(value).trim())
+        .map(String)
+        .join(" · ")
+    : "";
+  return [vehicle, propertyHint, notes].filter(Boolean).join(" · ") || null;
 }
 
 export function LiveQueue({ mode }: { mode: ConsoleMode }) {
@@ -310,6 +334,19 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
     setNotificationPermission(permission);
   }, []);
 
+  const queuePoints: MapPoint[] = useMemo(
+    () => (queue ?? [])
+      .filter((job) => job.lat != null && job.lng != null)
+      .map((job): MapPoint => ({
+        lat: job.lat!,
+        lng: job.lng!,
+        kind: "job",
+        id: job.id,
+        label: job.address ?? job.id,
+      })),
+    [queue],
+  );
+
   return (
     <div>
       <PageHeader
@@ -350,9 +387,10 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
       ) : queue && queue.length === 0 ? (
         <EmptyState icon={CheckCircle2} title="Queue empty" description="No jobs are waiting for dispatch." />
       ) : (
-        <Card>
-          <CardContent className="p-0">
-            <div className="overflow-auto">
+        <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-auto">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 z-10 bg-card text-left text-xs font-semibold uppercase text-muted-foreground">
                   <tr>
@@ -370,13 +408,18 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                   {(queue ?? []).map((job) => {
                     const risk = risks.get(job.id) ?? "normal";
                     const label = riskLabel(risk);
+                    const detail = jobDetailSummary(job.detail);
                     return (
                     <tr
                       key={job.id}
                       className={`border-t transition-colors hover:bg-secondary/40 cursor-pointer ${risk === "normal" ? "border-border" : "border-destructive/35 bg-destructive/5"}`}
                       onClick={() => router.push(`/queue/${job.id}`)}
                     >
-                      <td className="px-4 py-3 font-medium">{job.address ?? "—"}</td>
+                      <td className="px-4 py-3 font-medium">
+                        <div>{job.address ?? "—"}</div>
+                        {detail ? <div className="mt-1 max-w-[34rem] truncate text-xs font-normal text-muted-foreground">{detail}</div> : null}
+                        {job.photo_count ? <div className="mt-1 text-xs text-muted-foreground">{job.photo_count} intake photo{job.photo_count === 1 ? "" : "s"}</div> : null}
+                      </td>
                       <td className="px-4 py-3 text-muted-foreground">{job.access_type ?? "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">{job.situation ?? "—"}</td>
                       <td className="px-4 py-3">
@@ -402,13 +445,46 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                   })}
                 </tbody>
               </table>
-            </div>
-            <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-muted-foreground">
-              <span>{queue?.length ?? 0} jobs waiting</span>
-              <span>Refreshes every 30s</span>
-            </div>
-          </CardContent>
-        </Card>
+              </div>
+              <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-muted-foreground">
+                <span>{queue?.length ?? 0} jobs waiting</span>
+                <span>Refreshes every 30s</span>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="overflow-hidden">
+            <CardHeader>
+              <CardTitle>Queue map</CardTitle>
+              <CardDescription>{queuePoints.length} job{queuePoints.length === 1 ? "" : "s"} with coordinates.</CardDescription>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="relative h-[420px] bg-[#101720]">
+                {queuePoints.length > 0 ? (
+                  <GoogleMapView
+                    points={queuePoints}
+                    fallback={
+                      <div className="absolute inset-0 grid content-center gap-3 p-4 text-xs text-muted-foreground">
+                        {queuePoints.map((point) => (
+                          <button
+                            className="rounded-md border border-border bg-background/90 px-3 py-2 text-left"
+                            key={point.id}
+                            type="button"
+                            onClick={() => router.push(`/queue/${point.id}`)}
+                          >
+                            <span className="font-medium text-foreground">{point.label}</span>
+                            <span className="ml-2 tabular-nums">{point.lat.toFixed(4)}, {point.lng.toFixed(4)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    }
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">No queue jobs have coordinates</div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );
@@ -628,6 +704,7 @@ type OpsCandidate = {
   technician_supports_skill?: boolean;
   skills_match: boolean;
   dist_km: number | null;
+  distance_mi?: number | null;
   eta_min: number | null;
   eta_max: number | null;
   is_online: boolean;
@@ -731,11 +808,11 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   const job = data?.job;
   const candidates = data?.candidates ?? [];
 
-  const jobPoint: MapPoint | null = (job?.lat && job?.lng) ? { lat: job.lat, lng: job.lng, kind: "job", label: job.address ?? "Job", id: job.id } : null;
+  const jobPoint: MapPoint | null = (job?.lat != null && job?.lng != null) ? { lat: job.lat, lng: job.lng, kind: "job", label: job.address ?? "Job", id: job.id } : null;
   const mapPoints: MapPoint[] = [
     ...(jobPoint ? [jobPoint] : []),
     ...candidates
-      .filter((t) => t.current_lat && t.current_lng)
+      .filter((t) => t.current_lat != null && t.current_lng != null)
       .map((t): MapPoint => ({
         lat: t.current_lat!,
         lng: t.current_lng!,
@@ -746,6 +823,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   ];
 
   const activeOffer = job?.offer_active ? job : null;
+  const selectedJobDetail = jobDetailSummary(job?.detail);
 
   return (
     <div>
@@ -789,7 +867,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                         {tech.organization_supports_skill !== false && tech.technician_supports_skill === false ? <Badge variant="danger">Technician skill missing</Badge> : null}
                       </div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        {tech.dist_km != null ? `${tech.dist_km} km` : "Distance unknown"} · ETA {tech.eta_min != null ? `${tech.eta_min}–${tech.eta_max}m` : "unknown"}
+                        {tech.distance_mi != null ? `${tech.distance_mi} mi` : tech.dist_km != null ? `${tech.dist_km} km` : "Distance unknown"} · ETA {tech.eta_min != null ? `${tech.eta_min}–${tech.eta_max}m` : "unknown"}
                       </div>
                       {tech.is_busy && tech.active_job ? (
                         <div className="mt-1 text-xs text-muted-foreground">Active job: {tech.active_job.status} — {tech.active_job.address ?? tech.active_job.id}</div>
@@ -844,6 +922,23 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                     <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
                   </div>
                   <div className="text-sm text-muted-foreground">Age: {ageLabel(job.created_at)} · {job.dispatch_attempts} attempt{job.dispatch_attempts === 1 ? "" : "s"}</div>
+                  {selectedJobDetail ? <div className="rounded-md border border-border bg-secondary/30 p-3 text-sm text-muted-foreground">{selectedJobDetail}</div> : null}
+                  {job.photo_count ? (
+                    <div className="rounded-md border border-border bg-secondary/30 p-3 text-sm">
+                      <div className="font-medium">{job.photo_count} intake photo{job.photo_count === 1 ? "" : "s"}</div>
+                      {job.photo_urls?.length ? (
+                        <div className="mt-2 grid grid-cols-3 gap-2">
+                          {job.photo_urls.map((url) => (
+                            <a className="block overflow-hidden rounded-md border border-border bg-background" href={url} key={url} target="_blank" rel="noreferrer">
+                              <img className="aspect-square w-full object-cover" src={url} alt="Intake upload" />
+                            </a>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-1 break-all text-xs text-muted-foreground">{(job.photo_paths ?? []).join(", ")}</div>
+                      )}
+                    </div>
+                  ) : null}
                   {job.last_decline_reason ? (
                     <div className="rounded-md border border-warn/35 bg-warn/10 p-2 text-sm text-warn">
                       Last decline{job.decline_count > 1 ? ` (${job.decline_count} total)` : ""}: “{job.last_decline_reason}”

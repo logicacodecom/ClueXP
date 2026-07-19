@@ -3906,6 +3906,49 @@ def test_channel_info_returns_provider_dispatch_phone(monkeypatch):
     }
 
 
+def test_direct_public_ticket_creation_is_blocked():
+    from starlette.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    response = client.post("/tickets", json={"access_type": "vehicle"})
+    assert response.status_code == 403
+    assert "provider company link" in response.json()["detail"]
+
+
+def test_branded_ticket_creation_still_works(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": str(uuid4()),
+            "origin_org_id": str(uuid4()),
+            "customer_owner_org_id": str(uuid4()),
+            "dispatch_cutover_enabled": False,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+    response = client.post("/tickets", json={"intake_channel": "metro-key", "access_type": "vehicle"})
+    assert response.status_code == 200, response.text
+    assert response.json()["ticket"]["access_type"] == "vehicle"
+
+
+def test_reverse_geocode_endpoint_degrades_when_unconfigured(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app
+
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+    client = TestClient(app)
+    response = client.get("/reverse-geocode?lat=40.7589&lng=-73.9851")
+    assert response.status_code == 200
+    assert response.json() == {"resolved": False}
+
+
 def test_token_read_includes_owner_dispatch_phone(monkeypatch):
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -3923,6 +3966,66 @@ def test_token_read_includes_owner_dispatch_phone(monkeypatch):
     client = TestClient(app)
     body = client.get(f"/t/{token}").json()
     assert body["dispatch_phone"] == "+15559876543"
+
+
+def test_provider_queue_surfaces_intake_photo_metadata():
+    org = str(uuid4())
+    jid = str(uuid4())
+    store = InMemoryStore()
+    store._job_status = {jid: STATUS_PENDING_DISPATCH}
+    store._job_org = {jid: org}
+    store._job_photo_paths = {jid: ["tickets/job/photo-1.jpg", "tickets/job/photo-2.jpg"]}
+
+    rows = asyncio.run(store.get_ops_queue(org_id=org))
+    assert rows[0]["photo_count"] == 2
+    assert rows[0]["photo_paths"] == ["tickets/job/photo-1.jpg", "tickets/job/photo-2.jpg"]
+
+
+def test_ops_candidates_include_miles_distance():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from datetime import datetime, timezone
+
+    uid = "user-platform-admin-cand-mi"
+    jid = str(uuid4())
+    tid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_cand_mi@cluexp.test", "phone": None,
+        "display_name": "Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    _orig_queue = app_store.get_ops_queue
+
+    async def _patched_queue():
+        rows = await _orig_queue()
+        for row in rows:
+            if str(row["id"]) == jid:
+                row["lat"] = 40.7589
+                row["lng"] = -73.9851
+        return rows
+
+    app_store.get_ops_queue = _patched_queue
+    app_store._technicians = [{
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "Mile Tech", "skills": [], "rating": 4.7,
+        "current_lat": 40.7614, "current_lng": -73.9776,
+        "service_area_center_lat": None, "service_area_center_lng": None,
+        "location_updated_at": datetime.now(timezone.utc).isoformat(),
+        "primary_organization_id": None,
+    }]
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    try:
+        response = client.get(f"/ops/queue/{jid}/candidates", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200, response.text
+        candidate = response.json()["candidates"][0]
+        assert candidate["dist_km"] is not None
+        assert candidate["distance_mi"] == round(candidate["dist_km"] * 0.621371, 2)
+    finally:
+        app_store.get_ops_queue = _orig_queue
 
 
 # --- per-provider dispatch settings (0025): ack SLA / stalled threshold override --

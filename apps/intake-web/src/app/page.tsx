@@ -106,6 +106,16 @@ type GeocodeResponse =
     }
   | { resolved: false };
 
+type ReverseGeocodeResponse =
+  | {
+      resolved: true;
+      lat: number;
+      lng: number;
+      formatted_address?: string;
+      geocode_confidence: string;
+    }
+  | { resolved: false };
+
 interface PlacePrediction {
   description: string;
   place_id: string;
@@ -373,12 +383,26 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       if (code === 2) throw new Error("Location unavailable on this device — please type your address below.");
       throw new Error("Location request timed out — please type your address below.");
     }
+    const lat = position.coords.latitude;
+    const lng = position.coords.longitude;
+    let rawText = `GPS location ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    let geocodeConfidence = "high";
+    try {
+      const result = await api<ReverseGeocodeResponse>(`/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+      if (result.resolved && result.formatted_address) {
+        rawText = result.formatted_address;
+        geocodeConfidence = result.geocode_confidence;
+      }
+    } catch {
+      // Keep the precise coordinate label when reverse geocoding is unavailable.
+    }
+    setForm((current) => ({ ...current, address: rawText }));
     await patch({
       location: {
-        raw_text: "Current GPS location",
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-        geocode_confidence: "high"
+        raw_text: rawText,
+        lat,
+        lng,
+        geocode_confidence: geocodeConfidence
       }
     });
   }
@@ -557,6 +581,22 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   }, [ticket?.ticket_id, screen, sessionKey]);
 
   const content = (() => {
+    if (!organizationSlug) {
+      return (
+        <>
+          <AgentMessage support="Open intake from your provider company's branded link so the request is attached to the right dispatch team.">
+            Intake link required
+          </AgentMessage>
+          <div className="panel">
+            <p className="panel-title">This direct intake page is closed.</p>
+            <p className="fine">Please use the intake link from your service provider, or call customer service.</p>
+          </div>
+          <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`}>
+            <Phone size={18} aria-hidden="true" /> Call customer service
+          </a>
+        </>
+      );
+    }
     if (screen === "opener") {
       return (
         <>

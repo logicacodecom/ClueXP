@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from api.geocode import geocode, places_autocomplete
+from api.geocode import geocode, places_autocomplete, reverse_geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
@@ -2372,6 +2372,16 @@ async def geocode_address(q: str) -> dict[str, Any]:
     return {"resolved": True, **result}
 
 
+@app.get("/reverse-geocode")
+async def reverse_geocode_coordinates(lat: float, lng: float) -> dict[str, Any]:
+    """Resolve browser GPS coordinates to a dispatch-friendly address label."""
+    await latency()
+    result = await reverse_geocode(lat, lng)
+    if result is None:
+        return {"resolved": False}
+    return {"resolved": True, "lat": lat, "lng": lng, **result}
+
+
 @app.get("/places/autocomplete")
 async def places_autocomplete_endpoint(q: str) -> dict[str, Any]:
     """Server-proxied Places Autocomplete — browser never sees the Maps key.
@@ -2408,9 +2418,15 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     await latency()
     # Trusted intake-channel resolution (SYSTEM-DESIGN §20.4): the browser supplies only a channel
     # slug (attribution, dropped by sanitize); the owning org is resolved server-side and
-    # is never trusted from the client. Absent/unknown slug => public ClueXP intake.
+    # is never trusted from the client. Absent/unknown slug is rejected: ClueXP is
+    # a SaaS platform, not the dispatching provider.
     raw_slug = (payload or {}).get("intake_channel")
     origin = await store.resolve_intake_channel(raw_slug if isinstance(raw_slug, str) else None)
+    if origin is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Intake must be opened from a provider company link.",
+        )
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
@@ -2727,6 +2743,8 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
             "technician_supports_skill": technician_supports_skill,
             "skills_match": organization_supports_skill and technician_supports_skill,
             "dist_km": round(dist, 2) if dist is not None else None,
+            "distance_km": round(dist, 2) if dist is not None else None,
+            "distance_mi": round(dist * 0.621371, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
             "is_online": is_online,
@@ -2750,6 +2768,24 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
         -(c.get("rating") or 0.0),
     ))
     return enriched
+
+
+async def _attach_queue_photo_urls(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach signed intake photo URLs for dispatch views when storage is online."""
+    for row in rows:
+        urls: list[str] = []
+        for path in row.get("photo_paths") or []:
+            if not isinstance(path, str):
+                continue
+            if path.startswith(("http://", "https://")):
+                urls.append(path)
+                continue
+            try:
+                urls.append(await storage.create_signed_download_url(storage.PRIVATE_BUCKET, path))
+            except RuntimeError:
+                pass
+        row["photo_urls"] = urls
+    return rows
 
 
 async def _send_targeted_offer(
@@ -2832,7 +2868,7 @@ async def ops_get_queue(
     require_any_role(session, {"platform_admin"})
     await store.expire_stale_offers()
     await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
-    return await store.get_ops_queue()
+    return await _attach_queue_photo_urls(await store.get_ops_queue())
 
 
 @app.get("/ops/queue/{job_id}/candidates")
@@ -2842,7 +2878,7 @@ async def ops_get_candidates(
 ) -> dict[str, Any]:
     """Return the job plus all active+verified technicians with advisory signals."""
     require_any_role(session, {"platform_admin"})
-    jobs = await store.get_ops_queue()
+    jobs = await _attach_queue_photo_urls(await store.get_ops_queue())
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
@@ -3303,7 +3339,7 @@ async def provider_get_queue(
     org_id = _require_dispatch_org(session)
     await store.expire_stale_offers()
     await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
-    return await store.get_ops_queue(org_id=org_id)
+    return await _attach_queue_photo_urls(await store.get_ops_queue(org_id=org_id))
 
 
 @app.get("/provider/queue/{job_id}/candidates")
@@ -3313,7 +3349,7 @@ async def provider_get_candidates(
 ) -> dict[str, Any]:
     """The job plus the company's own active+verified technicians, advisory-scored."""
     org_id = _require_dispatch_org(session)
-    jobs = await store.get_ops_queue(org_id=org_id)
+    jobs = await _attach_queue_photo_urls(await store.get_ops_queue(org_id=org_id))
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")

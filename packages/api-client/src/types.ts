@@ -197,6 +197,10 @@ export interface Job {
   escalation_reason?: string;
   lat?: number;
   lng?: number;
+  detail?: Record<string, unknown>;
+  photo_count?: number;
+  photo_paths?: string[];
+  photo_urls?: string[];
 }
 
 export interface DashboardAggregates {
