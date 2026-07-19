@@ -78,11 +78,19 @@ export type TechnicianJob = {
   approval_url?: string | null; // customer approval / tracking link
   technician_location_updated_at?: string | null; // when the server last received a fix
   technician_location_is_fresh?: boolean | null; // server's view of location freshness
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  detail?: Record<string, unknown> | null;
 };
+
+function humanizeCode(value: string) {
+  const text = value.replaceAll("_", " ").replace(/\s+/g, " ").trim().toLowerCase();
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}` : "";
+}
 
 function serviceLabel(job: TechnicianJob) {
   const raw = job.service_type?.trim() || job.situation || "Service request";
-  return raw.replaceAll("_", " ");
+  return raw.split(".").filter(Boolean).map(humanizeCode).join(" · ");
 }
 
 function distanceLabel(job: TechnicianJob) {
@@ -126,7 +134,7 @@ function newCloseoutLine(itemType = "service_fee"): CloseoutLineDraft {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     item_type_code: spec.value,
-    description: spec.label,
+    description: "",
     quantity: "1",
     unit_amount: "",
     taxable: spec.taxable,
@@ -138,6 +146,15 @@ function newCloseoutLine(itemType = "service_fee"): CloseoutLineDraft {
 function moneyValue(value: string) {
   const amount = Number.parseFloat(value);
   return Number.isFinite(amount) ? amount : 0;
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function recordValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function nextStatus(status: TechnicianJob["status"]): TechnicianJob["status"] | null {
@@ -339,7 +356,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       if (patch.item_type_code) {
         const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === patch.item_type_code);
         if (spec) {
-          next.description = spec.label;
+          next.description = "";
           next.taxable = spec.taxable;
           if (!spec.requiresProvidedBy) next.provided_by = "";
           if (!spec.requiresNote) next.note = "";
@@ -465,6 +482,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
         </div>
 
         <JobTruth job={job} mapsHref={mapsHref} />
+        <JobDetails job={job} />
 
         {location.state === "error" ? <OperationalAlert tone="danger" text={location.detail} /> : null}
         {error ? <OperationalAlert tone="danger" text={error} /> : null}
@@ -559,8 +577,9 @@ function MapFallback({ job }: { job: TechnicianJob }) {
 }
 
 function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | null }) {
-  const distance = distanceLabel(job);
-  const eta = etaLabel(job);
+  const showTravelMeta = job.status === "assigned" || job.status === "en_route";
+  const distance = showTravelMeta ? distanceLabel(job) : null;
+  const eta = showTravelMeta ? etaLabel(job) : null;
   const hasMeta = eta != null || distance != null;
   const photos = job.intake_photos ?? [];
   return (
@@ -582,6 +601,47 @@ function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | nu
       {job.technician_location_updated_at ? <LocationFreshness fresh={job.technician_location_is_fresh} updatedAt={job.technician_location_updated_at} /> : null}
       {photos.length > 0 ? <IntakePhotos photos={photos} /> : null}
       {mapsHref ? <a className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={mapsHref} target="_blank" rel="noreferrer">Open turn-by-turn navigation <ExternalLink className="size-4" /></a> : null}
+    </section>
+  );
+}
+
+function JobDetails({ job }: { job: TechnicianJob }) {
+  const detail = recordValue(job.detail);
+  const automotive = recordValue(detail.automotive);
+  const customerName = job.customer_name || stringValue(detail.customer_name) || stringValue(detail.customerName);
+  const customerPhone = job.customer_phone || stringValue(detail.customer_phone) || stringValue(detail.customerPhone);
+  const notes = stringValue(detail.additional_details) || stringValue(detail.notes) || stringValue(detail.description);
+  const vehicleParts = [
+    stringValue(automotive.year),
+    stringValue(automotive.color),
+    stringValue(automotive.make),
+    stringValue(automotive.model)
+  ].filter(Boolean);
+  const vehicle = vehicleParts.length > 0 ? vehicleParts.join(" ") : null;
+  const keyType = stringValue(automotive.key_type) || stringValue(automotive.keyType);
+  const rows = [
+    customerName ? { label: "Customer", value: customerName } : null,
+    customerPhone ? { label: "Phone", value: customerPhone, href: `tel:${customerPhone.replace(/[^\d+]/g, "")}` } : null,
+    vehicle ? { label: "Vehicle", value: vehicle } : null,
+    keyType ? { label: "Key type", value: keyType } : null,
+    notes ? { label: "Job notes", value: notes } : null
+  ].filter(Boolean) as Array<{ label: string; value: string; href?: string }>;
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="mt-4 border border-border bg-card p-4">
+      <p className="field-kicker">Customer & job details</p>
+      <dl className="mt-3 space-y-3">
+        {rows.map((row) => (
+          <div className="grid gap-1" key={row.label}>
+            <dt className="text-[11px] font-black uppercase tracking-[.08em] text-muted">{row.label}</dt>
+            <dd className="text-sm leading-5 text-[#dfd8ca]">
+              {row.href ? <a className="font-semibold text-primary underline-offset-4 hover:underline" href={row.href}>{row.value}</a> : row.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
@@ -736,9 +796,24 @@ function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, on
         const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
         return <div className="border border-border bg-card p-3" key={line.id}>
           <div className="flex items-center justify-between"><span className="field-kicker">Item {index + 1}</span>{lines.length > 1 ? <button className="text-sm font-semibold text-danger" onClick={() => onRemove(line.id)} type="button">Remove</button> : null}</div>
-          <select className="field-input mt-3" value={line.item_type_code} onChange={(event) => onUpdate(line.id, { item_type_code: event.target.value })}>{CLOSEOUT_ITEM_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
-          <input className="field-input mt-2" value={line.description} onChange={(event) => onUpdate(line.id, { description: event.target.value })} aria-label={`Item ${index + 1} description`} />
-          <div className="mt-2 grid grid-cols-2 gap-2"><input className="field-input" inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="Quantity" /><input className="field-input" inputMode="decimal" value={line.unit_amount} onChange={(event) => onUpdate(line.id, { unit_amount: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="Amount" /></div>
+          <label className="mt-3 block">
+            <span className="field-kicker">Line type</span>
+            <select className="field-input mt-1" value={line.item_type_code} onChange={(event) => onUpdate(line.id, { item_type_code: event.target.value })}>{CLOSEOUT_ITEM_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+          </label>
+          <label className="mt-2 block">
+            <span className="field-kicker">Customer receipt description</span>
+            <input className="field-input mt-1" value={line.description} onChange={(event) => onUpdate(line.id, { description: event.target.value })} placeholder={`Describe this ${spec.label.toLowerCase()}`} />
+          </label>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="field-kicker">Quantity</span>
+              <input className="field-input mt-1" inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="1" />
+            </label>
+            <label className="block">
+              <span className="field-kicker">Amount</span>
+              <input className="field-input mt-1" inputMode="decimal" value={line.unit_amount} onChange={(event) => onUpdate(line.id, { unit_amount: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="0.00" />
+            </label>
+          </div>
           {spec.requiresProvidedBy ? <select className="field-input mt-2" value={line.provided_by} onChange={(event) => onUpdate(line.id, { provided_by: event.target.value })}><option value="">Provided by…</option><option value="company">Company</option><option value="technician">Technician</option><option value="customer">Customer</option><option value="third_party">Third party</option></select> : null}
           {spec.requiresNote ? <input className="field-input mt-2" value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Required note" /> : null}
         </div>;
