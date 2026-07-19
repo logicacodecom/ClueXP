@@ -148,6 +148,23 @@ function moneyValue(value: string) {
   return Number.isFinite(amount) ? amount : 0;
 }
 
+function closeoutLineError(line: CloseoutLineDraft, index = 0) {
+  const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
+  if (!line.description.trim()) return `Item ${index + 1}: add a customer receipt description.`;
+  if (moneyValue(line.quantity || "1") <= 0) return `${spec.label}: quantity must be greater than zero.`;
+  if (!line.unit_amount.trim() || moneyValue(line.unit_amount) < 0) return `${spec.label}: enter an amount.`;
+  if (spec.requiresProvidedBy && !line.provided_by) return `${spec.label}: choose who provided it.`;
+  if (spec.requiresNote && !line.note.trim()) return `${spec.label}: add the required note.`;
+  return null;
+}
+
+function closeoutFormError(lines: CloseoutLineDraft[], method: string) {
+  const lineIssue = lines.map((line, index) => closeoutLineError(line, index)).find(Boolean);
+  if (lineIssue) return lineIssue;
+  if (!method) return "Choose how the money was collected.";
+  return null;
+}
+
 function stringValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -195,7 +212,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [collectMethod, setCollectMethod] = useState("");
   const [tipAmount, setTipAmount] = useState("");
   const [closeoutLines, setCloseoutLines] = useState<CloseoutLineDraft[]>(() => [newCloseoutLine()]);
-  const [collectDone, setCollectDone] = useState(false);
+  const [collectDone, setCollectDone] = useState(() => Boolean(initialJob.collection_items?.length));
   const currentIndex = stageIndexForJob(job.status);
   const stage = stageForJob(job.status);
 
@@ -207,7 +224,9 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       if (response.status === 401) return window.location.assign("/signin");
       if (response.status === 404) return window.location.assign("/jobs");
       if (!response.ok) throw new Error(body.detail || "Unable to refresh this job");
-      setJob(body as TechnicianJob);
+      const nextJob = body as TechnicianJob;
+      setJob(nextJob);
+      if (nextJob.collection_items?.length) setCollectDone(true);
       setError(null);
     } catch (cause) {
       if (!quiet) setError(cause instanceof Error ? cause.message : "Unable to refresh this job");
@@ -369,6 +388,11 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const closeoutSubtotal = closeoutLines.reduce((sum, line) => sum + moneyValue(line.quantity || "1") * moneyValue(line.unit_amount), 0);
 
   async function reportCollection() {
+    const validation = closeoutFormError(closeoutLines, collectMethod);
+    if (validation) {
+      setError(validation);
+      return;
+    }
     const lineItems = closeoutLines.map((line) => ({
       item_type_code: line.item_type_code,
       description: line.description.trim(),
@@ -378,7 +402,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       provided_by: line.provided_by || undefined,
       note: line.note.trim() || undefined
     }));
-    if (!collectMethod || lineItems.some((line) => !line.description || line.quantity <= 0 || line.unit_amount < 0) || busy) return;
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -390,6 +414,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Could not record the collection");
       setCollectDone(true);
+      await refreshJob(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not record the collection");
     } finally {
@@ -788,6 +813,7 @@ function UnavailableAction({ title, text }: { title: string; text: string }) {
 
 function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, onRemove, onUpdate, onMethod, onTip, onSave }: { id: string; lines: CloseoutLineDraft[]; subtotal: number; method: string; tip: string; done: boolean; busy: boolean; onAdd: () => void; onRemove: (id: string) => void; onUpdate: (id: string, patch: Partial<CloseoutLineDraft>) => void; onMethod: (value: string) => void; onTip: (value: string) => void; onSave: () => void }) {
   if (done) return <section className="mt-5 border border-success/30 bg-success/8 p-4" id={id}><p className="font-semibold text-success"><CheckCircle2 className="mr-2 inline size-5" />Closeout recorded by ClueXP</p><p className="mt-2 text-sm text-muted">Review it once more, then submit it for customer confirmation.</p></section>;
+  const validation = closeoutFormError(lines, method);
   return (
     <section className="mt-6 scroll-mt-4" id={id}>
       <div className="flex items-center justify-between"><div><p className="field-kicker">Closeout record</p><h2 className="mt-1 font-condensed text-3xl font-bold uppercase">What did you complete?</h2></div><ChevronDown className="size-5 text-muted" /></div>
@@ -814,8 +840,18 @@ function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, on
               <input className="field-input mt-1" inputMode="decimal" value={line.unit_amount} onChange={(event) => onUpdate(line.id, { unit_amount: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="0.00" />
             </label>
           </div>
-          {spec.requiresProvidedBy ? <select className="field-input mt-2" value={line.provided_by} onChange={(event) => onUpdate(line.id, { provided_by: event.target.value })}><option value="">Provided by…</option><option value="company">Company</option><option value="technician">Technician</option><option value="customer">Customer</option><option value="third_party">Third party</option></select> : null}
-          {spec.requiresNote ? <input className="field-input mt-2" value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Required note" /> : null}
+          {spec.requiresProvidedBy ? (
+            <label className="mt-2 block">
+              <span className="field-kicker">Provided by</span>
+              <select className="field-input mt-1" value={line.provided_by} onChange={(event) => onUpdate(line.id, { provided_by: event.target.value })}><option value="">Choose provider…</option><option value="company">Company</option><option value="technician">Technician</option><option value="customer">Customer</option><option value="third_party">Third party</option></select>
+            </label>
+          ) : null}
+          {spec.requiresNote ? (
+            <label className="mt-2 block">
+              <span className="field-kicker">Required note</span>
+              <input className="field-input mt-1" value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Add context for this line" />
+            </label>
+          ) : null}
         </div>;
       })}</div>
       <button className="mt-3 min-h-12 w-full border border-dashed border-border font-semibold text-muted" onClick={onAdd} type="button">+ Add service or part</button>
@@ -824,7 +860,8 @@ function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, on
         <select className="field-input mt-3" value={method} onChange={(event) => onMethod(event.target.value)}><option value="">How was this collected?</option>{PAYMENT_METHODS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
         <input className="field-input mt-2" inputMode="decimal" value={tip} onChange={(event) => onTip(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="Tip received (optional)" />
       </div>
-      <button className="field-primary-action mt-4" disabled={busy || !method || lines.some((line) => !line.description.trim() || !line.unit_amount)} onClick={onSave} type="button"><ShieldCheck className="size-5" />{busy ? "Saving…" : "Record closeout"}</button>
+      {validation ? <p className="mt-3 text-center text-xs text-primary">{validation}</p> : null}
+      <button className="field-primary-action mt-3" disabled={busy || validation != null} onClick={onSave} type="button"><ShieldCheck className="size-5" />{busy ? "Saving…" : "Record closeout"}</button>
     </section>
   );
 }
