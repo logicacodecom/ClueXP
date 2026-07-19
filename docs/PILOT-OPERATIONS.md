@@ -225,10 +225,27 @@ and can open the **recovery workspace** (`/recovery`).
    **override reason** before sending. One 90-second offer goes out; on expiry the job returns
    to MetroKey's queue.
 
+> **Pilot-only behavior:** busy is currently an advisory flag that a dispatcher can override with
+> a reason. This is not the approved production contract. Before broader launch, an active job must
+> be a non-overridable global capacity lock across every company affiliation.
+
 ### Step 3 — Technician accepts (tech PWA)
 1. Open **`https://tech.cluexp.com`**, sign in as the assigned technician.
 2. An offer card appears with a countdown → tap **Accept** (first-accept-wins).
 3. The customer tracking page shows the named technician.
+
+The pilot PWA discovers offers through foreground polling; the screen must remain open. Production
+requires monitored high-priority native push with sound/haptics and a deep link to the offer.
+Lock-screen content must remain privacy-gated: company, service category, approximate area, coarse
+travel estimate, and expiry only.
+
+**Approved active-job capacity rule:** one global technician may have only one immediate active job,
+even when affiliated with several companies. Acceptance starts a hard-busy interval through
+`completed_pending_customer`. Same-company and other-company dispatchers must not send another
+immediate offer; foreign companies see only tenant-safe unavailability. Accepting one idle-state
+offer must atomically supersede every other pending offer to that technician and return those jobs
+to their owning queues. The current backend does not yet fully enforce this cross-job transaction;
+it is a P0 broader-launch gate in [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1.
 
 ### Step 4 — Field lifecycle (with secure arrival PIN)
 
@@ -279,6 +296,7 @@ sanitized API responses in the private evidence log. Customer-side calls go to
 | Offer expiry | Expired offer returns the job to the same company's queue without automatic reassignment |
 | Assignment race | One targeted offer wins; competing action receives `409` |
 | Override assignment | Flagged technician requires and records an override reason |
+| Global capacity (broader-launch gate) | Same-company and cross-company concurrent accepts yield one global active job; losing offers close and their jobs return to the correct tenant queue without cross-tenant detail leakage |
 | Customer cancellation | Allowed before arrival; active offer is revoked; technician/customer refreshes reflect cancellation |
 | Technician failure | Failure reason recorded; provider can release and replace the technician |
 | Reassignment | Previous technician loses access; replacement receives a new targeted offer; history remains visible |
@@ -371,8 +389,10 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 |---|---|
 | Real payment | None — demo charge/finalize routes are removed (`410`) |
 | SMS / email / push | Not available — manual sharing/polling is pilot-only and blocks unattended real-customer widening |
+| Job messaging / masked call | Not available — the technician can submit structured problem reports, but customer chat, dispatcher chat, delivery receipts, attachments, and mediated calling are not built |
 | Live map / ETA | Coarse, clearly-labelled estimate (no continuous tracking) |
 | Technician GPS | Foreground/manual — PWA must be open |
+| Global active-job capacity | Intended contract is one active job per global technician across affiliations; current acceptance is job-atomic but does not yet DB-enforce the cross-job lock, and busy assignment remains overrideable |
 | Dispatch model | **Provider-managed** — ClueXP does not dispatch; public-marketplace + independent-tech dispatch is a future version |
 
 ---

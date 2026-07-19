@@ -1,7 +1,7 @@
 "use client";
 
 import { useLocale } from "@cluexp/app-core";
-import { AlertTriangle, Check, Clock3, MapPin, RefreshCw, ShieldAlert, Timer, X } from "lucide-react";
+import { AlertTriangle, Check, MapPin, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Countdown } from "./client-widgets";
@@ -132,11 +132,6 @@ export function LiveOffersFeed() {
         return a.distance_mi - b.distance_mi;
       }
 
-      // Priority 4: Rank (lower is better, if available)
-      if (a.rank != null && b.rank != null) {
-        return a.rank - b.rank;
-      }
-
       return 0;
     });
   }, [activeOffers]);
@@ -202,10 +197,11 @@ export function LiveOffersFeed() {
   }
   if (activeOffers.length === 0) {
     return (
-      <div className="rounded-[22px] border border-border bg-card p-5 text-center">
-        <Clock3 className="mx-auto size-7 text-success" />
-        <h2 className="mt-3 text-lg font-black">Standing by</h2>
-        <p className="mt-1 text-sm leading-5 text-muted">{t("noOffers")}</p>
+      <div className="border-y border-border py-10 text-center">
+        <div className="mx-auto flex size-16 items-center justify-center rounded-full border-2 border-success text-success"><Check className="size-7" /></div>
+        <h2 className="mt-4 font-condensed text-4xl font-bold uppercase">Ready for offers</h2>
+        <p className="mt-1 font-mono text-xs text-success">server feed connected</p>
+        <p className="mx-auto mt-4 max-w-[18rem] text-[15px] leading-6 text-muted">{t("noOffers")} You can leave this screen open while working nearby.</p>
       </div>
     );
   }
@@ -213,42 +209,32 @@ export function LiveOffersFeed() {
   const multipleOffers = activeOffers.length > 1;
 
   return (
-    <div className="space-y-3" aria-live="polite">
+    <div className="-mx-4 -mt-3 min-h-[calc(100svh-190px)] bg-background px-5 pb-4 pt-3" aria-live="polite">
       {error ? <p className="rounded-xl border border-danger/30 bg-danger/10 p-3 text-sm font-semibold text-danger">{error}</p> : null}
       {multipleOffers && (
-        <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2">
-          <p className="text-[11px] font-black uppercase text-primary">
-            {activeOffers.length} offers available
-          </p>
+        <div className="mx-auto flex w-fit items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm text-muted">
+          <span className="size-2 rounded-full bg-primary" />{activeOffers.length - 1} more {activeOffers.length - 1 === 1 ? "offer" : "offers"} waiting
         </div>
       )}
-      {sortedOffers.map((offer) => (
-        <article className="rounded-[22px] border border-primary/45 bg-card p-4" key={offer.id || offer.offer_id}>
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/35 bg-primary/10 px-2.5 py-1 text-[11px] font-black uppercase text-primary">
-                {offer.urgency === "critical" ? <ShieldAlert className="size-3.5" /> : <Timer className="size-3.5" />}
-                {offer.urgency ?? "urgent"}
-              </div>
-              <h2 className="mt-3 text-[22px] font-black leading-7">{offer.service_type || offer.situation || "Urgent service request"}</h2>
-              <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-muted"><MapPin className="size-4" />{offer.area || "Nearby service area"} · {t("exactAddressAfterAccept")}</p>
-            </div>
-            <div className="shrink-0 text-right">
-              <div className="font-condensed text-4xl font-bold leading-none">{offer.eta_min ?? "--"}</div>
-              <div className="text-[10px] font-black uppercase text-muted">min ETA</div>
-            </div>
+      {sortedOffers.slice(0, 1).map((offer) => (
+        <article className="pt-5" key={offer.id || offer.offer_id}>
+          <Countdown expiresAt={offer.expires_at} offeredAt={offer.offered_at} />
+          <div className="mt-7 border-y border-border py-4">
+            <p className="field-kicker">Incoming offer</p>
+            <h2 className="mt-2 font-condensed text-3xl font-bold uppercase leading-none">{offer.service_type || offer.situation || "Service request"}</h2>
+            <p className="mt-3 flex items-center gap-2 text-[15px] text-muted"><MapPin className="size-4 text-primary" />{offer.area || "Nearby service area"}</p>
+            <p className="mt-1 text-sm text-[#6e6759]">Exact address and customer details unlock after acceptance.</p>
           </div>
-          <div className="mt-4"><Countdown expiresAt={offer.expires_at} offeredAt={offer.offered_at} /></div>
-          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-            <OfferMetric label="Distance" value={offer.distance_mi != null ? `${offer.distance_mi} mi` : offer.dist_km != null ? `${offer.dist_km.toFixed(1)} km` : "--"} />
-            <OfferMetric label="Value" value={offer.estimated_earnings || "TBD"} />
-            <OfferMetric label="Rank" value={offer.rank ? `#${offer.rank}` : "--"} />
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <OfferMetric label="Travel" value={offer.distance_mi != null ? `≈ ${offer.distance_mi} mi` : offer.dist_km != null ? `≈ ${offer.dist_km.toFixed(1)} km` : "Not provided"} />
+            <OfferMetric label="Coarse drive" value={offer.eta_min != null ? `≈ ${offer.eta_min} min` : "Not provided"} />
           </div>
-          <div className="mt-4 grid grid-cols-[.72fr_1.28fr] gap-3">
-            <button className="touch-target min-h-[52px] rounded-2xl border border-border bg-card-strong px-4 font-black disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => { const oid = offer.id || offer.offer_id || null; setReasonFor((current) => current === oid ? null : oid); }}><X className="mr-2 inline size-5" />{declining === (offer.id || offer.offer_id) ? t("loading") : t("decline")}</button>
-            <button className="touch-target min-h-[52px] rounded-2xl bg-primary px-4 font-black text-primary-foreground disabled:opacity-50" disabled={accepting === (offer.id || offer.offer_id)} onClick={() => void accept(offer)}>
+          <div className="mt-2 flex items-center justify-between border border-border bg-card p-4"><span className="text-sm text-muted">Your amount for this job</span><strong className="font-condensed text-3xl">{offer.estimated_earnings || "Pending"}</strong></div>
+          <div className="mt-5 flex flex-col gap-3">
+            <button className="field-primary-action" disabled={accepting === (offer.id || offer.offer_id)} onClick={() => void accept(offer)}>
               <Check className="mr-2 inline size-5" />{accepting === (offer.id || offer.offer_id) ? t("loading") : t("accept")}
             </button>
+            <button className="touch-target min-h-[52px] border border-border bg-card px-4 font-condensed text-lg font-bold uppercase tracking-[.05em] disabled:opacity-50" disabled={declining === (offer.id || offer.offer_id)} onClick={() => { const oid = offer.id || offer.offer_id || null; setReasonFor((current) => current === oid ? null : oid); }}><X className="mr-2 inline size-5" />{declining === (offer.id || offer.offer_id) ? t("loading") : t("decline")}</button>
           </div>
           {reasonFor === (offer.id || offer.offer_id) ? (
             <div className="mt-3 rounded-2xl border border-border bg-card-strong p-3">
@@ -268,7 +254,7 @@ export function LiveOffersFeed() {
 }
 
 function OfferMetric({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0 rounded-xl border border-border bg-card-strong p-2"><div className="truncate text-[10px] font-black uppercase text-muted">{label}</div><div className="mt-1 truncate text-sm font-black">{value}</div></div>;
+  return <div className="min-w-0 border border-border bg-card p-3"><div className="truncate text-sm text-muted">{label}</div><div className="mt-1 truncate text-base font-semibold">{value}</div></div>;
 }
 
 function LiveOfferSkeleton() {

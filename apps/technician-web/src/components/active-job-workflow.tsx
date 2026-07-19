@@ -2,48 +2,44 @@
 
 import {
   AlertTriangle,
+  ArrowUp,
   Check,
   CheckCircle2,
-  Clock3,
+  ChevronDown,
   ExternalLink,
   LocateFixed,
   MapPin,
+  MessageSquare,
+  MoreHorizontal,
   Navigation,
+  Phone,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
-  Wrench
+  Wrench,
+  X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { GoogleMapView, type MapPoint } from "./google-map";
 
-// Payment methods a technician may record collecting by. Mirrors the backend
-// PAYMENT_METHODS set; "other" is the catch-all.
-const PAYMENT_METHODS: Array<{ value: string; label: string }> = [
-  { value: "credit_card", label: "Credit card" },
-  { value: "debit_card", label: "Debit card" },
+const PAYMENT_METHODS = [
+  { value: "credit_card", label: "Card reader" },
   { value: "cash", label: "Cash" },
   { value: "check", label: "Check" },
   { value: "zelle", label: "Zelle" },
-  { value: "cash_app", label: "Cash App" },
-  { value: "apple_pay", label: "Apple Pay" },
-  { value: "google_pay", label: "Google Pay" },
-  { value: "venmo", label: "Venmo" },
-  { value: "paypal", label: "PayPal" },
   { value: "other", label: "Other" }
 ];
 
-const CLOSEOUT_ITEM_TYPES: Array<{ value: string; label: string; requiresProvidedBy?: boolean; requiresNote?: boolean; taxable?: boolean }> = [
+const CLOSEOUT_ITEM_TYPES = [
   { value: "service_fee", label: "Service fee", taxable: true },
   { value: "labor", label: "Labor", taxable: true },
   { value: "diagnostic", label: "Diagnostic", taxable: true },
-  { value: "physical_part", label: "Physical part", requiresProvidedBy: true, taxable: true },
-  { value: "hardware", label: "Hardware", requiresProvidedBy: true, taxable: true },
-  { value: "key_blank", label: "Key blank", requiresProvidedBy: true, taxable: true },
-  { value: "remote_fob", label: "Remote / fob", requiresProvidedBy: true, taxable: true },
-  { value: "key_code_purchase", label: "Key code purchase", requiresProvidedBy: true, requiresNote: true, taxable: false },
-  { value: "programming_token", label: "Programming token", requiresProvidedBy: true, requiresNote: true, taxable: false },
-  { value: "third_party_service", label: "Third-party service", requiresProvidedBy: true, requiresNote: true, taxable: false },
-  { value: "other", label: "Other", requiresProvidedBy: true, requiresNote: true, taxable: true }
+  { value: "physical_part", label: "Physical part", taxable: true, requiresProvidedBy: true },
+  { value: "hardware", label: "Hardware", taxable: true, requiresProvidedBy: true },
+  { value: "key_code_purchase", label: "Key code purchase", taxable: false, requiresProvidedBy: true, requiresNote: true },
+  { value: "third_party_service", label: "Third-party service", taxable: false, requiresProvidedBy: true, requiresNote: true },
+  { value: "other", label: "Other", taxable: true, requiresProvidedBy: true, requiresNote: true }
 ];
 
 type CloseoutLineDraft = {
@@ -56,25 +52,6 @@ type CloseoutLineDraft = {
   provided_by: string;
   note: string;
 };
-
-function newCloseoutLine(itemType = "service_fee"): CloseoutLineDraft {
-  const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === itemType) ?? CLOSEOUT_ITEM_TYPES[0];
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    item_type_code: spec.value,
-    description: spec.label,
-    quantity: "1",
-    unit_amount: "",
-    taxable: spec.taxable ?? true,
-    provided_by: "",
-    note: ""
-  };
-}
-
-function moneyValue(value: string): number {
-  const amount = Number.parseFloat(value);
-  return Number.isFinite(amount) ? amount : 0;
-}
 
 export type TechnicianJob = {
   id: string;
@@ -89,78 +66,78 @@ export type TechnicianJob = {
 type LocationState =
   | { state: "idle" }
   | { state: "saving" }
-  | { state: "ready"; lat: number; lng: number; savedAt: string }
+  | { state: "ready"; lat: number; lng: number; accuracy: number; savedAt: string }
   | { state: "error"; detail: string };
 
-const stages: Array<{ status: TechnicianJob["status"]; label: string }> = [
-  { status: "assigned", label: "Accepted" },
-  { status: "en_route", label: "En route" },
-  { status: "arrived", label: "Arrived" },
-  { status: "in_progress", label: "In service" },
-  { status: "completed_pending_customer", label: "Customer review" }
+type Sheet = "messages" | "call" | "safety" | "more" | null;
+
+const stages: Array<{ status: TechnicianJob["status"]; label: string; heading: string }> = [
+  { status: "assigned", label: "Depart", heading: "Ready to depart" },
+  { status: "en_route", label: "En route", heading: "Driving to customer" },
+  { status: "arrived", label: "On site", heading: "At the location" },
+  { status: "in_progress", label: "Service", heading: "Service underway" },
+  { status: "completed_pending_customer", label: "Review", heading: "Waiting for customer" }
 ];
 
-function statusCopy(status: TechnicianJob["status"]) {
-  if (status === "assigned") return { eyebrow: "Ready to depart", title: "Start route", detail: "Share your current location and begin the trip." };
-  if (status === "en_route") return { eyebrow: "Driving to customer", title: "Confirm arrival", detail: "Only confirm after reaching the service address." };
-  if (status === "arrived") return { eyebrow: "At the location", title: "Start service", detail: "Verify authorization before beginning work." };
-  if (status === "in_progress") return { eyebrow: "Service underway", title: "Finish service", detail: "Send the job to the customer for confirmation." };
-  return { eyebrow: "Work submitted", title: "Awaiting customer", detail: "This job closes only after customer confirmation, Ops resolution, or timeout." };
+function newCloseoutLine(itemType = "service_fee"): CloseoutLineDraft {
+  const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === itemType) ?? CLOSEOUT_ITEM_TYPES[0];
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    item_type_code: spec.value,
+    description: spec.label,
+    quantity: "1",
+    unit_amount: "",
+    taxable: spec.taxable,
+    provided_by: "",
+    note: ""
+  };
 }
 
-function nextStatus(status: TechnicianJob["status"]) {
+function moneyValue(value: string) {
+  const amount = Number.parseFloat(value);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function nextStatus(status: TechnicianJob["status"]): TechnicianJob["status"] | null {
   if (status === "assigned") return "en_route";
-  if (status === "en_route") return "arrived";
   if (status === "arrived") return "in_progress";
   if (status === "in_progress") return "completed_pending_customer";
   return null;
 }
 
-function actionLabel(status: TechnicianJob["status"]) {
-  if (status === "assigned") return "Start route";
-  if (status === "en_route") return "Confirm arrival";
-  if (status === "arrived") return "Start service";
-  if (status === "in_progress") return "Request customer confirmation";
-  return "Waiting for customer";
-}
-
-function ActionIcon({ status }: { status: TechnicianJob["status"] }) {
-  if (status === "assigned") return <Navigation className="size-5" />;
-  if (status === "en_route") return <MapPin className="size-5" />;
-  if (status === "arrived") return <Wrench className="size-5" />;
-  return <CheckCircle2 className="size-5" />;
+function formatSyncAge(value: string) {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+  return seconds < 60 ? `${seconds} s ago` : `${Math.floor(seconds / 60)} min ago`;
 }
 
 export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob }) {
   const [job, setJob] = useState(initialJob);
+  const [online, setOnline] = useState(true);
   const [location, setLocation] = useState<LocationState>({ state: "idle" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pinMode, setPinMode] = useState(false);
   const [pin, setPin] = useState("");
+  const pinInput = useRef<HTMLInputElement>(null);
+  const [sheet, setSheet] = useState<Sheet>(null);
   const [issueKind, setIssueKind] = useState<string | null>(null);
   const [issueReason, setIssueReason] = useState("");
   const [issueDone, setIssueDone] = useState(false);
+  const [closeoutOpen, setCloseoutOpen] = useState(false);
   const [collectMethod, setCollectMethod] = useState("");
   const [tipAmount, setTipAmount] = useState("");
   const [closeoutLines, setCloseoutLines] = useState<CloseoutLineDraft[]>(() => [newCloseoutLine()]);
   const [collectDone, setCollectDone] = useState(false);
-  const copy = statusCopy(job.status);
   const currentIndex = stages.findIndex((stage) => stage.status === job.status);
+  const stage = stages[Math.max(0, currentIndex)];
 
   const refreshJob = useCallback(async (quiet = false) => {
     if (!quiet) setBusy(true);
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}`, { cache: "no-store" });
       const body = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        window.location.assign("/signin");
-        return;
-      }
-      if (response.status === 404) {
-        window.location.assign("/jobs");
-        return;
-      }
+      if (response.status === 401) return window.location.assign("/signin");
+      if (response.status === 404) return window.location.assign("/jobs");
       if (!response.ok) throw new Error(body.detail || "Unable to refresh this job");
       setJob(body as TechnicianJob);
       setError(null);
@@ -172,6 +149,17 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   }, [job.id]);
 
   useEffect(() => {
+    const syncOnline = () => setOnline(navigator.onLine);
+    syncOnline();
+    window.addEventListener("online", syncOnline);
+    window.addEventListener("offline", syncOnline);
+    return () => {
+      window.removeEventListener("online", syncOnline);
+      window.removeEventListener("offline", syncOnline);
+    };
+  }, []);
+
+  useEffect(() => {
     const id = window.setInterval(() => void refreshJob(true), 15_000);
     const onFocus = () => void refreshJob(true);
     window.addEventListener("focus", onFocus);
@@ -181,26 +169,13 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     };
   }, [refreshJob]);
 
-  // While the job is live (en route / on site), push the technician's location
-  // periodically so the customer's tracking map and the dispatcher's fleet map
-  // follow real movement — not a static assignment point.
   useEffect(() => {
-    if (!["en_route", "arrived", "in_progress"].includes(job.status)) return;
-    const id = window.setInterval(() => void shareLocation(), 25_000);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job.status]);
+    if (!pinMode) return;
+    const id = window.setTimeout(() => pinInput.current?.focus(), 80);
+    return () => window.clearTimeout(id);
+  }, [pinMode]);
 
-  const points = useMemo(() => {
-    const next: MapPoint[] = [];
-    if (location.state === "ready") next.push({ lat: location.lat, lng: location.lng, kind: "tech", label: "Your shared location" });
-    if (typeof job.lat === "number" && typeof job.lng === "number") {
-      next.push({ lat: job.lat, lng: job.lng, kind: "job", label: "Service address" });
-    }
-    return next;
-  }, [job.lat, job.lng, location]);
-
-  async function shareLocation(): Promise<boolean> {
+  const shareLocation = useCallback(async (): Promise<boolean> => {
     if (!navigator.geolocation) {
       setLocation({ state: "error", detail: "Location is not available on this device." });
       return false;
@@ -220,6 +195,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
             state: "ready",
             lat: position.coords.latitude,
             lng: position.coords.longitude,
+            accuracy: position.coords.accuracy,
             savedAt: body.last_location_at || new Date().toISOString()
           });
           resolve(true);
@@ -228,32 +204,49 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
           resolve(false);
         }
       }, (failure) => {
-        const detail =
-          failure.code === failure.PERMISSION_DENIED ? "Allow location access to start the route." :
-          failure.code === failure.TIMEOUT ? "Location timed out. Move to an open area and retry." :
-          "Your current location is unavailable.";
+        const detail = failure.code === failure.PERMISSION_DENIED
+          ? "Allow precise location access to start the route."
+          : failure.code === failure.TIMEOUT
+            ? "Location timed out. Move to an open area and retry."
+            : "Your current location is unavailable.";
         setLocation({ state: "error", detail });
         resolve(false);
       }, { enableHighAccuracy: true, timeout: 12_000, maximumAge: 30_000 });
     });
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!["en_route", "arrived", "in_progress"].includes(job.status)) return;
+    void shareLocation();
+    const id = window.setInterval(() => void shareLocation(), 25_000);
+    return () => window.clearInterval(id);
+  }, [job.status, shareLocation]);
+
+  const points = useMemo(() => {
+    const next: MapPoint[] = [];
+    if (location.state === "ready") next.push({ lat: location.lat, lng: location.lng, kind: "tech", label: "Your shared location" });
+    if (typeof job.lat === "number" && typeof job.lng === "number") next.push({ lat: job.lat, lng: job.lng, kind: "job", label: "Service address" });
+    return next;
+  }, [job.lat, job.lng, location]);
+
+  const mapsHref = typeof job.lat === "number" && typeof job.lng === "number"
+    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${job.lat},${job.lng}`)}`
+    : job.address
+      ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(job.address)}`
+      : null;
 
   async function verifyArrival() {
-    const code = pin.trim();
-    if (code.length !== 6 || busy) return;
+    if (pin.length !== 6 || busy) return;
     setBusy(true);
     setError(null);
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/arrival/verify`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pin: code })
+        body: JSON.stringify({ pin })
       });
       const body = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        window.location.assign("/signin");
-        return;
-      }
+      if (response.status === 401) return window.location.assign("/signin");
       if (!response.ok) throw new Error(body.detail || "PIN verification failed");
       setJob((current) => ({ ...current, status: "arrived" }));
       setPinMode(false);
@@ -265,57 +258,24 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     }
   }
 
-  async function reportIssue() {
-    if (!issueKind || busy) return;
+  async function submitIssue(kind = issueKind) {
+    if (!kind || busy) return;
     setBusy(true);
     setError(null);
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/report-issue`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind: issueKind, reason: issueReason.trim() })
+        body: JSON.stringify({ kind, reason: issueReason.trim() })
       });
       const body = await response.json().catch(() => ({}));
-      if (response.status === 401) { window.location.assign("/signin"); return; }
+      if (response.status === 401) return window.location.assign("/signin");
       if (!response.ok) throw new Error(body.detail || "Could not report the problem");
       setIssueDone(true);
       setIssueKind(null);
       setIssueReason("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not report the problem");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function reportCollection() {
-    const lineItems = closeoutLines.map((line) => ({
-      item_type_code: line.item_type_code,
-      description: line.description.trim(),
-      quantity: Number.parseFloat(line.quantity || "1"),
-      unit_amount: moneyValue(line.unit_amount),
-      taxable: line.taxable,
-      provided_by: line.provided_by || undefined,
-      note: line.note.trim() || undefined
-    }));
-    const hasInvalidLine = lineItems.some((line) =>
-      !line.description || !Number.isFinite(line.quantity) || line.quantity <= 0 || line.unit_amount < 0
-    );
-    if (!collectMethod || hasInvalidLine || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/collection`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ method: collectMethod, tip_amount: moneyValue(tipAmount), line_items: lineItems })
-      });
-      const body = await response.json().catch(() => ({}));
-      if (response.status === 401) { window.location.assign("/signin"); return; }
-      if (!response.ok) throw new Error(body.detail || "Could not record the collection");
-      setCollectDone(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not record the collection");
     } finally {
       setBusy(false);
     }
@@ -329,7 +289,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
         const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === patch.item_type_code);
         if (spec) {
           next.description = spec.label;
-          next.taxable = spec.taxable ?? true;
+          next.taxable = spec.taxable;
           if (!spec.requiresProvidedBy) next.provided_by = "";
           if (!spec.requiresNote) next.note = "";
         }
@@ -338,21 +298,50 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     }));
   }
 
-  const closeoutSubtotal = closeoutLines.reduce((sum, line) => {
-    const qty = Number.parseFloat(line.quantity || "1");
-    return sum + (Number.isFinite(qty) ? qty : 0) * moneyValue(line.unit_amount);
-  }, 0);
+  const closeoutSubtotal = closeoutLines.reduce((sum, line) => sum + moneyValue(line.quantity || "1") * moneyValue(line.unit_amount), 0);
+
+  async function reportCollection() {
+    const lineItems = closeoutLines.map((line) => ({
+      item_type_code: line.item_type_code,
+      description: line.description.trim(),
+      quantity: moneyValue(line.quantity || "1"),
+      unit_amount: moneyValue(line.unit_amount),
+      taxable: line.taxable,
+      provided_by: line.provided_by || undefined,
+      note: line.note.trim() || undefined
+    }));
+    if (!collectMethod || lineItems.some((line) => !line.description || line.quantity <= 0 || line.unit_amount < 0) || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/collection`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method: collectMethod, tip_amount: moneyValue(tipAmount), line_items: lineItems })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Could not record the collection");
+      setCollectDone(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not record the collection");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function advance() {
-    const target = nextStatus(job.status);
-    if (!target || busy) return;
-    // Arrival is gated by the customer-held PIN — open the entry panel instead of
-    // a direct status write (the API rejects a direct en_route -> arrived).
+    if (busy) return;
     if (job.status === "en_route") {
-      setError(null);
       setPinMode(true);
       return;
     }
+    if (job.status === "in_progress" && !closeoutOpen) {
+      setCloseoutOpen(true);
+      window.setTimeout(() => document.getElementById("closeout")?.scrollIntoView({ behavior: "smooth" }), 20);
+      return;
+    }
+    const target = nextStatus(job.status);
+    if (!target) return;
     setBusy(true);
     setError(null);
     try {
@@ -363,12 +352,10 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
         body: JSON.stringify({ status: target })
       });
       const body = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        window.location.assign("/signin");
-        return;
-      }
+      if (response.status === 401) return window.location.assign("/signin");
       if (!response.ok) throw new Error(body.detail || "The job could not be updated");
       setJob((current) => ({ ...current, status: target }));
+      setCloseoutOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The job could not be updated");
     } finally {
@@ -376,303 +363,263 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     }
   }
 
-  const mapsHref =
-    typeof job.lat === "number" && typeof job.lng === "number"
-      ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${job.lat},${job.lng}`)}`
-      : job.address
-        ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(job.address)}`
-        : null;
+  const actionLabel = job.status === "assigned" ? "Start route"
+    : job.status === "en_route" ? "Confirm arrival"
+      : job.status === "arrived" ? "Start service"
+        : job.status === "in_progress" && !closeoutOpen ? "Review and finish service"
+          : job.status === "in_progress" ? "Submit for customer confirmation"
+            : "Waiting for customer";
+
+  const canSubmitCloseout = job.status !== "in_progress" || !closeoutOpen || collectDone;
+  const mapVisible = job.status === "assigned" || job.status === "en_route";
 
   return (
-    <div className="min-h-full bg-background pb-28">
-      <section className="relative h-[42svh] min-h-[310px] overflow-hidden border-b border-border bg-[#10151b]">
-        <GoogleMapView
-          points={points}
-          connect={false}
-          fallback={
-            <div className="flex h-full items-center justify-center px-8 text-center">
-              <div>
-                <MapPin className="mx-auto size-8 text-primary" />
-                <p className="mt-3 font-bold">{points.length ? "Map unavailable" : "Location not shared"}</p>
-                <p className="mt-1 text-sm leading-5 text-muted">
-                  {points.length ? "Use the address or open external navigation." : "Start the route to share your position."}
-                </p>
-              </div>
-            </div>
-          }
-        />
-        <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full border border-border bg-background/95 px-3 py-2 text-xs font-black">
-          <span className={`size-2 rounded-full ${location.state === "ready" ? "bg-success" : "bg-muted"}`} />
-          {location.state === "ready" ? "Location shared" : location.state === "saving" ? "Locating..." : "Location idle"}
-        </div>
-        <button
-          className="touch-target absolute bottom-4 right-4 flex size-12 items-center justify-center rounded-full border border-border bg-background text-foreground disabled:opacity-50"
-          disabled={location.state === "saving"}
-          onClick={() => void shareLocation()}
-          type="button"
-          aria-label="Update current location"
-        >
-          <LocateFixed className="size-5" />
-        </button>
-      </section>
+    <div className="min-h-[100svh] bg-background pb-[178px]">
+      <header className="safe-top flex min-h-12 items-center justify-between border-b border-border px-5 pb-2 font-condensed text-sm font-semibold uppercase tracking-[.08em]">
+        <span>ClueXP Field</span>
+        <span className="flex items-center gap-2 text-muted"><span className={`size-2 rounded-full ${online ? "bg-success" : "bg-primary"}`} />{online ? "Online" : "Offline"}</span>
+      </header>
 
-      <div className="px-4 pt-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-[.12em] text-primary">{copy.eyebrow}</p>
-            <h1 className="mt-1 font-condensed text-[2.45rem] font-bold uppercase leading-[.95]">{copy.title}</h1>
-            <p className="mt-3 max-w-sm text-sm leading-6 text-muted">{copy.detail}</p>
+      {mapVisible ? (
+        <section className={`relative overflow-hidden border-b border-border bg-[#131417] ${job.status === "en_route" ? "h-[46svh] min-h-[340px]" : "h-[34svh] min-h-[270px]"}`}>
+          <GoogleMapView points={points} connect={job.status === "en_route"} fallback={<MapFallback job={job} />} />
+          <div className="absolute left-3 top-3 flex items-center gap-2 rounded-[5px] border border-border bg-background/95 px-3 py-2 text-xs font-semibold text-[#cfc8ba]">
+            <span className={`size-2 rounded-full ${location.state === "ready" ? "bg-success" : location.state === "error" ? "bg-danger" : "bg-muted"}`} />
+            {location.state === "ready"
+              ? `GPS ±${Math.round(location.accuracy)} ft · synced ${formatSyncAge(location.savedAt)}`
+              : location.state === "saving" ? "Getting precise location…" : location.state === "error" ? "Location unavailable" : "Location starts with route"}
           </div>
-          <button className="touch-target flex size-11 shrink-0 items-center justify-center rounded-full border border-border bg-card" disabled={busy} onClick={() => void refreshJob()} aria-label="Refresh job">
+          {job.status === "en_route" && mapsHref ? (
+            <div className="absolute bottom-3 left-3 right-3 grid grid-cols-[1fr_auto] gap-2">
+              <a className="field-secondary-action" href={mapsHref} target="_blank" rel="noreferrer">Open in maps <ExternalLink className="size-4" /></a>
+              <button className="field-secondary-action px-4" onClick={() => void shareLocation()} type="button" aria-label="Recenter map"><LocateFixed className="size-4" /></button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      <main className="px-5 pt-5">
+        <StageProgress current={currentIndex} />
+        <div className="mt-2 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="font-condensed text-[2.2rem] font-bold uppercase leading-none tracking-[.02em]">{stage.heading}</h1>
+            <p className="mt-2 text-[15px] leading-6 text-[#a39c8e]">{stageDetail(job.status)}</p>
+          </div>
+          <button className="touch-target flex size-11 shrink-0 items-center justify-center border border-border bg-card" disabled={busy} onClick={() => void refreshJob()} aria-label="Refresh job">
             <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
           </button>
         </div>
 
-        <div className="mt-5 grid grid-cols-5 gap-1.5" aria-label="Job progress">
-          {stages.map((stage, index) => (
-            <div key={stage.status} className="min-w-0">
-              <div className={`h-1.5 ${index <= currentIndex ? "bg-primary" : "bg-card-strong"}`} />
-              <div className={`mt-1 truncate text-center text-[9px] font-black uppercase ${index <= currentIndex ? "text-primary" : "text-muted"}`}>{stage.label}</div>
-            </div>
-          ))}
+        <JobTruth job={job} mapsHref={mapsHref} />
+
+        {location.state === "error" ? <OperationalAlert tone="danger" text={location.detail} /> : null}
+        {error ? <OperationalAlert tone="danger" text={error} /> : null}
+        {issueDone ? <OperationalAlert tone="success" text="Problem recorded by ClueXP. Dispatch has been notified." /> : null}
+
+        {job.status === "arrived" ? (
+          <div className="mt-4 border border-success/30 bg-success/8 p-3 text-sm text-success"><CheckCircle2 className="mr-2 inline size-4" />Arrival verified by customer PIN</div>
+        ) : null}
+
+        {job.status === "in_progress" && closeoutOpen ? (
+          <CloseoutPanel
+            id="closeout"
+            lines={closeoutLines}
+            subtotal={closeoutSubtotal}
+            method={collectMethod}
+            tip={tipAmount}
+            done={collectDone}
+            busy={busy}
+            onAdd={() => setCloseoutLines((current) => [...current, newCloseoutLine()])}
+            onRemove={(id) => setCloseoutLines((current) => current.filter((line) => line.id !== id))}
+            onUpdate={updateCloseoutLine}
+            onMethod={setCollectMethod}
+            onTip={setTipAmount}
+            onSave={() => void reportCollection()}
+          />
+        ) : null}
+
+        {job.status === "completed_pending_customer" ? <PendingConfirmation job={job} /> : null}
+      </main>
+
+      {job.status !== "completed_pending_customer" ? (
+        <div className="fixed bottom-[86px] left-1/2 z-30 w-full max-w-[480px] -translate-x-1/2 bg-background px-4 pt-3">
+          <button className="field-primary-action" disabled={busy || !canSubmitCloseout} onClick={() => void advance()} type="button">
+            {busy ? <RefreshCw className="size-5 animate-spin" /> : <PrimaryActionIcon status={job.status} />}
+            {busy ? "Updating…" : actionLabel}
+          </button>
+          {job.status === "in_progress" && closeoutOpen && !collectDone ? <p className="mt-2 text-center text-xs text-muted">Record the closeout before submitting.</p> : null}
         </div>
+      ) : null}
 
-        <section className="mt-6 border-y border-border py-4">
-          <div className="flex gap-3">
-            <div className="flex size-11 shrink-0 items-center justify-center bg-card-strong text-primary"><MapPin className="size-5" /></div>
-            <div className="min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Service address</p>
-              <p className="mt-1 text-base font-black leading-5">{job.address || "Address unavailable"}</p>
-              <p className="mt-1 text-sm capitalize text-muted">{job.access_type || "Service"} · {(job.situation || "Service request").replaceAll("_", " ")}</p>
-            </div>
-          </div>
-          {mapsHref ? (
-            <a className="touch-target mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card-strong px-4 text-sm font-black" href={mapsHref} target="_blank" rel="noreferrer">
-              <ExternalLink className="size-4" />Open turn-by-turn navigation
-            </a>
-          ) : null}
-        </section>
+      <ContextRail onOpen={setSheet} />
+      {pinMode ? <PinSheet pin={pin} busy={busy} error={error} inputRef={pinInput} onPin={setPin} onClose={() => { setPinMode(false); setPin(""); setError(null); }} onConfirm={() => void verifyArrival()} /> : null}
+      {sheet ? <ActionSheet sheet={sheet} job={job} busy={busy} issueDone={issueDone} issueKind={issueKind} issueReason={issueReason} onClose={() => setSheet(null)} onIssueKind={setIssueKind} onIssueReason={setIssueReason} onSubmitIssue={(kind) => void submitIssue(kind)} /> : null}
+    </div>
+  );
+}
 
-        {location.state === "error" ? (
-          <div className="mt-4 flex gap-3 border border-danger/35 bg-danger/10 p-3 text-sm text-danger" role="alert">
-            <AlertTriangle className="size-5 shrink-0" />
-            <p>{location.detail}</p>
-          </div>
-        ) : null}
-        {error ? (
-          <div className="mt-4 flex gap-3 border border-danger/35 bg-danger/10 p-3 text-sm text-danger" role="alert">
-            <AlertTriangle className="size-5 shrink-0" />
-            <p>{error}</p>
-          </div>
-        ) : null}
+function stageDetail(status: TechnicianJob["status"]) {
+  if (status === "assigned") return "Review the destination, then share your location and begin the route.";
+  if (status === "en_route") return "Use your maps app for directions. Confirm arrival with the customer’s six-digit PIN.";
+  if (status === "arrived") return "Review the request and authorization before beginning work.";
+  if (status === "in_progress") return "Capture the work performed, then build an honest closeout record.";
+  return "The receipt was submitted. You remain busy until the customer or dispatcher resolves it.";
+}
 
-        {pinMode && job.status === "en_route" ? (
-          <div className="mt-5 border border-primary/35 bg-primary/5 p-4">
-            <p className="text-[11px] font-black uppercase tracking-[.1em] text-primary">Arrival verification</p>
-            <p className="mt-1 text-sm leading-5 text-muted">Ask the customer for the 6-digit arrival PIN shown on their tracking page, then enter it to confirm you are on site.</p>
-            <input
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              value={pin}
-              onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="------"
-              aria-label="Customer arrival PIN"
-              className="mt-3 w-full border border-border bg-card px-4 py-3 text-center font-condensed text-3xl tracking-[.4em]"
-            />
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button className="touch-target min-h-12 border border-border bg-card-strong font-black" onClick={() => { setPinMode(false); setPin(""); }} type="button">Cancel</button>
-              <button className="touch-target min-h-12 bg-primary font-black text-primary-foreground disabled:opacity-50" disabled={busy || pin.length !== 6} onClick={() => void verifyArrival()} type="button">{busy ? "Verifying..." : "Confirm arrival"}</button>
-            </div>
-          </div>
-        ) : null}
+function PrimaryActionIcon({ status }: { status: TechnicianJob["status"] }) {
+  if (status === "assigned") return <Navigation className="size-5" />;
+  if (status === "en_route") return <MapPin className="size-5" />;
+  if (status === "arrived") return <Wrench className="size-5" />;
+  return <CheckCircle2 className="size-5" />;
+}
 
-        {job.status === "completed_pending_customer" ? (
-          <div className="mt-5 flex gap-3 border border-warn/35 bg-warn/10 p-4">
-            <Clock3 className="size-5 shrink-0 text-warn" />
-            <div><p className="font-black">Customer confirmation pending</p><p className="mt-1 text-sm leading-5 text-muted">You cannot close this job yourself. This screen will refresh automatically.</p></div>
-          </div>
-        ) : null}
-
-        {(job.status === "en_route" || job.status === "arrived" || job.status === "in_progress") ? (
-          <div className="mt-5 border border-border p-4">
-            {issueDone ? (
-              <p className="text-sm font-semibold text-success">Problem reported — dispatch has been notified and will follow up.</p>
-            ) : (
-              <>
-                <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Report a problem</p>
-                <p className="mt-1 text-sm leading-5 text-muted">Flag a blocker to dispatch. This does not change the job — your dispatcher decides what happens next.</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {([["cannot_complete", "Can’t complete"], ["customer_unavailable", "Customer unavailable"], ["unsafe", "Unsafe"]] as const).map(([kind, label]) => (
-                    <button key={kind} className={`touch-target min-h-10 rounded-full border px-3 text-sm font-bold ${issueKind === kind ? "border-primary bg-primary/10 text-primary" : "border-border"}`} onClick={() => setIssueKind(kind)} type="button">{label}</button>
-                  ))}
-                </div>
-                {issueKind ? (
-                  <div className="mt-3 space-y-2">
-                    <input className="w-full border border-border bg-card px-3 py-2 text-sm" placeholder="Add detail (optional)" value={issueReason} onChange={(e) => setIssueReason(e.target.value)} aria-label="Problem detail" />
-                    <button className="touch-target min-h-11 w-full bg-primary font-black text-primary-foreground disabled:opacity-50" disabled={busy} onClick={() => void reportIssue()} type="button">{busy ? "Reporting…" : "Report to dispatch"}</button>
-                  </div>
-                ) : null}
-              </>
-            )}
-          </div>
-        ) : null}
-
-        {(job.status === "in_progress" || job.status === "completed_pending_customer") ? (
-          <div className="mt-5 border border-border p-4">
-            {collectDone ? (
-              <p className="text-sm font-semibold text-success">
-                Payment recorded — {PAYMENT_METHODS.find((m) => m.value === collectMethod)?.label}. It will appear in your job history.
-              </p>
-            ) : (
-              <>
-                <p className="text-[11px] font-black uppercase tracking-[.1em] text-muted">Closeout receipt</p>
-                <p className="mt-1 text-sm leading-5 text-muted">Break down labor, service fees, parts, codes, tip, and payment method. Tax and card fees are calculated by company settings.</p>
-                <div className="mt-3 space-y-3">
-                  {closeoutLines.map((line, index) => {
-                    const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
-                    return (
-                      <div className="border border-border bg-card/70 p-3" key={line.id}>
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-[10px] font-black uppercase tracking-[.1em] text-muted">Line {index + 1}</p>
-                          {closeoutLines.length > 1 ? (
-                            <button
-                              className="text-xs font-black text-danger"
-                              type="button"
-                              onClick={() => setCloseoutLines((current) => current.filter((item) => item.id !== line.id))}
-                            >
-                              Remove
-                            </button>
-                          ) : null}
-                        </div>
-                        <div className="mt-2 grid grid-cols-1 gap-2">
-                          <select
-                            className="w-full border border-border bg-card px-3 py-2 text-sm"
-                            value={line.item_type_code}
-                            onChange={(e) => updateCloseoutLine(line.id, { item_type_code: e.target.value })}
-                            aria-label={`Line ${index + 1} item type`}
-                          >
-                            {CLOSEOUT_ITEM_TYPES.map((item) => (<option key={item.value} value={item.value}>{item.label}</option>))}
-                          </select>
-                          <input
-                            className="w-full border border-border bg-card px-3 py-2 text-sm"
-                            placeholder="Description"
-                            value={line.description}
-                            onChange={(e) => updateCloseoutLine(line.id, { description: e.target.value })}
-                            aria-label={`Line ${index + 1} description`}
-                          />
-                          <div className="grid grid-cols-2 gap-2">
-                            <input
-                              inputMode="decimal"
-                              className="w-full border border-border bg-card px-3 py-2 text-sm"
-                              placeholder="Qty"
-                              value={line.quantity}
-                              onChange={(e) => updateCloseoutLine(line.id, { quantity: e.target.value.replace(/[^0-9.]/g, "") })}
-                              aria-label={`Line ${index + 1} quantity`}
-                            />
-                            <input
-                              inputMode="decimal"
-                              className="w-full border border-border bg-card px-3 py-2 text-sm"
-                              placeholder="Amount"
-                              value={line.unit_amount}
-                              onChange={(e) => updateCloseoutLine(line.id, { unit_amount: e.target.value.replace(/[^0-9.]/g, "") })}
-                              aria-label={`Line ${index + 1} amount`}
-                            />
-                          </div>
-                          <label className="flex items-center gap-2 text-xs font-bold text-muted">
-                            <input
-                              checked={line.taxable}
-                              onChange={(e) => updateCloseoutLine(line.id, { taxable: e.target.checked })}
-                              type="checkbox"
-                            />
-                            Taxable
-                          </label>
-                          {spec.requiresProvidedBy ? (
-                            <select
-                              className="w-full border border-border bg-card px-3 py-2 text-sm"
-                              value={line.provided_by}
-                              onChange={(e) => updateCloseoutLine(line.id, { provided_by: e.target.value })}
-                              aria-label={`Line ${index + 1} provided by`}
-                            >
-                              <option value="">Provided by…</option>
-                              <option value="company">Company</option>
-                              <option value="technician">Technician</option>
-                              <option value="customer">Customer</option>
-                              <option value="third_party">Third party</option>
-                            </select>
-                          ) : null}
-                          {spec.requiresNote ? (
-                            <input
-                              className="w-full border border-border bg-card px-3 py-2 text-sm"
-                              placeholder="Required note"
-                              value={line.note}
-                              onChange={(e) => updateCloseoutLine(line.id, { note: e.target.value })}
-                              aria-label={`Line ${index + 1} note`}
-                            />
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <button
-                  className="touch-target mt-3 min-h-10 w-full border border-border bg-card-strong text-sm font-black"
-                  type="button"
-                  onClick={() => setCloseoutLines((current) => [...current, newCloseoutLine()])}
-                >
-                  Add line item
-                </button>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <input
-                    inputMode="decimal"
-                    className="w-full border border-border bg-card px-3 py-2 text-sm"
-                    placeholder="Tip (optional)"
-                    value={tipAmount}
-                    onChange={(e) => setTipAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                    aria-label="Tip amount"
-                  />
-                  <select
-                    className="w-full border border-border bg-card px-3 py-2 text-sm"
-                    value={collectMethod}
-                    onChange={(e) => setCollectMethod(e.target.value)}
-                    aria-label="Payment method"
-                  >
-                    <option value="">Method…</option>
-                    {PAYMENT_METHODS.map((m) => (<option key={m.value} value={m.value}>{m.label}</option>))}
-                  </select>
-                </div>
-                <p className="mt-2 text-xs font-semibold text-muted">
-                  Subtotal before tax/fees: ${closeoutSubtotal.toFixed(2)}
-                </p>
-                <button
-                  className="touch-target mt-2 min-h-11 w-full bg-primary font-black text-primary-foreground disabled:opacity-50"
-                  disabled={busy || !collectMethod || closeoutLines.some((line) => !line.description.trim() || !line.unit_amount)}
-                  onClick={() => void reportCollection()}
-                  type="button"
-                >
-                  {busy ? "Saving…" : "Record collection"}
-                </button>
-              </>
-            )}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="safe-bottom fixed bottom-[82px] left-1/2 z-30 w-full max-w-[480px] -translate-x-1/2 border-t border-border bg-background/98 px-4 pt-3">
-        <button
-          className="touch-target flex min-h-[58px] w-full items-center justify-center gap-2 bg-primary px-4 text-base font-black text-primary-foreground disabled:cursor-not-allowed disabled:opacity-55"
-          disabled={busy || job.status === "completed_pending_customer"}
-          onClick={() => void advance()}
-          type="button"
-        >
-          {busy ? <RefreshCw className="size-5 animate-spin" /> : <ActionIcon status={job.status} />}
-          {busy ? "Updating..." : actionLabel(job.status)}
-        </button>
-        <p className="mt-2 text-center text-[11px] font-semibold text-muted">
-          <ShieldCheck className="mr-1 inline size-3.5 text-success" />
-          Status changes are recorded by ClueXP
-        </p>
+function StageProgress({ current }: { current: number }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-4">
+        <span className="field-kicker">Stage {current + 1} of 5</span>
+        <span className="flex flex-1 justify-end gap-1" aria-hidden>{stages.map((item, index) => <span className={`h-1 w-6 rounded-sm ${index <= current ? "bg-primary" : "bg-border"}`} key={item.status} />)}</span>
       </div>
     </div>
   );
+}
+
+function MapFallback({ job }: { job: TechnicianJob }) {
+  return (
+    <div className="absolute inset-0 overflow-hidden bg-[#131417]">
+      <div className="absolute inset-0 opacity-70 [background-image:linear-gradient(#1b1d21_1px,transparent_1px),linear-gradient(90deg,#1b1d21_1px,transparent_1px)] [background-size:46px_46px]" />
+      <div className="absolute left-[-20%] top-[58%] h-4 w-[150%] -rotate-6 bg-[#1a1c20]" />
+      <div className="absolute left-[34%] top-[-20%] h-[150%] w-3 rotate-6 bg-[#1a1c20]" />
+      <div className="absolute bottom-4 left-4 right-4 border border-border bg-background/95 p-3">
+        <div className="text-xs text-muted">Map unavailable — destination as text</div>
+        <div className="mt-1 font-condensed text-xl font-bold uppercase">{job.address || "Address unavailable"}</div>
+      </div>
+    </div>
+  );
+}
+
+function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | null }) {
+  return (
+    <section className="mt-5 border-y border-border py-4">
+      <div className="flex gap-3">
+        <div className="flex size-10 shrink-0 items-center justify-center bg-card-strong text-primary"><MapPin className="size-5" /></div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-muted">Authorized service address</p>
+          <p className="mt-1 text-[17px] font-semibold leading-5">{job.address || "Address unavailable"}</p>
+          <p className="mt-2 text-sm capitalize text-[#8a8171]">{(job.situation || "Service request").replaceAll("_", " ")}{job.access_type ? ` · ${job.access_type}` : ""}</p>
+        </div>
+      </div>
+      {mapsHref ? <a className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={mapsHref} target="_blank" rel="noreferrer">Open turn-by-turn navigation <ExternalLink className="size-4" /></a> : null}
+    </section>
+  );
+}
+
+function OperationalAlert({ tone, text }: { tone: "danger" | "success"; text: string }) {
+  return <div className={`mt-4 flex gap-3 border p-3 text-sm ${tone === "danger" ? "border-danger/40 bg-danger/10 text-[#edd9d9]" : "border-success/30 bg-success/8 text-success"}`} role="status">{tone === "danger" ? <AlertTriangle className="size-5 shrink-0 text-danger" /> : <CheckCircle2 className="size-5 shrink-0" />}<p>{text}</p></div>;
+}
+
+function ContextRail({ onOpen }: { onOpen: (sheet: Exclude<Sheet, null>) => void }) {
+  const items = [
+    { label: "Message", icon: MessageSquare, sheet: "messages" as const },
+    { label: "Call", icon: Phone, sheet: "call" as const },
+    { label: "Safety", icon: ShieldAlert, sheet: "safety" as const, danger: true },
+    { label: "More", icon: MoreHorizontal, sheet: "more" as const }
+  ];
+  return (
+    <nav className="safe-bottom fixed bottom-0 left-1/2 z-40 grid w-full max-w-[480px] -translate-x-1/2 grid-cols-4 gap-2 border-t border-border bg-background px-3 pt-2" aria-label="Active job actions">
+      {items.map(({ label, icon: Icon, sheet, danger }) => <button className={`field-rail-action ${danger ? "border-danger/40 text-danger" : ""}`} key={label} onClick={() => onOpen(sheet)} type="button"><Icon className="size-4" />{label}</button>)}
+    </nav>
+  );
+}
+
+function PinSheet({ pin, busy, error, inputRef, onPin, onClose, onConfirm }: { pin: string; busy: boolean; error: string | null; inputRef: RefObject<HTMLInputElement | null>; onPin: (value: string) => void; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-background" role="dialog" aria-modal="true" aria-labelledby="pin-title">
+      <div className="mx-auto flex min-h-[100svh] w-full max-w-[480px] flex-col px-5 safe-top safe-bottom">
+        <button className="touch-target ml-auto flex size-11 items-center justify-center border border-border" onClick={onClose} aria-label="Close arrival verification"><X className="size-5" /></button>
+        <StageProgress current={2} />
+        <h2 className="mt-3 font-condensed text-4xl font-bold uppercase" id="pin-title">Verify arrival</h2>
+        <p className="mt-2 text-base leading-6 text-[#cfc8ba]">Ask the customer for the six-digit PIN on their ClueXP tracking page.</p>
+        <label className="relative mt-8 block cursor-text" onClick={() => inputRef.current?.focus()}>
+          <span className="sr-only">Customer arrival PIN</span>
+          <span className="grid grid-cols-6 gap-2" aria-hidden>{Array.from({ length: 6 }, (_, index) => <span className={`flex h-[60px] items-center justify-center border bg-card font-condensed text-3xl font-bold ${index === pin.length ? "border-2 border-primary" : error ? "border-danger/70" : "border-border"}`} key={index}>{pin[index] || ""}</span>)}</span>
+          <input ref={inputRef} className="absolute inset-0 opacity-0" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={pin} onChange={(event) => onPin(event.target.value.replace(/\D/g, "").slice(0, 6))} />
+        </label>
+        <p className="mt-3 text-center text-sm text-muted">The button enables after six digits.</p>
+        {error ? <OperationalAlert tone="danger" text={error} /> : null}
+        <div className="mt-auto pt-8">
+          <button className="field-primary-action" disabled={busy || pin.length !== 6} onClick={onConfirm} type="button">{busy ? <RefreshCw className="size-5 animate-spin" /> : <Check className="size-5" />}{busy ? "Verifying…" : "Confirm arrival"}</button>
+          <p className="mt-4 text-center text-sm text-muted">Can’t get a PIN? Close this screen and use More → Report problem.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActionSheet({ sheet, job, busy, issueDone, issueKind, issueReason, onClose, onIssueKind, onIssueReason, onSubmitIssue }: { sheet: Exclude<Sheet, null>; job: TechnicianJob; busy: boolean; issueDone: boolean; issueKind: string | null; issueReason: string; onClose: () => void; onIssueKind: (value: string) => void; onIssueReason: (value: string) => void; onSubmitIssue: (kind?: string) => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60" role="dialog" aria-modal="true">
+      <section className={`safe-bottom max-h-[88svh] w-full max-w-[480px] overflow-y-auto rounded-t-2xl border-t bg-[#121110] px-5 pb-5 ${sheet === "safety" ? "border-danger" : "border-border"}`}>
+        <div className="sticky top-0 z-10 flex items-center justify-between bg-[#121110] py-3"><span className="h-1 w-11 rounded-full bg-border" /><button className="touch-target flex size-11 items-center justify-center" onClick={onClose} aria-label="Close"><X className="size-5" /></button></div>
+        {sheet === "messages" ? <UnavailableAction title="Job messages" text="Job-scoped messaging is not enabled on this pilot environment yet. No delivery status will be fabricated." /> : null}
+        {sheet === "call" ? <UnavailableAction title="Call" text="Private call routing is not enabled on this pilot environment yet. Contact dispatch through your approved operational channel." /> : null}
+        {sheet === "safety" ? (
+          <div>
+            <h2 className="font-condensed text-4xl font-bold uppercase text-danger">Safety</h2>
+            <p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">For unsafe conditions at or near this job. An alert is recorded against this job and sent to dispatch.</p>
+            <button className="mt-5 flex min-h-[62px] w-full items-center justify-center bg-danger px-4 font-condensed text-xl font-semibold uppercase text-[#fff6f0] disabled:opacity-50" disabled={busy || issueDone} onClick={() => onSubmitIssue("unsafe")} type="button"><ShieldAlert className="mr-2 size-5" />{busy ? "Sending alert…" : issueDone ? "Alert sent" : "I feel unsafe — alert dispatch"}</button>
+            <a className="mt-3 flex min-h-14 w-full items-center justify-center border-2 border-danger font-condensed text-xl font-semibold uppercase text-danger" href="tel:911">Call 911</a>
+            <p className="mt-5 border border-danger/30 bg-danger/8 p-4 text-sm leading-6 text-[#b8a9a9]">If there is immediate danger, call 911 first. Reporting here is not a replacement for emergency services.</p>
+          </div>
+        ) : null}
+        {sheet === "more" ? (
+          <div>
+            <p className="field-kicker">More → Report problem</p>
+            <h2 className="mt-2 font-condensed text-4xl font-bold uppercase">Report a problem</h2>
+            <p className="mt-2 text-sm leading-5 text-muted">Non-emergency blockers for job {job.id.slice(0, 8)}. Dispatch decides what happens next.</p>
+            <div className="mt-5 space-y-2">{[["customer_unavailable", "Customer unavailable"], ["wrong_address", "Wrong address"], ["cannot_access", "Cannot access the work area"], ["job_differs", "Job differs from the request"], ["cannot_complete", "Cannot complete the work"]].map(([value, label]) => <button className={`touch-target flex min-h-[52px] w-full items-center justify-between border px-4 text-left ${issueKind === value ? "border-primary bg-primary/8 font-semibold" : "border-border bg-card"}`} key={value} onClick={() => onIssueKind(value)} type="button">{label}{issueKind === value ? <span className="size-2 rounded-full bg-primary" /> : null}</button>)}</div>
+            <label className="mt-4 block text-sm text-muted">What is blocking you?<textarea className="mt-2 min-h-24 w-full resize-y border border-border bg-card p-3 text-foreground" value={issueReason} onChange={(event) => onIssueReason(event.target.value)} placeholder="Add useful detail for dispatch" /></label>
+            <p className="mt-3 border border-border bg-card p-3 text-sm leading-5 text-muted">Submitting records the issue and notifies dispatch. It does not automatically reassign or cancel this job.</p>
+            <button className="field-primary-action mt-4" disabled={!issueKind || busy || issueDone} onClick={() => onSubmitIssue()} type="button"><ArrowUp className="size-5" />{busy ? "Submitting…" : issueDone ? "Problem submitted" : "Submit to dispatch"}</button>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function UnavailableAction({ title, text }: { title: string; text: string }) {
+  return <div><h2 className="font-condensed text-4xl font-bold uppercase">{title}</h2><div className="mt-4 border border-primary/35 bg-primary/8 p-4"><p className="font-semibold">Not enabled in this pilot</p><p className="mt-2 text-sm leading-6 text-muted">{text}</p></div></div>;
+}
+
+function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, onRemove, onUpdate, onMethod, onTip, onSave }: { id: string; lines: CloseoutLineDraft[]; subtotal: number; method: string; tip: string; done: boolean; busy: boolean; onAdd: () => void; onRemove: (id: string) => void; onUpdate: (id: string, patch: Partial<CloseoutLineDraft>) => void; onMethod: (value: string) => void; onTip: (value: string) => void; onSave: () => void }) {
+  if (done) return <section className="mt-5 border border-success/30 bg-success/8 p-4" id={id}><p className="font-semibold text-success"><CheckCircle2 className="mr-2 inline size-5" />Closeout recorded by ClueXP</p><p className="mt-2 text-sm text-muted">Review it once more, then submit it for customer confirmation.</p></section>;
+  return (
+    <section className="mt-6 scroll-mt-4" id={id}>
+      <div className="flex items-center justify-between"><div><p className="field-kicker">Closeout record</p><h2 className="mt-1 font-condensed text-3xl font-bold uppercase">What did you complete?</h2></div><ChevronDown className="size-5 text-muted" /></div>
+      <p className="mt-2 text-sm leading-5 text-muted">Record what actually happened. ClueXP records this collection; it does not process payment or determine payout.</p>
+      <div className="mt-4 space-y-3">{lines.map((line, index) => {
+        const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
+        return <div className="border border-border bg-card p-3" key={line.id}>
+          <div className="flex items-center justify-between"><span className="field-kicker">Item {index + 1}</span>{lines.length > 1 ? <button className="text-sm font-semibold text-danger" onClick={() => onRemove(line.id)} type="button">Remove</button> : null}</div>
+          <select className="field-input mt-3" value={line.item_type_code} onChange={(event) => onUpdate(line.id, { item_type_code: event.target.value })}>{CLOSEOUT_ITEM_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+          <input className="field-input mt-2" value={line.description} onChange={(event) => onUpdate(line.id, { description: event.target.value })} aria-label={`Item ${index + 1} description`} />
+          <div className="mt-2 grid grid-cols-2 gap-2"><input className="field-input" inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="Quantity" /><input className="field-input" inputMode="decimal" value={line.unit_amount} onChange={(event) => onUpdate(line.id, { unit_amount: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="Amount" /></div>
+          {spec.requiresProvidedBy ? <select className="field-input mt-2" value={line.provided_by} onChange={(event) => onUpdate(line.id, { provided_by: event.target.value })}><option value="">Provided by…</option><option value="company">Company</option><option value="technician">Technician</option><option value="customer">Customer</option><option value="third_party">Third party</option></select> : null}
+          {spec.requiresNote ? <input className="field-input mt-2" value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Required note" /> : null}
+        </div>;
+      })}</div>
+      <button className="mt-3 min-h-12 w-full border border-dashed border-border font-semibold text-muted" onClick={onAdd} type="button">+ Add service or part</button>
+      <div className="mt-4 border border-border bg-card p-4">
+        <div className="flex justify-between"><span className="text-muted">Total recorded</span><strong className="font-condensed text-2xl">${subtotal.toFixed(2)}</strong></div>
+        <select className="field-input mt-3" value={method} onChange={(event) => onMethod(event.target.value)}><option value="">How was this collected?</option>{PAYMENT_METHODS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+        <input className="field-input mt-2" inputMode="decimal" value={tip} onChange={(event) => onTip(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="Tip received (optional)" />
+      </div>
+      <button className="field-primary-action mt-4" disabled={busy || !method || lines.some((line) => !line.description.trim() || !line.unit_amount)} onClick={onSave} type="button"><ShieldCheck className="size-5" />{busy ? "Saving…" : "Record closeout"}</button>
+    </section>
+  );
+}
+
+function PendingConfirmation({ job }: { job: TechnicianJob }) {
+  return <section className="py-10 text-center"><div className="mx-auto flex size-16 items-center justify-center rounded-full border-2 border-dashed border-primary/50 font-condensed text-2xl font-bold text-primary">…</div><p className="mt-5 field-kicker">Job {job.id.slice(0, 8)}</p><p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</p><div className="mt-6 border border-border bg-card p-4 text-left text-sm"><div className="flex justify-between gap-4"><span className="text-muted">Receipt</span><span>Submitted for review</span></div><div className="mt-3 flex justify-between gap-4"><span className="text-muted">Your status</span><span className="text-primary">Busy · no new offers</span></div></div></section>;
 }

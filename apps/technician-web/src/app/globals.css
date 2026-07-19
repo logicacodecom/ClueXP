@@ -5,15 +5,15 @@
 
 :root {
   --background: #0e0e0e;
-  --foreground: #f4f1e8;
-  --card: #171717;
-  --card-strong: #202020;
-  --muted: #a49f94;
-  --border: #30302e;
+  --foreground: #f1ede4;
+  --card: #161513;
+  --card-strong: #24211d;
+  --muted: #8a8171;
+  --border: #2b2823;
   --primary: #ffbf00;
   --primary-foreground: #1d1500;
-  --success: #31d291;
-  --danger: #ff6b6b;
+  --success: #3dbf7a;
+  --danger: #e5484d;
   --info: #62a8ff;
   --warn: #f5b53d;
   --font-inter: Inter;
@@ -98,5 +98,91 @@
   .glass {
     background: color-mix(in srgb, var(--color-card) 84%, transparent);
     backdrop-filter: blur(18px);
+  }
+}
+
+@layer components {
+  .field-kicker {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+
+  .field-primary-action {
+    display: flex;
+    min-height: 58px;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    border-radius: 6px;
+    border: 0;
+    background: var(--color-primary);
+    padding: 0.75rem 1rem;
+    color: var(--color-primary-foreground);
+    font-family: var(--font-condensed);
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: transform 120ms ease-out, filter 120ms ease-out, opacity 120ms ease-out;
+  }
+
+  .field-primary-action:active:not(:disabled) {
+    transform: translateY(1px) scale(0.995);
+    filter: brightness(0.94);
+  }
+
+  .field-primary-action:disabled {
+    cursor: not-allowed;
+    background: #5c4a14;
+    color: #a6987b;
+  }
+
+  .field-secondary-action {
+    display: inline-flex;
+    min-height: 48px;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    border: 1px solid #3a362f;
+    border-radius: 6px;
+    background: rgb(27 25 22 / 0.96);
+    color: var(--color-foreground);
+    font-family: var(--font-condensed);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .field-rail-action {
+    display: flex;
+    min-height: 54px;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: #1b1916;
+    color: #cfc8ba;
+    font-family: var(--font-condensed);
+    font-size: 0.875rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .field-input {
+    min-height: 48px;
+    width: 100%;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: #1b1916;
+    padding: 0.7rem 0.8rem;
+    color: var(--color-foreground);
+    font-size: 1rem;
   }
 }

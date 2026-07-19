@@ -185,19 +185,62 @@ Body: `{ "technician_id": UUID, "override_reason"?: str }`. Steps:
 2. Fetch the job from **this org's** queue — 404 if not found (no cross-tenant existence leak)
 3. Reject (409) if an active `offered` offer already exists (partial unique index prevents duplicates at DB level)
 4. Resolve the technician scoped to this org (`get_ops_technician(…, org_id=…)`) — 422 if not the org's active/verified technician
-5. Create single targeted offer: `expires_at = now() + OFFER_TTL_SECONDS`. An override (offline/busy/stale/skill-mismatch) requires `override_reason`.
+5. Create single targeted offer: `expires_at = now() + OFFER_TTL_SECONDS`. In the current pilot implementation, an override (offline/**busy**/stale/skill-mismatch) requires `override_reason`. **Busy override is not the production contract:** an active job must become a hard global capacity lock before broader launch (§4.2a).
 6. Write audit event with the `provider` prefix, capturing actor, technician, and any override reason
 7. Return `{ offer_id, technician_id, expires_at }`
 
 #### Step 5 — Technician accepts (`POST /offers/{id}/accept`)
 1. DB check: offer must be `status=offered`
-2. **Atomic first-accept-wins:** `UPDATE jobs WHERE fulfillment_technician_id IS NULL SET ...` — prevents race conditions
+2. **Current job-level first-accept-wins:** `UPDATE jobs WHERE fulfillment_technician_id IS NULL SET ...` — prevents two accepts from claiming the same job
 3. Sets `jobs.fulfillment_technician_id`, `jobs.status = assigned`, `jobs.trust_state = matched`
 4. Supersedes all other open offers for this job
+
+This transaction does **not yet** lock the technician against accepting another job. The required
+cross-job/cross-company capacity transaction is specified in §4.2a and remains a P0
+broader-launch gate.
 
 #### Step 6 — Decline or expiry → return to queue
 - **Decline** (`POST /offers/{id}/decline`): marks offer declined; if zero `offered` offers remain for the job → `jobs.status = 'pending_dispatch'`
 - **Expiry** (`expire_stale_offers()`): marks offers expired; same return-to-queue logic
+
+### 4.2a Global Technician Capacity and Alert Contract (Approved; not yet fully implemented)
+
+The technician is a global person who may have several non-exclusive company affiliations. Their
+immediate-job capacity is therefore also **global**, not tenant-local: **one technician may hold at
+most one active job across all companies**.
+
+**Hard-busy interval:** acceptance starts the global capacity lock. The lock remains through
+`assigned`, `en_route`, `arrived`, `in_progress`, and `completed_pending_customer`; it releases only
+after a server-confirmed terminal/release transition. While locked:
+
+- no company may send the technician another immediate offer, even with an override reason;
+- normal new-job alerts are suppressed so they cannot distract the technician while driving or
+  working;
+- the owning company may see its own active-job context; another affiliated company sees only a
+  tenant-safe `unavailable_on_active_job` state, never the company, customer, address, job value,
+  or exact location;
+- only alerts about the active job may interrupt: cancellation, mediated customer communication,
+  owning-dispatcher instruction, arrival/confirmation failure, release/reassignment, or safety.
+
+**Atomic acceptance requirement:** accepting an offer must lock the global technician-capacity
+record (or equivalent DB-enforced invariant), re-check that no active job exists, assign exactly one
+job, mark the technician busy, supersede **all** other pending offers to that technician across
+companies, and commit atomically. A concurrent losing accept returns `409` with a safe
+"technician became unavailable" result; each affected job returns to its owning company's queue.
+No tenant learns which other company won.
+
+**Idle multi-offer behavior:** an online, idle technician may temporarily receive offers from more
+than one affiliated company. The app presents them in one privacy-gated decision surface. Accepting
+one activates the global lock and closes the rest. Future/next-job reservations, if added, are a
+separate scheduled-capacity feature and must never be implemented by bypassing this immediate-job
+lock.
+
+**Production alert delivery:** foreground polling remains fallback only. A native-capable delivery
+service must send a high-priority APNs/FCM offer notification with distinctive sound/haptics and a
+deep link to the offer; record sent/delivered/displayed/acknowledged outcomes; retry safely; and show
+unacknowledged/failed delivery to the owning dispatcher for reassignment. Lock-screen content is
+limited to company, service category, approximate area, coarse travel estimate, and expiry — never
+customer identity, contact information, or exact address before acceptance.
 
 ### 4.3 Candidate Signals (Display Only — No Automatic Filtering)
 
@@ -1122,7 +1165,8 @@ An active job takes priority over ordinary tabs (persistent job bar).
 
 **Global states:** availability (`offline`/`online`/`busy`/`break`/`blocked_by_documents`/
 `suspended`); GPS (`tracking_active`/`paused`/`permission_needed`/`low_accuracy`/`stale`/
-`background_limited`); sound/alarm for incoming offers. Location status is always visible.
+`background_limited`); sound/alarm for incoming offers. Location status is always visible. `busy`
+is a global cross-affiliation capacity state, not a company-specific preference (§4.2a).
 
 **Job lifecycle (technician-facing projection over the shared `events` — never a separate
 lifecycle):** `offer_received → accepted → assigned → en_route → arrived (PIN-verified) →
@@ -1138,11 +1182,60 @@ conflate this with a future org-routed **"org accept"** flow (§20.4) — that i
 not-yet-built event; in the current provider-managed model the only acceptance is the technician's.
 
 **Hard contracts:** honest status (no fake customer data/ETA/route/movement); no customer/job
-detail before acceptance; customer phone masked/mediated; expired docs block availability.
+detail before acceptance; customer phone masked/mediated; expired docs block availability; one
+global active job; and no new-work interruption while the technician is active on a job.
 
 **Status:** live on real BFF routes (offers, accept/decline, active-job, location push, collection,
-history, profile/photo/affiliations). Remaining: masked job chat, voice/call, native background
-GPS/push — tracked in [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1.
+history, profile/photo/affiliations). The approved active-job-first UX, native-ready boundary, and
+complete development sequence are in
+[`TECHNICIAN-APP-REDESIGN.md`](TECHNICIAN-APP-REDESIGN.md). Remaining delivery gates are tracked in
+[`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1.
+
+#### 18.2.1 Job-scoped technician communications (Approved; unbuilt)
+
+Technician messaging is part of the active-job command surface, not a generic cross-company social
+inbox. Each accepted job owns three visibly separated streams:
+
+1. **Customer chat** — assigned technician ↔ ticket-scoped customer. It opens only after named
+   acceptance; phone numbers remain masked; exact job/customer context stays inside the authorized
+   job. Customer-safe attachments may be supported after malware/type/size controls exist.
+2. **Dispatcher chat** — assigned technician ↔ the job's owning-company dispatcher(s). It is hidden
+   from the customer and used for clarification, access/authorization problems, recovery, and
+   instructions. Provider internal notes remain a different, provider-only audit surface and must
+   never leak into this stream.
+3. **System timeline** — read-only lifecycle events such as assignment, cancellation, arrival
+   verification, release/reassignment, customer confirmation, and dispute state. System events must
+   not impersonate human messages.
+
+**Access and tenancy:** all communication is authorized by the job, current assignment, customer
+capability, and owning organization. Another affiliated company cannot discover, read, join, or
+infer the thread. Non-job affiliation/administrative notices belong in a quiet notification center;
+they cannot enter the active-job channel or create an interruptive dispatch message.
+
+**Active-job UX:** `Message`, mediated `Call`, and `Safety` are persistent contextual actions. The
+message surface shows explicit Customer/Dispatcher destinations, unread counts, sender role/company,
+and delivery state. While `en_route`, favor large approved quick replies and optional read-aloud;
+never require typing while driving. Safety and emergency handling remain dedicated flows, not chat.
+
+**Alerts:** current-job customer messages use normal priority; owning-dispatcher instructions use a
+stronger operational treatment; urgent dispatcher messages require acknowledgement; cancellation
+and safety use distinct critical alerts. Lock-screen copy defaults to "New message about your active
+job" without customer identity or message text unless the technician explicitly enables previews.
+These are allowed active-job interruptions under §4.2a; unrelated new-work alerts remain suppressed.
+
+**Reliability:** message submission uses a client-generated idempotency key and durable server
+record. The UI distinguishes sending, server-accepted, device-acknowledged/read, retrying, and
+failed; preserves a platform-appropriately protected offline outbox/draft (best-effort within the PWA
+web threat model; native encrypted storage is a stronger guarantee); retries without duplicating;
+synchronizes unread state across devices; and exposes failed critical delivery to the owning dispatcher. Attachments show
+upload/progress/failure independently of text. Push is a delivery hint, never the message source of
+truth.
+
+**Lifecycle and retention:** the thread follows release/reassignment permissions immediately. A
+released technician loses write access and any replacement receives only the history explicitly
+allowed by policy. After completion, the thread remains writable only for the configured
+support/dispute window, then becomes read-only under the retention/audit policy. Masked voice/call,
+when added, launches from the same job communication surface and follows the same tenancy boundary.
 
 ### 18.3 Partner / provider console — `provider-web`
 
@@ -1183,6 +1276,9 @@ endpoints: §4 and §13.
   sub-teams exist). A provider technician's read-only detail (`GET /provider/technicians/{id}`)
   surfaces team memberships, company + global review summaries, and compliance documents.
 - The active-job lock is **global** to the technician (no double-dispatch across two companies).
+  This is the approved contract, but the current acceptance transaction still enforces only
+  job-level first-accept-wins; §4.2a and [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1 track the
+  P0 implementation gate.
 - Tenant boundaries: a provider mutates only its own affiliations, never global technician
   status (that is Ops). Company lifecycle (`pending_review`/`active`/`suspended`/`rejected`/`closed`,
   migration `0019`) is distinct from the technician lifecycle.

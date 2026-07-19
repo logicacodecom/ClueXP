@@ -2,7 +2,7 @@
 
 import { technicianAppProfile } from "@cluexp/api-client";
 import type { TechnicianAppProfile } from "@cluexp/api-client";
-import { BriefcaseBusiness, LogOut, Map, MessageCircle, Timer, UserRound, WalletCards } from "lucide-react";
+import { BriefcaseBusiness, LogOut, Map, MessageCircle, UserRound, WalletCards } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -140,16 +140,11 @@ export function Countdown({ expiresAt, offeredAt }: { expiresAt: string; offered
   const secondsPart = String(seconds % 60).padStart(2, "0");
   const pct = totalWindow > 0 ? Math.max(0, Math.min(100, (remaining / totalWindow) * 100)) : 0;
   return (
-    <div>
-      <div className="flex items-end justify-between">
-        <div>
-          <div className="text-[10px] font-black uppercase tracking-[.08em] text-muted">Offer expires</div>
-          <div className="mt-1 font-condensed text-5xl font-bold leading-none tabular-nums">{minutesPart}:{secondsPart}</div>
-        </div>
-        <Timer className="size-8 text-primary" />
-      </div>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-card-strong">
-        <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+    <div className="text-center">
+      <div className="font-condensed text-[5.5rem] font-bold leading-none tabular-nums tracking-[.02em]">{minutesPart}:{secondsPart}</div>
+      <div className="mt-2 font-mono text-[11px] text-muted">offer expires · server timer</div>
+      <div className="mx-auto mt-3 h-1.5 w-[200px] overflow-hidden rounded-full bg-card-strong">
+        <div className="h-full rounded-full bg-primary transition-[width] duration-1000" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
