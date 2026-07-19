@@ -56,7 +56,7 @@ export type RecordedCollectionItem = { description: string; amount?: number | nu
 
 export type TechnicianJob = {
   id: string;
-  status: "assigned" | "en_route" | "arrived" | "in_progress" | "completed_pending_customer";
+  status: "assigned" | "en_route" | "arrived" | "in_progress" | "completed_pending_customer" | "completed_confirmed" | "completed_auto_closed" | "disputed";
   access_type?: string | null;
   situation?: string | null;
   address?: string | null;
@@ -147,6 +147,15 @@ function nextStatus(status: TechnicianJob["status"]): TechnicianJob["status"] | 
   return null;
 }
 
+function stageForJob(status: TechnicianJob["status"]) {
+  return stages.find((item) => item.status === status) ?? stages[stages.length - 1];
+}
+
+function stageIndexForJob(status: TechnicianJob["status"]) {
+  const index = stages.findIndex((item) => item.status === status);
+  return index >= 0 ? index : stages.length - 1;
+}
+
 function formatSyncAge(value: string) {
   const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
   return seconds < 60 ? `${seconds} s ago` : `${Math.floor(seconds / 60)} min ago`;
@@ -170,8 +179,8 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [tipAmount, setTipAmount] = useState("");
   const [closeoutLines, setCloseoutLines] = useState<CloseoutLineDraft[]>(() => [newCloseoutLine()]);
   const [collectDone, setCollectDone] = useState(false);
-  const currentIndex = stages.findIndex((stage) => stage.status === job.status);
-  const stage = stages[Math.max(0, currentIndex)];
+  const currentIndex = stageIndexForJob(job.status);
+  const stage = stageForJob(job.status);
 
   const refreshJob = useCallback(async (quiet = false) => {
     if (!quiet) setBusy(true);
@@ -486,9 +495,10 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
         ) : null}
 
         {job.status === "completed_pending_customer" ? <PendingConfirmation job={job} /> : null}
+        {job.status === "completed_confirmed" || job.status === "completed_auto_closed" || job.status === "disputed" ? <ResolvedJobState job={job} /> : null}
       </main>
 
-      {job.status !== "completed_pending_customer" ? (
+      {job.status !== "completed_pending_customer" && job.status !== "completed_confirmed" && job.status !== "completed_auto_closed" && job.status !== "disputed" ? (
         <div className="fixed bottom-[86px] left-1/2 z-30 w-full max-w-[480px] -translate-x-1/2 bg-background px-4 pt-3">
           <button className="field-primary-action" disabled={busy || !canSubmitCloseout} onClick={() => void advance()} type="button">
             {busy ? <RefreshCw className="size-5 animate-spin" /> : <PrimaryActionIcon status={job.status} />}
@@ -510,6 +520,9 @@ function stageDetail(status: TechnicianJob["status"]) {
   if (status === "en_route") return "Use your maps app for directions. Confirm arrival with the customer’s six-digit PIN.";
   if (status === "arrived") return "Review the request and authorization before beginning work.";
   if (status === "in_progress") return "Capture the work performed, then build an honest closeout record.";
+  if (status === "completed_confirmed") return "The customer confirmed the closeout. You can return to available work.";
+  if (status === "completed_auto_closed") return "The confirmation window expired and dispatch rules closed the job.";
+  if (status === "disputed") return "The customer disputed the closeout. Dispatch must mediate before the job is resolved.";
   return "The receipt was submitted. You remain busy until the customer or dispatcher resolves it.";
 }
 
@@ -761,6 +774,29 @@ function PendingConfirmation({ job }: { job: TechnicianJob }) {
       {job.approval_url && /^https?:\/\//.test(job.approval_url) ? (
         <a className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={job.approval_url} target="_blank" rel="noreferrer">
           View approval status <ExternalLink className="size-4" />
+        </a>
+      ) : null}
+    </section>
+  );
+}
+
+function ResolvedJobState({ job }: { job: TechnicianJob }) {
+  const isDisputed = job.status === "disputed";
+  const isExpired = job.status === "completed_auto_closed";
+  const label = isDisputed ? "Disputed" : isExpired ? "Expired closure" : "Approved";
+  const detail = isDisputed
+    ? "Dispatch must resolve the dispute. Do not collect additional payment through ClueXP."
+    : isExpired
+      ? "The customer confirmation window expired and the job was closed by policy."
+      : "The customer approved the closeout. This job is no longer awaiting customer action.";
+  return (
+    <section className={`mt-6 border p-4 ${isDisputed ? "border-danger/40 bg-danger/10" : "border-success/30 bg-success/8"}`}>
+      <p className="field-kicker">Customer approval</p>
+      <h2 className={`mt-1 font-condensed text-3xl font-bold uppercase ${isDisputed ? "text-danger" : "text-success"}`}>{label}</h2>
+      <p className="mt-2 text-sm leading-5 text-muted">{detail}</p>
+      {job.approval_url && /^https?:\/\//.test(job.approval_url) ? (
+        <a className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={job.approval_url} target="_blank" rel="noreferrer">
+          Open customer tracking <ExternalLink className="size-4" />
         </a>
       ) : null}
     </section>

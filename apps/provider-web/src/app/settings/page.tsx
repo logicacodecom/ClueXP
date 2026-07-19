@@ -4,6 +4,7 @@ import type { ServiceCategory } from "@cluexp/api-client";
 import { DEFAULT_SERVICE_CATALOG } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, SkillSelect } from "@cluexp/console-ui";
 import { Building2, Check, Copy, CreditCard, Link2, Save, TimerReset, Upload } from "lucide-react";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -84,6 +85,16 @@ function financialDefaultLabel(value: number, field: keyof FinancialSettings): s
 }
 
 const INTAKE_BASE = (process.env.NEXT_PUBLIC_INTAKE_BASE_URL || "https://intake.cluexp.com").replace(/\/$/, "");
+
+function SettingsSection({ eyebrow, title, children }: { eyebrow: string; title: string; children: ReactNode }) {
+  return (
+    <div className="pt-2">
+      <div className="text-[11px] font-black uppercase tracking-[.14em] text-primary">{eyebrow}</div>
+      <h2 className="mt-1 text-2xl font-semibold tracking-tight">{title}</h2>
+      {children ? <p className="mt-1 text-sm text-muted-foreground">{children}</p> : null}
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const [form, setForm] = useState({
@@ -505,6 +516,9 @@ export default function SettingsPage() {
   return (
     <AppFrame>
       <div className="space-y-6">
+        <SettingsSection eyebrow="Customer entry" title="Branded intake">
+          Link sharing and the customer-facing intake steps for this provider.
+        </SettingsSection>
         <Card>
           <CardHeader><CardTitle className="flex items-center gap-2"><Link2 className="size-5 text-primary" />Your intake link</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -531,7 +545,7 @@ export default function SettingsPage() {
           <CardHeader><CardTitle>Intake flow settings</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Control customer-facing steps on your branded intake link. Disabling the estimate skips the upfront price range and asks only for request/cancellation terms before dispatch.
+              Control customer-facing steps on your branded intake link. Disabling the estimate hides the upfront price range and asks only for request/cancellation terms before dispatch.
             </p>
             <label className="flex items-start gap-3 rounded-md border border-border p-3 text-sm">
               <input
@@ -566,6 +580,9 @@ export default function SettingsPage() {
             </Button>
           </CardContent>
         </Card>
+        <SettingsSection eyebrow="Company identity" title="Provider profile">
+          Public-facing company details, service area, branding, and customer-care contact data.
+        </SettingsSection>
         <Card>
           <CardHeader><CardTitle className="flex items-center gap-2"><Building2 className="size-5 text-primary" />Company profile</CardTitle></CardHeader>
           <CardContent className="space-y-6">
@@ -659,6 +676,9 @@ export default function SettingsPage() {
             <Button disabled={busy || !form.display_name.trim()} onClick={() => void save()}><Save className="size-4" />{busy ? "Saving…" : "Save company profile"}</Button>
           </CardContent>
         </Card>
+        <SettingsSection eyebrow="Service routing" title="Capabilities">
+          Canonical service codes used by intake, dispatch eligibility, and technician matching.
+        </SettingsSection>
         <Card>
           <CardHeader><CardTitle>Company service capabilities</CardTitle></CardHeader>
           <CardContent className="space-y-4">
@@ -677,6 +697,9 @@ export default function SettingsPage() {
             </Button>
           </CardContent>
         </Card>
+        <SettingsSection eyebrow="Closeout" title="Financial defaults">
+          Receipt and collection-record defaults. ClueXP records closeout data but does not process provider payments.
+        </SettingsSection>
         <Card>
           <CardHeader><CardTitle className="flex items-center gap-2"><CreditCard className="size-5 text-primary" />Financial closeout defaults</CardTitle></CardHeader>
           <CardContent className="space-y-4">
@@ -729,6 +752,9 @@ export default function SettingsPage() {
             </Button>
           </CardContent>
         </Card>
+        <SettingsSection eyebrow="Dispatch controls" title="Queue thresholds">
+          Operational queue timing and display preferences. The dispatch screen itself will be replaced separately.
+        </SettingsSection>
         <Card>
           <CardHeader><CardTitle>Dispatch queue thresholds</CardTitle></CardHeader>
           <CardContent className="space-y-4">

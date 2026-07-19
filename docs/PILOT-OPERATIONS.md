@@ -92,6 +92,9 @@ Do not enable a company channel for real customers until all of these are true:
   time-boxed, continuously staffed internal pilot; do not enable unattended real-customer traffic
   without production alert delivery and escalation.
 - Rollback owners have access to Vercel and the production database.
+- Privacy/security review is complete: see [`PRIVACY-SECURITY-REVIEW.md`](PRIVACY-SECURITY-REVIEW.md).
+- Production readiness checklist is complete: see [`PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md).
+- End-to-end smoke test has passed with synthetic data: see [`E2E-SMOKE-TEST.md`](E2E-SMOKE-TEST.md).
 
 ---
 

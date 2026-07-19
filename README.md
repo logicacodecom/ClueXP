@@ -125,6 +125,12 @@ Copy `.env.example` into the relevant Vercel project environment variables rathe
 6. Deploy from `main`.
 7. Smoke test on mobile: create ticket, submit intake, confirm the record persists.
 
+For pilot releases, also use:
+
+- [`docs/PRODUCTION-READINESS.md`](docs/PRODUCTION-READINESS.md)
+- [`docs/PRIVACY-SECURITY-REVIEW.md`](docs/PRIVACY-SECURITY-REVIEW.md)
+- [`docs/E2E-SMOKE-TEST.md`](docs/E2E-SMOKE-TEST.md)
+
 ## Fix Later Backlog
 
 Most of the original hardening items are now handled in Sprint 0/1 — see `docs/EXECUTION-PLAN.md`
