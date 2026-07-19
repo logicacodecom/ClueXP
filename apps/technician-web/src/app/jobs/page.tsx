@@ -41,13 +41,13 @@ export default async function JobsPage() {
   const activeJob = activeJobRead.state === "ready" ? activeJobRead.job : undefined;
   if (activeJob) {
     return (
-      <TechnicianShell title="Active Job">
+      <TechnicianShell title="Active Job" nav={false} topbar={false}>
         <Screen flush padBottom={false}><ActiveJobWorkflow initialJob={activeJob} /></Screen>
       </TechnicianShell>
     );
   }
   return (
-    <TechnicianShell>
+      <TechnicianShell title="Work">
       <Screen>
         <div className="pt-3">
           <div className="mb-5 flex items-end justify-between gap-3">
