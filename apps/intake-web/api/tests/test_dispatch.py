@@ -2429,6 +2429,92 @@ def test_active_job_lock_is_technician_scoped():
     assert active is not None and active["id"] == jid
 
 
+def test_technician_active_job_includes_distance_collection_and_approval_contract():
+    from datetime import datetime, timezone
+    from api.main import store as app_store
+
+    tech_uid, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+    app_store._job_access_type[jid] = "vehicle"
+    app_store._job_situation = getattr(app_store, "_job_situation", {})
+    app_store._job_situation[jid] = "locked_out"
+    app_store._job_address = getattr(app_store, "_job_address", {})
+    app_store._job_address[jid] = "Times Square, New York, NY"
+    app_store._job_loc = getattr(app_store, "_job_loc", {})
+    app_store._job_loc[jid] = (40.7589, -73.9851)
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = token
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tech_uid,
+        "status": "active",
+        "vetting_status": "verified",
+        "display_name": "Active Tech",
+        "current_lat": 40.7614,
+        "current_lng": -73.9776,
+        "location_updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    asyncio.run(app_store.record_job_closeout({
+        "job_id": jid,
+        "reported_by": "technician",
+        "currency": "USD",
+        "method": "cash",
+        "subtotal_cents": 12500,
+        "taxable_subtotal_cents": 12500,
+        "tax_rate_basis_points": 0,
+        "tax_cents": 0,
+        "tip_cents": 0,
+        "card_fee_basis_points": 0,
+        "card_fee_fixed_cents": 0,
+        "card_fee_cents": 0,
+        "total_cents": 12500,
+        "line_items": [{
+            "description": "Vehicle lockout",
+            "quantity": 1,
+            "line_total_cents": 12500,
+            "taxable": True,
+            "provided_by": "company",
+        }],
+    }))
+    asyncio.run(app_store.record_payment_report(
+        job_id=UUID(jid),
+        reported_by="technician",
+        amount=125,
+        method="cash",
+    ))
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        response = client.get(
+            f"/technicians/{tech_uid}/active-job",
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["id"] == jid
+        assert body["service_type"] == "locksmith.vehicle_lockout"
+        assert body["distance_mi"] is not None
+        assert body["eta_min"] is not None
+        assert body["technician_location_is_fresh"] is True
+        assert body["approval_status"] == "pending"
+        assert body["approval_url"] == f"/t/{token}"
+        assert body["collection_total"] == 125
+        assert body["collection_items"] == [{
+            "description": "Vehicle lockout",
+            "amount": 125,
+            "provided_by": "company",
+            "quantity": 1,
+            "taxable": True,
+        }]
+        assert body["payment"]["amount"] == 125
+    finally:
+        app_store.get_user_session = _orig
+
+
 # --- Slice B: invite/attach existing tech + leave/rejoin history --------------
 
 def test_create_new_technician_creates_active_affiliation():

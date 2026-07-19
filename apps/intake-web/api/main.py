@@ -30,6 +30,7 @@ from api.dispatch import (
     STATUS_ARRIVED,
     STATUS_ASSIGNED,
     STATUS_CANCELLED,
+    STATUS_COMPLETED_AUTO_CLOSED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
     STATUS_DISPUTED,
@@ -2788,6 +2789,40 @@ async def _attach_queue_photo_urls(rows: list[dict[str, Any]]) -> list[dict[str,
     return rows
 
 
+async def _signed_photo_urls(paths: list[Any]) -> list[str]:
+    urls: list[str] = []
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        if path.startswith(("http://", "https://")):
+            urls.append(path)
+            continue
+        try:
+            urls.append(await storage.create_signed_download_url(storage.PRIVATE_BUCKET, path))
+        except RuntimeError:
+            pass
+    return urls
+
+
+def _closeout_collection_items(closeout: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not closeout:
+        return []
+    items: list[dict[str, Any]] = []
+    for item in closeout.get("line_items") or []:
+        if not isinstance(item, dict):
+            continue
+        cents = item.get("line_total_cents")
+        amount = round(float(cents) / 100, 2) if cents is not None else None
+        items.append({
+            "description": item.get("description") or item.get("item_type_code") or "Service item",
+            "amount": amount,
+            "provided_by": item.get("provided_by"),
+            "quantity": item.get("quantity"),
+            "taxable": item.get("taxable"),
+        })
+    return items
+
+
 async def _send_targeted_offer(
     *, job: dict[str, Any], job_id: UUID, technician_id: UUID, tech: dict[str, Any],
     override_reason: str | None, session: dict[str, Any], audit_prefix: str,
@@ -3448,7 +3483,35 @@ async def technician_active_job(
     if result is None:
         return {}
     lifecycle = await store.get_job_lifecycle(UUID(result["id"]))
-    return {**result, **(lifecycle or {})}
+    job_id = UUID(result["id"])
+    closeout = await store.get_job_closeout(job_id)
+    payments = await store.get_payment_reports(job_id)
+    tracking_token = await store.get_tracking_token(job_id)
+    status = (lifecycle or {}).get("status") or result.get("status")
+    service_type = required_skill_for_job(result)
+    approval_url = f"/t/{tracking_token}" if tracking_token else None
+    approval_status = (
+        "pending" if status == STATUS_COMPLETED_PENDING
+        else "approved" if status in {STATUS_COMPLETED_CONFIRMED, STATUS_COMPLETED_AUTO_CLOSED}
+        else "disputed" if status == STATUS_DISPUTED
+        else None
+    )
+    photo_urls = await _signed_photo_urls(result.get("photo_paths") or [])
+    enriched = {
+        **result,
+        **(lifecycle or {}),
+        "service_type": service_type,
+        "collection_items": _closeout_collection_items(closeout),
+        "collection_total": round(float(closeout["total_cents"]) / 100, 2) if closeout and closeout.get("total_cents") is not None else None,
+        "collection_currency": closeout.get("currency") if closeout else None,
+        "collection_closeout": closeout,
+        "payment": payments.get("technician") if isinstance(payments, dict) else None,
+        "approval_status": approval_status,
+        "approval_url": approval_url,
+        "tracking_token": tracking_token,
+        "intake_photos": [{"url": url} for url in photo_urls],
+    }
+    return enriched
 
 
 @app.get("/technicians/{technician_id}/offers")
