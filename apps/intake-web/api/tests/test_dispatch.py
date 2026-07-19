@@ -2501,7 +2501,7 @@ def test_technician_active_job_includes_distance_collection_and_approval_contrac
         assert body["eta_min"] is not None
         assert body["technician_location_is_fresh"] is True
         assert body["approval_status"] == "pending"
-        assert body["approval_url"] == f"/t/{token}"
+        assert body["approval_url"] == f"https://intake.cluexp.com/t/{token}"
         assert body["collection_total"] == 125
         assert body["collection_items"] == [{
             "description": "Vehicle lockout",

@@ -3575,7 +3575,7 @@ async def technician_active_job(
     tracking_token = await store.get_tracking_token(job_id)
     status = (lifecycle or {}).get("status") or result.get("status")
     service_type = required_skill_for_job(result)
-    approval_url = f"/t/{tracking_token}" if tracking_token else None
+    approval_url = f"{config.CUSTOMER_INTAKE_BASE_URL}/t/{tracking_token}" if tracking_token else None
     approval_status = (
         "pending" if status == STATUS_COMPLETED_PENDING
         else "approved" if status == STATUS_COMPLETED_CONFIRMED
