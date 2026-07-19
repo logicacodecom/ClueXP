@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ExternalLink,
+  Image as ImageIcon,
   LocateFixed,
   MapPin,
   Navigation,
@@ -50,6 +51,9 @@ type CloseoutLineDraft = {
   note: string;
 };
 
+export type IntakePhoto = { url: string; label?: string | null };
+export type RecordedCollectionItem = { description: string; amount?: number | null; provided_by?: string | null };
+
 export type TechnicianJob = {
   id: string;
   status: "assigned" | "en_route" | "arrived" | "in_progress" | "completed_pending_customer";
@@ -58,7 +62,29 @@ export type TechnicianJob = {
   address?: string | null;
   lat?: number | null;
   lng?: number | null;
+  // Optional display fields. The active-job BFF route (`/api/active-job`) passes the
+  // backend body through unchanged, so each renders as soon as the API includes it —
+  // and stays silently absent until then. See the Codex handoff note for the contract.
+  service_type?: string | null; // canonical service / job type
+  eta_min?: number | null; // ETA to the customer
+  distance_mi?: number | null; // distance away (miles)
+  distance_km?: number | null; // distance away (km fallback)
+  intake_photos?: IntakePhoto[] | null; // customer-uploaded intake photos
+  collection_items?: RecordedCollectionItem[] | null; // server-recorded collection lines
+  collection_total?: number | null;
+  approval_status?: "pending" | "approved" | "disputed" | "expired" | null; // customer approval
+  approval_url?: string | null; // customer approval / tracking link
 };
+
+function serviceLabel(job: TechnicianJob) {
+  return job.service_type?.trim() || (job.situation || "Service request").replaceAll("_", " ");
+}
+
+function distanceLabel(job: TechnicianJob) {
+  if (job.distance_mi != null) return `${job.distance_mi} mi`;
+  if (job.distance_km != null) return `${job.distance_km.toFixed(1)} km`;
+  return null;
+}
 
 type LocationState =
   | { state: "idle" }
@@ -420,6 +446,8 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
           <div className="mt-4 border border-success/30 bg-success/8 p-3 text-sm text-success"><CheckCircle2 className="mr-2 inline size-4" />Arrival verified by customer PIN</div>
         ) : null}
 
+        {job.collection_items && job.collection_items.length > 0 ? <RecordedCollection items={job.collection_items} total={job.collection_total} /> : null}
+
         {job.status === "in_progress" && closeoutOpen ? (
           <CloseoutPanel
             id="closeout"
@@ -499,6 +527,9 @@ function MapFallback({ job }: { job: TechnicianJob }) {
 }
 
 function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | null }) {
+  const distance = distanceLabel(job);
+  const hasMeta = job.eta_min != null || distance != null;
+  const photos = job.intake_photos ?? [];
   return (
     <section className="mt-5 border-y border-border py-4">
       <div className="flex gap-3">
@@ -506,10 +537,74 @@ function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | nu
         <div className="min-w-0 flex-1">
           <p className="text-sm text-muted">Authorized service address</p>
           <p className="mt-1 text-[17px] font-semibold leading-5">{job.address || "Address unavailable"}</p>
-          <p className="mt-2 text-sm capitalize text-[#8a8171]">{(job.situation || "Service request").replaceAll("_", " ")}{job.access_type ? ` · ${job.access_type}` : ""}</p>
+          <p className="mt-2 text-sm capitalize text-[#8a8171]">{serviceLabel(job)}{job.access_type ? ` · ${job.access_type}` : ""}</p>
         </div>
       </div>
+      {hasMeta ? (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {job.eta_min != null ? <MetaChip label="ETA" value={`${job.eta_min} min`} /> : null}
+          {distance != null ? <MetaChip label="Distance" value={distance} /> : null}
+        </div>
+      ) : null}
+      {photos.length > 0 ? <IntakePhotos photos={photos} /> : null}
       {mapsHref ? <a className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={mapsHref} target="_blank" rel="noreferrer">Open turn-by-turn navigation <ExternalLink className="size-4" /></a> : null}
+    </section>
+  );
+}
+
+function MetaChip({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 border border-border bg-card px-2.5 py-1">
+      <span className="text-[10px] font-black uppercase tracking-[.08em] text-muted">{label}</span>
+      <span className="font-condensed text-sm font-bold tabular-nums">{value}</span>
+    </span>
+  );
+}
+
+function IntakePhotos({ photos }: { photos: IntakePhoto[] }) {
+  return (
+    <div className="mt-4">
+      <p className="field-kicker flex items-center gap-1.5"><ImageIcon className="size-3.5" />Customer intake photos</p>
+      <div className="mt-2 flex gap-2 overflow-x-auto">
+        {photos.map((photo, index) => (
+          <a
+            className="block size-20 shrink-0 overflow-hidden border border-border bg-card"
+            href={photo.url}
+            key={`${photo.url}-${index}`}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img alt={photo.label || `Intake photo ${index + 1}`} className="size-full object-cover" loading="lazy" src={photo.url} />
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecordedCollection({ items, total }: { items: RecordedCollectionItem[]; total?: number | null }) {
+  return (
+    <section className="mt-4 border border-border bg-card p-4">
+      <p className="field-kicker">Recorded collection</p>
+      <ul className="mt-3 space-y-2">
+        {items.map((item, index) => (
+          <li className="flex items-baseline justify-between gap-3 text-sm" key={`${item.description}-${index}`}>
+            <span className="min-w-0">
+              <span className="font-semibold">{item.description}</span>
+              {item.provided_by ? <span className="ml-2 text-xs text-muted">provided by {item.provided_by}</span> : null}
+            </span>
+            {item.amount != null ? <span className="shrink-0 font-condensed text-base tabular-nums">${item.amount.toFixed(2)}</span> : null}
+          </li>
+        ))}
+      </ul>
+      {total != null ? (
+        <div className="mt-3 flex justify-between border-t border-border pt-3">
+          <span className="text-muted">Total recorded</span>
+          <strong className="font-condensed text-xl tabular-nums">${total.toFixed(2)}</strong>
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-muted">ClueXP records this collection; it does not process payment or determine payout.</p>
     </section>
   );
 }
@@ -615,5 +710,27 @@ function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, on
 }
 
 function PendingConfirmation({ job }: { job: TechnicianJob }) {
-  return <section className="py-10 text-center"><div className="mx-auto flex size-16 items-center justify-center rounded-full border-2 border-dashed border-primary/50 font-condensed text-2xl font-bold text-primary">…</div><p className="mt-5 field-kicker">Job {job.id.slice(0, 8)}</p><p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</p><div className="mt-6 border border-border bg-card p-4 text-left text-sm"><div className="flex justify-between gap-4"><span className="text-muted">Receipt</span><span>Submitted for review</span></div><div className="mt-3 flex justify-between gap-4"><span className="text-muted">Your status</span><span className="text-primary">Busy · no new offers</span></div></div></section>;
+  const approval = job.approval_status;
+  const approvalLabel =
+    approval === "approved" ? "Approved by customer" :
+    approval === "disputed" ? "Disputed — dispatch mediating" :
+    approval === "expired" ? "Confirmation window expired" :
+    "Awaiting confirmation";
+  const approvalTone = approval === "approved" ? "text-success" : approval === "disputed" ? "text-danger" : "text-primary";
+  return (
+    <section className="py-10 text-center">
+      <div className="mx-auto flex size-16 items-center justify-center rounded-full border-2 border-dashed border-primary/50 font-condensed text-2xl font-bold text-primary">…</div>
+      <p className="mt-5 field-kicker">Job {job.id.slice(0, 8)}</p>
+      <p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</p>
+      <div className="mt-6 border border-border bg-card p-4 text-left text-sm">
+        <div className="flex justify-between gap-4"><span className="text-muted">Customer approval</span><span className={approvalTone}>{approvalLabel}</span></div>
+        <div className="mt-3 flex justify-between gap-4"><span className="text-muted">Your status</span><span className="text-primary">Busy · no new offers</span></div>
+      </div>
+      {job.approval_url ? (
+        <a className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={job.approval_url} target="_blank" rel="noreferrer">
+          View approval status <ExternalLink className="size-4" />
+        </a>
+      ) : null}
+    </section>
+  );
 }
