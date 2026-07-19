@@ -17,6 +17,7 @@ export type Urgency = "emergency" | "urgent" | "standard" | "scheduled";
 export interface Automotive {
   make?: string | null;
   model?: string | null;
+  color?: string | null;
   year?: number | null;
   key_type?: KeyType;
   key_type_source?: KeyTypeSource;

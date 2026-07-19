@@ -13,9 +13,16 @@ interface DispatchSettingField {
   platform_default: number;
 }
 
+interface DispatchStringSettingField {
+  value: string;
+  is_override: boolean;
+  platform_default: string;
+}
+
 interface DispatchSettings {
   ack_sla_minutes: DispatchSettingField;
   stalled_minutes: DispatchSettingField;
+  distance_unit: DispatchStringSettingField;
 }
 
 interface FinancialSettings {
@@ -91,6 +98,7 @@ export default function SettingsPage() {
   const [dispatchSettings, setDispatchSettings] = useState<DispatchSettings | null>(null);
   const [ackSlaInput, setAckSlaInput] = useState("");
   const [stalledInput, setStalledInput] = useState("");
+  const [distanceUnitInput, setDistanceUnitInput] = useState<"mi" | "km">("mi");
   const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
   const [dispatchBusy, setDispatchBusy] = useState(false);
   const [capabilitySkills, setCapabilitySkills] = useState<string[]>([]);
@@ -116,6 +124,7 @@ export default function SettingsPage() {
       setDispatchSettings(settings);
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
+      setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to load dispatch settings");
     }
@@ -299,7 +308,8 @@ export default function SettingsPage() {
         method: "PATCH", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ack_sla_minutes: Number(ackSlaInput),
-          stalled_minutes: Number(stalledInput)
+          stalled_minutes: Number(stalledInput),
+          distance_unit: distanceUnitInput
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -308,6 +318,7 @@ export default function SettingsPage() {
       setDispatchSettings(settings);
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
+      setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
       setDispatchMessage("Dispatch settings saved.");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to save dispatch settings");
@@ -316,7 +327,7 @@ export default function SettingsPage() {
     }
   }
 
-  async function resetDispatchField(field: "ack_sla_minutes" | "stalled_minutes") {
+  async function resetDispatchField(field: keyof DispatchSettings) {
     setDispatchBusy(true);
     setDispatchMessage(null);
     try {
@@ -330,6 +341,7 @@ export default function SettingsPage() {
       setDispatchSettings(settings);
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
+      setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
       setDispatchMessage("Reverted to the platform default.");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
@@ -648,6 +660,31 @@ export default function SettingsPage() {
                     <Button
                       variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
                       disabled={dispatchBusy} onClick={() => void resetDispatchField("stalled_minutes")}
+                    >
+                      <TimerReset className="size-3" />Reset to default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="distance-unit">Distance unit</label>
+                <select
+                  id="distance-unit"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={distanceUnitInput}
+                  onChange={(event) => setDistanceUnitInput(event.target.value === "km" ? "km" : "mi")}
+                >
+                  <option value="mi">Miles (mi)</option>
+                  <option value="km">Kilometers (km)</option>
+                </select>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {dispatchSettings?.distance_unit.is_override
+                    ? <>Overridden — platform default is {dispatchSettings.distance_unit.platform_default}.</>
+                    : <>Using the platform default.</>}
+                  {dispatchSettings?.distance_unit.is_override ? (
+                    <Button
+                      variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
+                      disabled={dispatchBusy} onClick={() => void resetDispatchField("distance_unit")}
                     >
                       <TimerReset className="size-3" />Reset to default
                     </Button>

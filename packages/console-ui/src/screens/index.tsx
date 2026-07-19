@@ -705,6 +705,7 @@ type OpsCandidate = {
   skills_match: boolean;
   dist_km: number | null;
   distance_mi?: number | null;
+  distance_km?: number | null;
   eta_min: number | null;
   eta_max: number | null;
   is_online: boolean;
@@ -719,6 +720,7 @@ type OpsCandidate = {
 type CandidatesResponse = {
   job: OpsJob;
   candidates: OpsCandidate[];
+  distance_unit?: "mi" | "km";
 };
 
 export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: ConsoleMode }) {
@@ -807,6 +809,13 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
 
   const job = data?.job;
   const candidates = data?.candidates ?? [];
+  const distanceUnit = data?.distance_unit === "km" ? "km" : "mi";
+  const formatCandidateDistance = (tech: OpsCandidate) => {
+    if (distanceUnit === "km") {
+      return tech.distance_km != null ? `${tech.distance_km} km` : tech.dist_km != null ? `${tech.dist_km} km` : "Distance unknown";
+    }
+    return tech.distance_mi != null ? `${tech.distance_mi} mi` : tech.dist_km != null ? `${Math.round(tech.dist_km * 0.621371 * 100) / 100} mi` : "Distance unknown";
+  };
 
   const jobPoint: MapPoint | null = (job?.lat != null && job?.lng != null) ? { lat: job.lat, lng: job.lng, kind: "job", label: job.address ?? "Job", id: job.id } : null;
   const mapPoints: MapPoint[] = [
@@ -867,7 +876,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                         {tech.organization_supports_skill !== false && tech.technician_supports_skill === false ? <Badge variant="danger">Technician skill missing</Badge> : null}
                       </div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        {tech.distance_mi != null ? `${tech.distance_mi} mi` : tech.dist_km != null ? `${tech.dist_km} km` : "Distance unknown"} · ETA {tech.eta_min != null ? `${tech.eta_min}–${tech.eta_max}m` : "unknown"}
+                        {formatCandidateDistance(tech)} · ETA {tech.eta_min != null ? `${tech.eta_min}–${tech.eta_max}m` : "unknown"}
                       </div>
                       {tech.is_busy && tech.active_job ? (
                         <div className="mt-1 text-xs text-muted-foreground">Active job: {tech.active_job.status} — {tech.active_job.address ?? tech.active_job.id}</div>

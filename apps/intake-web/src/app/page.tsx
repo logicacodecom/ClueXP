@@ -266,6 +266,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     address: "",
     make: "",
     model: "",
+    color: "",
     year: "",
     lockType: "",
     notes: "",
@@ -747,6 +748,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               <>
                 <input className="field" placeholder="Make" value={form.make} onChange={(event) => setForm({ ...form, make: event.target.value })} />
                 <input className="field" placeholder="Model" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
+                <input className="field" placeholder="Color" value={form.color} onChange={(event) => setForm({ ...form, color: event.target.value })} />
                 <input className="field" inputMode="numeric" placeholder="Year" value={form.year} onChange={(event) => setForm({ ...form, year: event.target.value })} />
                 <ChipSelect
                   value={ticket?.automotive?.key_type}
@@ -762,6 +764,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                         automotive: {
                           make: form.make || null,
                           model: form.model || null,
+                          color: form.color || null,
                           year: form.year ? Number(form.year) : null,
                           key_type: value,
                           key_type_source: "stated"

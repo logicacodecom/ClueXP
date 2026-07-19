@@ -60,6 +60,15 @@ def _is_bool(v: Any) -> bool:
     return isinstance(v, bool)
 
 
+def _one_of(*allowed: str) -> Callable[[Any], bool]:
+    allowed_values = set(allowed)
+
+    def _validate(v: Any) -> bool:
+        return isinstance(v, str) and v in allowed_values
+
+    return _validate
+
+
 # --- allowlist registry: the single source of truth for validation -----------
 SETTINGS: dict[str, SettingSpec] = {
     "dispatch_offer_ttl_seconds": SettingSpec(
@@ -133,6 +142,15 @@ SETTINGS: dict[str, SettingSpec] = {
         env="DISPATCH_STALLED_MINUTES",
         fallback=15,
         validate=_int_range(1, 1440),
+        org_overridable=True,
+    ),
+    "dispatch_distance_unit": SettingSpec(
+        key="dispatch_distance_unit",
+        value_type="string",
+        description="Distance unit shown in provider dispatch screens.",
+        env="DISPATCH_DISTANCE_UNIT",
+        fallback="mi",
+        validate=_one_of("mi", "km"),
         org_overridable=True,
     ),
     # --- per-org tenant caps, console-overridable (0026) ---

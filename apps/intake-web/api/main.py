@@ -3296,6 +3296,7 @@ def _require_dispatch_org(session: dict[str, Any]) -> str:
 _DISPATCH_SETTING_FIELDS = {
     "ack_sla_minutes": "dispatch_ack_sla_minutes",
     "stalled_minutes": "dispatch_stalled_minutes",
+    "distance_unit": "dispatch_distance_unit",
 }
 
 
@@ -3329,6 +3330,7 @@ class ProviderDispatchSettingsUpdate(BaseModel):
     # "absent" from "sent as null".
     ack_sla_minutes: int | None = None
     stalled_minutes: int | None = None
+    distance_unit: str | None = None
 
 
 @app.patch("/provider/settings/dispatch")
@@ -3389,7 +3391,11 @@ async def provider_get_candidates(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
     techs = await store.list_all_technicians_for_ops(org_id=org_id)
-    return {"job": job, "candidates": await _enriched_candidates(job, techs)}
+    return {
+        "job": job,
+        "candidates": await _enriched_candidates(job, techs),
+        "distance_unit": await runtime_settings.resolve_org(store, org_id, "dispatch_distance_unit"),
+    }
 
 
 @app.post("/provider/queue/{job_id}/assign")
