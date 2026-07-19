@@ -9,12 +9,8 @@ import {
   ExternalLink,
   LocateFixed,
   MapPin,
-  MessageSquare,
-  MoreHorizontal,
   Navigation,
-  Phone,
   RefreshCw,
-  ShieldAlert,
   ShieldCheck,
   Wrench,
   X
@@ -22,6 +18,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { GoogleMapView, type MapPoint } from "./google-map";
+import { activeJobActionItems } from "./technician-app-chrome";
 
 const PAYMENT_METHODS = [
   { value: "credit_card", label: "Card reader" },
@@ -376,7 +373,10 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   return (
     <div className="min-h-[100svh] bg-background pb-[178px]">
       <header className="safe-top flex min-h-12 items-center justify-between border-b border-border px-5 pb-2 font-condensed text-sm font-semibold uppercase tracking-[.08em]">
-        <span>ClueXP Field</span>
+        <span className="flex items-center gap-2">
+          <img className="h-5 w-auto object-contain" src="/logo.png" alt="ClueXP" />
+          <span>Field</span>
+        </span>
         <span className="flex items-center gap-2 text-muted"><span className={`size-2 rounded-full ${online ? "bg-success" : "bg-primary"}`} />{online ? "Online" : "Offline"}</span>
       </header>
 
@@ -519,15 +519,9 @@ function OperationalAlert({ tone, text }: { tone: "danger" | "success"; text: st
 }
 
 function ContextRail({ onOpen }: { onOpen: (sheet: Exclude<Sheet, null>) => void }) {
-  const items = [
-    { label: "Message", icon: MessageSquare, sheet: "messages" as const },
-    { label: "Call", icon: Phone, sheet: "call" as const },
-    { label: "Safety", icon: ShieldAlert, sheet: "safety" as const, danger: true },
-    { label: "More", icon: MoreHorizontal, sheet: "more" as const }
-  ];
   return (
     <nav className="safe-bottom fixed bottom-0 left-1/2 z-40 grid w-full max-w-[480px] -translate-x-1/2 grid-cols-4 gap-2 border-t border-border bg-background px-3 pt-2" aria-label="Active job actions">
-      {items.map(({ label, icon: Icon, sheet, danger }) => <button className={`field-rail-action ${danger ? "border-danger/40 text-danger" : ""}`} key={label} onClick={() => onOpen(sheet)} type="button"><Icon className="size-4" />{label}</button>)}
+      {activeJobActionItems.map(({ label, icon: Icon, key, danger }) => <button className={`field-rail-action ${danger ? "border-danger/40 text-danger" : ""}`} key={key} onClick={() => onOpen(key)} type="button"><Icon className="size-4" />{label}</button>)}
     </nav>
   );
 }
@@ -567,7 +561,7 @@ function ActionSheet({ sheet, job, busy, issueDone, issueKind, issueReason, onCl
           <div>
             <h2 className="font-condensed text-4xl font-bold uppercase text-danger">Safety</h2>
             <p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">For unsafe conditions at or near this job. An alert is recorded against this job and sent to dispatch.</p>
-            <button className="mt-5 flex min-h-[62px] w-full items-center justify-center bg-danger px-4 font-condensed text-xl font-semibold uppercase text-[#fff6f0] disabled:opacity-50" disabled={busy || issueDone} onClick={() => onSubmitIssue("unsafe")} type="button"><ShieldAlert className="mr-2 size-5" />{busy ? "Sending alert…" : issueDone ? "Alert sent" : "I feel unsafe — alert dispatch"}</button>
+            <button className="mt-5 flex min-h-[62px] w-full items-center justify-center bg-danger px-4 font-condensed text-xl font-semibold uppercase text-[#fff6f0] disabled:opacity-50" disabled={busy || issueDone} onClick={() => onSubmitIssue("unsafe")} type="button"><AlertTriangle className="mr-2 size-5" />{busy ? "Sending alert…" : issueDone ? "Alert sent" : "I feel unsafe — alert dispatch"}</button>
             <a className="mt-3 flex min-h-14 w-full items-center justify-center border-2 border-danger font-condensed text-xl font-semibold uppercase text-danger" href="tel:911">Call 911</a>
             <p className="mt-5 border border-danger/30 bg-danger/8 p-4 text-sm leading-6 text-[#b8a9a9]">If there is immediate danger, call 911 first. Reporting here is not a replacement for emergency services.</p>
           </div>

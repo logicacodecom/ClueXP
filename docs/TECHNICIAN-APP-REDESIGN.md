@@ -2,7 +2,7 @@
 
 > **Status:** Product direction approved; detailed specification pending TAR-0 approval
 >
-> **Updated:** 2026-07-18
+> **Updated:** 2026-07-19
 >
 > **Primary delivery:** redesign the existing `apps/technician-web` PWA first while building
 > shared contracts for a future native client
@@ -10,6 +10,13 @@
 > **Authority:** [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) remains authoritative for dispatch,
 > fulfillment, trust, tenancy, financial, and communication contracts. This document translates
 > those contracts into the technician product experience and required development work.
+>
+> **Visual reference:** the approved UI mock (full lifecycle, account/receipt/call/conflict
+> screens, and the gap screens: evidence capture, blocked/suspended modes, notification center,
+> permission primers) and its token/screen spec live in
+> [`design-ref/ui/technician-app/`](design-ref/ui/technician-app/DESIGN.md), synced 2026-07-19.
+> The mock now covers this spec's full screen inventory; where mock and spec disagree, this spec
+> wins.
 
 ## 1. Executive decision
 
