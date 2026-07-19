@@ -1000,7 +1000,7 @@ For the pilot, these technicians are seeded in the DB:
 
 | Name | Email | Password | Coverage |
 |------|-------|---------|---------|
-| Jordan Lee | `jordan@cluexp.example` | `123456` | NYC area, skills: vehicle/home/business |
+| Jordan Lee | `jordan@cluexp.example` | `123456` | NYC area, skills: `locksmith.vehicle_lockout`, `locksmith.residential_lockout`, `locksmith.commercial_lockout` |
 | Marcus Reyes | `marcus@metrokey.example` | — | NYC area |
 | Lena Ortiz | `lena@metrokey.example` | — | NYC area |
 

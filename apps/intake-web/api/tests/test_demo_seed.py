@@ -43,7 +43,7 @@ def test_normalizers_map_aliases_to_the_right_vocabularies():
 
 def test_technician_skills_are_all_canonical():
     for tech in demo_seed.FLORIDA_TECHNICIANS:
-        for skill in demo_seed.normalize_skills(tech["skills"]):
+        for skill in tech["skills"]:
             assert skill in demo_seed.VALID_SKILLS
 
 

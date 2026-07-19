@@ -142,7 +142,11 @@ FLORIDA_TECHNICIANS: list[dict[str, Any]] = [
         "email": "carlos.rivera@florida-locksmith.demo",
         "name": "Carlos Rivera",
         "phone": "+18135550141",
-        "skills": ["home", "business", "vehicle"],
+        "skills": [
+            "locksmith.residential_lockout",
+            "locksmith.commercial_lockout",
+            "locksmith.vehicle_lockout",
+        ],
         "lat": 27.9506,
         "lng": -82.4572,
         "rating": 4.9,
@@ -151,7 +155,10 @@ FLORIDA_TECHNICIANS: list[dict[str, Any]] = [
         "email": "maya.thompson@florida-locksmith.demo",
         "name": "Maya Thompson",
         "phone": "+18135550142",
-        "skills": ["home", "business"],
+        "skills": [
+            "locksmith.residential_lockout",
+            "locksmith.commercial_lockout",
+        ],
         "lat": 27.9605,
         "lng": -82.4382,
         "rating": 4.8,
@@ -160,9 +167,10 @@ FLORIDA_TECHNICIANS: list[dict[str, Any]] = [
         "email": "andre.wilson@florida-locksmith.demo",
         "name": "Andre Wilson",
         "phone": "+18135550143",
-        # Intentionally given as the alias "car" to prove normalize_skill maps it
-        # to "vehicle" — no dispatch mismatch.
-        "skills": ["car", "home"],
+        "skills": [
+            "locksmith.vehicle_lockout",
+            "locksmith.residential_lockout",
+        ],
         "lat": 27.9555,
         "lng": -82.5240,
         "rating": 4.7,

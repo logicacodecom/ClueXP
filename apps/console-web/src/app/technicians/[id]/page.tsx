@@ -154,7 +154,7 @@ export default function TechnicianDetailPage() {
             </label>
             <label className="block space-y-1.5 font-medium">
               Skills
-              <Input value={profileInputs.skills} onChange={(event) => setProfileInputs((prev) => ({ ...prev, skills: event.target.value }))} placeholder="home, vehicle, rekey" />
+              <Input value={profileInputs.skills} onChange={(event) => setProfileInputs((prev) => ({ ...prev, skills: event.target.value }))} placeholder="locksmith.residential_lockout, locksmith.vehicle_lockout" />
             </label>
             <div><span className="text-muted-foreground">Email:</span> {detail.email || "—"}</div>
             <div><span className="text-muted-foreground">Vetting:</span> {detail.vetting_status}</div>
