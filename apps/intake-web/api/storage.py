@@ -18,8 +18,12 @@ SUPABASE_SERVICE_KEY = (
 
 PRIVATE_BUCKET = "private-verification"
 PUBLIC_TECH_BUCKET = "public-tech-media"
+ORG_MEDIA_BUCKET = "public-org-media"
 TECHNICIAN_DOCS_BUCKET = "private-technician-docs"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_LOGO_BYTES = 2 * 1024 * 1024
+LOGO_MIN_DIMENSION = 64
+LOGO_MAX_DIMENSION = 2048
 UPLOAD_TTL_SECONDS = 60
 DOWNLOAD_TTL_SECONDS = 300
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
@@ -52,6 +56,94 @@ def validate_upload_claim(content_type: str, size: int, *, allow_pdf: bool = Fal
             "Only PNG, JPEG, WebP, or PDF files are accepted here"
             if allow_pdf else "Only PNG, JPEG, or WebP images are accepted here"
         )
+
+
+def sniff_image_mime(content: bytes) -> str | None:
+    """Identify a PNG/JPEG/WebP from its magic bytes — the actual file content,
+    not the browser-stated content-type. Returns None for anything else."""
+    if content[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if content[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def image_dimensions(content: bytes) -> tuple[int, int] | None:
+    """Best-effort (width, height) parsed from the image header, no decode libs.
+    Returns None if the header can't be read."""
+    mime = sniff_image_mime(content)
+    try:
+        if mime == "image/png":
+            if len(content) < 24 or content[12:16] != b"IHDR":
+                return None
+            return (
+                int.from_bytes(content[16:20], "big"),
+                int.from_bytes(content[20:24], "big"),
+            )
+        if mime == "image/jpeg":
+            i, n = 2, len(content)
+            while i + 9 < n:
+                if content[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = content[i + 1]
+                if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                seg_len = int.from_bytes(content[i + 2 : i + 4], "big")
+                if marker in (
+                    0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                    0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+                ):
+                    height = int.from_bytes(content[i + 5 : i + 7], "big")
+                    width = int.from_bytes(content[i + 7 : i + 9], "big")
+                    return (width, height)
+                i += 2 + seg_len
+            return None
+        if mime == "image/webp":
+            fourcc = content[12:16]
+            if fourcc == b"VP8 " and len(content) >= 30:
+                width = int.from_bytes(content[26:28], "little") & 0x3FFF
+                height = int.from_bytes(content[28:30], "little") & 0x3FFF
+                return (width, height)
+            if fourcc == b"VP8L" and len(content) >= 25:
+                bits = int.from_bytes(content[21:25], "little")
+                width = (bits & 0x3FFF) + 1
+                height = ((bits >> 14) & 0x3FFF) + 1
+                return (width, height)
+            if fourcc == b"VP8X" and len(content) >= 30:
+                width = int.from_bytes(content[24:27], "little") + 1
+                height = int.from_bytes(content[27:30], "little") + 1
+                return (width, height)
+            return None
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def validate_logo_upload(content: bytes, claimed_type: str) -> str:
+    """Validate an organization logo by its real bytes, size, and dimensions.
+    Returns the canonical sniffed mime; raises ValueError on any failure."""
+    if not content:
+        raise ValueError("File is empty")
+    if len(content) > MAX_LOGO_BYTES:
+        raise ValueError("Logo exceeds 2 MB")
+    mime = sniff_image_mime(content)
+    if mime is None:
+        raise ValueError("Only PNG, JPEG, or WebP images are accepted")
+    if claimed_type and claimed_type != mime:
+        raise ValueError("File content does not match its type")
+    dims = image_dimensions(content)
+    if dims is None:
+        raise ValueError("Could not read image dimensions")
+    width, height = dims
+    if width < LOGO_MIN_DIMENSION or height < LOGO_MIN_DIMENSION:
+        raise ValueError(f"Logo must be at least {LOGO_MIN_DIMENSION}x{LOGO_MIN_DIMENSION}px")
+    if width > LOGO_MAX_DIMENSION or height > LOGO_MAX_DIMENSION:
+        raise ValueError(f"Logo must be at most {LOGO_MAX_DIMENSION}x{LOGO_MAX_DIMENSION}px")
+    return mime
 
 
 async def create_signed_upload_url(bucket: str, path: str) -> UploadIntent:
