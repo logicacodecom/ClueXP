@@ -3,7 +3,7 @@
 import type { ServiceCategory } from "@cluexp/api-client";
 import { DEFAULT_SERVICE_CATALOG } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, SkillSelect } from "@cluexp/console-ui";
-import { Check, Copy, CreditCard, Link2, Save, TimerReset } from "lucide-react";
+import { Building2, Check, Copy, CreditCard, Link2, Save, TimerReset, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
 
@@ -49,9 +49,19 @@ const INTAKE_BASE = (process.env.NEXT_PUBLIC_INTAKE_BASE_URL || "https://intake.
 export default function SettingsPage() {
   const [form, setForm] = useState({
     display_name: "", legal_name: "", description: "", phone: "", email: "",
+    contact_name: "", contact_title: "", contact_email: "", contact_phone: "",
+    address_line1: "", address_line2: "", city: "", region: "", postal_code: "", country_code: "",
+    website: "", customer_care_phone: "", google_profile_url: "", google_review_url: "",
     service_area_radius_km: "", dispatch_mode: "organization_managed",
     fulfillment_policy: "owner_first_then_network"
   });
+  const [postalCodes, setPostalCodes] = useState<string[]>([]);
+  const [postalInput, setPostalInput] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoMessage, setLogoMessage] = useState<string | null>(null);
+  const [dispatchPolicyBusy, setDispatchPolicyBusy] = useState(false);
+  const [dispatchPolicyMessage, setDispatchPolicyMessage] = useState<string | null>(null);
   const [slug, setSlug] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [intakeMessage, setIntakeMessage] = useState<string | null>(null);
@@ -134,12 +144,28 @@ export default function SettingsPage() {
       if (!response.ok) throw new Error(body.detail || "Unable to load organization");
       const organization = body.organization ?? {};
       setSlug(organization.slug ?? null);
+      setLogoUrl(organization.logo_url ?? null);
+      setPostalCodes(Array.isArray(organization.service_postal_codes) ? organization.service_postal_codes : []);
       setForm({
         display_name: organization.display_name ?? "",
         legal_name: organization.legal_name ?? "",
         description: organization.description ?? "",
         phone: organization.phone ?? "",
         email: organization.email ?? "",
+        contact_name: organization.contact_name ?? "",
+        contact_title: organization.contact_title ?? "",
+        contact_email: organization.contact_email ?? "",
+        contact_phone: organization.contact_phone ?? "",
+        address_line1: organization.address_line1 ?? "",
+        address_line2: organization.address_line2 ?? "",
+        city: organization.city ?? "",
+        region: organization.region ?? "",
+        postal_code: organization.postal_code ?? "",
+        country_code: organization.country_code ?? "",
+        website: organization.website ?? "",
+        customer_care_phone: organization.customer_care_phone ?? "",
+        google_profile_url: organization.google_profile_url ?? "",
+        google_review_url: organization.google_review_url ?? "",
         service_area_radius_km: organization.service_area_radius_km?.toString() ?? "",
         dispatch_mode: organization.dispatch_mode ?? "organization_managed",
         fulfillment_policy: organization.fulfillment_policy ?? "owner_first_then_network"
@@ -181,20 +207,91 @@ export default function SettingsPage() {
     setBusy(true);
     setMessage(null);
     try {
+      // Profile-only payload. dispatch_mode / fulfillment_policy are saved separately
+      // (operational settings), and logo_url is set only via the logo upload.
       const response = await fetch("/api/workspace", {
         method: "PATCH", headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ...form,
+          display_name: form.display_name.trim(),
+          legal_name: form.legal_name,
+          description: form.description,
+          contact_name: form.contact_name,
+          contact_title: form.contact_title,
+          contact_email: form.contact_email,
+          contact_phone: form.contact_phone,
+          address_line1: form.address_line1,
+          address_line2: form.address_line2,
+          city: form.city,
+          region: form.region,
+          postal_code: form.postal_code,
+          country_code: form.country_code,
+          phone: form.phone,
+          email: form.email,
+          website: form.website,
+          customer_care_phone: form.customer_care_phone,
+          google_profile_url: form.google_profile_url,
+          google_review_url: form.google_review_url,
+          service_postal_codes: postalCodes,
           service_area_radius_km: form.service_area_radius_km ? Number(form.service_area_radius_km) : null
         })
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || "Unable to save organization");
-      setMessage("Organization settings saved.");
+      if (!response.ok) throw new Error(body.detail || "Unable to save company profile");
+      setMessage("Company profile saved.");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save organization");
+      setMessage(cause instanceof Error ? cause.message : "Unable to save company profile");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveDispatchPolicy() {
+    setDispatchPolicyBusy(true);
+    setDispatchPolicyMessage(null);
+    try {
+      const response = await fetch("/api/provider/organization/dispatch-policy", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dispatch_mode: form.dispatch_mode,
+          fulfillment_policy: form.fulfillment_policy
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save dispatch policy");
+      setDispatchPolicyMessage("Dispatch policy saved.");
+    } catch (cause) {
+      setDispatchPolicyMessage(cause instanceof Error ? cause.message : "Unable to save dispatch policy");
+    } finally {
+      setDispatchPolicyBusy(false);
+    }
+  }
+
+  function addPostalCode() {
+    const code = postalInput.trim().toUpperCase();
+    if (!code) return;
+    if (!postalCodes.includes(code)) setPostalCodes([...postalCodes, code]);
+    setPostalInput("");
+  }
+
+  function removePostalCode(code: string) {
+    setPostalCodes(postalCodes.filter((existing) => existing !== code));
+  }
+
+  async function uploadLogo(file: File) {
+    setLogoBusy(true);
+    setLogoMessage(null);
+    try {
+      const data = new FormData();
+      data.append("file", file);
+      const response = await fetch("/api/provider/organization/logo", { method: "POST", body: data });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to upload logo");
+      setLogoUrl(body.logo_url ?? null);
+      setLogoMessage("Logo uploaded.");
+    } catch (cause) {
+      setLogoMessage(cause instanceof Error ? cause.message : "Unable to upload logo");
+    } finally {
+      setLogoBusy(false);
     }
   }
 
@@ -351,14 +448,96 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>Organization profile</CardTitle></CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2">
-            <Input placeholder="Display name" value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} />
-            <Input placeholder="Legal name" value={form.legal_name} onChange={(event) => setForm({ ...form, legal_name: event.target.value })} />
-            <Input placeholder="Contact email" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-            <Input placeholder="Contact phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
-            <Input placeholder="Service radius (km)" inputMode="decimal" value={form.service_area_radius_km} onChange={(event) => setForm({ ...form, service_area_radius_km: event.target.value })} />
-            <Input placeholder="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+          <CardHeader><CardTitle className="flex items-center gap-2"><Building2 className="size-5 text-primary" />Company profile</CardTitle></CardHeader>
+          <CardContent className="space-y-6">
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-muted-foreground">Company identity</h3>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Display name</span><Input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Legal name</span><Input value={form.legal_name} onChange={(event) => setForm({ ...form, legal_name: event.target.value })} /></label>
+              </div>
+              <label className="space-y-1.5 text-sm"><span className="font-medium">Description</span>
+                <textarea className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+              </label>
+            </div>
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-muted-foreground">Contact person in charge</h3>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Name</span><Input value={form.contact_name} onChange={(event) => setForm({ ...form, contact_name: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Title</span><Input value={form.contact_title} onChange={(event) => setForm({ ...form, contact_title: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Email</span><Input type="email" value={form.contact_email} onChange={(event) => setForm({ ...form, contact_email: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Phone</span><Input value={form.contact_phone} onChange={(event) => setForm({ ...form, contact_phone: event.target.value })} /></label>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-muted-foreground">Company address</h3>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1.5 text-sm md:col-span-2"><span className="font-medium">Address line 1</span><Input value={form.address_line1} onChange={(event) => setForm({ ...form, address_line1: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm md:col-span-2"><span className="font-medium">Address line 2</span><Input value={form.address_line2} onChange={(event) => setForm({ ...form, address_line2: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">City</span><Input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Region / State</span><Input value={form.region} onChange={(event) => setForm({ ...form, region: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Postal code</span><Input value={form.postal_code} onChange={(event) => setForm({ ...form, postal_code: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Country code (ISO 2)</span><Input maxLength={2} placeholder="US" value={form.country_code} onChange={(event) => setForm({ ...form, country_code: event.target.value.toUpperCase() })} /></label>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-muted-foreground">Contact &amp; web</h3>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Company phone</span><Input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Company email</span><Input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Customer-care phone</span><Input value={form.customer_care_phone} onChange={(event) => setForm({ ...form, customer_care_phone: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Website (https://)</span><Input type="url" placeholder="https://" value={form.website} onChange={(event) => setForm({ ...form, website: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Google profile URL</span><Input type="url" placeholder="https://" value={form.google_profile_url} onChange={(event) => setForm({ ...form, google_profile_url: event.target.value })} /></label>
+                <label className="space-y-1.5 text-sm"><span className="font-medium">Google review URL</span><Input type="url" placeholder="https://" value={form.google_review_url} onChange={(event) => setForm({ ...form, google_review_url: event.target.value })} /></label>
+              </div>
+              <p className="text-xs text-muted-foreground">Customer-care phone, branding, and Google links are stored for upcoming customer-facing features and are not shown publicly yet.</p>
+            </div>
+
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-muted-foreground">Company logo</h3>
+              <div className="flex items-center gap-4">
+                <div className="flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-secondary">
+                  {logoUrl ? <img src={logoUrl} alt="Company logo" className="size-full object-contain" /> : <Building2 className="size-8 text-muted-foreground" />}
+                </div>
+                <div className="space-y-1.5">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium">
+                    <Upload className="size-4" />{logoBusy ? "Uploading…" : "Upload logo"}
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" disabled={logoBusy}
+                      onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadLogo(file); event.target.value = ""; }} />
+                  </label>
+                  <p className="text-xs text-muted-foreground">PNG, JPEG, or WebP · up to 2 MB · 64–2048px.</p>
+                  {logoMessage ? <div className="text-xs" role="status">{logoMessage}</div> : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-muted-foreground">Service coverage (postal codes)</h3>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input placeholder="Add a postal code" value={postalInput}
+                  onChange={(event) => setPostalInput(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addPostalCode(); } }} />
+                <Button type="button" variant="outline" className="shrink-0" onClick={addPostalCode}>Add</Button>
+              </div>
+              {postalCodes.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {postalCodes.map((code) => (
+                    <Badge key={code} variant="outline" className="gap-1.5">
+                      {code}
+                      <button type="button" aria-label={`Remove ${code}`} className="text-muted-foreground hover:text-foreground" onClick={() => removePostalCode(code)}>×</button>
+                    </Badge>
+                  ))}
+                </div>
+              ) : <p className="text-xs text-muted-foreground">No service postal codes yet.</p>}
+            </div>
+
+            <label className="space-y-1.5 text-sm block max-w-xs"><span className="font-medium">Service radius (km)</span><Input inputMode="decimal" value={form.service_area_radius_km} onChange={(event) => setForm({ ...form, service_area_radius_km: event.target.value })} /></label>
+
+            {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
+            <Button disabled={busy || !form.display_name.trim()} onClick={() => void save()}><Save className="size-4" />{busy ? "Saving…" : "Save company profile"}</Button>
           </CardContent>
         </Card>
         <Card>
@@ -366,6 +545,10 @@ export default function SettingsPage() {
           <CardContent className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 text-sm font-medium">Dispatch manager<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.dispatch_mode} onChange={(event) => setForm({ ...form, dispatch_mode: event.target.value })}><option value="organization_managed">Organization managed</option><option value="platform_managed">ClueXP managed</option></select></label>
             <label className="space-y-2 text-sm font-medium">Fulfillment policy<select className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3" value={form.fulfillment_policy} onChange={(event) => setForm({ ...form, fulfillment_policy: event.target.value })}><option value="private_owner_only">Private roster only</option><option value="owner_first_then_network">Roster first, then network</option><option value="network_open">Verified network open</option></select></label>
+            <div className="md:col-span-2 space-y-3">
+              {dispatchPolicyMessage ? <div className="text-sm" role="status">{dispatchPolicyMessage}</div> : null}
+              <Button variant="outline" disabled={dispatchPolicyBusy} onClick={() => void saveDispatchPolicy()}><Save className="size-4" />{dispatchPolicyBusy ? "Saving…" : "Save dispatch policy"}</Button>
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -495,8 +678,6 @@ export default function SettingsPage() {
             </Button>
           </CardContent>
         </Card>
-        {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
-        <Button disabled={busy || !form.display_name.trim()} onClick={() => void save()}><Save className="size-4" />{busy ? "Saving…" : "Save settings"}</Button>
       </div>
     </AppFrame>
   );

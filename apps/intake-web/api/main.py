@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import random
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from api.geocode import geocode, places_autocomplete
 from api import storage
@@ -355,6 +356,198 @@ class OrganizationProfileUpdateRequest(BaseModel):
     service_area_center_lat: float | None = None
     service_area_center_lng: float | None = None
     service_area_radius_km: float | None = None
+    dispatch_mode: str | None = None
+    fulfillment_policy: str | None = None
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_RE = re.compile(r"^\+?[0-9][0-9\s().\-]{5,19}$")
+_POSTAL_RE = re.compile(r"^[A-Z0-9][A-Z0-9 \-]{1,9}$")
+_COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
+_MAX_TEXT = 200
+_MAX_URL = 500
+_MAX_DESC = 2000
+_MAX_POSTAL_CODES = 200
+
+
+def _blank_to_none(value: Any) -> Any:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
+def _require_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) > _MAX_TEXT or not _EMAIL_RE.match(value):
+        raise ValueError("Invalid email address")
+    return value.lower()
+
+
+def _require_phone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _PHONE_RE.match(value):
+        raise ValueError("Invalid phone number")
+    return value
+
+
+def _require_https_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) > _MAX_URL or not value.lower().startswith("https://"):
+        raise ValueError("URL must start with https://")
+    return value
+
+
+def _normalize_postal_list(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str):
+            raise ValueError("Postal codes must be text")
+        code = raw.strip().upper()
+        if not code:
+            continue
+        if not _POSTAL_RE.match(code):
+            raise ValueError(f"Invalid postal code: {raw}")
+        if code in seen:
+            continue
+        seen.add(code)
+        out.append(code)
+    if len(out) > _MAX_POSTAL_CODES:
+        raise ValueError(f"At most {_MAX_POSTAL_CODES} postal codes")
+    return out
+
+
+class ProviderCompanyProfileUpdateRequest(BaseModel):
+    """Provider-editable company profile. Deliberately excludes operational fields
+    (dispatch_mode / fulfillment_policy — see ProviderDispatchPolicyUpdateRequest)
+    and logo_url (set only via the dedicated logo-upload endpoint). Only fields the
+    client actually sends are written (endpoint uses exclude_unset); a sent null or
+    blank string clears the column."""
+
+    display_name: str | None = None
+    legal_name: str | None = None
+    description: str | None = None
+    contact_name: str | None = None
+    contact_title: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    address_line1: str | None = None
+    address_line2: str | None = None
+    city: str | None = None
+    region: str | None = None
+    postal_code: str | None = None
+    country_code: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    website: str | None = None
+    customer_care_phone: str | None = None
+    google_profile_url: str | None = None
+    google_review_url: str | None = None
+    service_postal_codes: list[str] | None = None
+    service_area_center_lat: float | None = None
+    service_area_center_lng: float | None = None
+    service_area_radius_km: float | None = None
+
+    @field_validator(
+        "display_name", "legal_name", "description", "contact_name", "contact_title",
+        "contact_email", "contact_phone", "address_line1", "address_line2", "city",
+        "region", "postal_code", "country_code", "phone", "email", "website",
+        "customer_care_phone", "google_profile_url", "google_review_url",
+        mode="before",
+    )
+    @classmethod
+    def _strip_blanks(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
+    @field_validator(
+        "display_name", "legal_name", "contact_name", "contact_title",
+        "address_line1", "address_line2", "city", "region",
+    )
+    @classmethod
+    def _cap_text(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > _MAX_TEXT:
+            raise ValueError(f"Value exceeds {_MAX_TEXT} characters")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def _cap_description(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > _MAX_DESC:
+            raise ValueError(f"Description exceeds {_MAX_DESC} characters")
+        return value
+
+    @field_validator("contact_email", "email")
+    @classmethod
+    def _check_emails(cls, value: str | None) -> str | None:
+        return _require_email(value)
+
+    @field_validator("contact_phone", "phone", "customer_care_phone")
+    @classmethod
+    def _check_phones(cls, value: str | None) -> str | None:
+        return _require_phone(value)
+
+    @field_validator("website", "google_profile_url", "google_review_url")
+    @classmethod
+    def _check_urls(cls, value: str | None) -> str | None:
+        return _require_https_url(value)
+
+    @field_validator("postal_code")
+    @classmethod
+    def _check_postal(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        code = value.strip().upper()
+        if not _POSTAL_RE.match(code):
+            raise ValueError("Invalid postal code")
+        return code
+
+    @field_validator("country_code")
+    @classmethod
+    def _check_country(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        code = value.strip().upper()
+        if not _COUNTRY_RE.match(code):
+            raise ValueError("country_code must be a 2-letter ISO code")
+        return code
+
+    @field_validator("service_postal_codes")
+    @classmethod
+    def _check_postal_list(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_postal_list(value)
+
+    @field_validator("service_area_center_lat")
+    @classmethod
+    def _check_lat(cls, value: float | None) -> float | None:
+        if value is not None and not -90 <= value <= 90:
+            raise ValueError("Latitude out of range")
+        return value
+
+    @field_validator("service_area_center_lng")
+    @classmethod
+    def _check_lng(cls, value: float | None) -> float | None:
+        if value is not None and not -180 <= value <= 180:
+            raise ValueError("Longitude out of range")
+        return value
+
+    @field_validator("service_area_radius_km")
+    @classmethod
+    def _check_radius(cls, value: float | None) -> float | None:
+        if value is not None and not 0 < value <= 500:
+            raise ValueError("Radius must be between 0 and 500 km")
+        return value
+
+
+class ProviderDispatchPolicyUpdateRequest(BaseModel):
+    """Operational dispatch settings — split out of the company-profile request so
+    the profile surface cannot write these."""
+
     dispatch_mode: str | None = None
     fulfillment_policy: str | None = None
 
@@ -1502,9 +1695,28 @@ async def provider_workspace(
 
 @app.patch("/provider/organization")
 async def update_provider_organization(
-    payload: OrganizationProfileUpdateRequest,
+    payload: ProviderCompanyProfileUpdateRequest,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    """Save the provider-editable company profile. provider_admin only. Operational
+    fields (dispatch_mode / fulfillment_policy) and logo_url are NOT writable here."""
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    # exclude_unset: only fields the client actually sent are written, so a sent
+    # null/blank clears that column while untouched fields are left intact.
+    data = payload.model_dump(exclude_unset=True)
+    result = await store.update_company_profile(organization_id, data)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return result
+
+
+@app.patch("/provider/organization/dispatch-policy")
+async def update_provider_dispatch_policy(
+    payload: ProviderDispatchPolicyUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Operational dispatch settings, kept separate from the company profile."""
     organization_id = _provider_organization_id(session)
     if payload.dispatch_mode and payload.dispatch_mode not in {
         "organization_managed", "platform_managed"
@@ -1520,6 +1732,35 @@ async def update_provider_organization(
     if result is None:
         raise HTTPException(status_code=404, detail="Organization not found")
     return result
+
+
+@app.post("/provider/organization/logo")
+async def upload_provider_logo(
+    file: UploadFile = File(...),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload the organization logo to the public org-media bucket. provider_admin
+    only; validates real image bytes, size, and dimensions before storing. The
+    resulting URL is saved server-side — clients cannot set logo_url directly."""
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    content = await file.read()
+    try:
+        mime = storage.validate_logo_upload(content, file.content_type or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not storage.storage_configured():
+        raise HTTPException(status_code=503, detail="Logo storage is not configured")
+    ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
+    path = f"organizations/{organization_id}/logo-{uuid4()}.{ext}"
+    try:
+        url = await storage.upload_object(storage.ORG_MEDIA_BUCKET, path, content, mime)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Logo upload failed")
+    result = await store.set_organization_logo(organization_id, url)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return {"logo_url": url, "message": "Logo uploaded"}
 
 
 @app.post("/provider/teams")

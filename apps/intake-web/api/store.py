@@ -636,6 +636,20 @@ def _slugify(name: str) -> str:
     return slug or "org"
 
 
+# Columns a provider may write through the company-profile PATCH. Whitelist used
+# to build the dynamic UPDATE — never interpolate arbitrary client keys into SQL.
+# Deliberately excludes logo_url (set only via the logo-upload endpoint) and the
+# operational dispatch_mode / fulfillment_policy.
+COMPANY_PROFILE_COLUMNS = (
+    "display_name", "legal_name", "description",
+    "contact_name", "contact_title", "contact_email", "contact_phone",
+    "address_line1", "address_line2", "city", "region", "postal_code", "country_code",
+    "phone", "email", "website", "customer_care_phone",
+    "google_profile_url", "google_review_url", "service_postal_codes",
+    "service_area_center_lat", "service_area_center_lng", "service_area_radius_km",
+)
+
+
 class Store:
     async def startup(self) -> None:  # pragma: no cover - interface
         ...
@@ -876,6 +890,16 @@ class Store:
 
     async def update_organization_profile(
         self, organization_id: UUID, data: dict
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_company_profile(
+        self, organization_id: UUID, data: dict
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def set_organization_logo(
+        self, organization_id: UUID, logo_url: str
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1315,6 +1339,12 @@ class InMemoryStore(Store):
         self._technician_agreements: dict[tuple[str, str], dict] = {}
         self._settlement_periods: dict[str, dict] = {}
         self._organization_capabilities: dict[str, set[str]] = {}
+        self._organizations: dict[str, dict] = {
+            "org-metro": {
+                "id": "org-metro", "display_name": "Metro Key Partners",
+                "status": "active", "service_postal_codes": [],
+            }
+        }
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
             self._service_categories[cat["code"]] = cat
@@ -1511,15 +1541,63 @@ class InMemoryStore(Store):
                 },
                 "team_ids": [],
             })
+        rec = self._org_record(organization_id)
+        profile_keys = (
+            "legal_name", "description", "slug", "phone", "email",
+            "service_area_center_lat", "service_area_center_lng", "service_area_radius_km",
+            "dispatch_mode", "fulfillment_policy",
+            "contact_name", "contact_title", "contact_email", "contact_phone",
+            "address_line1", "address_line2", "city", "region", "postal_code", "country_code",
+            "website", "customer_care_phone", "google_profile_url", "google_review_url",
+            "logo_url",
+        )
+        organization = {
+            "id": rec["id"],
+            "display_name": rec.get("display_name"),
+            "status": rec.get("status", "active"),
+            "service_postal_codes": list(rec.get("service_postal_codes") or []),
+            **{key: rec.get(key) for key in profile_keys},
+        }
         return {
-            "organization": {"id": str(organization_id), "display_name": "Local provider"},
+            "organization": organization,
             "teams": [],
             "technicians": technicians,
             "documents": [],
         }
 
+    def _org_record(self, organization_id: UUID) -> dict:
+        oid = str(organization_id)
+        rec = self._organizations.get(oid)
+        if rec is None:
+            rec = {
+                "id": oid, "display_name": "Local provider",
+                "status": "active", "service_postal_codes": [],
+            }
+            self._organizations[oid] = rec
+        return rec
+
     async def update_organization_profile(self, organization_id: UUID, data: dict) -> dict | None:
-        return {"id": str(organization_id), **data}
+        rec = self._org_record(organization_id)
+        rec.update(data)
+        return {
+            "id": rec["id"], "display_name": rec.get("display_name"),
+            "status": rec.get("status", "active"),
+        }
+
+    async def update_company_profile(self, organization_id: UUID, data: dict) -> dict | None:
+        rec = self._org_record(organization_id)
+        for column in COMPANY_PROFILE_COLUMNS:
+            if column in data:
+                rec[column] = data[column]
+        return {
+            "id": rec["id"], "display_name": rec.get("display_name"),
+            "status": rec.get("status", "active"),
+        }
+
+    async def set_organization_logo(self, organization_id: UUID, logo_url: str) -> dict | None:
+        rec = self._org_record(organization_id)
+        rec["logo_url"] = logo_url
+        return {"id": rec["id"], "logo_url": logo_url}
 
     async def list_affiliated_technicians_directory(self, organization_id: UUID) -> list[dict]:
         oid = str(organization_id)
@@ -2104,7 +2182,7 @@ class InMemoryStore(Store):
 
     # --- technician self-service (Slice D backend) ---
     def _org_names(self) -> dict:
-        return {str(o.get("id")): o.get("display_name") for o in getattr(self, "_organizations", [])}
+        return {str(o.get("id")): o.get("display_name") for o in getattr(self, "_organizations", {}).values()}
 
     def _activation_exclusive_conflict(self, tid: str, target_org: str, target_exclusivity: str) -> bool:
         """Activation rule: a technician with an active EXCLUSIVE affiliation elsewhere
@@ -7406,7 +7484,11 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select id, display_name, legal_name, description, slug, status, phone, email,"
                 " service_area_center_lat, service_area_center_lng, service_area_radius_km,"
-                " dispatch_mode, fulfillment_policy"
+                " dispatch_mode, fulfillment_policy,"
+                " contact_name, contact_title, contact_email, contact_phone,"
+                " address_line1, address_line2, city, region, postal_code, country_code,"
+                " website, customer_care_phone, google_profile_url, google_review_url,"
+                " logo_url, service_postal_codes"
                 " from organizations where id = %s",
                 (str(organization_id),),
             )
@@ -7468,6 +7550,22 @@ class PostgresStore(Store):
                 # stored as the canonical DB vocabulary; surfaced in semantic form
                 # (an org is its own owner, so this is its effective default policy)
                 "fulfillment_policy": normalize_policy(org[12], str(org[0])),
+                "contact_name": org[13],
+                "contact_title": org[14],
+                "contact_email": org[15],
+                "contact_phone": org[16],
+                "address_line1": org[17],
+                "address_line2": org[18],
+                "city": org[19],
+                "region": org[20],
+                "postal_code": org[21],
+                "country_code": org[22],
+                "website": org[23],
+                "customer_care_phone": org[24],
+                "google_profile_url": org[25],
+                "google_review_url": org[26],
+                "logo_url": org[27],
+                "service_postal_codes": list(org[28] or []),
             },
             "teams": [
                 {
@@ -7762,6 +7860,41 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return {"id": str(row[0]), "display_name": row[1], "status": row[2]} if row else None
+
+    async def update_company_profile(self, organization_id: UUID, data: dict) -> dict | None:
+        # Only whitelisted profile columns; `data` already contains solely the keys
+        # the client sent (endpoint uses exclude_unset), so a present key with a null
+        # value clears that column — explicit assignment, not coalesce.
+        columns = [c for c in COMPANY_PROFILE_COLUMNS if c in data]
+        if not columns:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "select id, display_name, status from organizations where id = %s",
+                    (str(organization_id),),
+                )
+                row = await cur.fetchone()
+            return {"id": str(row[0]), "display_name": row[1], "status": row[2]} if row else None
+        assignments = ", ".join(f"{c} = %s" for c in columns)
+        params = [data[c] for c in columns]
+        params.append(str(organization_id))
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"update organizations set {assignments}, updated_at = now()"
+                " where id = %s returning id, display_name, status",
+                tuple(params),
+            )
+            row = await cur.fetchone()
+        return {"id": str(row[0]), "display_name": row[1], "status": row[2]} if row else None
+
+    async def set_organization_logo(self, organization_id: UUID, logo_url: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set logo_url = %s, updated_at = now()"
+                " where id = %s returning id, logo_url",
+                (logo_url, str(organization_id)),
+            )
+            row = await cur.fetchone()
+        return {"id": str(row[0]), "logo_url": row[1]} if row else None
 
     async def create_team(self, organization_id: UUID, data: dict) -> dict:
         parent_id = data.get("parent_team_id")
