@@ -323,7 +323,7 @@ export interface TechnicianActiveJob {
   collection_items?: TechnicianCollectionItem[];
   collection_total?: number | null;
   collection_currency?: string | null;
-  approval_status?: "pending" | "approved" | "disputed" | null;
+  approval_status?: "pending" | "approved" | "disputed" | "expired" | null;
   approval_url?: string | null;
   tracking_token?: string | null;
   intake_photos?: Array<{ url: string; label?: string | null }>;

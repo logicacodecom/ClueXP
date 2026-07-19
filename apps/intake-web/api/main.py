@@ -3492,7 +3492,8 @@ async def technician_active_job(
     approval_url = f"/t/{tracking_token}" if tracking_token else None
     approval_status = (
         "pending" if status == STATUS_COMPLETED_PENDING
-        else "approved" if status in {STATUS_COMPLETED_CONFIRMED, STATUS_COMPLETED_AUTO_CLOSED}
+        else "approved" if status == STATUS_COMPLETED_CONFIRMED
+        else "expired" if status == STATUS_COMPLETED_AUTO_CLOSED
         else "disputed" if status == STATUS_DISPUTED
         else None
     )
