@@ -6715,7 +6715,7 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select id, display_name, legal_name, slug, organization_type, status,"
-                " subscription_status, phone, email, created_at"
+                " subscription_status, phone, email, created_at, fulfillment_policy"
                 " from organizations where id = %s",
                 (oid,),
             )
@@ -6726,6 +6726,8 @@ class PostgresStore(Store):
                 "id": str(row[0]), "display_name": row[1], "legal_name": row[2], "slug": row[3],
                 "organization_type": row[4], "status": row[5], "subscription_status": row[6],
                 "phone": row[7], "email": row[8], "created_at": row[9].isoformat() if row[9] else None,
+                # surfaced as semantic vocabulary; an org is its own owner
+                "fulfillment_policy": normalize_policy(row[10], str(row[0])),
             }
             cur = await conn.execute(
                 "select u.id, u.display_name, u.email, u.phone, m.role, m.status, m.created_at"
