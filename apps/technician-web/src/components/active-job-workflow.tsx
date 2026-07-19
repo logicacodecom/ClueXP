@@ -67,23 +67,42 @@ export type TechnicianJob = {
   // and stays silently absent until then. See the Codex handoff note for the contract.
   service_type?: string | null; // canonical service / job type
   eta_min?: number | null; // ETA to the customer
+  eta_max?: number | null; // ETA upper bound (ETA is a range, not a point)
   distance_mi?: number | null; // distance away (miles)
   distance_km?: number | null; // distance away (km fallback)
   intake_photos?: IntakePhoto[] | null; // customer-uploaded intake photos
   collection_items?: RecordedCollectionItem[] | null; // server-recorded collection lines
   collection_total?: number | null;
+  collection_currency?: string | null; // ISO currency for collection amounts
   approval_status?: "pending" | "approved" | "disputed" | "expired" | null; // customer approval
   approval_url?: string | null; // customer approval / tracking link
+  technician_location_updated_at?: string | null; // when the server last received a fix
+  technician_location_is_fresh?: boolean | null; // server's view of location freshness
 };
 
 function serviceLabel(job: TechnicianJob) {
-  return job.service_type?.trim() || (job.situation || "Service request").replaceAll("_", " ");
+  const raw = job.service_type?.trim() || job.situation || "Service request";
+  return raw.replaceAll("_", " ");
 }
 
 function distanceLabel(job: TechnicianJob) {
   if (job.distance_mi != null) return `${job.distance_mi} mi`;
   if (job.distance_km != null) return `${job.distance_km.toFixed(1)} km`;
   return null;
+}
+
+function etaLabel(job: TechnicianJob) {
+  if (job.eta_min == null) return null;
+  if (job.eta_max != null && job.eta_max !== job.eta_min) return `${job.eta_min}–${job.eta_max} min`;
+  return `${job.eta_min} min`;
+}
+
+function money(amount: number, currency?: string | null) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
 }
 
 type LocationState =
@@ -446,7 +465,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
           <div className="mt-4 border border-success/30 bg-success/8 p-3 text-sm text-success"><CheckCircle2 className="mr-2 inline size-4" />Arrival verified by customer PIN</div>
         ) : null}
 
-        {job.collection_items && job.collection_items.length > 0 ? <RecordedCollection items={job.collection_items} total={job.collection_total} /> : null}
+        {job.collection_items && job.collection_items.length > 0 ? <RecordedCollection items={job.collection_items} total={job.collection_total} currency={job.collection_currency} /> : null}
 
         {job.status === "in_progress" && closeoutOpen ? (
           <CloseoutPanel
@@ -528,7 +547,8 @@ function MapFallback({ job }: { job: TechnicianJob }) {
 
 function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | null }) {
   const distance = distanceLabel(job);
-  const hasMeta = job.eta_min != null || distance != null;
+  const eta = etaLabel(job);
+  const hasMeta = eta != null || distance != null;
   const photos = job.intake_photos ?? [];
   return (
     <section className="mt-5 border-y border-border py-4">
@@ -542,13 +562,25 @@ function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | nu
       </div>
       {hasMeta ? (
         <div className="mt-4 flex flex-wrap gap-2">
-          {job.eta_min != null ? <MetaChip label="ETA" value={`${job.eta_min} min`} /> : null}
+          {eta != null ? <MetaChip label="ETA" value={eta} /> : null}
           {distance != null ? <MetaChip label="Distance" value={distance} /> : null}
         </div>
       ) : null}
+      {job.technician_location_updated_at ? <LocationFreshness fresh={job.technician_location_is_fresh} updatedAt={job.technician_location_updated_at} /> : null}
       {photos.length > 0 ? <IntakePhotos photos={photos} /> : null}
       {mapsHref ? <a className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={mapsHref} target="_blank" rel="noreferrer">Open turn-by-turn navigation <ExternalLink className="size-4" /></a> : null}
     </section>
+  );
+}
+
+function LocationFreshness({ fresh, updatedAt }: { fresh?: boolean | null; updatedAt: string }) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-1.5 text-xs">
+      <span className={`size-2 rounded-full ${fresh ? "bg-success" : "bg-primary"}`} />
+      <span className="text-muted">Dispatch sees your location:</span>
+      <span className={fresh ? "text-success" : "text-primary"}>{fresh ? "fresh" : "stale"}</span>
+      <span className="text-muted">· updated {formatSyncAge(updatedAt)}</span>
+    </div>
   );
 }
 
@@ -583,7 +615,7 @@ function IntakePhotos({ photos }: { photos: IntakePhoto[] }) {
   );
 }
 
-function RecordedCollection({ items, total }: { items: RecordedCollectionItem[]; total?: number | null }) {
+function RecordedCollection({ items, total, currency }: { items: RecordedCollectionItem[]; total?: number | null; currency?: string | null }) {
   return (
     <section className="mt-4 border border-border bg-card p-4">
       <p className="field-kicker">Recorded collection</p>
@@ -594,14 +626,14 @@ function RecordedCollection({ items, total }: { items: RecordedCollectionItem[];
               <span className="font-semibold">{item.description}</span>
               {item.provided_by ? <span className="ml-2 text-xs text-muted">provided by {item.provided_by}</span> : null}
             </span>
-            {item.amount != null ? <span className="shrink-0 font-condensed text-base tabular-nums">${item.amount.toFixed(2)}</span> : null}
+            {item.amount != null ? <span className="shrink-0 font-condensed text-base tabular-nums">{money(item.amount, currency)}</span> : null}
           </li>
         ))}
       </ul>
       {total != null ? (
         <div className="mt-3 flex justify-between border-t border-border pt-3">
           <span className="text-muted">Total recorded</span>
-          <strong className="font-condensed text-xl tabular-nums">${total.toFixed(2)}</strong>
+          <strong className="font-condensed text-xl tabular-nums">{money(total, currency)}</strong>
         </div>
       ) : null}
       <p className="mt-3 text-xs leading-5 text-muted">ClueXP records this collection; it does not process payment or determine payout.</p>
@@ -726,7 +758,7 @@ function PendingConfirmation({ job }: { job: TechnicianJob }) {
         <div className="flex justify-between gap-4"><span className="text-muted">Customer approval</span><span className={approvalTone}>{approvalLabel}</span></div>
         <div className="mt-3 flex justify-between gap-4"><span className="text-muted">Your status</span><span className="text-primary">Busy · no new offers</span></div>
       </div>
-      {job.approval_url ? (
+      {job.approval_url && /^https?:\/\//.test(job.approval_url) ? (
         <a className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={job.approval_url} target="_blank" rel="noreferrer">
           View approval status <ExternalLink className="size-4" />
         </a>
