@@ -2407,10 +2407,15 @@ async def channel_info(slug: str) -> dict[str, Any]:
     origin = await store.resolve_intake_channel(slug)
     if origin is None:
         raise HTTPException(status_code=404, detail="Unknown channel")
+    org_id = origin.get("customer_owner_org_id") or origin.get("origin_org_id")
+    show_estimate = True
+    if org_id:
+        show_estimate = bool(await runtime_settings.resolve_org(store, str(org_id), "intake_show_estimate"))
     return {
         "slug": slug,
         "organization_name": origin.get("organization_name"),
         "dispatch_phone": origin.get("dispatch_phone"),
+        "show_estimate": show_estimate,
     }
 
 
@@ -2547,10 +2552,20 @@ async def photo_complete(ticket_id: UUID, payload: PhotoCompleteRequest) -> Tick
     return await envelope(ticket)
 
 
+async def _intake_show_estimate_for_ticket(ticket_id: UUID) -> bool:
+    lifecycle = await store.get_job_lifecycle(ticket_id)
+    org_id = (lifecycle or {}).get("customer_owner_org_id") or (lifecycle or {}).get("origin_org_id")
+    if not org_id:
+        return True
+    return bool(await runtime_settings.resolve_org(store, str(org_id), "intake_show_estimate"))
+
+
 @app.post("/tickets/{ticket_id}/price-quote", response_model=TicketEnvelope)
 async def price_quote(ticket_id: UUID) -> TicketEnvelope:
     await latency()
     ticket = await require_ticket(ticket_id)
+    if not await _intake_show_estimate_for_ticket(ticket_id):
+        raise HTTPException(status_code=409, detail="Estimate step is disabled for this provider")
     base = {
         AccessType.CAR: (115.0, 245.0),
         AccessType.HOME: (95.0, 185.0),
@@ -2590,8 +2605,16 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
     ticket = await require_ticket(ticket_id)
     # Sprint 1: payment-on-file is deferred, so price acceptance is the sole
     # commercial-consent gate. Restore the payment-method check before launch.
-    if ticket.price_quote is None or not ticket.price_quote.accepted_by_customer:
+    estimate_required = await _intake_show_estimate_for_ticket(ticket_id)
+    price_accepted = ticket.price_quote is not None and ticket.price_quote.accepted_by_customer
+    terms_accepted = (
+        ticket.cancellation_policy is not None
+        and ticket.cancellation_policy.accepted_by_customer
+    )
+    if estimate_required and not price_accepted:
         raise HTTPException(status_code=409, detail="Price acceptance required")
+    if not estimate_required and not terms_accepted:
+        raise HTTPException(status_code=409, detail="Request terms acceptance required")
     token = await store.get_tracking_token(ticket_id)
     if not token:
         # Legacy path only: status column tracks ticket lifecycle. On the cutover
@@ -3239,6 +3262,63 @@ async def update_provider_financial_settings(
         spec = runtime_settings.SETTINGS[key]
         await store.upsert_organization_setting(org_id, key, value, spec.value_type, actor_id)
     return await _resolve_financial_settings(org_id)
+
+
+# --- provider intake-flow settings ------------------------------------------
+_INTAKE_SETTING_FIELDS = {
+    "show_estimate": "intake_show_estimate",
+}
+
+
+class ProviderIntakeSettingsUpdate(BaseModel):
+    show_estimate: bool | None = None
+
+
+async def _resolve_intake_settings(org_id: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field, key in _INTAKE_SETTING_FIELDS.items():
+        override = await store.get_organization_setting(org_id, key)
+        platform_default = await runtime_settings.resolve(store, key)
+        result[field] = {
+            "value": override["value"] if override else platform_default,
+            "is_override": override is not None,
+            "platform_default": platform_default,
+        }
+    return result
+
+
+@app.get("/provider/settings/intake")
+async def get_provider_intake_settings(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    return await _resolve_intake_settings(org_id)
+
+
+@app.patch("/provider/settings/intake")
+async def update_provider_intake_settings(
+    payload: ProviderIntakeSettingsUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    sent = payload.model_dump(exclude_unset=True)
+    if not sent:
+        raise HTTPException(status_code=422, detail="No intake settings provided")
+
+    actor_id = session.get("user", {}).get("id")
+    for field, value in sent.items():
+        key = _INTAKE_SETTING_FIELDS[field]
+        if value is None:
+            await store.delete_organization_setting(org_id, key)
+            continue
+        try:
+            runtime_settings.coerce_and_validate(key, value)
+        except runtime_settings.SettingValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        spec = runtime_settings.SETTINGS[key]
+        await store.upsert_organization_setting(org_id, key, value, spec.value_type, actor_id)
+    return await _resolve_intake_settings(org_id)
 
 
 @app.get("/provider/users")

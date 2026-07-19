@@ -3989,7 +3989,33 @@ def test_channel_info_returns_provider_dispatch_phone(monkeypatch):
         "slug": "metro-key",
         "organization_name": "Metro Key Partners",
         "dispatch_phone": "+15551234567",
+        "show_estimate": True,
     }
+
+
+def test_channel_info_reflects_provider_estimate_setting(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org = str(uuid4())
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": "c1",
+            "origin_org_id": org,
+            "customer_owner_org_id": org,
+            "dispatch_cutover_enabled": True,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    asyncio.run(app_store.upsert_organization_setting(org, "intake_show_estimate", False, "boolean", None))
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+
+    body = client.get("/channels/metro-key").json()
+    assert body["show_estimate"] is False
 
 
 def test_direct_public_ticket_creation_is_blocked():
@@ -4022,6 +4048,49 @@ def test_branded_ticket_creation_still_works(monkeypatch):
     response = client.post("/tickets", json={"intake_channel": "metro-key", "access_type": "vehicle"})
     assert response.status_code == 200, response.text
     assert response.json()["ticket"]["access_type"] == "vehicle"
+
+
+def test_hidden_estimate_blocks_quote_but_allows_terms_based_commit(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org = str(uuid4())
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": str(uuid4()),
+            "origin_org_id": org,
+            "customer_owner_org_id": org,
+            "dispatch_cutover_enabled": True,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    asyncio.run(app_store.upsert_organization_setting(org, "intake_show_estimate", False, "boolean", None))
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+
+    created = client.post("/tickets", json={"intake_channel": "metro-key", "access_type": "vehicle"})
+    assert created.status_code == 200, created.text
+    ticket_id = created.json()["ticket"]["ticket_id"]
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[ticket_id] = org
+
+    quote = client.post(f"/tickets/{ticket_id}/price-quote")
+    assert quote.status_code == 409
+
+    not_ready = client.post(f"/tickets/{ticket_id}/commit")
+    assert not_ready.status_code == 409
+    assert "terms" in not_ready.json()["detail"].lower()
+
+    accepted = client.patch(
+        f"/tickets/{ticket_id}",
+        json={"cancellation_policy": {"accepted_by_customer": True, "accepted_at": "2026-07-19T12:00:00Z"}},
+    )
+    assert accepted.status_code == 200, accepted.text
+    committed = client.post(f"/tickets/{ticket_id}/commit")
+    assert committed.status_code == 200, committed.text
 
 
 def test_reverse_geocode_endpoint_degrades_when_unconfigured(monkeypatch):
@@ -4222,6 +4291,40 @@ def test_provider_candidates_include_effective_distance_unit():
     r2 = client.get(f"/provider/queue/{jid}/candidates", headers=H)
     assert r2.status_code == 200, r2.text
     assert r2.json()["distance_unit"] == "km"
+
+
+def test_intake_settings_default_override_and_clear():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "intake_settings@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["provider_admin"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    default = client.get("/provider/settings/intake", headers=H)
+    assert default.status_code == 200, default.text
+    assert default.json() == {
+        "show_estimate": {"value": True, "is_override": False, "platform_default": True}
+    }
+
+    saved = client.patch("/provider/settings/intake", json={"show_estimate": False}, headers=H)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["show_estimate"] == {"value": False, "is_override": True, "platform_default": True}
+
+    cleared = client.patch("/provider/settings/intake", json={"show_estimate": None}, headers=H)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["show_estimate"] == {"value": True, "is_override": False, "platform_default": True}
+
+    empty = client.patch("/provider/settings/intake", json={}, headers=H)
+    assert empty.status_code == 422
 
 
 def test_dispatch_settings_requires_dispatch_org():

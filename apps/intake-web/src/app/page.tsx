@@ -262,6 +262,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState<DispatchStatus | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
+  const [showEstimate, setShowEstimate] = useState(true);
   const [form, setForm] = useState({
     address: "",
     make: "",
@@ -477,9 +478,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   // keeps the NEXT_PUBLIC_DISPATCH_PHONE fallback.
   useEffect(() => {
     if (!organizationSlug) return;
-    api<{ dispatch_phone: string | null }>(`/channels/${organizationSlug}`)
+    api<{ dispatch_phone: string | null; show_estimate?: boolean }>(`/channels/${organizationSlug}`)
       .then((info) => {
         if (info.dispatch_phone) setDispatchPhone(info.dispatch_phone);
+        setShowEstimate(info.show_estimate !== false);
       })
       .catch(() => {}); // unknown channel / offline — keep the global fallback
   }, [organizationSlug]);
@@ -934,6 +936,35 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (screen === "price") {
       const quote = ticket?.price_quote;
       const policy = ticket?.cancellation_policy;
+      if (!showEstimate) {
+        return (
+          <>
+            <AgentMessage support="This provider does not show an upfront estimate in intake. No technician is committed before you accept the request terms.">
+              Review the request terms.
+            </AgentMessage>
+            <div className="stack">
+              <div className="panel">
+                <p className="panel-title">Request terms</p>
+                <p className="fine">You are asking the provider to dispatch help. Any final charge is confirmed later with the technician/provider before collection.</p>
+              </div>
+              <button
+                className="primary"
+                type="button"
+                onClick={() =>
+                  run(async () => {
+                    await patch({
+                      cancellation_policy: { accepted_by_customer: true, accepted_at: new Date().toISOString() }
+                    });
+                    setScreen("commit");
+                  })
+                }
+              >
+                Accept request terms
+              </button>
+            </div>
+          </>
+        );
+      }
       return (
         <>
           <AgentMessage support="This is the first commercial consent step. No technician is committed before you accept.">

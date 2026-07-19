@@ -153,6 +153,15 @@ SETTINGS: dict[str, SettingSpec] = {
         validate=_one_of("mi", "km"),
         org_overridable=True,
     ),
+    "intake_show_estimate": SettingSpec(
+        key="intake_show_estimate",
+        value_type="boolean",
+        description="Whether branded customer intake shows and requires the upfront estimate step.",
+        env="INTAKE_SHOW_ESTIMATE",
+        fallback=True,
+        validate=_is_bool,
+        org_overridable=True,
+    ),
     # --- per-org tenant caps, console-overridable (0026) ---
     "max_users_per_org": SettingSpec(
         key="max_users_per_org",
