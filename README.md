@@ -7,6 +7,7 @@ Mobile-web-first emergency access intake for ClueXP: a Next.js + TypeScript fron
 The project is documented by four canonical docs (plus a pilot runbook):
 
 - [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) — tech stack, database + storage, infrastructure, and the four subsystem specs (intake / technician / partner / ops). **Architecture source of truth.**
+- [`docs/TECHNICIAN-APP-REDESIGN.md`](docs/TECHNICIAN-APP-REDESIGN.md) — approved active-job-first technician experience, native/PWA boundaries, development workstreams, testing, and rollout gates.
 - [`docs/EXECUTION-PLAN.md`](docs/EXECUTION-PLAN.md) — product backlog, releases, sprints, tasks, and **Canonical Status**.
 - [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) — the UI Guide (visual tokens, components); `docs/design-ref/` holds reference assets only.
 - [`docs/HANDOFF.md`](docs/HANDOFF.md) — the multi-agent communication channel.
@@ -21,7 +22,7 @@ The project is documented by four canonical docs (plus a pilot runbook):
 - `apps/intake-web/scripts/generate_types.py` - local schema-to-TypeScript generator.
 - `packages/db/` - Alembic migrations for the dispatch relational core.
 - `apps/ops-web/`, `apps/provider-web/` - dispatch consoles (ClueXP ops + provider org) built on shared `packages/console-ui` (`SYSTEM-DESIGN.md` §18.3–§18.4, §20.3).
-- `apps/technician-web/` - technician field PWA (`SYSTEM-DESIGN.md` §18.2).
+- `apps/technician-web/` - technician field PWA (`SYSTEM-DESIGN.md` §18.2; redesign and native-ready delivery plan in `docs/TECHNICIAN-APP-REDESIGN.md`).
 - `packages/api-client/`, `packages/console-ui/` - shared types + mock data and the shared console component system (seam for the future `cluexp-api`).
 
 > This is an npm-workspace monorepo (`apps/*` + `packages/*`). The instructions below cover the

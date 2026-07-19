@@ -2429,6 +2429,92 @@ def test_active_job_lock_is_technician_scoped():
     assert active is not None and active["id"] == jid
 
 
+def test_technician_active_job_includes_distance_collection_and_approval_contract():
+    from datetime import datetime, timezone
+    from api.main import store as app_store
+
+    tech_uid, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tech_uid
+    app_store._job_access_type = getattr(app_store, "_job_access_type", {})
+    app_store._job_access_type[jid] = "vehicle"
+    app_store._job_situation = getattr(app_store, "_job_situation", {})
+    app_store._job_situation[jid] = "locked_out"
+    app_store._job_address = getattr(app_store, "_job_address", {})
+    app_store._job_address[jid] = "Times Square, New York, NY"
+    app_store._job_loc = getattr(app_store, "_job_loc", {})
+    app_store._job_loc[jid] = (40.7589, -73.9851)
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = token
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tech_uid,
+        "status": "active",
+        "vetting_status": "verified",
+        "display_name": "Active Tech",
+        "current_lat": 40.7614,
+        "current_lng": -73.9776,
+        "location_updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    asyncio.run(app_store.record_job_closeout({
+        "job_id": jid,
+        "reported_by": "technician",
+        "currency": "USD",
+        "method": "cash",
+        "subtotal_cents": 12500,
+        "taxable_subtotal_cents": 12500,
+        "tax_rate_basis_points": 0,
+        "tax_cents": 0,
+        "tip_cents": 0,
+        "card_fee_basis_points": 0,
+        "card_fee_fixed_cents": 0,
+        "card_fee_cents": 0,
+        "total_cents": 12500,
+        "line_items": [{
+            "description": "Vehicle lockout",
+            "quantity": 1,
+            "line_total_cents": 12500,
+            "taxable": True,
+            "provided_by": "company",
+        }],
+    }))
+    asyncio.run(app_store.record_payment_report(
+        job_id=UUID(jid),
+        reported_by="technician",
+        amount=125,
+        method="cash",
+    ))
+
+    client, access, _orig = _tech_client(app_store, tech_uid)
+    try:
+        response = client.get(
+            f"/technicians/{tech_uid}/active-job",
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["id"] == jid
+        assert body["service_type"] == "locksmith.vehicle_lockout"
+        assert body["distance_mi"] is not None
+        assert body["eta_min"] is not None
+        assert body["technician_location_is_fresh"] is True
+        assert body["approval_status"] == "pending"
+        assert body["approval_url"] == f"https://intake.cluexp.com/t/{token}"
+        assert body["collection_total"] == 125
+        assert body["collection_items"] == [{
+            "description": "Vehicle lockout",
+            "amount": 125,
+            "provided_by": "company",
+            "quantity": 1,
+            "taxable": True,
+        }]
+        assert body["payment"]["amount"] == 125
+    finally:
+        app_store.get_user_session = _orig
+
+
 # --- Slice B: invite/attach existing tech + leave/rejoin history --------------
 
 def test_create_new_technician_creates_active_affiliation():
@@ -3903,7 +3989,119 @@ def test_channel_info_returns_provider_dispatch_phone(monkeypatch):
         "slug": "metro-key",
         "organization_name": "Metro Key Partners",
         "dispatch_phone": "+15551234567",
+        "show_estimate": True,
     }
+
+
+def test_channel_info_reflects_provider_estimate_setting(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org = str(uuid4())
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": "c1",
+            "origin_org_id": org,
+            "customer_owner_org_id": org,
+            "dispatch_cutover_enabled": True,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    asyncio.run(app_store.upsert_organization_setting(org, "intake_show_estimate", False, "boolean", None))
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+
+    body = client.get("/channels/metro-key").json()
+    assert body["show_estimate"] is False
+
+
+def test_direct_public_ticket_creation_is_blocked():
+    from starlette.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    response = client.post("/tickets", json={"access_type": "vehicle"})
+    assert response.status_code == 403
+    assert "provider company link" in response.json()["detail"]
+
+
+def test_branded_ticket_creation_still_works(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": str(uuid4()),
+            "origin_org_id": str(uuid4()),
+            "customer_owner_org_id": str(uuid4()),
+            "dispatch_cutover_enabled": False,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+    response = client.post("/tickets", json={"intake_channel": "metro-key", "access_type": "vehicle"})
+    assert response.status_code == 200, response.text
+    assert response.json()["ticket"]["access_type"] == "vehicle"
+
+
+def test_hidden_estimate_blocks_quote_but_allows_terms_based_commit(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org = str(uuid4())
+
+    async def fake_resolve(slug):
+        assert slug == "metro-key"
+        return {
+            "intake_channel_id": str(uuid4()),
+            "origin_org_id": org,
+            "customer_owner_org_id": org,
+            "dispatch_cutover_enabled": True,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    asyncio.run(app_store.upsert_organization_setting(org, "intake_show_estimate", False, "boolean", None))
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+
+    created = client.post("/tickets", json={"intake_channel": "metro-key", "access_type": "vehicle"})
+    assert created.status_code == 200, created.text
+    ticket_id = created.json()["ticket"]["ticket_id"]
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[ticket_id] = org
+
+    quote = client.post(f"/tickets/{ticket_id}/price-quote")
+    assert quote.status_code == 409
+
+    not_ready = client.post(f"/tickets/{ticket_id}/commit")
+    assert not_ready.status_code == 409
+    assert "terms" in not_ready.json()["detail"].lower()
+
+    accepted = client.patch(
+        f"/tickets/{ticket_id}",
+        json={"cancellation_policy": {"accepted_by_customer": True, "accepted_at": "2026-07-19T12:00:00Z"}},
+    )
+    assert accepted.status_code == 200, accepted.text
+    committed = client.post(f"/tickets/{ticket_id}/commit")
+    assert committed.status_code == 200, committed.text
+
+
+def test_reverse_geocode_endpoint_degrades_when_unconfigured(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app
+
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+    client = TestClient(app)
+    response = client.get("/reverse-geocode?lat=40.7589&lng=-73.9851")
+    assert response.status_code == 200
+    assert response.json() == {"resolved": False}
 
 
 def test_token_read_includes_owner_dispatch_phone(monkeypatch):
@@ -3925,6 +4123,66 @@ def test_token_read_includes_owner_dispatch_phone(monkeypatch):
     assert body["dispatch_phone"] == "+15559876543"
 
 
+def test_provider_queue_surfaces_intake_photo_metadata():
+    org = str(uuid4())
+    jid = str(uuid4())
+    store = InMemoryStore()
+    store._job_status = {jid: STATUS_PENDING_DISPATCH}
+    store._job_org = {jid: org}
+    store._job_photo_paths = {jid: ["tickets/job/photo-1.jpg", "tickets/job/photo-2.jpg"]}
+
+    rows = asyncio.run(store.get_ops_queue(org_id=org))
+    assert rows[0]["photo_count"] == 2
+    assert rows[0]["photo_paths"] == ["tickets/job/photo-1.jpg", "tickets/job/photo-2.jpg"]
+
+
+def test_ops_candidates_include_miles_distance():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+    from datetime import datetime, timezone
+
+    uid = "user-platform-admin-cand-mi"
+    jid = str(uuid4())
+    tid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "admin_cand_mi@cluexp.test", "phone": None,
+        "display_name": "Admin", "password_hash": "",
+        "roles": ["platform_admin"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    _orig_queue = app_store.get_ops_queue
+
+    async def _patched_queue():
+        rows = await _orig_queue()
+        for row in rows:
+            if str(row["id"]) == jid:
+                row["lat"] = 40.7589
+                row["lng"] = -73.9851
+        return rows
+
+    app_store.get_ops_queue = _patched_queue
+    app_store._technicians = [{
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "Mile Tech", "skills": [], "rating": 4.7,
+        "current_lat": 40.7614, "current_lng": -73.9776,
+        "service_area_center_lat": None, "service_area_center_lng": None,
+        "location_updated_at": datetime.now(timezone.utc).isoformat(),
+        "primary_organization_id": None,
+    }]
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    client = TestClient(app)
+    try:
+        response = client.get(f"/ops/queue/{jid}/candidates", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200, response.text
+        candidate = response.json()["candidates"][0]
+        assert candidate["dist_km"] is not None
+        assert candidate["distance_mi"] == round(candidate["dist_km"] * 0.621371, 2)
+    finally:
+        app_store.get_ops_queue = _orig_queue
+
+
 # --- per-provider dispatch settings (0025): ack SLA / stalled threshold override --
 def test_dispatch_settings_default_before_any_override():
     from starlette.testclient import TestClient
@@ -3942,6 +4200,7 @@ def test_dispatch_settings_default_before_any_override():
     assert body == {
         "ack_sla_minutes": {"value": 5, "is_override": False, "platform_default": 5},
         "stalled_minutes": {"value": 15, "is_override": False, "platform_default": 15},
+        "distance_unit": {"value": "mi", "is_override": False, "platform_default": "mi"},
     }
 
 
@@ -3958,11 +4217,16 @@ def test_dispatch_settings_override_and_clear():
     client = TestClient(app)
 
     # Set an override on both fields.
-    r = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": 10, "stalled_minutes": 30}, headers=H)
+    r = client.patch(
+        "/provider/settings/dispatch",
+        json={"ack_sla_minutes": 10, "stalled_minutes": 30, "distance_unit": "km"},
+        headers=H,
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ack_sla_minutes"] == {"value": 10, "is_override": True, "platform_default": 5}
     assert body["stalled_minutes"] == {"value": 30, "is_override": True, "platform_default": 15}
+    assert body["distance_unit"] == {"value": "km", "is_override": True, "platform_default": "mi"}
 
     # Another org is unaffected (per-org, not global).
     other_org = str(uuid4())
@@ -3971,6 +4235,7 @@ def test_dispatch_settings_override_and_clear():
     other_access = create_access_token({"sub": other_uid, "id": other_uid, "roles": ["dispatcher"]})
     other = client.get("/provider/settings/dispatch", headers={"Authorization": f"Bearer {other_access}"}).json()
     assert other["ack_sla_minutes"]["is_override"] is False
+    assert other["distance_unit"]["value"] == "mi"
 
     # Clearing one field (explicit null) reverts just that field to the platform default.
     r2 = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": None}, headers=H)
@@ -3978,6 +4243,7 @@ def test_dispatch_settings_override_and_clear():
     body2 = r2.json()
     assert body2["ack_sla_minutes"] == {"value": 5, "is_override": False, "platform_default": 5}
     assert body2["stalled_minutes"]["is_override"] is True  # untouched
+    assert body2["distance_unit"]["is_override"] is True
 
 
 def test_dispatch_settings_rejects_ack_above_stalled_and_out_of_range():
@@ -4000,9 +4266,65 @@ def test_dispatch_settings_rejects_ack_above_stalled_and_out_of_range():
     r2 = client.patch("/provider/settings/dispatch", json={"stalled_minutes": 5000}, headers=H)
     assert r2.status_code == 422
 
+    # Invalid distance unit.
+    bad_unit = client.patch("/provider/settings/dispatch", json={"distance_unit": "meters"}, headers=H)
+    assert bad_unit.status_code == 422
+
     # No fields sent at all.
     r3 = client.patch("/provider/settings/dispatch", json={}, headers=H)
     assert r3.status_code == 422
+
+
+def test_provider_candidates_include_effective_distance_unit():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid = str(uuid4())
+    _seed_provider_job(app_store, org, jid)
+
+    H = {"Authorization": f"Bearer {token}"}
+    r1 = client.get(f"/provider/queue/{jid}/candidates", headers=H)
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["distance_unit"] == "mi"
+
+    saved = client.patch("/provider/settings/dispatch", json={"distance_unit": "km"}, headers=H)
+    assert saved.status_code == 200, saved.text
+    r2 = client.get(f"/provider/queue/{jid}/candidates", headers=H)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["distance_unit"] == "km"
+
+
+def test_intake_settings_default_override_and_clear():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": "intake_settings@cluexp.test", "phone": None,
+        "display_name": "Provider Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    access = create_access_token({"sub": uid, "id": uid, "roles": ["provider_admin"]})
+    H = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+
+    default = client.get("/provider/settings/intake", headers=H)
+    assert default.status_code == 200, default.text
+    assert default.json() == {
+        "show_estimate": {"value": True, "is_override": False, "platform_default": True}
+    }
+
+    saved = client.patch("/provider/settings/intake", json={"show_estimate": False}, headers=H)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["show_estimate"] == {"value": False, "is_override": True, "platform_default": True}
+
+    cleared = client.patch("/provider/settings/intake", json={"show_estimate": None}, headers=H)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["show_estimate"] == {"value": True, "is_override": False, "platform_default": True}
+
+    empty = client.patch("/provider/settings/intake", json={}, headers=H)
+    assert empty.status_code == 422
 
 
 def test_dispatch_settings_requires_dispatch_org():

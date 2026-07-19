@@ -35,7 +35,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
     );
   }
   return (
-    <TechnicianShell title="Active Job">
+    <TechnicianShell title="Active Job" nav={false} topbar={false}>
       <Screen flush padBottom={false}><ActiveJobWorkflow initialJob={job} /></Screen>
     </TechnicianShell>
   );

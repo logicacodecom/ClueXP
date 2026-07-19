@@ -106,6 +106,16 @@ type GeocodeResponse =
     }
   | { resolved: false };
 
+type ReverseGeocodeResponse =
+  | {
+      resolved: true;
+      lat: number;
+      lng: number;
+      formatted_address?: string;
+      geocode_confidence: string;
+    }
+  | { resolved: false };
+
 interface PlacePrediction {
   description: string;
   place_id: string;
@@ -252,10 +262,12 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState<DispatchStatus | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
+  const [showEstimate, setShowEstimate] = useState(true);
   const [form, setForm] = useState({
     address: "",
     make: "",
     model: "",
+    color: "",
     year: "",
     lockType: "",
     notes: "",
@@ -373,12 +385,26 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       if (code === 2) throw new Error("Location unavailable on this device — please type your address below.");
       throw new Error("Location request timed out — please type your address below.");
     }
+    const lat = position.coords.latitude;
+    const lng = position.coords.longitude;
+    let rawText = `GPS location ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    let geocodeConfidence = "high";
+    try {
+      const result = await api<ReverseGeocodeResponse>(`/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+      if (result.resolved && result.formatted_address) {
+        rawText = result.formatted_address;
+        geocodeConfidence = result.geocode_confidence;
+      }
+    } catch {
+      // Keep the precise coordinate label when reverse geocoding is unavailable.
+    }
+    setForm((current) => ({ ...current, address: rawText }));
     await patch({
       location: {
-        raw_text: "Current GPS location",
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-        geocode_confidence: "high"
+        raw_text: rawText,
+        lat,
+        lng,
+        geocode_confidence: geocodeConfidence
       }
     });
   }
@@ -452,9 +478,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   // keeps the NEXT_PUBLIC_DISPATCH_PHONE fallback.
   useEffect(() => {
     if (!organizationSlug) return;
-    api<{ dispatch_phone: string | null }>(`/channels/${organizationSlug}`)
+    api<{ dispatch_phone: string | null; show_estimate?: boolean }>(`/channels/${organizationSlug}`)
       .then((info) => {
         if (info.dispatch_phone) setDispatchPhone(info.dispatch_phone);
+        setShowEstimate(info.show_estimate !== false);
       })
       .catch(() => {}); // unknown channel / offline — keep the global fallback
   }, [organizationSlug]);
@@ -557,6 +584,22 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   }, [ticket?.ticket_id, screen, sessionKey]);
 
   const content = (() => {
+    if (!organizationSlug) {
+      return (
+        <>
+          <AgentMessage support="Open intake from your provider company's branded link so the request is attached to the right dispatch team.">
+            Intake link required
+          </AgentMessage>
+          <div className="panel">
+            <p className="panel-title">This direct intake page is closed.</p>
+            <p className="fine">Please use the intake link from your service provider, or call customer service.</p>
+          </div>
+          <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`}>
+            <Phone size={18} aria-hidden="true" /> Call customer service
+          </a>
+        </>
+      );
+    }
     if (screen === "opener") {
       return (
         <>
@@ -707,6 +750,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               <>
                 <input className="field" placeholder="Make" value={form.make} onChange={(event) => setForm({ ...form, make: event.target.value })} />
                 <input className="field" placeholder="Model" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
+                <input className="field" placeholder="Color" value={form.color} onChange={(event) => setForm({ ...form, color: event.target.value })} />
                 <input className="field" inputMode="numeric" placeholder="Year" value={form.year} onChange={(event) => setForm({ ...form, year: event.target.value })} />
                 <ChipSelect
                   value={ticket?.automotive?.key_type}
@@ -722,6 +766,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                         automotive: {
                           make: form.make || null,
                           model: form.model || null,
+                          color: form.color || null,
                           year: form.year ? Number(form.year) : null,
                           key_type: value,
                           key_type_source: "stated"
@@ -891,6 +936,35 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (screen === "price") {
       const quote = ticket?.price_quote;
       const policy = ticket?.cancellation_policy;
+      if (!showEstimate) {
+        return (
+          <>
+            <AgentMessage support="This provider does not show an upfront estimate in intake. No technician is committed before you accept the request terms.">
+              Review the request terms.
+            </AgentMessage>
+            <div className="stack">
+              <div className="panel">
+                <p className="panel-title">Request terms</p>
+                <p className="fine">You are asking the provider to dispatch help. Any final charge is confirmed later with the technician/provider before collection.</p>
+              </div>
+              <button
+                className="primary"
+                type="button"
+                onClick={() =>
+                  run(async () => {
+                    await patch({
+                      cancellation_policy: { accepted_by_customer: true, accepted_at: new Date().toISOString() }
+                    });
+                    setScreen("commit");
+                  })
+                }
+              >
+                Accept request terms
+              </button>
+            </div>
+          </>
+        );
+      }
       return (
         <>
           <AgentMessage support="This is the first commercial consent step. No technician is committed before you accept.">

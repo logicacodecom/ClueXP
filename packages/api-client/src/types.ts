@@ -197,6 +197,10 @@ export interface Job {
   escalation_reason?: string;
   lat?: number;
   lng?: number;
+  detail?: Record<string, unknown>;
+  photo_count?: number;
+  photo_paths?: string[];
+  photo_urls?: string[];
 }
 
 export interface DashboardAggregates {
@@ -288,6 +292,41 @@ export interface TechnicianAppOffer {
   status: OfferStatus;
   expires_at: string;
   superseded_by?: string;
+}
+
+export interface TechnicianCollectionItem {
+  description: string;
+  amount?: number | null;
+  provided_by?: string | null;
+  quantity?: number | null;
+  taxable?: boolean | null;
+}
+
+export interface TechnicianActiveJob {
+  id: string;
+  status: JobStatus;
+  access_type?: string | null;
+  situation?: string | null;
+  service_type?: string | null;
+  address?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  technician_current_lat?: number | null;
+  technician_current_lng?: number | null;
+  technician_location_updated_at?: string | null;
+  technician_location_is_fresh?: boolean;
+  distance_km?: number | null;
+  distance_mi?: number | null;
+  eta_min?: number | null;
+  eta_max?: number | null;
+  eta_is_estimate?: boolean;
+  collection_items?: TechnicianCollectionItem[];
+  collection_total?: number | null;
+  collection_currency?: string | null;
+  approval_status?: "pending" | "approved" | "disputed" | "expired" | null;
+  approval_url?: string | null;
+  tracking_token?: string | null;
+  intake_photos?: Array<{ url: string; label?: string | null }>;
 }
 
 export interface TechnicianActivitySummary {

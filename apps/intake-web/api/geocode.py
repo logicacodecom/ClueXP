@@ -34,6 +34,14 @@ async def geocode(address: str | None) -> dict | None:
     return await asyncio.to_thread(_geocode_sync, address.strip(), key)
 
 
+async def reverse_geocode(lat: float | None, lng: float | None) -> dict | None:
+    """Resolve browser GPS coordinates to a formatted address when possible."""
+    key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not key or lat is None or lng is None:
+        return None
+    return await asyncio.to_thread(_reverse_geocode_sync, lat, lng, key)
+
+
 async def places_autocomplete(input_text: str) -> list[dict]:
     """Return address suggestions from Google Places Autocomplete.
 
@@ -78,6 +86,24 @@ def _geocode_sync(address: str, key: str) -> dict | None:
     return {
         "lat": loc["lat"],
         "lng": loc["lng"],
+        "formatted_address": top.get("formatted_address"),
+        "geocode_confidence": _CONFIDENCE.get(location_type, "low"),
+    }
+
+
+def _reverse_geocode_sync(lat: float, lng: float, key: str) -> dict | None:
+    query = urllib.parse.urlencode({"latlng": f"{lat},{lng}", "key": key})
+    req = urllib.request.Request(f"{GEOCODE_URL}?{query}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+    if data.get("status") != "OK" or not data.get("results"):
+        return None
+    top = data["results"][0]
+    location_type = top.get("geometry", {}).get("location_type", "")
+    return {
         "formatted_address": top.get("formatted_address"),
         "geocode_confidence": _CONFIDENCE.get(location_type, "low"),
     }

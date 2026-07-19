@@ -10,6 +10,7 @@ production apps.
 | `intake-stitch/` | Original Google Stitch customer intake screen references. Each numbered folder contains `screen.png` and `code.html`. |
 | `intake-stitch/DESIGN.md` | Original Stitch design-token/style notes. `docs/DESIGN-SYSTEM.md` (the UI Guide) is now the canonical design system. |
 | `Dispatch/` | Generated dispatch-console mocks (`*/screen.png`) + `SPEC-REVIEW-FIXLIST.md` + `cluexp/DESIGN.md`. Reference only — the consoles are built in `apps/ops-web` + `apps/provider-web` (spec: `docs/SYSTEM-DESIGN.md` §18.3–§18.4). |
+| `technician-app/` | Approved technician-app redesign mock (`ClueXP Technician App.dc.html`, open with `support.js` beside it) + `DESIGN.md` token/screen spec shared by Claude/Codex. Governing spec: `docs/TECHNICIAN-APP-REDESIGN.md`. |
 | `../brand/` | Official ClueXP brand assets (logos, brand board). See `docs/DESIGN-SYSTEM.md §1.1`. |
 | `archives/` | Raw archived exports, kept for traceability. |
 

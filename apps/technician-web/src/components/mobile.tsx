@@ -40,6 +40,7 @@ import type { ReactNode } from "react";
 import { AvailabilityToggle, Countdown, TechnicianBottomNav } from "./client-widgets";
 import { GoogleMapView } from "./google-map";
 import type { MapPoint } from "./google-map";
+import { activeJobActionItems } from "./technician-app-chrome";
 
 type PillTone = "default" | "success" | "warn" | "danger" | "info" | "muted";
 type JobPhase = "accepted" | "en_route" | "arrived" | "in_progress" | "completed";
@@ -382,10 +383,10 @@ export function JobActionSheet({ job, offer }: { job?: Job; offer?: TechnicianAp
       )}
       {job ? (
         <div className="mt-3 grid grid-cols-4 gap-2">
-          <SecondaryAction href={`/jobs/${job.id}/call`} icon={Phone} label="Call" />
-          <SecondaryAction href={`/jobs/${job.id}/chat`} icon={MessageCircle} label="Message" />
-          <SecondaryAction href="/messages" icon={Headphones} label="Dispatch" />
-          <EmergencySupportButton compact />
+          {activeJobActionItems.map(({ key, icon, label }) => {
+            const href = key === "messages" ? `/jobs/${job.id}/chat` : key === "call" ? `/jobs/${job.id}/call` : "/messages";
+            return <SecondaryAction href={href} icon={icon} label={label} key={key} />;
+          })}
         </div>
       ) : null}
     </section>

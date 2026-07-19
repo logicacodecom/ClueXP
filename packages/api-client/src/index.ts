@@ -100,7 +100,7 @@ export async function updateTechnicianJobStatus(
 }
 
 /** Get technician's active job */
-export async function getActiveJob(): Promise<import("./types").Job | null> {
+export async function getActiveJob(): Promise<import("./types").TechnicianActiveJob | null> {
   const res = await fetch(`/api/active-job`, {
     headers: { "content-type": "application/json" }
   });

@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from api.geocode import geocode, places_autocomplete
+from api.geocode import geocode, places_autocomplete, reverse_geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
@@ -30,6 +30,7 @@ from api.dispatch import (
     STATUS_ARRIVED,
     STATUS_ASSIGNED,
     STATUS_CANCELLED,
+    STATUS_COMPLETED_AUTO_CLOSED,
     STATUS_COMPLETED_CONFIRMED,
     STATUS_COMPLETED_PENDING,
     STATUS_DISPUTED,
@@ -2372,6 +2373,16 @@ async def geocode_address(q: str) -> dict[str, Any]:
     return {"resolved": True, **result}
 
 
+@app.get("/reverse-geocode")
+async def reverse_geocode_coordinates(lat: float, lng: float) -> dict[str, Any]:
+    """Resolve browser GPS coordinates to a dispatch-friendly address label."""
+    await latency()
+    result = await reverse_geocode(lat, lng)
+    if result is None:
+        return {"resolved": False}
+    return {"resolved": True, "lat": lat, "lng": lng, **result}
+
+
 @app.get("/places/autocomplete")
 async def places_autocomplete_endpoint(q: str) -> dict[str, Any]:
     """Server-proxied Places Autocomplete — browser never sees the Maps key.
@@ -2396,10 +2407,15 @@ async def channel_info(slug: str) -> dict[str, Any]:
     origin = await store.resolve_intake_channel(slug)
     if origin is None:
         raise HTTPException(status_code=404, detail="Unknown channel")
+    org_id = origin.get("customer_owner_org_id") or origin.get("origin_org_id")
+    show_estimate = True
+    if org_id:
+        show_estimate = bool(await runtime_settings.resolve_org(store, str(org_id), "intake_show_estimate"))
     return {
         "slug": slug,
         "organization_name": origin.get("organization_name"),
         "dispatch_phone": origin.get("dispatch_phone"),
+        "show_estimate": show_estimate,
     }
 
 
@@ -2408,9 +2424,15 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     await latency()
     # Trusted intake-channel resolution (SYSTEM-DESIGN §20.4): the browser supplies only a channel
     # slug (attribution, dropped by sanitize); the owning org is resolved server-side and
-    # is never trusted from the client. Absent/unknown slug => public ClueXP intake.
+    # is never trusted from the client. Absent/unknown slug is rejected: ClueXP is
+    # a SaaS platform, not the dispatching provider.
     raw_slug = (payload or {}).get("intake_channel")
     origin = await store.resolve_intake_channel(raw_slug if isinstance(raw_slug, str) else None)
+    if origin is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Intake must be opened from a provider company link.",
+        )
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
@@ -2530,10 +2552,20 @@ async def photo_complete(ticket_id: UUID, payload: PhotoCompleteRequest) -> Tick
     return await envelope(ticket)
 
 
+async def _intake_show_estimate_for_ticket(ticket_id: UUID) -> bool:
+    lifecycle = await store.get_job_lifecycle(ticket_id)
+    org_id = (lifecycle or {}).get("customer_owner_org_id") or (lifecycle or {}).get("origin_org_id")
+    if not org_id:
+        return True
+    return bool(await runtime_settings.resolve_org(store, str(org_id), "intake_show_estimate"))
+
+
 @app.post("/tickets/{ticket_id}/price-quote", response_model=TicketEnvelope)
 async def price_quote(ticket_id: UUID) -> TicketEnvelope:
     await latency()
     ticket = await require_ticket(ticket_id)
+    if not await _intake_show_estimate_for_ticket(ticket_id):
+        raise HTTPException(status_code=409, detail="Estimate step is disabled for this provider")
     base = {
         AccessType.CAR: (115.0, 245.0),
         AccessType.HOME: (95.0, 185.0),
@@ -2573,8 +2605,16 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
     ticket = await require_ticket(ticket_id)
     # Sprint 1: payment-on-file is deferred, so price acceptance is the sole
     # commercial-consent gate. Restore the payment-method check before launch.
-    if ticket.price_quote is None or not ticket.price_quote.accepted_by_customer:
+    estimate_required = await _intake_show_estimate_for_ticket(ticket_id)
+    price_accepted = ticket.price_quote is not None and ticket.price_quote.accepted_by_customer
+    terms_accepted = (
+        ticket.cancellation_policy is not None
+        and ticket.cancellation_policy.accepted_by_customer
+    )
+    if estimate_required and not price_accepted:
         raise HTTPException(status_code=409, detail="Price acceptance required")
+    if not estimate_required and not terms_accepted:
+        raise HTTPException(status_code=409, detail="Request terms acceptance required")
     token = await store.get_tracking_token(ticket_id)
     if not token:
         # Legacy path only: status column tracks ticket lifecycle. On the cutover
@@ -2727,6 +2767,8 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
             "technician_supports_skill": technician_supports_skill,
             "skills_match": organization_supports_skill and technician_supports_skill,
             "dist_km": round(dist, 2) if dist is not None else None,
+            "distance_km": round(dist, 2) if dist is not None else None,
+            "distance_mi": round(dist * 0.621371, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
             "is_online": is_online,
@@ -2750,6 +2792,58 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
         -(c.get("rating") or 0.0),
     ))
     return enriched
+
+
+async def _attach_queue_photo_urls(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach signed intake photo URLs for dispatch views when storage is online."""
+    for row in rows:
+        urls: list[str] = []
+        for path in row.get("photo_paths") or []:
+            if not isinstance(path, str):
+                continue
+            if path.startswith(("http://", "https://")):
+                urls.append(path)
+                continue
+            try:
+                urls.append(await storage.create_signed_download_url(storage.PRIVATE_BUCKET, path))
+            except RuntimeError:
+                pass
+        row["photo_urls"] = urls
+    return rows
+
+
+async def _signed_photo_urls(paths: list[Any]) -> list[str]:
+    urls: list[str] = []
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        if path.startswith(("http://", "https://")):
+            urls.append(path)
+            continue
+        try:
+            urls.append(await storage.create_signed_download_url(storage.PRIVATE_BUCKET, path))
+        except RuntimeError:
+            pass
+    return urls
+
+
+def _closeout_collection_items(closeout: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not closeout:
+        return []
+    items: list[dict[str, Any]] = []
+    for item in closeout.get("line_items") or []:
+        if not isinstance(item, dict):
+            continue
+        cents = item.get("line_total_cents")
+        amount = round(float(cents) / 100, 2) if cents is not None else None
+        items.append({
+            "description": item.get("description") or item.get("item_type_code") or "Service item",
+            "amount": amount,
+            "provided_by": item.get("provided_by"),
+            "quantity": item.get("quantity"),
+            "taxable": item.get("taxable"),
+        })
+    return items
 
 
 async def _send_targeted_offer(
@@ -2832,7 +2926,7 @@ async def ops_get_queue(
     require_any_role(session, {"platform_admin"})
     await store.expire_stale_offers()
     await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
-    return await store.get_ops_queue()
+    return await _attach_queue_photo_urls(await store.get_ops_queue())
 
 
 @app.get("/ops/queue/{job_id}/candidates")
@@ -2842,7 +2936,7 @@ async def ops_get_candidates(
 ) -> dict[str, Any]:
     """Return the job plus all active+verified technicians with advisory signals."""
     require_any_role(session, {"platform_admin"})
-    jobs = await store.get_ops_queue()
+    jobs = await _attach_queue_photo_urls(await store.get_ops_queue())
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
@@ -3170,6 +3264,63 @@ async def update_provider_financial_settings(
     return await _resolve_financial_settings(org_id)
 
 
+# --- provider intake-flow settings ------------------------------------------
+_INTAKE_SETTING_FIELDS = {
+    "show_estimate": "intake_show_estimate",
+}
+
+
+class ProviderIntakeSettingsUpdate(BaseModel):
+    show_estimate: bool | None = None
+
+
+async def _resolve_intake_settings(org_id: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field, key in _INTAKE_SETTING_FIELDS.items():
+        override = await store.get_organization_setting(org_id, key)
+        platform_default = await runtime_settings.resolve(store, key)
+        result[field] = {
+            "value": override["value"] if override else platform_default,
+            "is_override": override is not None,
+            "platform_default": platform_default,
+        }
+    return result
+
+
+@app.get("/provider/settings/intake")
+async def get_provider_intake_settings(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    return await _resolve_intake_settings(org_id)
+
+
+@app.patch("/provider/settings/intake")
+async def update_provider_intake_settings(
+    payload: ProviderIntakeSettingsUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    sent = payload.model_dump(exclude_unset=True)
+    if not sent:
+        raise HTTPException(status_code=422, detail="No intake settings provided")
+
+    actor_id = session.get("user", {}).get("id")
+    for field, value in sent.items():
+        key = _INTAKE_SETTING_FIELDS[field]
+        if value is None:
+            await store.delete_organization_setting(org_id, key)
+            continue
+        try:
+            runtime_settings.coerce_and_validate(key, value)
+        except runtime_settings.SettingValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        spec = runtime_settings.SETTINGS[key]
+        await store.upsert_organization_setting(org_id, key, value, spec.value_type, actor_id)
+    return await _resolve_intake_settings(org_id)
+
+
 @app.get("/provider/users")
 async def list_provider_users(
     session: dict[str, Any] = Depends(require_session),
@@ -3225,6 +3376,7 @@ def _require_dispatch_org(session: dict[str, Any]) -> str:
 _DISPATCH_SETTING_FIELDS = {
     "ack_sla_minutes": "dispatch_ack_sla_minutes",
     "stalled_minutes": "dispatch_stalled_minutes",
+    "distance_unit": "dispatch_distance_unit",
 }
 
 
@@ -3258,6 +3410,7 @@ class ProviderDispatchSettingsUpdate(BaseModel):
     # "absent" from "sent as null".
     ack_sla_minutes: int | None = None
     stalled_minutes: int | None = None
+    distance_unit: str | None = None
 
 
 @app.patch("/provider/settings/dispatch")
@@ -3303,7 +3456,7 @@ async def provider_get_queue(
     org_id = _require_dispatch_org(session)
     await store.expire_stale_offers()
     await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
-    return await store.get_ops_queue(org_id=org_id)
+    return await _attach_queue_photo_urls(await store.get_ops_queue(org_id=org_id))
 
 
 @app.get("/provider/queue/{job_id}/candidates")
@@ -3313,12 +3466,16 @@ async def provider_get_candidates(
 ) -> dict[str, Any]:
     """The job plus the company's own active+verified technicians, advisory-scored."""
     org_id = _require_dispatch_org(session)
-    jobs = await store.get_ops_queue(org_id=org_id)
+    jobs = await _attach_queue_photo_urls(await store.get_ops_queue(org_id=org_id))
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
     techs = await store.list_all_technicians_for_ops(org_id=org_id)
-    return {"job": job, "candidates": await _enriched_candidates(job, techs)}
+    return {
+        "job": job,
+        "candidates": await _enriched_candidates(job, techs),
+        "distance_unit": await runtime_settings.resolve_org(store, org_id, "dispatch_distance_unit"),
+    }
 
 
 @app.post("/provider/queue/{job_id}/assign")
@@ -3412,7 +3569,36 @@ async def technician_active_job(
     if result is None:
         return {}
     lifecycle = await store.get_job_lifecycle(UUID(result["id"]))
-    return {**result, **(lifecycle or {})}
+    job_id = UUID(result["id"])
+    closeout = await store.get_job_closeout(job_id)
+    payments = await store.get_payment_reports(job_id)
+    tracking_token = await store.get_tracking_token(job_id)
+    status = (lifecycle or {}).get("status") or result.get("status")
+    service_type = required_skill_for_job(result)
+    approval_url = f"{config.CUSTOMER_INTAKE_BASE_URL}/t/{tracking_token}" if tracking_token else None
+    approval_status = (
+        "pending" if status == STATUS_COMPLETED_PENDING
+        else "approved" if status == STATUS_COMPLETED_CONFIRMED
+        else "expired" if status == STATUS_COMPLETED_AUTO_CLOSED
+        else "disputed" if status == STATUS_DISPUTED
+        else None
+    )
+    photo_urls = await _signed_photo_urls(result.get("photo_paths") or [])
+    enriched = {
+        **result,
+        **(lifecycle or {}),
+        "service_type": service_type,
+        "collection_items": _closeout_collection_items(closeout),
+        "collection_total": round(float(closeout["total_cents"]) / 100, 2) if closeout and closeout.get("total_cents") is not None else None,
+        "collection_currency": closeout.get("currency") if closeout else None,
+        "collection_closeout": closeout,
+        "payment": payments.get("technician") if isinstance(payments, dict) else None,
+        "approval_status": approval_status,
+        "approval_url": approval_url,
+        "tracking_token": tracking_token,
+        "intake_photos": [{"url": url} for url in photo_urls],
+    }
+    return enriched
 
 
 @app.get("/technicians/{technician_id}/offers")

@@ -2094,12 +2094,15 @@ class InMemoryStore(Store):
                 "access_type": None, "situation": None, "urgency": None,
                 "created_at": None, "customer_owner_org_id": owner_org,
                 "fulfillment_policy": None, "dispatch_attempts": 0,
+                "detail": getattr(self, "_job_detail", {}).get(jid, {}),
                 "offer_active": active_offer is not None,
                 "offer_id": active_offer["id"] if active_offer else None,
                 "offered_technician_id": active_offer["technician_id"] if active_offer else None,
                 "offer_expires_at": None,
                 "decline_count": len(declined),
                 "last_decline_reason": last_decline_reason,
+                "photo_count": len(getattr(self, "_job_photo_paths", {}).get(jid, [])),
+                "photo_paths": list(getattr(self, "_job_photo_paths", {}).get(jid, [])),
             })
         return result
 
@@ -2403,7 +2406,40 @@ class InMemoryStore(Store):
         statuses = getattr(self, "_job_status", {})
         for jid, tech_id in job_techs.items():
             if tech_id == tid and statuses.get(jid) in _ACTIVE:
-                return {"id": jid, "status": statuses[jid], "access_type": None, "situation": None, "address": None, "lat": None, "lng": None}
+                loc = getattr(self, "_job_loc", {}).get(jid)
+                tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == tid), {})
+                job_lat = loc[0] if loc else None
+                job_lng = loc[1] if loc else None
+                tech_lat = tech.get("current_lat")
+                tech_lng = tech.get("current_lng")
+                dist = haversine_km(job_lat, job_lng, tech_lat, tech_lng)
+                dist_km = dist if dist != float("inf") else None
+                eta_min, eta_max = eta_range_from_km(dist_km)
+                loc_updated = tech.get("location_updated_at")
+                return {
+                    "id": jid,
+                    "status": statuses[jid],
+                    "access_type": getattr(self, "_job_access_type", {}).get(jid),
+                    "situation": getattr(self, "_job_situation", {}).get(jid),
+                    "address": getattr(self, "_job_address", {}).get(jid),
+                    "lat": job_lat,
+                    "lng": job_lng,
+                    "detail": getattr(self, "_job_detail", {}).get(jid, {}),
+                    "photo_paths": list(getattr(self, "_job_photo_paths", {}).get(jid, [])),
+                    "technician_current_lat": tech_lat,
+                    "technician_current_lng": tech_lng,
+                    "technician_location_updated_at": loc_updated,
+                    "technician_location_is_fresh": location_is_fresh(
+                        loc_updated,
+                        now=datetime.now(timezone.utc),
+                        threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
+                    ),
+                    "distance_km": round(dist_km, 2) if dist_km is not None else None,
+                    "distance_mi": round(dist_km * 0.621371, 2) if dist_km is not None else None,
+                    "eta_min": eta_min,
+                    "eta_max": eta_max,
+                    "eta_is_estimate": True,
+                }
         return None
 
     async def decline_dispatch_offer(
@@ -4965,15 +5001,27 @@ class PostgresStore(Store):
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, status, access_type, situation, address, lat, lng from jobs"
-                " where fulfillment_technician_id = %s"
-                " and status = any(%s)"
-                " order by updated_at desc limit 1",
+                "select j.id, j.status, j.access_type, j.situation, j.address, j.lat, j.lng,"
+                " j.detail, t.current_lat, t.current_lng, t.location_updated_at,"
+                " m.photo_paths"
+                " from jobs j"
+                " join technicians t on t.id = j.fulfillment_technician_id"
+                " left join lateral ("
+                "   select coalesce(array_agg(path order by uploaded_at asc), ARRAY[]::text[]) as photo_paths"
+                "   from media"
+                "   where owner_type = 'job' and owner_id = j.id and kind = 'intake_photo'"
+                " ) m on true"
+                " where j.fulfillment_technician_id = %s"
+                " and j.status = any(%s)"
+                " order by j.updated_at desc limit 1",
                 (str(technician_id), ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]),
             )
             row = await cur.fetchone()
         if not row:
             return None
+        dist = haversine_km(row[5], row[6], row[8], row[9])
+        dist_km = dist if dist != float("inf") else None
+        eta_min, eta_max = eta_range_from_km(dist_km)
         return {
             "id": str(row[0]),
             "status": row[1],
@@ -4982,6 +5030,21 @@ class PostgresStore(Store):
             "address": row[4],
             "lat": row[5],
             "lng": row[6],
+            "detail": row[7] or {},
+            "technician_current_lat": row[8],
+            "technician_current_lng": row[9],
+            "technician_location_updated_at": row[10].isoformat() if row[10] else None,
+            "technician_location_is_fresh": location_is_fresh(
+                row[10],
+                now=datetime.now(timezone.utc),
+                threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
+            ),
+            "photo_paths": list(row[11] or []),
+            "distance_km": round(dist_km, 2) if dist_km is not None else None,
+            "distance_mi": round(dist_km * 0.621371, 2) if dist_km is not None else None,
+            "eta_min": eta_min,
+            "eta_max": eta_max,
+            "eta_is_estimate": True,
         }
 
     # --- ops-controlled dispatch (Sprint 3.4) ----------------------------------
@@ -4999,9 +5062,10 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select j.id, j.address, j.lat, j.lng, j.access_type, j.situation,"
                 " j.urgency, j.created_at, j.customer_owner_org_id,"
-                " j.fulfillment_policy, j.dispatch_attempts,"
+                " j.fulfillment_policy, j.dispatch_attempts, j.detail,"
                 " o.id as offer_id, o.technician_id as offered_tech_id, o.expires_at,"
-                " d.decline_reason, d.declined_count"
+                " d.decline_reason, d.declined_count,"
+                " m.photo_count, m.photo_paths"
                 " from jobs j"
                 " left join dispatch_offers o"
                 "   on o.job_id = j.id and o.status = 'offered'"
@@ -5012,6 +5076,12 @@ class PostgresStore(Store):
                 "   from dispatch_offers"
                 "   where job_id = j.id and status = 'declined'"
                 " ) d on true"
+                " left join lateral ("
+                "   select count(*)::int as photo_count,"
+                "     coalesce(array_agg(path order by uploaded_at asc), ARRAY[]::text[]) as photo_paths"
+                "   from media"
+                "   where owner_type = 'job' and owner_id = j.id and kind = 'intake_photo'"
+                " ) m on true"
                 " where j.status = 'pending_dispatch'" + org_filter +
                 " order by j.created_at asc",
                 params,
@@ -5030,12 +5100,15 @@ class PostgresStore(Store):
                 "customer_owner_org_id": str(r[8]) if r[8] else None,
                 "fulfillment_policy": r[9],
                 "dispatch_attempts": r[10] or 0,
-                "offer_active": r[11] is not None,
-                "offer_id": str(r[11]) if r[11] else None,
-                "offered_technician_id": str(r[12]) if r[12] else None,
-                "offer_expires_at": r[13].isoformat() if r[13] else None,
-                "last_decline_reason": r[14],
-                "decline_count": r[15] or 0,
+                "detail": r[11] or {},
+                "offer_active": r[12] is not None,
+                "offer_id": str(r[12]) if r[12] else None,
+                "offered_technician_id": str(r[13]) if r[13] else None,
+                "offer_expires_at": r[14].isoformat() if r[14] else None,
+                "last_decline_reason": r[15],
+                "decline_count": r[16] or 0,
+                "photo_count": r[17] or 0,
+                "photo_paths": list(r[18] or []),
             }
             for r in rows
         ]

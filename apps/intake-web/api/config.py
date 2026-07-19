@@ -91,3 +91,12 @@ LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
 LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)
 _demo_seed_default = "false" if IS_PRODUCTION else "true"
 DEMO_SEED = os.environ.get("DEMO_SEED", _demo_seed_default).strip().lower() != "false"
+
+# Public customer/intake origin used when another app (e.g. technician-web) needs
+# to open a customer capability/tracking link. Keep TicketEnvelope.tracking_path
+# relative for the intake app router; use this only for cross-app URLs.
+CUSTOMER_INTAKE_BASE_URL = (
+    os.environ.get("CUSTOMER_INTAKE_BASE_URL")
+    or os.environ.get("NEXT_PUBLIC_INTAKE_BASE_URL")
+    or "https://intake.cluexp.com"
+).rstrip("/")

@@ -13,9 +13,26 @@ interface DispatchSettingField {
   platform_default: number;
 }
 
+interface DispatchStringSettingField {
+  value: string;
+  is_override: boolean;
+  platform_default: string;
+}
+
+interface BooleanSettingField {
+  value: boolean;
+  is_override: boolean;
+  platform_default: boolean;
+}
+
 interface DispatchSettings {
   ack_sla_minutes: DispatchSettingField;
   stalled_minutes: DispatchSettingField;
+  distance_unit: DispatchStringSettingField;
+}
+
+interface IntakeSettings {
+  show_estimate: BooleanSettingField;
 }
 
 interface FinancialSettings {
@@ -91,8 +108,13 @@ export default function SettingsPage() {
   const [dispatchSettings, setDispatchSettings] = useState<DispatchSettings | null>(null);
   const [ackSlaInput, setAckSlaInput] = useState("");
   const [stalledInput, setStalledInput] = useState("");
+  const [distanceUnitInput, setDistanceUnitInput] = useState<"mi" | "km">("mi");
   const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
   const [dispatchBusy, setDispatchBusy] = useState(false);
+  const [intakeSettings, setIntakeSettings] = useState<IntakeSettings | null>(null);
+  const [showEstimateInput, setShowEstimateInput] = useState(true);
+  const [intakeSettingsMessage, setIntakeSettingsMessage] = useState<string | null>(null);
+  const [intakeSettingsBusy, setIntakeSettingsBusy] = useState(false);
   const [capabilitySkills, setCapabilitySkills] = useState<string[]>([]);
   const [capabilityCatalog, setCapabilityCatalog] = useState<ServiceCategory[]>(DEFAULT_SERVICE_CATALOG);
   const [capabilityMessage, setCapabilityMessage] = useState<string | null>(null);
@@ -116,8 +138,22 @@ export default function SettingsPage() {
       setDispatchSettings(settings);
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
+      setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to load dispatch settings");
+    }
+  }
+
+  async function loadIntakeSettings() {
+    try {
+      const response = await fetch("/api/provider/settings/intake", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to load intake settings");
+      const settings = body as IntakeSettings;
+      setIntakeSettings(settings);
+      setShowEstimateInput(Boolean(settings.show_estimate.value));
+    } catch (cause) {
+      setIntakeSettingsMessage(cause instanceof Error ? cause.message : "Unable to load intake settings");
     }
   }
 
@@ -153,6 +189,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     void loadDispatchSettings();
+    void loadIntakeSettings();
     void loadCapabilities();
     void loadFinancialSettings();
   }, []);
@@ -299,7 +336,8 @@ export default function SettingsPage() {
         method: "PATCH", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ack_sla_minutes: Number(ackSlaInput),
-          stalled_minutes: Number(stalledInput)
+          stalled_minutes: Number(stalledInput),
+          distance_unit: distanceUnitInput
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -308,6 +346,7 @@ export default function SettingsPage() {
       setDispatchSettings(settings);
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
+      setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
       setDispatchMessage("Dispatch settings saved.");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to save dispatch settings");
@@ -316,7 +355,7 @@ export default function SettingsPage() {
     }
   }
 
-  async function resetDispatchField(field: "ack_sla_minutes" | "stalled_minutes") {
+  async function resetDispatchField(field: keyof DispatchSettings) {
     setDispatchBusy(true);
     setDispatchMessage(null);
     try {
@@ -330,11 +369,56 @@ export default function SettingsPage() {
       setDispatchSettings(settings);
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
+      setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
       setDispatchMessage("Reverted to the platform default.");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
     } finally {
       setDispatchBusy(false);
+    }
+  }
+
+  async function saveIntakeSettings() {
+    setIntakeSettingsBusy(true);
+    setIntakeSettingsMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/intake", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ show_estimate: showEstimateInput })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save intake settings");
+      const settings = body as IntakeSettings;
+      setIntakeSettings(settings);
+      setShowEstimateInput(Boolean(settings.show_estimate.value));
+      setIntakeSettingsMessage("Intake settings saved.");
+    } catch (cause) {
+      setIntakeSettingsMessage(cause instanceof Error ? cause.message : "Unable to save intake settings");
+    } finally {
+      setIntakeSettingsBusy(false);
+    }
+  }
+
+  async function resetIntakeField(field: keyof IntakeSettings) {
+    setIntakeSettingsBusy(true);
+    setIntakeSettingsMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/intake", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ [field]: null })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to reset to platform default");
+      const settings = body as IntakeSettings;
+      setIntakeSettings(settings);
+      setShowEstimateInput(Boolean(settings.show_estimate.value));
+      setIntakeSettingsMessage("Reverted to the platform default.");
+    } catch (cause) {
+      setIntakeSettingsMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
+    } finally {
+      setIntakeSettingsBusy(false);
     }
   }
 
@@ -441,6 +525,45 @@ export default function SettingsPage() {
             )}
             {intakeMessage ? <div className="text-sm text-muted-foreground" role="status">{intakeMessage}</div> : null}
             {slug ? <Badge variant="outline">slug: {slug}</Badge> : null}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Intake flow settings</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Control customer-facing steps on your branded intake link. Disabling the estimate skips the upfront price range and asks only for request/cancellation terms before dispatch.
+            </p>
+            <label className="flex items-start gap-3 rounded-md border border-border p-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={showEstimateInput}
+                onChange={(event) => setShowEstimateInput(event.target.checked)}
+              />
+              <span className="space-y-1">
+                <span className="block font-medium">Show upfront estimate</span>
+                <span className="block text-xs text-muted-foreground">When enabled, customers must view and accept an estimated range before requesting help.</span>
+              </span>
+            </label>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {intakeSettings?.show_estimate.is_override
+                ? <>Overridden — platform default is {intakeSettings.show_estimate.platform_default ? "show" : "hide"}.</>
+                : <>Using the platform default.</>}
+              {intakeSettings?.show_estimate.is_override ? (
+                <Button
+                  variant="ghost"
+                  className="h-auto px-1.5 py-0.5 text-xs"
+                  disabled={intakeSettingsBusy}
+                  onClick={() => void resetIntakeField("show_estimate")}
+                >
+                  <TimerReset className="size-3" />Reset to default
+                </Button>
+              ) : null}
+            </div>
+            {intakeSettingsMessage ? <div className="text-sm" role="status">{intakeSettingsMessage}</div> : null}
+            <Button disabled={intakeSettingsBusy} variant="outline" onClick={() => void saveIntakeSettings()}>
+              <Save className="size-4" />{intakeSettingsBusy ? "Saving…" : "Save intake settings"}
+            </Button>
           </CardContent>
         </Card>
         <Card>
@@ -648,6 +771,31 @@ export default function SettingsPage() {
                     <Button
                       variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
                       disabled={dispatchBusy} onClick={() => void resetDispatchField("stalled_minutes")}
+                    >
+                      <TimerReset className="size-3" />Reset to default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="distance-unit">Distance unit</label>
+                <select
+                  id="distance-unit"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={distanceUnitInput}
+                  onChange={(event) => setDistanceUnitInput(event.target.value === "km" ? "km" : "mi")}
+                >
+                  <option value="mi">Miles (mi)</option>
+                  <option value="km">Kilometers (km)</option>
+                </select>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {dispatchSettings?.distance_unit.is_override
+                    ? <>Overridden — platform default is {dispatchSettings.distance_unit.platform_default}.</>
+                    : <>Using the platform default.</>}
+                  {dispatchSettings?.distance_unit.is_override ? (
+                    <Button
+                      variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
+                      disabled={dispatchBusy} onClick={() => void resetDispatchField("distance_unit")}
                     >
                       <TimerReset className="size-3" />Reset to default
                     </Button>

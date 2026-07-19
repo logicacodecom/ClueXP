@@ -134,6 +134,7 @@ class Automotive(BaseModel):
     """Populated only when access_type == CAR."""
     make: Optional[str] = None
     model: Optional[str] = None
+    color: Optional[str] = None
     year: Optional[int] = None
     key_type: KeyType = KeyType.UNKNOWN
     key_type_source: KeyTypeSource = KeyTypeSource.UNVERIFIED

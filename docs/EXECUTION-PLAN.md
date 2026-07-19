@@ -441,10 +441,26 @@ completes the remaining communications surfaces and ops oversight depth.
   stalled jobs. This works only while the console is open; it is not durable production delivery.
 - [ ] Define and approve the dispatcher acknowledgement SLA: staffed coverage window, primary + backup owner, acknowledgement target, stalled-job threshold and after-hours fallback.
 - [ ] Deliver and verify background dispatcher alerts for new, stalled and safety-flagged jobs, with delivery monitoring and an audited escalation path when the first owner does not acknowledge.
-- [ ] Tenant-safe customer, technician and provider communication threads.
-- [ ] Masked call or mediated contact path.
+- [ ] Tenant-safe, **job-scoped** communication with visibly separate customer↔technician,
+  owning-dispatcher↔technician, and read-only system-timeline streams; no cross-company discovery
+  or content leakage; provider internal notes remain provider-only.
+- [ ] Durable message delivery: client idempotency keys, platform-appropriately protected offline
+  draft/outbox (PWA best-effort within the web threat model; native encrypted storage), retry
+  without duplication, unread synchronization, sender/destination role labels, delivery/read/device
+  acknowledgement states, attachment progress/failure, and dispatcher-visible failure for critical
+  messages. Push is a hint; the server thread remains source of truth.
+- [ ] Active-job message UX and notification priority: contextual Message/Call/Safety actions,
+  Customer vs Dispatcher destination, driving-safe quick replies/read-aloud, privacy-safe lock-screen
+  copy, and distinct normal/operational/acknowledgement-required/critical treatments.
+- [ ] Masked call or mediated contact path, launched from the same job-scoped communication surface.
 - [ ] SMS/email delivery of the customer token link and critical status updates.
-- [ ] Reliable technician offer notification strategy (push/SMS) with polling fallback.
+- [ ] Reliable technician offer notification strategy: high-priority APNs/FCM push with
+  sound/haptics + offer deep link; sent/delivered/displayed/acknowledged monitoring; safe retry;
+  dispatcher-visible failed/unacknowledged delivery; polling fallback; privacy-safe lock-screen
+  content. SMS is fallback/escalation only, not the primary app transport.
+- [ ] Suppress new-work alerts throughout the global hard-busy interval (`assigned` through
+  `completed_pending_customer`); permit only current-job cancellation, communication,
+  recovery/reassignment, confirmation-failure, and safety alerts.
 
 **Sprint 5 exit:** the **owning company's dispatcher/`provider_admin`** can resolve every supported
 failure path for its own jobs through the UI (with **ClueXP Ops** observing/administering, not
@@ -642,6 +658,14 @@ readiness variant.
   so closure must continue to work without pretending a charge occurred.
 - `[!]` PWA notification/background-location limits mean polling is acceptable
   for pilot operations but not the final reliability standard. Technician offer notification strategy (push/SMS) is Sprint 5.
+- `[!]` **P0 broader-launch gate — global technician capacity is documented but not yet
+  DB-enforced.** Candidate/assignment code identifies a busy technician and currently permits a
+  reasoned busy override; offer acceptance atomically protects one job but does not yet prevent the
+  same global technician from accepting another job owned by the same or a different company.
+  Before widening: make active-job busy a non-overridable immediate-dispatch gate, atomically lock
+  technician capacity at acceptance, supersede every other pending offer to that technician across
+  companies, return losing jobs to their owning queues, and add same-company/cross-company race
+  coverage. Tenant-safe busy status must never reveal the other company's job details.
 - `[!]` Organization `fulfillment_policy` semantic values differ from channel/job values and must be reconciled before org-managed self-dispatch widens. In the provider-managed pilot, policy is advisory — the company's dispatcher sees its own roster regardless.
 - `[!]` **Still to decide for the pilot:** coarse ETA vs. Google Routes; offer TTL for the staffed pilot; which pilot company + roster; which checks are mandatory before real (vs. internal test) customers.
 - `[!]` API extraction is deferred unless the co-located backend becomes a
@@ -661,7 +685,10 @@ readiness variant.
 ### 11.1 Technician app (`technician-web` PWA)
 
 The PWA is **no longer a mock prototype** — it runs on real app-server BFF routes that forward
-the signed-in technician session to the intake API.
+the signed-in technician session to the intake API. The approved active-job-first product redesign,
+native-ready architecture, phased workstreams, testing matrix, and definition of done are in
+[`TECHNICIAN-APP-REDESIGN.md`](TECHNICIAN-APP-REDESIGN.md); this section remains the concise
+execution/status tracker.
 
 **Live:** sign-in/up; session shell + availability control; live offers feed (`/api/offers`,
 multiple offers, sorted, privacy-gated); accept/decline; active-job restoration
@@ -672,10 +699,24 @@ finished-job history (`/activity`); global profile + photo upload/review + affil
 Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T3, T5–T7 done.)
 
 **Remaining:**
-- [ ] **Masked job chat (T4)** — next high-priority slice: customer↔assigned-technician
-  messaging through ClueXP without exposing phone numbers (then unread states). _(Ties to §5 comms.)_
-- [ ] Voice/masked call — after masked chat, once a comms provider is selected.
-- [ ] Production push/sound/alarm delivery strategy; native background GPS. _(§5/§8.)_
+- [ ] **P0 global active-job capacity lock:** enforce one active job per global technician across
+  all affiliations at the DB acceptance boundary; remove active-job conflicts from the immediate
+  offer override path; atomically supersede the technician's other pending offers; return `409` on
+  concurrent losing accepts; cover same-company and cross-company races.
+- [ ] Active-job alert policy: no ordinary offer alerts while `assigned`/`en_route`/`arrived`/
+  `in_progress`/`completed_pending_customer`; only current-job communication, cancellation,
+  recovery/reassignment, confirmation failure, and safety may interrupt.
+- [ ] **Job-scoped masked messaging (T4)** — customer↔assigned-technician, owning-dispatcher↔
+  technician, and read-only system timeline as separate destinations; no phone exposure or
+  cross-tenant discovery; active-job contextual entry rather than a misleading standalone inbox.
+  Include idempotent send, platform-appropriately protected offline draft/outbox (PWA best-effort
+  within the web threat model; native encrypted storage), retry/failure, unread sync, delivery/read
+  acknowledgement, quick replies, privacy-safe push, release/reassignment permissions, and
+  completion/dispute-window retention. _(Contract: `SYSTEM-DESIGN.md` §18.2.1; ties to §5 comms.)_
+- [ ] Voice/masked call — after messaging, once a comms provider is selected; launch from the same
+  job communication surface and preserve the same job/tenant authorization boundary.
+- [ ] Production push/sound/alarm delivery strategy with APNs/FCM acknowledgement monitoring,
+  privacy-safe lock-screen copy and polling fallback; native background GPS. _(§5/§8.)_
 - [ ] Activity pagination/date range as volume grows; keep "collected" separate from
   provider Stripe payouts or technician compensation language until processor-backed values exist (§6).
 - [ ] Keep all active-job transitions as live backend mutations — never a technician-only lifecycle.
