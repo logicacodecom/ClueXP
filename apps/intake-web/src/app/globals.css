@@ -210,6 +210,54 @@ textarea.field {
   gap: 10px;
 }
 
+.star-rating {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(48px, 1fr));
+  gap: 8px;
+  align-items: center;
+}
+
+.star-button {
+  min-height: 64px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.26);
+  display: grid;
+  place-items: center;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.star-button.active {
+  border-color: rgba(255, 196, 48, 0.74);
+  background: #2a240d;
+  color: var(--primary);
+}
+
+.star-button:active {
+  transform: scale(0.96);
+}
+
+.star-button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.star-icon {
+  width: 31px;
+  height: 31px;
+}
+
+.star-rating-caption {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
 .primary,
 .secondary,
 .ghost {

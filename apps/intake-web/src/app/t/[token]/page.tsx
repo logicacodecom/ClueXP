@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import type { TicketGuards } from "@/types/schema.generated";
 import { useRouter, useParams } from "next/navigation";
-import { LoaderCircle, ShieldCheck } from "lucide-react";
+import { LoaderCircle, ShieldCheck, Star } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { TrackingMap } from "@/components/tracking-map";
 
@@ -1091,20 +1091,14 @@ export default function TokenTrackingPage() {
                 <p className="panel-title">
                   {locale === "es" ? "Calificación" : "Rating"}
                 </p>
-                <div className="row" role="radiogroup" aria-label="Service rating">
-                {[1, 2, 3, 4, 5].map((rating) => (
-                    <button
-                      className={reviewData.rating === rating ? "primary" : "ghost"}
-                      key={rating}
-                      type="button"
-                      aria-checked={reviewData.rating === rating}
-                      role="radio"
-                      onClick={() => setReviewData(prev => ({ ...prev, rating }))}
-                    >
-                      {rating}
-                    </button>
-                  ))}
-                </div>
+                <StarRating
+                  emptyText={locale === "es" ? "Toque una estrella" : "Tap a star"}
+                  label={locale === "es" ? "Calificación del servicio" : "Service rating"}
+                  rating={reviewData.rating}
+                  starText={locale === "es" ? "estrella" : "star"}
+                  starsText={locale === "es" ? "estrellas" : "stars"}
+                  onChange={(rating) => setReviewData(prev => ({ ...prev, rating }))}
+                />
               </div>
               <div className="chip-grid">
                 {[
@@ -1284,4 +1278,44 @@ export default function TokenTrackingPage() {
   }
 
   return null;
+}
+
+function StarRating({
+  emptyText,
+  label,
+  rating,
+  starText,
+  starsText,
+  onChange
+}: {
+  emptyText: string;
+  label: string;
+  rating: number | null;
+  starText: string;
+  starsText: string;
+  onChange: (rating: number) => void;
+}) {
+  return (
+    <div className="star-rating" role="radiogroup" aria-label={label}>
+      {[1, 2, 3, 4, 5].map((value) => {
+        const active = rating != null && value <= rating;
+        return (
+          <button
+            aria-checked={rating === value}
+            aria-label={`${value} ${value === 1 ? starText : starsText}`}
+            className={`star-button ${active ? "active" : ""}`}
+            key={value}
+            onClick={() => onChange(value)}
+            role="radio"
+            type="button"
+          >
+            <Star aria-hidden="true" className="star-icon" fill="currentColor" />
+          </button>
+        );
+      })}
+      <p className="star-rating-caption">
+        {rating ? `${rating}/5` : emptyText}
+      </p>
+    </div>
+  );
 }
