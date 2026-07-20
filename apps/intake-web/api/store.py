@@ -2419,7 +2419,7 @@ class InMemoryStore(Store):
         }
 
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
-        _ACTIVE = {"assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"}
+        _ACTIVE = {"assigned", "en_route", "arrived", "in_progress"}
         tid = str(technician_id)
         job_techs = getattr(self, "_job_tech", {})
         statuses = getattr(self, "_job_status", {})
@@ -5063,7 +5063,7 @@ class PostgresStore(Store):
                 " where j.fulfillment_technician_id = %s"
                 " and j.status = any(%s)"
                 " order by j.updated_at desc limit 1",
-                (str(technician_id), ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]),
+                (str(technician_id), ["assigned", "en_route", "arrived", "in_progress"]),
             )
             row = await cur.fetchone()
         if not row:
@@ -5223,7 +5223,7 @@ class PostgresStore(Store):
           busy     — has an active job                   (red)
           inactive — not active / unavailable            (yellow, last known)
         """
-        active = ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"]
+        active = ["assigned", "en_route", "arrived", "in_progress"]
         if org_id is None:
             where = " where t.status = 'active' and t.vetting_status = 'verified'"
             params: tuple = (active,)
@@ -7791,7 +7791,7 @@ class PostgresStore(Store):
         rating, affiliation date, skills, and a compliance summary so the portal
         never needs mock data. Document compliance counts ONLY the technician's
         own credentials (provider companies do not own technician documents)."""
-        active_job = ("assigned", "en_route", "arrived", "in_progress", "completed_pending_customer")
+        active_job = ("assigned", "en_route", "arrived", "in_progress")
         completed = ("completed_confirmed", "completed_auto_closed")
         async with await self._connect() as conn:
             cur = await conn.execute(

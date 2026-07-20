@@ -805,6 +805,68 @@ def test_http_provider_override_arrival_requires_reason_and_is_tenant_scoped():
     assert app_store._job_status[jid] == STATUS_ARRIVED
 
 
+def test_http_provider_confirm_completion_requires_voice_job_reason_and_tenant_scope():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    disp_uid = str(uuid4())
+    tech_uid = str(uuid4())
+    web_jid = str(uuid4())
+    voice_jid = str(uuid4())
+    _seed_en_route_job(app_store, tech_uid, web_jid, channel="mobile_web")
+    _seed_en_route_job(app_store, tech_uid, voice_jid, channel="voice")
+    app_store._job_status[web_jid] = STATUS_COMPLETED_PENDING
+    app_store._job_status[voice_jid] = STATUS_COMPLETED_PENDING
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[web_jid] = org
+    app_store._job_org[voice_jid] = org
+    app_store.users[disp_uid] = {
+        "id": disp_uid, "email": "disp_confirm@cluexp.test", "phone": None,
+        "display_name": "Dispatcher", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    access = create_access_token({"sub": disp_uid, "id": disp_uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    missing = client.post(
+        f"/provider/jobs/{voice_jid}/completion/confirm", json={"reason": ""},
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert missing.status_code == 422
+    assert app_store._job_status[voice_jid] == STATUS_COMPLETED_PENDING
+
+    web = client.post(
+        f"/provider/jobs/{web_jid}/completion/confirm", json={"reason": "Customer confirmed by phone"},
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert web.status_code == 409
+    assert app_store._job_status[web_jid] == STATUS_COMPLETED_PENDING
+
+    other_uid = str(uuid4())
+    app_store.users[other_uid] = {
+        "id": other_uid, "email": "disp_other_confirm@cluexp.test", "phone": None,
+        "display_name": "Other", "password_hash": "",
+        "roles": ["dispatcher"], "active_organization_id": str(uuid4()), "organization_name": "Other",
+    }
+    other_access = create_access_token({"sub": other_uid, "id": other_uid, "roles": ["dispatcher"]})
+    foreign = client.post(
+        f"/provider/jobs/{voice_jid}/completion/confirm", json={"reason": "Customer confirmed by phone"},
+        headers={"Authorization": f"Bearer {other_access}"},
+    )
+    assert foreign.status_code == 404
+    assert app_store._job_status[voice_jid] == STATUS_COMPLETED_PENDING
+
+    ok = client.post(
+        f"/provider/jobs/{voice_jid}/completion/confirm", json={"reason": "Customer confirmed by phone"},
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == STATUS_COMPLETED_CONFIRMED
+    assert app_store._job_status[voice_jid] == STATUS_COMPLETED_CONFIRMED
+
+
 # ---------------------------------------------------------------------------
 # Provider-managed dispatch (SaaS pivot): company dispatcher, org-scoped,
 # tenant-isolated. ClueXP does not dispatch — the company does.
@@ -2547,13 +2609,26 @@ def test_active_job_lock_is_technician_scoped():
     assert active is not None and active["id"] == jid
 
 
+def test_completed_pending_customer_does_not_block_technician_active_job():
+    store = InMemoryStore()
+    tid, jid = str(uuid4()), str(uuid4())
+    store._job_tech = {jid: tid}
+    store._job_status = {jid: STATUS_COMPLETED_PENDING}
+
+    active = asyncio.run(store.get_technician_active_job(UUID(tid)))
+    history = asyncio.run(store.get_technician_job_history(UUID(tid)))
+
+    assert active is None
+    assert any(row["id"] == jid and row["status"] == STATUS_COMPLETED_PENDING for row in history)
+
+
 def test_technician_active_job_includes_distance_collection_and_approval_contract():
     from datetime import datetime, timezone
     from api.main import store as app_store
 
     tech_uid, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
     app_store._job_status = getattr(app_store, "_job_status", {})
-    app_store._job_status[jid] = STATUS_COMPLETED_PENDING
+    app_store._job_status[jid] = STATUS_IN_PROGRESS
     app_store._job_tech = getattr(app_store, "_job_tech", {})
     app_store._job_tech[jid] = tech_uid
     app_store._job_access_type = getattr(app_store, "_job_access_type", {})
@@ -2618,7 +2693,7 @@ def test_technician_active_job_includes_distance_collection_and_approval_contrac
         assert body["distance_mi"] is not None
         assert body["eta_min"] is not None
         assert body["technician_location_is_fresh"] is True
-        assert body["approval_status"] == "pending"
+        assert body["approval_status"] is None
         assert body["approval_url"] == f"https://intake.cluexp.com/t/{token}"
         assert body["collection_total"] == 125
         assert body["collection_items"] == [{

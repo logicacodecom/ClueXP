@@ -994,6 +994,7 @@ function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, on
 
 function PendingConfirmation({ job }: { job: TechnicianJob }) {
   const approval = job.approval_status;
+  const dispatchFallback = Boolean(job.arrival_verification?.dispatcher_fallback_allowed);
   const approvalLabel =
     approval === "approved" ? "Approved by customer" :
     approval === "disputed" ? "Disputed — dispatch mediating" :
@@ -1004,11 +1005,20 @@ function PendingConfirmation({ job }: { job: TechnicianJob }) {
     <section className="py-10 text-center">
       <div className="mx-auto flex size-16 items-center justify-center rounded-full border-2 border-dashed border-primary/50 font-condensed text-2xl font-bold text-primary">…</div>
       <p className="mt-5 field-kicker">Job {job.id.slice(0, 8)}</p>
-      <p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</p>
+      <p className="mt-2 text-[15px] leading-6 text-[#cfc8ba]">
+        {dispatchFallback
+          ? "This call-center job needs customer receipt confirmation. If the customer confirms by phone, dispatch can close it and release you."
+          : "The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved."}
+      </p>
       <div className="mt-6 border border-border bg-card p-4 text-left text-sm">
         <div className="flex justify-between gap-4"><span className="text-muted">Customer approval</span><span className={approvalTone}>{approvalLabel}</span></div>
         <div className="mt-3 flex justify-between gap-4"><span className="text-muted">Your status</span><span className="text-primary">Busy · no new offers</span></div>
       </div>
+      {dispatchFallback ? (
+        <p className="mt-3 border border-info/30 bg-info/5 p-4 text-left text-sm leading-6 text-info">
+          No customer page available? Contact dispatch and ask them to use provider receipt confirmation after speaking with the customer.
+        </p>
+      ) : null}
       {job.approval_url && /^https?:\/\//.test(job.approval_url) ? (
         <a className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={job.approval_url} target="_blank" rel="noreferrer">
           View approval status <ExternalLink className="size-4" />

@@ -4866,6 +4866,40 @@ async def provider_no_show(
     )
 
 
+@app.post("/provider/jobs/{job_id}/completion/confirm")
+async def provider_confirm_completion(
+    job_id: UUID, payload: RecoveryRequest, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Owning provider confirms customer receipt by phone for call-center jobs
+    that have no practical customer tracking-page confirmation path. Tenant-scoped
+    and reason-required; customer-facing web jobs must use /t/{token}/confirm."""
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A phone confirmation note is required.")
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle["status"] != STATUS_COMPLETED_PENDING:
+        raise HTTPException(status_code=409, detail="Job is not awaiting customer confirmation")
+    ticket = await require_ticket(job_id)
+    ticket_channel = getattr(ticket.channel, "value", str(ticket.channel))
+    if ticket_channel != "voice":
+        raise HTTPException(status_code=409, detail="Provider receipt confirmation is only available for call-center intake jobs.")
+    updated = await store.set_job_status(
+        job_id, STATUS_COMPLETED_CONFIRMED,
+        expected_current=STATUS_COMPLETED_PENDING, extra_timestamps=["closed_at"],
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Status changed concurrently")
+    actor_id = session.get("user", {}).get("id", "unknown")
+    await store.log_event_raw(
+        job_id, f"completion:provider_receipt_confirmed:by={actor_id}:org={org_id}:reason={reason[:140]}"
+    )
+    return {"status": updated["status"]}
+
+
 @app.post("/provider/jobs/{job_id}/recall-offer")
 async def provider_recall_offer(
     job_id: UUID, payload: RecoveryRequest, session: dict[str, Any] = Depends(require_session),

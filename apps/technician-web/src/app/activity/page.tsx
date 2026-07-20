@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, ChevronDown, ChevronUp, Filter, RefreshCw, Star } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronUp, Filter, RefreshCw, ShieldCheck, Star } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Screen, TechnicianShell } from "@/components/mobile";
 
@@ -183,6 +183,11 @@ export default function ActivityPage() {
                     <Star className="size-4 fill-warn text-warn" />
                     <span className="font-bold">{job.review.rating}/5</span>
                     {job.review.comment ? <span className="ml-2 truncate text-muted">“{job.review.comment}”</span> : null}
+                  </div>
+                ) : job.status === "completed_pending_customer" ? (
+                  <div className="mt-3 flex gap-2 border-t border-border pt-3 text-sm text-muted">
+                    <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+                    <span>Receipt confirmation is with dispatch. You are available for new jobs.</span>
                   </div>
                 ) : (
                   <div className="mt-3 border-t border-border pt-3 text-sm text-muted">No customer review yet.</div>

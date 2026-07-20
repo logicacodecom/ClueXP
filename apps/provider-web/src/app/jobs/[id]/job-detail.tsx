@@ -14,6 +14,7 @@ import {
   StatCard,
 } from "@cluexp/console-ui";
 import { RefreshCw, Star } from "lucide-react";
+import { ProviderActionDialog } from "../../provider-action-dialog";
 
 type PaymentReport = { amount: number; currency: string; method: string } | null;
 
@@ -60,6 +61,8 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
   const [notes, setNotes] = useState<Note[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error" | "notfound">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     setState("loading");
@@ -86,6 +89,28 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
     }
   }, [jobId]);
 
+  async function confirmReceipt(reason: string) {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/completion/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Could not confirm receipt");
+      setMessage("Customer receipt confirmed by provider.");
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not confirm receipt");
+      setState("error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => { void load(); }, [load]);
 
   if (state === "notfound") {
@@ -110,12 +135,28 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
         title={summary?.address || `Job ${jobId.slice(0, 8)}`}
         description={summary?.situation ? summary.situation.replaceAll("_", " ") : "Service request"}
         actions={
-          <Button variant="outline" onClick={() => void load()} disabled={state === "loading"}>
-            <RefreshCw className={state === "loading" ? "animate-spin" : undefined} />
-            {state === "loading" ? "Refreshing" : "Refresh"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {active?.status === "completed_pending_customer" ? (
+              <ProviderActionDialog
+                confirmLabel="Confirm receipt"
+                description="Use only after the customer confirms receipt by phone. This closes the job and releases the technician."
+                disabled={busy}
+                onConfirm={confirmReceipt}
+                reasonMode="required"
+                title="Confirm customer receipt?"
+              >
+                <Button disabled={busy}>Confirm receipt by phone</Button>
+              </ProviderActionDialog>
+            ) : null}
+            <Button variant="outline" onClick={() => void load()} disabled={state === "loading"}>
+              <RefreshCw className={state === "loading" ? "animate-spin" : undefined} />
+              {state === "loading" ? "Refreshing" : "Refresh"}
+            </Button>
+          </div>
         }
       />
+
+      {message ? <Card className="border-success/35 bg-success/10"><CardContent className="py-3 text-sm text-success">{message}</CardContent></Card> : null}
 
       {state === "error" ? (
         <Card><CardContent className="py-8 text-center text-sm text-destructive">{error}</CardContent></Card>

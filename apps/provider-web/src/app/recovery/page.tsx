@@ -38,7 +38,7 @@ type RecoveryJob = {
 
 type Note = { id: string; author_name: string | null; body: string; created_at: string | null };
 type TimelineEvent = { event: string; at: string | null };
-type Action = "cancel" | "release" | "no-show" | "recall-offer" | "resolve";
+type Action = "cancel" | "release" | "no-show" | "confirm-receipt" | "recall-offer" | "resolve";
 
 const ASSIGNED = new Set(["assigned", "en_route", "arrived", "in_progress"]);
 const CANCELLABLE = new Set(["pending_dispatch", "assigned", "en_route", "arrived", "in_progress"]);
@@ -48,6 +48,7 @@ const ACTION_LABEL: Record<Action, string> = {
   cancel: "Cancel job",
   release: "Release technician",
   "no-show": "Mark no-show",
+  "confirm-receipt": "Confirm receipt",
   "recall-offer": "Recall offer",
   resolve: "Resolve dispute",
 };
@@ -56,6 +57,7 @@ const ACTION_HELP: Record<Action, string> = {
   cancel: "Cancels the job, revokes technician access, and supersedes any active offer.",
   release: "Returns the job to the provider queue so another technician can be assigned.",
   "no-show": "Closes the job as no-show and removes the technician from the active job.",
+  "confirm-receipt": "Use after phone confirmation from the customer. Closes the job and releases the technician.",
   "recall-offer": "Pulls back an active offer before the technician accepts.",
   resolve: "Closes a disputed job with an internal resolution note.",
 };
@@ -74,6 +76,7 @@ function availableActions(job: RecoveryJob): Action[] {
   if (CANCELLABLE.has(job.status)) actions.push("cancel");
   if (ASSIGNED.has(job.status)) actions.push("release");
   if (NO_SHOW_OK.has(job.status)) actions.push("no-show");
+  if (job.status === "completed_pending_customer") actions.push("confirm-receipt");
   if (job.status === "pending_dispatch" && job.offer_active) actions.push("recall-offer");
   if (job.status === "disputed") actions.push("resolve");
   return actions;
@@ -84,6 +87,7 @@ function statusVariant(status: string): "success" | "warn" | "danger" | "info" |
   if (status === "pending_dispatch") return "warn";
   if (status === "assigned" || status === "en_route") return "info";
   if (status === "arrived" || status === "in_progress") return "success";
+  if (status === "completed_pending_customer") return "warn";
   return "outline";
 }
 
@@ -133,7 +137,7 @@ function RecoveryWorkspace() {
     setBusy(true);
     setError(null);
     try {
-      const path = pending.action === "resolve" ? "resolve" : pending.action;
+      const path = pending.action === "resolve" ? "resolve" : pending.action === "confirm-receipt" ? "completion/confirm" : pending.action;
       const payload = pending.action === "resolve"
         ? { action: "close", note: reason.trim() }
         : { reason: reason.trim() };
