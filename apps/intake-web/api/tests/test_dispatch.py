@@ -604,12 +604,15 @@ def test_arrival_pin_secret_fails_secure_in_production(monkeypatch):
 # Gate 2: secure arrival PIN — HTTP flow
 # ---------------------------------------------------------------------------
 
-def _seed_en_route_job(app_store, tech_uid, jid, *, token=None):
+def _seed_en_route_job(app_store, tech_uid, jid, *, token=None, channel="mobile_web"):
+    from api.schema import Ticket, TicketStatus
+
     app_store.users[tech_uid] = {
         "id": tech_uid, "email": f"arr_{tech_uid[:8]}@cluexp.test", "phone": None,
         "display_name": "Arr Tech", "password_hash": "",
         "roles": ["technician"], "active_organization_id": None, "organization_name": None,
     }
+    app_store._tickets[UUID(jid)] = Ticket(ticket_id=UUID(jid), channel=channel, status=TicketStatus.COMPLETE)
     app_store._job_status = getattr(app_store, "_job_status", {})
     app_store._job_status[jid] = STATUS_EN_ROUTE
     app_store._job_tech = getattr(app_store, "_job_tech", {})
@@ -694,6 +697,57 @@ def test_http_technician_cannot_set_arrived_directly():
         assert resp.status_code == 409
         assert "PIN" in resp.json().get("detail", "")
         assert app_store._job_status[jid] == STATUS_EN_ROUTE
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_http_technician_dispatcher_verified_arrival_only_for_voice_jobs():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    web_jid = str(uuid4())
+    voice_jid = str(uuid4())
+    _seed_en_route_job(app_store, tech_uid, web_jid, channel="mobile_web")
+    _seed_en_route_job(app_store, tech_uid, voice_jid, channel="voice")
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    client = TestClient(app)
+    try:
+        web = client.post(
+            f"/jobs/{web_jid}/arrival/verify",
+            json={"method": "dispatcher_verified", "dispatcher_name": "NR", "reason": "Customer called dispatch"},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert web.status_code == 409
+        assert app_store._job_status[web_jid] == STATUS_EN_ROUTE
+
+        missing_reason = client.post(
+            f"/jobs/{voice_jid}/arrival/verify",
+            json={"method": "dispatcher_verified", "dispatcher_name": "NR", "reason": ""},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert missing_reason.status_code == 422
+        assert app_store._job_status[voice_jid] == STATUS_EN_ROUTE
+
+        voice = client.post(
+            f"/jobs/{voice_jid}/arrival/verify",
+            json={"method": "dispatcher_verified", "dispatcher_name": "NR", "reason": "Customer called dispatch"},
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert voice.status_code == 200, voice.text
+        assert voice.json()["status"] == STATUS_ARRIVED
+        assert voice.json()["verification_method"] == "dispatcher_verified"
+        assert app_store._job_status[voice_jid] == STATUS_ARRIVED
     finally:
         app_store.get_user_session = _orig_session
 

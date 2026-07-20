@@ -748,7 +748,10 @@ class JobStatusUpdateRequest(BaseModel):
 
 
 class ArrivalVerifyRequest(BaseModel):
-    pin: str
+    pin: str | None = None
+    method: str = "pin"
+    reason: str | None = None
+    dispatcher_name: str | None = None
 
 
 class IssueReportRequest(BaseModel):
@@ -3683,6 +3686,10 @@ async def technician_active_job(
         "approval_status": approval_status,
         "approval_url": approval_url,
         "tracking_token": tracking_token,
+        "arrival_verification": {
+            "pin_required": status == STATUS_EN_ROUTE,
+            "dispatcher_fallback_allowed": (result.get("detail") or {}).get("channel") == "voice",
+        },
         "intake_photos": [{"url": url} for url in photo_urls],
     }
     return enriched
@@ -4163,6 +4170,30 @@ async def verify_arrival(
         raise HTTPException(status_code=403, detail="Not your job")
     if lifecycle["status"] != STATUS_EN_ROUTE:
         raise HTTPException(status_code=409, detail="Job is not en route")
+    method = (payload.method or "pin").strip()
+    if method == "dispatcher_verified":
+        ticket = await require_ticket(job_id)
+        ticket_channel = getattr(ticket.channel, "value", str(ticket.channel))
+        if ticket_channel != "voice":
+            raise HTTPException(status_code=409, detail="Dispatcher verification is only available for call-center intake jobs.")
+        reason = (payload.reason or "").strip()
+        dispatcher_name = (payload.dispatcher_name or "").strip()
+        if len(dispatcher_name) < 2:
+            raise HTTPException(status_code=422, detail="Dispatcher name or initials are required.")
+        if len(reason) < 3:
+            raise HTTPException(status_code=422, detail="A verification note is required.")
+        updated = await store.set_job_status(
+            job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
+        )
+        if updated is None:
+            raise HTTPException(status_code=409, detail="Status changed concurrently")
+        await store.log_event_raw(
+            job_id,
+            f"arrival:dispatcher_verified_by_tech:tech={tech['id']}:dispatcher={dispatcher_name[:80]}:reason={reason[:140]}",
+        )
+        return {"status": updated["status"], "verification_method": method}
+    if method != "pin":
+        raise HTTPException(status_code=422, detail="Unsupported arrival verification method.")
     pin = (payload.pin or "").strip()
     result = await store.verify_arrival_pin(job_id, UUID(tech["id"]), _arrival_pin_hash(job_id, pin))
     if not result.get("ok"):

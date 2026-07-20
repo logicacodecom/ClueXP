@@ -76,6 +76,7 @@ export type TechnicianJob = {
   collection_currency?: string | null; // ISO currency for collection amounts
   approval_status?: "pending" | "approved" | "disputed" | "expired" | null; // customer approval
   approval_url?: string | null; // customer approval / tracking link
+  arrival_verification?: { pin_required?: boolean; dispatcher_fallback_allowed?: boolean } | null;
   technician_location_updated_at?: string | null; // when the server last received a fix
   technician_location_is_fresh?: boolean | null; // server's view of location freshness
   customer_name?: string | null;
@@ -202,6 +203,8 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [error, setError] = useState<string | null>(null);
   const [pinMode, setPinMode] = useState(false);
   const [pin, setPin] = useState("");
+  const [dispatcherName, setDispatcherName] = useState("");
+  const [dispatcherReason, setDispatcherReason] = useState("");
   const pinInput = useRef<HTMLInputElement>(null);
   const [sheet, setSheet] = useState<Sheet>(null);
   const [issueKind, setIssueKind] = useState<string | null>(null);
@@ -353,6 +356,35 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       setPin("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "PIN verification failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyDispatcherArrival() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/arrival/verify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          method: "dispatcher_verified",
+          dispatcher_name: dispatcherName.trim(),
+          reason: dispatcherReason.trim()
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) return window.location.assign("/signin");
+      if (!response.ok) throw new Error(body.detail || "Dispatcher verification failed");
+      setJob((current) => ({ ...current, status: "arrived" }));
+      setPinMode(false);
+      setPin("");
+      setDispatcherName("");
+      setDispatcherReason("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Dispatcher verification failed");
     } finally {
       setBusy(false);
     }
@@ -565,7 +597,29 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
       ) : null}
 
       <ContextRail onOpen={setSheet} />
-      {pinMode ? <PinSheet pin={pin} busy={busy} error={error} inputRef={pinInput} onPin={setPin} onClose={() => { setPinMode(false); setPin(""); setError(null); }} onConfirm={() => void verifyArrival()} /> : null}
+      {pinMode ? (
+        <PinSheet
+          dispatcherFallbackAllowed={Boolean(job.arrival_verification?.dispatcher_fallback_allowed)}
+          dispatcherName={dispatcherName}
+          dispatcherReason={dispatcherReason}
+          pin={pin}
+          busy={busy}
+          error={error}
+          inputRef={pinInput}
+          onDispatcherName={setDispatcherName}
+          onDispatcherReason={setDispatcherReason}
+          onPin={setPin}
+          onClose={() => {
+            setPinMode(false);
+            setPin("");
+            setDispatcherName("");
+            setDispatcherReason("");
+            setError(null);
+          }}
+          onConfirm={() => void verifyArrival()}
+          onDispatcherConfirm={() => void verifyDispatcherArrival()}
+        />
+      ) : null}
       {sheet ? <ActionSheet sheet={sheet} job={job} busy={busy} issueDone={issueDone} issueKind={issueKind} issueReason={issueReason} onClose={() => setSheet(null)} onIssueKind={setIssueKind} onIssueReason={setIssueReason} onSubmitIssue={(kind) => void submitIssue(kind)} /> : null}
     </div>
   );
@@ -775,7 +829,36 @@ function ContextRail({ onOpen }: { onOpen: (sheet: Exclude<Sheet, null>) => void
   );
 }
 
-function PinSheet({ pin, busy, error, inputRef, onPin, onClose, onConfirm }: { pin: string; busy: boolean; error: string | null; inputRef: RefObject<HTMLInputElement | null>; onPin: (value: string) => void; onClose: () => void; onConfirm: () => void }) {
+function PinSheet({
+  dispatcherFallbackAllowed,
+  dispatcherName,
+  dispatcherReason,
+  pin,
+  busy,
+  error,
+  inputRef,
+  onDispatcherName,
+  onDispatcherReason,
+  onPin,
+  onClose,
+  onConfirm,
+  onDispatcherConfirm
+}: {
+  dispatcherFallbackAllowed: boolean;
+  dispatcherName: string;
+  dispatcherReason: string;
+  pin: string;
+  busy: boolean;
+  error: string | null;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onDispatcherName: (value: string) => void;
+  onDispatcherReason: (value: string) => void;
+  onPin: (value: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+  onDispatcherConfirm: () => void;
+}) {
+  const canUseDispatchVerification = dispatcherName.trim().length >= 2 && dispatcherReason.trim().length >= 3;
   return (
     <div className="fixed inset-0 z-50 bg-background" role="dialog" aria-modal="true" aria-labelledby="pin-title">
       <div className="mx-auto flex min-h-[100svh] w-full max-w-[480px] flex-col px-5 safe-top safe-bottom">
@@ -790,9 +873,28 @@ function PinSheet({ pin, busy, error, inputRef, onPin, onClose, onConfirm }: { p
         </label>
         <p className="mt-3 text-center text-sm text-muted">The button enables after six digits.</p>
         {error ? <OperationalAlert tone="danger" text={error} /> : null}
+        {dispatcherFallbackAllowed ? (
+          <section className="mt-6 border border-info/30 bg-info/5 p-4">
+            <h3 className="font-condensed text-2xl font-bold uppercase text-info">Call-center verification</h3>
+            <p className="mt-2 text-sm leading-6 text-[#cfc8ba]">Use this only when dispatch confirms arrival for a call-center intake and the customer has no PIN page available.</p>
+            <label className="mt-4 block text-sm font-semibold text-[#f6f0e7]">
+              Dispatcher name or initials
+              <input className="mt-2 min-h-12 w-full border border-border bg-card px-3 text-base outline-none focus:border-primary" value={dispatcherName} onChange={(event) => onDispatcherName(event.target.value)} placeholder="Example: NR or Nadia" />
+            </label>
+            <label className="mt-4 block text-sm font-semibold text-[#f6f0e7]">
+              Verification note
+              <textarea className="mt-2 min-h-24 w-full resize-y border border-border bg-card px-3 py-2 text-base outline-none focus:border-primary" value={dispatcherReason} onChange={(event) => onDispatcherReason(event.target.value)} placeholder="Example: Customer called dispatch and confirmed technician is on site." />
+            </label>
+            <button className="mt-4 flex min-h-12 w-full items-center justify-center border border-info/40 bg-info/10 px-4 font-condensed text-lg font-semibold uppercase text-info disabled:opacity-50" disabled={busy || !canUseDispatchVerification} onClick={onDispatcherConfirm} type="button">
+              {busy ? <RefreshCw className="mr-2 size-5 animate-spin" /> : <ShieldCheck className="mr-2 size-5" />}
+              {busy ? "Verifying..." : "Mark dispatch verified"}
+            </button>
+          </section>
+        ) : (
+          <p className="mt-6 border border-border bg-card p-4 text-sm leading-6 text-muted">No PIN available? Contact dispatch. Dispatcher override is handled from the provider console for this intake type.</p>
+        )}
         <div className="mt-auto pt-8">
           <button className="field-primary-action" disabled={busy || pin.length !== 6} onClick={onConfirm} type="button">{busy ? <RefreshCw className="size-5 animate-spin" /> : <Check className="size-5" />}{busy ? "Verifying…" : "Confirm arrival"}</button>
-          <p className="mt-4 text-center text-sm text-muted">Can’t get a PIN? Close this screen and use More → Report problem.</p>
         </div>
       </div>
     </div>
