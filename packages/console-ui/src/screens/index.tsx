@@ -31,6 +31,7 @@ import {
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
   AlertTriangle,
   Badge,
@@ -556,27 +557,102 @@ const authorityOptions = [
   { value: "other", label: "Other authorized" },
 ] as const;
 
+const safetyOptions = [
+  { value: "none", label: "None reported" },
+  { value: "person_inside", label: "Person inside" },
+  { value: "pet_inside", label: "Pet inside" },
+  { value: "medical", label: "Medical concern" },
+  { value: "unsafe_location", label: "Unsafe location" },
+] as const;
+
+const sourceChannelOptions = [
+  { value: "Phone intake", label: "Phone" },
+  { value: "Walk-in", label: "Walk-in" },
+  { value: "Website callback", label: "Website callback" },
+  { value: "Referral", label: "Referral" },
+] as const;
+
+const initialProviderRequestForm = {
+  customer_name: "",
+  customer_phone: "",
+  street1: "",
+  street2: "",
+  city: "",
+  state: "",
+  zip: "",
+  source_channel: "Phone intake",
+  access_type: "",
+  situation: "",
+  urgency: "",
+  authority_role: "",
+  vehicle_make: "",
+  vehicle_model: "",
+  vehicle_year: "",
+  vehicle_color: "",
+  key_type: "unknown",
+  lock_type: "",
+  other_detail: "",
+  safety_flag: "",
+  scheduled_date: "",
+  scheduled_time: "",
+  notes: ""
+};
+
+function optionLabel(options: readonly { value: string; label: string }[], value: string) {
+  return options.find((option) => option.value === value)?.label ?? "Missing";
+}
+
+function normalizePhone(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function splitAddress(description: string) {
+  const parts = description.split(",").map((part) => part.trim()).filter(Boolean);
+  const stateZip = parts[2] || "";
+  const match = stateZip.match(/^([A-Za-z]{2})\s+(.+)$/);
+  return {
+    street1: parts[0] || description,
+    city: parts[1] || "",
+    state: match?.[1] || "",
+    zip: match?.[2] || "",
+  };
+}
+
+function fullAddress(form: typeof initialProviderRequestForm) {
+  return [
+    form.street1.trim(),
+    form.street2.trim(),
+    [form.city.trim(), form.state.trim(), form.zip.trim()].filter(Boolean).join(" "),
+  ].filter(Boolean).join(", ");
+}
+
 function OptionGroup<T extends string>({
   label,
   options,
   value,
-  onChange
+  onChange,
+  required,
+  tone = "default"
 }: {
   label: string;
   options: readonly { value: T; label: string }[];
   value: string;
   onChange: (value: T) => void;
+  required?: boolean;
+  tone?: "default" | "safety";
 }) {
   return (
     <div className="space-y-2">
-      <div className="text-sm font-medium">{label}</div>
+      <div className="text-sm font-medium">{label}{required ? <span className="text-destructive"> *</span> : null}</div>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => (
           <button
             className={cn(
               "min-h-10 rounded-md border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary",
               value === option.value
-                ? "border-primary bg-primary text-primary-foreground"
+                ? tone === "safety" && option.value !== "none"
+                  ? "border-destructive bg-destructive text-destructive-foreground"
+                  : "border-primary bg-primary text-primary-foreground"
                 : "border-border bg-background text-foreground hover:bg-accent"
             )}
             key={option.value}
@@ -593,25 +669,8 @@ function OptionGroup<T extends string>({
 
 export function ProviderNewRequest() {
   const org = organizationById(orgId);
-  const [form, setForm] = useState({
-    customer_name: "",
-    customer_phone: "",
-    address: "",
-    source_channel: "Phone intake",
-    access_type: "home",
-    situation: "locked_out",
-    urgency: "urgent",
-    authority_role: "owner",
-    vehicle_make: "",
-    vehicle_model: "",
-    vehicle_year: "",
-    vehicle_color: "",
-    key_type: "unknown",
-    lock_type: "",
-    unit: "",
-    safety_flag: "none",
-    notes: ""
-  });
+  const customerNameRef = useRef<HTMLInputElement | null>(null);
+  const [form, setForm] = useState(initialProviderRequestForm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -619,43 +678,59 @@ export function ProviderNewRequest() {
   const [placesLoading, setPlacesLoading] = useState(false);
   const [addressStatus, setAddressStatus] = useState<"manual" | "selected" | "unresolved">("manual");
   const [geocodeConfidence, setGeocodeConfidence] = useState<string | null>(null);
-  const addressScope = org?.service_area ?? "";
+  const [activePredictionIndex, setActivePredictionIndex] = useState(-1);
 
   function update(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
-    if (field === "address") {
+    if (["street1", "street2", "city", "state", "zip"].includes(field)) {
       setAddressStatus("manual");
       setGeocodeConfidence(null);
     }
   }
 
+  function resetForNextCall() {
+    setForm(initialProviderRequestForm);
+    setError(null);
+    setCreatedId(null);
+    setPlacePredictions([]);
+    setAddressStatus("manual");
+    setGeocodeConfidence(null);
+    requestAnimationFrame(() => customerNameRef.current?.focus());
+  }
+
   function buildNotes() {
     const details = [
       form.notes.trim(),
-      `Authority: ${form.authority_role}`,
-      form.safety_flag !== "none" ? `Safety flag: ${form.safety_flag}` : "Safety flag: none reported",
-      form.unit.trim() ? `Unit/access: ${form.unit.trim()}` : "",
+      `Authority: ${optionLabel(authorityOptions, form.authority_role)}`,
+      `Safety flag: ${optionLabel(safetyOptions, form.safety_flag)}`,
+      form.urgency === "scheduled"
+        ? `Scheduled service: ${form.scheduled_date || "date missing"} ${form.scheduled_time || "time missing"}`
+        : "",
       form.access_type === "vehicle"
         ? `Vehicle: ${[form.vehicle_year, form.vehicle_color, form.vehicle_make, form.vehicle_model].filter(Boolean).join(" ") || "details not provided"}; key type: ${form.key_type}`
         : "",
       form.access_type === "home" || form.access_type === "business"
         ? `Lock/property: ${form.lock_type.trim() || "not sure"}`
         : "",
+      form.access_type === "other" ? `Other service detail: ${form.other_detail.trim() || "not provided"}` : "",
       addressStatus === "selected" ? `Address verified: ${geocodeConfidence || "confidence unknown"}` : "Address not verified by autocomplete",
     ].filter(Boolean);
     return details.join("\n");
   }
 
   async function selectPlace(description: string) {
-    update("address", description);
+    const parsed = splitAddress(description);
+    setForm((current) => ({ ...current, ...parsed }));
     setPlacePredictions([]);
+    setActivePredictionIndex(-1);
     setPlacesLoading(true);
     try {
       const response = await fetch(`/api/geocode?q=${encodeURIComponent(description)}`, { cache: "no-store" });
       const body = await response.json().catch(() => ({})) as GeocodeResponse;
       if (!response.ok) throw new Error("Unable to verify address");
       if (body.resolved) {
-        setForm((current) => ({ ...current, address: body.formatted_address || description }));
+        const verified = splitAddress(body.formatted_address || description);
+        setForm((current) => ({ ...current, ...verified }));
         setAddressStatus("selected");
         setGeocodeConfidence(body.geocode_confidence);
       } else {
@@ -670,6 +745,26 @@ export function ProviderNewRequest() {
     }
   }
 
+  function handleAddressKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (!placePredictions.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActivePredictionIndex((index) => Math.min(index + 1, placePredictions.length - 1));
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActivePredictionIndex((index) => Math.max(index - 1, 0));
+    }
+    if (event.key === "Enter" && activePredictionIndex >= 0) {
+      event.preventDefault();
+      void selectPlace(placePredictions[activePredictionIndex]!.description);
+    }
+    if (event.key === "Escape") {
+      setPlacePredictions([]);
+      setActivePredictionIndex(-1);
+    }
+  }
+
   async function createRequest() {
     setBusy(true);
     setError(null);
@@ -681,7 +776,7 @@ export function ProviderNewRequest() {
         body: JSON.stringify({
           customer_name: form.customer_name.trim() || null,
           customer_phone: form.customer_phone.trim() || null,
-          address: [form.address.trim(), form.unit.trim()].filter(Boolean).join(", "),
+          address: fullAddress(form),
           source_channel: form.source_channel,
           access_type: form.access_type,
           situation: form.situation,
@@ -700,7 +795,7 @@ export function ProviderNewRequest() {
   }
 
   useEffect(() => {
-    const address = form.address.trim();
+    const address = form.street1.trim();
     if (address.length < 2 || addressStatus === "selected") {
       setPlacePredictions([]);
       setPlacesLoading(false);
@@ -710,13 +805,13 @@ export function ProviderNewRequest() {
     const timer = setTimeout(async () => {
       setPlacesLoading(true);
       try {
-        const scopedQuery = [address, addressScope].filter(Boolean).join(" ");
-        const response = await fetch(`/api/places/autocomplete?q=${encodeURIComponent(scopedQuery)}`, {
+        const response = await fetch(`/api/places/autocomplete?q=${encodeURIComponent(address)}`, {
           cache: "no-store",
           signal: controller.signal,
         });
         const body = await response.json().catch(() => ({})) as PlacesAutocompleteResponse;
         setPlacePredictions(response.ok ? (body.predictions || []).slice(0, 5) : []);
+        setActivePredictionIndex(-1);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         setPlacePredictions([]);
@@ -728,45 +823,102 @@ export function ProviderNewRequest() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [form.address, addressScope, addressStatus]);
+  }, [form.street1, addressStatus]);
 
-  const canCreate = Boolean(form.customer_name.trim() && form.customer_phone.trim() && form.address.trim());
+  useEffect(() => {
+    customerNameRef.current?.focus();
+  }, []);
+
+  const phoneValid = normalizePhone(form.customer_phone).length >= 10;
+  const scheduledReady = form.urgency !== "scheduled" || Boolean(form.scheduled_date && form.scheduled_time);
+  const canCreate = Boolean(
+    form.customer_name.trim().length >= 2 &&
+    phoneValid &&
+    form.street1.trim() &&
+    form.city.trim() &&
+    form.state.trim() &&
+    form.zip.trim() &&
+    form.access_type &&
+    form.situation &&
+    form.urgency &&
+    form.authority_role &&
+    form.safety_flag &&
+    scheduledReady
+  );
+  const missingItems = [
+    form.customer_name.trim().length >= 2 ? "" : "caller name",
+    phoneValid ? "" : "valid callback phone",
+    form.street1.trim() && form.city.trim() && form.state.trim() && form.zip.trim() ? "" : "complete address",
+    form.access_type ? "" : "service type",
+    form.situation ? "" : "situation",
+    form.urgency ? "" : "urgency",
+    form.authority_role ? "" : "authority",
+    form.safety_flag ? "" : "safety",
+    scheduledReady ? "" : "scheduled date and time",
+  ].filter(Boolean);
+  const composedNotes = buildNotes();
 
   return (
     <div>
       <PageHeader
-        kicker="Manual intake"
-        title="New Service Request"
-        description="Call-center entry for provider-owned requests. The backend creates the job with trusted org/session context, not a browser-supplied org id."
-        actions={<><Badge variant="outline">Origin: {org?.display_name ?? "Provider"}</Badge><Badge variant="outline">Customer owner: {org?.display_name ?? "Provider"}</Badge></>}
+        kicker="Call intake"
+        title="New service request"
+        description="Capture the caller, location, service need, safety status, and authorization before sending the job to dispatch."
+        actions={<><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge><Badge variant="outline">Phone workflow</Badge></>}
       />
       <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>Request details</CardTitle>
-              <CardDescription>Designed for phone and dispatcher-entered requests. Submit stores the customer under the authenticated provider tenant.</CardDescription>
+              <CardTitle>Call details</CardTitle>
+              <CardDescription>Required fields are marked. Leave unknown technical details as not sure instead of guessing.</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="space-y-2 text-sm font-medium">Customer name<Input placeholder="Customer display name" value={form.customer_name} onChange={(event) => update("customer_name", event.target.value)} /></label>
-              <label className="space-y-2 text-sm font-medium">Customer phone<Input placeholder="Verified phone" value={form.customer_phone} onChange={(event) => update("customer_phone", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Customer name <span className="text-destructive">*</span><Input ref={customerNameRef} placeholder="Customer display name" value={form.customer_name} onChange={(event) => update("customer_name", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">Callback phone <span className="text-destructive">*</span><Input type="tel" inputMode="tel" placeholder="Verified callback number" value={form.customer_phone} onChange={(event) => update("customer_phone", event.target.value)} /></label>
+              <label className="space-y-2 text-sm font-medium">
+                Source channel
+                <select className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={form.source_channel} onChange={(event) => update("source_channel", event.target.value)}>
+                  {sourceChannelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="space-y-4 rounded-md border border-border bg-secondary/30 p-4">
+              <div>
+                <div className="text-sm font-semibold">1. Location <span className="text-destructive">*</span></div>
+                <p className="text-xs text-muted-foreground">Use autocomplete when possible. Manual fields stay editable.</p>
+              </div>
               <label className="relative space-y-2 text-sm font-medium">
-                Service address
+                Street 1
                 <div className="relative">
                   <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                  <Input className="pl-9" placeholder="Start typing address or landmark" value={form.address} onChange={(event) => update("address", event.target.value)} autoComplete="off" />
+                  <Input
+                    aria-autocomplete="list"
+                    aria-controls="provider-address-suggestions"
+                    aria-expanded={placePredictions.length > 0}
+                    className="pl-9"
+                    placeholder="Start typing street address"
+                    role="combobox"
+                    value={form.street1}
+                    onChange={(event) => update("street1", event.target.value)}
+                    onKeyDown={handleAddressKeyDown}
+                    autoComplete="off"
+                  />
                 </div>
                 <div className="min-h-5 text-xs text-muted-foreground" role="status">
-                  {placesLoading ? "Checking suggestions..." : addressStatus === "selected" ? `Address verified${geocodeConfidence ? ` · ${geocodeConfidence} confidence` : ""}` : addressStatus === "unresolved" ? "Using typed address. Dispatch may need to confirm location." : `Searching ${addressScope || "service area"} first. Manual entry is allowed.`}
+                  {placesLoading ? "Checking suggestions..." : addressStatus === "selected" ? `Address verified${geocodeConfidence ? ` · ${geocodeConfidence} confidence` : ""}` : addressStatus === "unresolved" ? "Using typed address. Dispatch may need to confirm location." : "Autocomplete is unscoped. Select a match or keep typing."}
                 </div>
                 {placePredictions.length > 0 ? (
-                  <div className="absolute left-0 right-0 top-full z-20 overflow-hidden rounded-md border border-border bg-popover shadow-lg">
-                    {placePredictions.map((prediction) => (
+                  <div className="absolute left-0 right-0 top-full z-20 overflow-hidden rounded-md border border-border bg-popover shadow-lg" id="provider-address-suggestions" role="listbox">
+                    {placePredictions.map((prediction, index) => (
                       <button
-                        className="flex w-full items-start gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                        aria-selected={activePredictionIndex === index}
+                        className={cn("flex w-full items-start gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none", activePredictionIndex === index && "bg-accent")}
                         key={prediction.place_id}
+                        role="option"
                         type="button"
                         onClick={() => void selectPlace(prediction.description)}
                       >
@@ -777,80 +929,113 @@ export function ProviderNewRequest() {
                   </div>
                 ) : null}
               </label>
-              <label className="space-y-2 text-sm font-medium">Source channel<Input placeholder="Phone, website, QR, referral" value={form.source_channel} onChange={(event) => update("source_channel", event.target.value)} /></label>
-            </div>
-            <div className="space-y-5 rounded-md border border-border bg-secondary/30 p-4">
-              <OptionGroup label="Service type" options={accessTypeOptions} value={form.access_type} onChange={(value) => update("access_type", value)} />
-              <OptionGroup label="Situation" options={situationOptions} value={form.situation} onChange={(value) => update("situation", value)} />
-              <OptionGroup label="Urgency" options={urgencyOptions} value={form.urgency} onChange={(value) => update("urgency", value)} />
-              <OptionGroup label="Customer authority" options={authorityOptions} value={form.authority_role} onChange={(value) => update("authority_role", value)} />
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="space-y-2 text-sm font-medium">Unit, gate, or landmark detail<Input placeholder="Apartment, suite, gate code, entrance note" value={form.unit} onChange={(event) => update("unit", event.target.value)} /></label>
-              <label className="space-y-2 text-sm font-medium">
-                Safety flag
-                <select className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={form.safety_flag} onChange={(event) => update("safety_flag", event.target.value)}>
-                  <option value="none">None reported</option>
-                  <option value="person_inside">Person inside</option>
-                  <option value="pet_inside">Pet inside</option>
-                  <option value="medical">Medical concern</option>
-                  <option value="unsafe_location">Unsafe location</option>
-                </select>
-              </label>
-            </div>
-            {form.access_type === "vehicle" ? (
-              <div className="grid gap-4 rounded-md border border-border p-4 md:grid-cols-3">
-                <label className="space-y-2 text-sm font-medium">Make<Input placeholder="Toyota, Ford..." value={form.vehicle_make} onChange={(event) => update("vehicle_make", event.target.value)} /></label>
-                <label className="space-y-2 text-sm font-medium">Model<Input placeholder="Camry, F-150..." value={form.vehicle_model} onChange={(event) => update("vehicle_model", event.target.value)} /></label>
-                <label className="space-y-2 text-sm font-medium">Year<Input inputMode="numeric" placeholder="2021" value={form.vehicle_year} onChange={(event) => update("vehicle_year", event.target.value)} /></label>
-                <label className="space-y-2 text-sm font-medium">Color<Input placeholder="Black, white..." value={form.vehicle_color} onChange={(event) => update("vehicle_color", event.target.value)} /></label>
-                <label className="space-y-2 text-sm font-medium md:col-span-2">
-                  Key type
-                  <select className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={form.key_type} onChange={(event) => update("key_type", event.target.value)}>
-                    <option value="unknown">Not sure</option>
-                    <option value="mechanical">Mechanical key</option>
-                    <option value="transponder">Transponder</option>
-                    <option value="smart_key">Smart key / fob</option>
-                  </select>
-                </label>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm font-medium">Street 2 / unit<Input placeholder="Apartment, suite, gate, landmark" value={form.street2} onChange={(event) => update("street2", event.target.value)} /></label>
+                <label className="space-y-2 text-sm font-medium">City <span className="text-destructive">*</span><Input value={form.city} onChange={(event) => update("city", event.target.value)} /></label>
+                <label className="space-y-2 text-sm font-medium">State <span className="text-destructive">*</span><Input maxLength={2} value={form.state} onChange={(event) => update("state", event.target.value.toUpperCase())} /></label>
+                <label className="space-y-2 text-sm font-medium">ZIP <span className="text-destructive">*</span><Input inputMode="numeric" value={form.zip} onChange={(event) => update("zip", event.target.value)} /></label>
               </div>
-            ) : null}
-            {form.access_type === "home" || form.access_type === "business" ? (
-              <label className="block space-y-2 rounded-md border border-border p-4 text-sm font-medium">
-                Lock or property detail
-                <Input placeholder={form.access_type === "business" ? "Storefront, office, access control, safe..." : "Front door, deadbolt, smart lock, garage..."} value={form.lock_type} onChange={(event) => update("lock_type", event.target.value)} />
-              </label>
-            ) : null}
-            <div className="grid gap-3 rounded-md border border-border bg-background p-4 text-sm md:grid-cols-3">
-              <div><div className="font-medium">Required</div><div className={form.customer_name.trim() && form.customer_phone.trim() ? "text-success" : "text-muted-foreground"}>Caller and callback</div></div>
-              <div><div className="font-medium">Location</div><div className={form.address.trim() ? "text-success" : "text-muted-foreground"}>{addressStatus === "selected" ? "Verified address" : "Manual or pending"}</div></div>
-              <div><div className="font-medium">Dispatch type</div><div className="text-success">{form.access_type} · {form.situation}</div></div>
             </div>
+
+            <div className="space-y-5 rounded-md border border-border bg-secondary/30 p-4">
+              <div>
+                <div className="text-sm font-semibold">2. Service</div>
+                <p className="text-xs text-muted-foreground">Choose coded values for dispatch. Labels shown here are normalized for agents.</p>
+              </div>
+              <OptionGroup required label="Service type" options={accessTypeOptions} value={form.access_type} onChange={(value) => update("access_type", value)} />
+              {form.access_type === "vehicle" ? (
+                <div className="grid gap-4 rounded-md border border-border bg-background p-4 md:grid-cols-3">
+                  <label className="space-y-2 text-sm font-medium">Make<Input placeholder="Toyota, Ford..." value={form.vehicle_make} onChange={(event) => update("vehicle_make", event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium">Model<Input placeholder="Camry, F-150..." value={form.vehicle_model} onChange={(event) => update("vehicle_model", event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium">Year<Input inputMode="numeric" placeholder="2021" value={form.vehicle_year} onChange={(event) => update("vehicle_year", event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium">Color<Input placeholder="Black, white..." value={form.vehicle_color} onChange={(event) => update("vehicle_color", event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium md:col-span-2">
+                    Key type
+                    <select className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={form.key_type} onChange={(event) => update("key_type", event.target.value)}>
+                      <option value="unknown">Not sure</option>
+                      <option value="mechanical">Mechanical key</option>
+                      <option value="transponder">Transponder</option>
+                      <option value="smart_key">Smart key / fob</option>
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+              {form.access_type === "home" || form.access_type === "business" ? (
+                <label className="block space-y-2 rounded-md border border-border bg-background p-4 text-sm font-medium">
+                  Lock or property detail
+                  <Input placeholder={form.access_type === "business" ? "Storefront, office, access control, safe..." : "Front door, deadbolt, smart lock, garage..."} value={form.lock_type} onChange={(event) => update("lock_type", event.target.value)} />
+                </label>
+              ) : null}
+              {form.access_type === "other" ? (
+                <label className="block space-y-2 rounded-md border border-border bg-background p-4 text-sm font-medium">
+                  Other service detail
+                  <Input placeholder="Describe the access problem" value={form.other_detail} onChange={(event) => update("other_detail", event.target.value)} />
+                </label>
+              ) : null}
+              <OptionGroup required label="Situation" options={situationOptions} value={form.situation} onChange={(value) => update("situation", value)} />
+              <OptionGroup required label="Urgency" options={urgencyOptions} value={form.urgency} onChange={(value) => update("urgency", value)} />
+              {form.urgency === "scheduled" ? (
+                <div className="grid gap-4 rounded-md border border-border bg-background p-4 md:grid-cols-2">
+                  <label className="space-y-2 text-sm font-medium">Calendar date <span className="text-destructive">*</span><Input type="date" value={form.scheduled_date} onChange={(event) => update("scheduled_date", event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium">Time <span className="text-destructive">*</span><Input type="time" value={form.scheduled_time} onChange={(event) => update("scheduled_time", event.target.value)} /></label>
+                  <p className="text-xs text-muted-foreground md:col-span-2">Scheduling is captured with the request details for dispatch visibility.</p>
+                </div>
+              ) : null}
+              <OptionGroup required label="Customer authority" options={authorityOptions} value={form.authority_role} onChange={(value) => update("authority_role", value)} />
+            </div>
+
+            <div className="space-y-5 rounded-md border border-border bg-secondary/30 p-4">
+              <div>
+                <div className="text-sm font-semibold">3. Safety <span className="text-destructive">*</span></div>
+                <p className="text-xs text-muted-foreground">Ask directly. Do not leave this blank.</p>
+              </div>
+              <OptionGroup required tone="safety" label="Safety status" options={safetyOptions} value={form.safety_flag} onChange={(value) => update("safety_flag", value)} />
+            </div>
+
             <label className="space-y-2 text-sm font-medium">
               Dispatcher notes
               <textarea className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" placeholder="Plain-language notes from the call" value={form.notes} onChange={(event) => update("notes", event.target.value)} />
             </label>
-            {createdId ? <div className="rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success">Created request {createdId}</div> : null}
+            {createdId ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success">
+                <span>Created request {createdId}</span>
+                <Button asChild size="sm" variant="outline"><Link href={`/queue/${createdId}`}>Open assignment</Link></Button>
+                <Button size="sm" onClick={resetForNextCall}>Create another</Button>
+              </div>
+            ) : null}
             {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy || !canCreate} onClick={createRequest}>{busy ? "Creating..." : "Create Request"}</Button>
               <Button asChild variant="outline"><Link href="/queue">Back to Queue</Link></Button>
             </div>
+            {!canCreate ? <p className="text-sm text-muted-foreground">Add {missingItems.join(", ")} before creating the request.</p> : null}
           </CardContent>
         </Card>
         <div className="space-y-6">
           <Card>
-            <CardHeader><CardTitle>Tenant policy preview</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">dispatch_mode: organization_managed</Badge>
-                <Badge variant="outline">fulfillment_policy: private</Badge>
-                <Badge variant="success">no-solicit required</Badge>
+            <CardHeader><CardTitle>Request readiness</CardTitle></CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <div className="grid gap-3">
+                <div className="flex items-center justify-between gap-3"><span>Caller and callback</span><Badge variant={form.customer_name.trim().length >= 2 && phoneValid ? "success" : "outline"}>{form.customer_name.trim().length >= 2 && phoneValid ? "Ready" : "Missing"}</Badge></div>
+                <div className="flex items-center justify-between gap-3"><span>Location</span><Badge variant={form.street1 && form.city && form.state && form.zip ? "success" : "outline"}>{addressStatus === "selected" ? "Verified" : form.street1 ? "Manual" : "Missing"}</Badge></div>
+                <div className="flex items-center justify-between gap-3"><span>Service</span><Badge variant={form.access_type && form.situation ? "success" : "outline"}>{form.access_type && form.situation ? `${optionLabel(accessTypeOptions, form.access_type)} · ${optionLabel(situationOptions, form.situation)}` : "Missing"}</Badge></div>
+                <div className="flex items-center justify-between gap-3"><span>Urgency</span><Badge variant={form.urgency ? "success" : "outline"}>{optionLabel(urgencyOptions, form.urgency)}</Badge></div>
+                <div className="flex items-center justify-between gap-3"><span>Authority</span><Badge variant={form.authority_role ? "success" : "outline"}>{optionLabel(authorityOptions, form.authority_role)}</Badge></div>
+                <div className="flex items-center justify-between gap-3"><span>Safety</span><Badge variant={form.safety_flag && form.safety_flag !== "none" ? "danger" : form.safety_flag ? "success" : "outline"}>{optionLabel(safetyOptions, form.safety_flag)}</Badge></div>
               </div>
-              <p className="text-sm leading-6 text-muted-foreground">
-                On submit, the authenticated provider session sets origin and customer owner.
-                The browser only sends form content and source context.
-              </p>
+              <div className="rounded-md border border-border bg-background p-3">
+                <div className="mb-2 font-medium">Summary</div>
+                <div className="space-y-1 text-muted-foreground">
+                  <div>{form.customer_name || "Caller name"} · {form.customer_phone || "callback missing"}</div>
+                  <div>{fullAddress(form) || "Address missing"}</div>
+                  <div>{form.access_type ? optionLabel(accessTypeOptions, form.access_type) : "Service type missing"} · {form.situation ? optionLabel(situationOptions, form.situation) : "situation missing"}</div>
+                  {form.urgency === "scheduled" ? <div>Scheduled: {form.scheduled_date || "date missing"} {form.scheduled_time || "time missing"}</div> : null}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-background p-3">
+                <div className="mb-2 font-medium">Notes preview</div>
+                <pre className="whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{composedNotes || "No notes yet."}</pre>
+              </div>
             </CardContent>
           </Card>
           <TrustSafety status="INTAKE" flags={[]} />
