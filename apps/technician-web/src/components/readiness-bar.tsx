@@ -307,15 +307,7 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
       })() : null}
 
       <div className="mt-5">
-        {available === null ? null : !available ? (
-          <div className="border-y border-border py-8 text-center">
-            <div className="font-condensed text-3xl font-bold uppercase leading-none">You're offline</div>
-            <p className="mx-auto mt-2 max-w-[18rem] text-sm leading-6 text-muted">Go online to start receiving nearby offers.</p>
-            <button className="field-primary-action mt-5" disabled={availBusy} onClick={() => void toggleAvailable()} type="button">
-              {availBusy ? "Going online…" : "Go online"}
-            </button>
-          </div>
-        ) : blocker ? (
+        {available === null || !available ? null : blocker ? (
           <div className="border-y border-border py-8 text-center">
             <div className={`mx-auto flex size-16 items-center justify-center rounded-full border-2 ${toneBorder(blocker.tone)} ${toneText(blocker.tone)}`}>
               <blocker.icon className="size-7" />

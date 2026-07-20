@@ -37,7 +37,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { AvailabilityToggle, Countdown, TechnicianBottomNav } from "./client-widgets";
+import { Countdown, ProfileAvatar, TechnicianBottomNav } from "./client-widgets";
 import { GoogleMapView } from "./google-map";
 import type { MapPoint } from "./google-map";
 import { activeJobActionItems } from "./technician-app-chrome";
@@ -134,25 +134,15 @@ export function Screen({
 }
 
 export function TechnicianTopBar({
-  profile = technicianAppProfile,
-  title = "ClueXP Tech"
+  title
 }: {
-  profile?: TechnicianAppProfile;
   title?: string;
 }) {
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-border/80 bg-background/96 px-4 pb-3 backdrop-blur-xl">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <img className="h-6 w-auto object-contain" src="/logo.png" alt="ClueXP" />
-          <div className="truncate font-condensed text-lg font-bold uppercase leading-tight">{title}</div>
-        </div>
-        <div className="flex items-center gap-2.5">
-          <AvailabilityToggle profile={profile} />
-          <Link className="touch-target flex items-center justify-center rounded-full border border-border bg-card" href="/profile" aria-label="Open account">
-            <Users className="size-5" />
-          </Link>
-        </div>
+        <img className="h-6 w-auto object-contain" src="/logo.png" alt="ClueXP" />
+        <ProfileAvatar />
       </div>
     </header>
   );

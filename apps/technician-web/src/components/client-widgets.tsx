@@ -2,7 +2,7 @@
 
 import { technicianAppProfile } from "@cluexp/api-client";
 import type { TechnicianAppProfile } from "@cluexp/api-client";
-import { LogOut } from "lucide-react";
+import { LogOut, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -104,6 +104,31 @@ export function AvailabilityToggle({ profile = technicianAppProfile }: { profile
       {online === null ? "..." : loading ? "Updating..." : isOnline ? "Online" : "Offline"}
       {error && <span className="text-xs text-danger">{error}</span>}
     </button>
+  );
+}
+
+export function ProfileAvatar() {
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/session", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const url = data?.session?.technician?.photo_url;
+        setPhotoUrl(typeof url === "string" ? url : null);
+      })
+      .catch(() => setPhotoUrl(null));
+  }, []);
+
+  return (
+    <Link className="touch-target flex items-center justify-center overflow-hidden rounded-full border border-border bg-card" href="/profile" aria-label="Open account">
+      {photoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img alt="Profile photo" className="size-full object-cover" src={photoUrl} />
+      ) : (
+        <Users className="size-5" />
+      )}
+    </Link>
   );
 }
 
