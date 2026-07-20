@@ -1670,6 +1670,34 @@ def test_provider_jobs_list_scoped():
     assert ja in ids and jb not in ids
 
 
+def test_provider_jobs_include_operations_fields():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[jid] = tid
+    app_store._job_loc = getattr(app_store, "_job_loc", {})
+    app_store._job_loc[jid] = (40.7589, -73.9851)
+    app_store._job_address = getattr(app_store, "_job_address", {})
+    app_store._job_address[jid] = "Times Square, New York, NY"
+
+    updated = asyncio.run(app_store.set_job_status(UUID(jid), STATUS_EN_ROUTE))
+    assert updated == {"id": jid, "status": STATUS_EN_ROUTE}
+
+    resp = client.get("/provider/jobs", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    row = next(j for j in resp.json() if j["id"] == jid)
+    assert row["lat"] == 40.7589
+    assert row["lng"] == -73.9851
+    assert row["address"] == "Times Square, New York, NY"
+    assert row["fulfillment_technician_id"] == tid
+    assert row["technician_display_name"] == "Org Tech"
+    assert row["technician_location_updated_at"]
+    assert row["active_status_started_at"] == app_store._job_timestamps[jid]["en_route_at"]
+
+
 # ---------------------------------------------------------------------------
 # Gate 4 hardening: demo routes gated, health check, ops flags, token rate limit
 # ---------------------------------------------------------------------------

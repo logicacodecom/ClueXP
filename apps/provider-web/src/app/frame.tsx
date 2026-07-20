@@ -2,7 +2,7 @@
 
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { Layers, LineChart, Receipt, Users as UsersIcon, Wallet } from "lucide-react";
+import { Layers, LineChart, Radar, Receipt, Users as UsersIcon, Wallet } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -34,7 +34,9 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const reportsNav = defaultNav.find((item) => item.href === "/reports") ?? defaultNav[0];
   const adminNav = defaultNav.find((item) => item.href === "/settings") ?? defaultNav[0];
   const providerNav = [
-    ...mappedNav,
+    mappedNav[0],
+    { ...defaultNav[0], label: "Operations", href: "/operations", icon: Radar },
+    ...mappedNav.slice(1),
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
     { ...defaultNav[0], label: "Completed", href: "/completed" },
     { ...reportsNav, label: "Overview", href: "/financial", icon: LineChart, group: "Financial" as const },

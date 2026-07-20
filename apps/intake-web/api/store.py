@@ -84,6 +84,14 @@ def _default_agreement(organization_id: str, technician_id: str) -> dict:
     }
 
 
+def _active_status_started_at(status: str | None, timestamps: dict[str, str | None]) -> str | None:
+    """Resolve the timestamp for the job's current lifecycle status, if known."""
+    column = STATUS_TIMESTAMP_COLUMN.get(status or "")
+    if not column:
+        return None
+    return timestamps.get(column)
+
+
 def _agreement_cut_basis_points(agreement: dict | None, skill_code: str | None) -> int:
     if not agreement:
         return 0
@@ -2507,6 +2515,8 @@ class InMemoryStore(Store):
         statuses = getattr(self, "_job_status", {})
         job_org = getattr(self, "_job_org", {})
         job_tech = getattr(self, "_job_tech", {})
+        job_loc = getattr(self, "_job_loc", {})
+        job_timestamps = getattr(self, "_job_timestamps", {})
         offers = getattr(self, "_offers", {})
         recoverable = {
             STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED,
@@ -2521,12 +2531,26 @@ class InMemoryStore(Store):
                 None,
             )
             issues = [e for e in self._events_for(jid) if e["event"].startswith("tech_issue:")]
+            tech_id = job_tech.get(jid)
+            tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == str(tech_id)), None)
+            loc = job_loc.get(jid)
+            timestamps = job_timestamps.get(jid, {})
             out.append({
-                "id": jid, "status": status, "address": None, "access_type": None,
-                "situation": None, "urgency": None, "created_at": None,
-                "fulfillment_technician_id": job_tech.get(jid),
+                "id": jid, "status": status,
+                "address": getattr(self, "_job_address", {}).get(jid),
+                "access_type": getattr(self, "_job_access_type", {}).get(jid),
+                "situation": getattr(self, "_job_situation", {}).get(jid),
+                "urgency": getattr(self, "_job_urgency", {}).get(jid),
+                "created_at": getattr(self, "_job_created_at", {}).get(jid),
+                "lat": loc[0] if loc else None,
+                "lng": loc[1] if loc else None,
+                "fulfillment_technician_id": tech_id,
+                "technician_display_name": tech.get("display_name") if tech else None,
+                "technician_location_updated_at": tech.get("location_updated_at") if tech else None,
+                "active_status_started_at": _active_status_started_at(status, timestamps),
                 "offer_active": active_offer is not None,
                 "offer_id": active_offer["id"] if active_offer else None,
+                "offer_expires_at": active_offer.get("expires_at") if active_offer else None,
                 "last_issue": issues[-1]["event"] if issues else None,
             })
         return out
@@ -5696,8 +5720,13 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select j.id, j.status, j.address, j.access_type, j.situation, j.urgency,"
-                " j.created_at, j.fulfillment_technician_id, o.id, o.expires_at, i.event"
+                " j.created_at, j.fulfillment_technician_id, j.lat, j.lng,"
+                " t.display_name, t.location_updated_at,"
+                " j.assigned_at, j.en_route_at, j.arrived_at, j.in_progress_at,"
+                " j.completed_pending_at, j.disputed_at,"
+                " o.id, o.expires_at, i.event"
                 " from jobs j"
+                " left join technicians t on t.id = j.fulfillment_technician_id"
                 " left join dispatch_offers o on o.job_id = j.id and o.status = 'offered'"
                 " left join lateral ("
                 "   select event from events"
@@ -5710,19 +5739,32 @@ class PostgresStore(Store):
                 (str(org_id), str(org_id), recoverable),
             )
             rows = await cur.fetchall()
-        return [
-            {
+        out: list[dict] = []
+        for r in rows:
+            timestamps = {
+                "assigned_at": r[12].isoformat() if r[12] else None,
+                "en_route_at": r[13].isoformat() if r[13] else None,
+                "arrived_at": r[14].isoformat() if r[14] else None,
+                "in_progress_at": r[15].isoformat() if r[15] else None,
+                "completed_pending_at": r[16].isoformat() if r[16] else None,
+                "disputed_at": r[17].isoformat() if r[17] else None,
+            }
+            out.append({
                 "id": str(r[0]), "status": r[1], "address": r[2], "access_type": r[3],
                 "situation": r[4], "urgency": r[5],
                 "created_at": r[6].isoformat() if r[6] else None,
                 "fulfillment_technician_id": str(r[7]) if r[7] else None,
-                "offer_active": r[8] is not None,
-                "offer_id": str(r[8]) if r[8] else None,
-                "offer_expires_at": r[9].isoformat() if r[9] else None,
-                "last_issue": r[10],
-            }
-            for r in rows
-        ]
+                "lat": r[8],
+                "lng": r[9],
+                "technician_display_name": r[10],
+                "technician_location_updated_at": r[11].isoformat() if r[11] else None,
+                "active_status_started_at": _active_status_started_at(r[1], timestamps),
+                "offer_active": r[18] is not None,
+                "offer_id": str(r[18]) if r[18] else None,
+                "offer_expires_at": r[19].isoformat() if r[19] else None,
+                "last_issue": r[20],
+            })
+        return out
 
     async def list_job_events(self, job_id: UUID) -> list[dict]:
         async with await self._connect() as conn:

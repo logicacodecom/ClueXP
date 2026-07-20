@@ -10,7 +10,8 @@
     "./globals.css": "./src/globals.css"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/screens/*.test.ts"
   },
   "dependencies": {
     "@cluexp/api-client": "*",
