@@ -803,6 +803,39 @@ def test_provider_queue_scoped_to_org():
     assert job_a in ids and job_b not in ids, "dispatcher must see only their own org's jobs"
 
 
+def test_provider_manual_request_enters_dispatch_queue():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    created = client.post(
+        "/provider/requests",
+        json={
+            "customer_name": "Taylor Morgan",
+            "customer_phone": "(555) 014-0199",
+            "address": "210 Pine St, North Hills",
+            "source_channel": "Phone intake",
+            "access_type": "home",
+            "situation": "locked_out",
+            "urgency": "urgent",
+            "notes": "Customer has ID available.",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert created.status_code == 200, created.text
+    ticket_id = created.json()["ticket"]["ticket_id"]
+
+    queued = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+    assert queued.status_code == 200, queued.text
+    assert ticket_id in [job["id"] for job in queued.json()]
+
+
 def test_provider_assign_happy_path_own_tech():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

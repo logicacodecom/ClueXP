@@ -2477,6 +2477,10 @@ async def create_provider_request(
     )
     origin = _manual_origin(session, payload)
     await save(ticket, origin)
+    # Provider call-center intake is already inside the dispatch surface. Once
+    # the authenticated dispatcher creates it, it should appear in the provider
+    # queue immediately for assignment.
+    await store.set_job_status(ticket.ticket_id, "pending_dispatch")
     source = payload.source_channel or "manual"
     await log_transition(ticket, f"manual_intake_created:{source}")
     return await envelope(ticket)

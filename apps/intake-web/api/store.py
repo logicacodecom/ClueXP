@@ -1412,6 +1412,11 @@ class InMemoryStore(Store):
 
     async def save(self, ticket: Ticket, origin: dict | None = None) -> None:
         self._tickets[ticket.ticket_id] = ticket
+        origin = origin or {}
+        owner_org = origin.get("customer_owner_org_id") or origin.get("origin_org_id")
+        if owner_org:
+            self._job_org = getattr(self, "_job_org", {})
+            self._job_org[str(ticket.ticket_id)] = str(owner_org)
 
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:
         # No DB locally — public ClueXP intake (no owning org).
