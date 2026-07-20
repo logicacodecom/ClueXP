@@ -121,7 +121,9 @@ export function ProfileAvatar() {
   }, []);
 
   return (
-    <Link className="touch-target flex items-center justify-center overflow-hidden rounded-full border border-border bg-card" href="/profile" aria-label="Open account">
+    // Fixed 44px circle (== the touch-target min) with shrink-0 so a loaded
+    // photo can never grow the wrapper past the icon's footprint.
+    <Link className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-card" href="/profile" aria-label="Open account">
       {photoUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img alt="Profile photo" className="size-full object-cover" src={photoUrl} />

@@ -21,7 +21,7 @@ type Cell = {
 // still fall back to the technician's service-area center without a live fix.
 const LOCATION_FRESH_MS = 5 * 60 * 1000;
 // Re-confirm availability/location with the server periodically while this
-// screen is open, so "server-verified" has a real, recent backing fetch.
+// screen is open, so the readiness cells reflect a recent backing fetch.
 const VERIFY_POLL_MS = 20_000;
 
 function ageLabel(iso: string) {
@@ -76,7 +76,6 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
   const [locError, setLocError] = useState<string | null>(null);
   const [online, setOnline] = useState(true);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
-  const [verifiedAt, setVerifiedAt] = useState<number | null>(null);
   const [openCell, setOpenCell] = useState<string | null>(null);
   const [, tick] = useState(0);
 
@@ -88,7 +87,6 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
       const tech = data?.session?.technician;
       if (typeof tech?.is_available === "boolean") setAvailable(tech.is_available);
       if (typeof tech?.location_updated_at === "string") setLocationAt(tech.location_updated_at);
-      setVerifiedAt(Date.now());
     } catch {
       // Silent — the last-known values stay on screen rather than flashing an error.
     }
@@ -119,7 +117,7 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
     setNotifPermission(Notification.permission);
   }, []);
 
-  // Keep "updated Xm ago" / "verified Xs ago" honest without extra fetches.
+  // Keep the location cell's "updated Xm ago" honest without extra fetches.
   useEffect(() => {
     const id = window.setInterval(() => tick((n) => n + 1), 15_000);
     return () => window.clearInterval(id);
@@ -137,7 +135,6 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
       });
       if (response.ok) {
         setAvailable(next);
-        setVerifiedAt(Date.now());
       }
     } finally {
       setAvailBusy(false);
@@ -327,18 +324,10 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
             </button>
           </div>
         ) : (
-          <>
-            <div className="border-y border-border py-4">
-              <div className="flex items-center gap-2 font-condensed text-2xl font-bold uppercase leading-none text-success">
-                <ShieldCheck className="size-5" />Ready for offers
-              </div>
-              {verifiedAt ? <p className="mt-1 font-mono text-[11px] text-success/80">server-verified · {ageLabel(new Date(verifiedAt).toISOString())}</p> : null}
-              <button className="field-secondary-action mt-4 w-full" disabled={availBusy} onClick={() => void toggleAvailable()} type="button">
-                {availBusy ? "Going offline…" : "Go offline"}
-              </button>
-            </div>
-            {children}
-          </>
+          // Ready state needs no banner: the green "Available" cell already
+          // says it, and the Available cell taps open to a Go-offline toggle.
+          // Stream the offers directly instead of a redundant confirmation.
+          children
         )}
       </div>
     </div>
