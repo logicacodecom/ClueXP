@@ -2,7 +2,8 @@
 
 import { useLocale } from "@cluexp/app-core";
 import { AlertTriangle, Check, MapPin, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { Countdown } from "./client-widgets";
 
@@ -45,6 +46,28 @@ function normalizeOffers(body: unknown): LiveOffer[] {
   }));
 }
 
+// Fires a real browser Notification (when permission is granted) for offers
+// that weren't present on the previous poll — a genuine foreground-polling
+// enhancement, not a stand-in for push. Skips the very first load so opening
+// the app doesn't notify about offers that were already there.
+function notifyNewOffers(next: LiveOffer[], knownIds: RefObject<Set<string> | null>) {
+  const currentIds = new Set(next.map((offer) => offer.id || offer.offer_id || ""));
+  const previousIds = knownIds.current;
+  if (previousIds) {
+    const fresh = next.filter(
+      (offer) => (offer.status === "offered" || offer.status === "seen") && !previousIds.has(offer.id || offer.offer_id || "")
+    );
+    if (fresh.length > 0 && typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      const first = fresh[0];
+      new Notification("New ClueXP offer", {
+        body: `${first.service_type || "Service request"} · ${first.area || "Nearby service area"}`,
+        tag: "cluexp-offer"
+      });
+    }
+  }
+  knownIds.current = currentIds;
+}
+
 export function LiveOffersFeed() {
   const router = useRouter();
   const { t } = useLocale();
@@ -54,6 +77,7 @@ export function LiveOffersFeed() {
   const [accepting, setAccepting] = useState<string | null>(null);
   const [declining, setDeclining] = useState<string | null>(null);
   const [reasonFor, setReasonFor] = useState<string | null>(null);
+  const knownOfferIds = useRef<Set<string> | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -65,7 +89,9 @@ export function LiveOffersFeed() {
         return;
       }
       if (!response.ok) throw new Error(body.detail || `Offer feed unavailable (${response.status})`);
-      setOffers(normalizeOffers(body));
+      const next = normalizeOffers(body);
+      notifyNewOffers(next, knownOfferIds);
+      setOffers(next);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("unableToConnect"));
