@@ -1475,6 +1475,7 @@ class InMemoryStore(Store):
                     "approved": tech.get("status") == "active" and tech.get("vetting_status") == "verified",
                     "photo_url": tech.get("profile_photo_url"),
                     "photo_status": tech.get("profile_photo_status") or "none",
+                    "location_updated_at": tech.get("location_updated_at"),
                     "affiliations": [],
                 }
                 if tech
@@ -4415,7 +4416,8 @@ class PostgresStore(Store):
         # Technician profile is 1:1 with the user (same id) when self-registered.
         cur = await conn.execute(
             "select id, status, vetting_status, is_available, display_name, phone,"
-            " skills, service_area_radius_km, profile_photo_url, profile_photo_status"
+            " skills, service_area_radius_km, profile_photo_url, profile_photo_status,"
+            " location_updated_at"
             " from technicians where id = %s",
             (user_id,),
         )
@@ -4463,6 +4465,7 @@ class PostgresStore(Store):
                 "approved": tech_row[1] == "active" and tech_row[2] == "verified",
                 "photo_url": tech_row[8],
                 "photo_status": tech_row[9] or "none",
+                "location_updated_at": tech_row[10].isoformat() if tech_row[10] else None,
                 "affiliations": tech_affiliations,
             }
             if tech_row
