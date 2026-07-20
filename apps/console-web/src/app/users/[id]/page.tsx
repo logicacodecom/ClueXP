@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, PageHeader, EmptyState } from "@cluexp/console-ui";
-import { UserRound } from "lucide-react";
+import { KeyRound, UserRound } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppFrame } from "../../frame";
@@ -28,6 +28,8 @@ export default function UserDetailPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [profileInputs, setProfileInputs] = useState({ display_name: "", email: "", phone: "" });
+  const [passwordInputs, setPasswordInputs] = useState({ temporary: "" });
+  const [passwordResult, setPasswordResult] = useState<string | null>(null);
   const [role, setRole] = useState<string>("dispatcher");
 
   const refresh = useCallback(async () => {
@@ -109,6 +111,32 @@ export default function UserDetailPage() {
     }
   }
 
+  async function resetPassword(mode: "set_temp_password" | "generate_temp_password" | "reset_link") {
+    if (!detail) return;
+    setBusy(mode);
+    setMessage(null);
+    setPasswordResult(null);
+    try {
+      const response = await fetch(`/api/users/${params.id}/password`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          password: mode === "set_temp_password" ? passwordInputs.temporary : undefined
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to reset password");
+      if (body.temporary_password) setPasswordResult(`Temporary password: ${body.temporary_password}`);
+      else if (body.reset_url) setPasswordResult(`Reset link: ${body.reset_url}`);
+      else setPasswordResult("Temporary password set.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to reset password");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (notFound) {
     return (
       <AppFrame>
@@ -182,6 +210,33 @@ export default function UserDetailPage() {
                 <div><span className="text-muted-foreground">Membership status:</span> {membership.status}</div>
               </>
             ) : <p className="text-muted-foreground">No company affiliation on file.</p>}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Password reset</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div className="flex items-start gap-3 rounded-md border border-info/30 bg-info/5 p-3 text-info">
+              <KeyRound className="mt-0.5 size-4 shrink-0" />
+              <div>Use a temporary password for a direct handoff, or generate a reset link to send later.</div>
+            </div>
+            <label className="block space-y-1.5 font-medium">
+              Set temporary password
+              <Input type="text" value={passwordInputs.temporary} onChange={(event) => setPasswordInputs({ temporary: event.target.value })} placeholder="Minimum 8 characters" />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <GovernanceActionDialog confirmLabel="Set password" description={`Set a temporary password for ${detail.display_name}. Share it through a secure channel.`} disabled={busy !== null || passwordInputs.temporary.length < 8} onConfirm={() => resetPassword("set_temp_password")} title={`Set password for ${detail.display_name}?`}>
+                <Button disabled={busy !== null || passwordInputs.temporary.length < 8} variant="outline">Set temporary</Button>
+              </GovernanceActionDialog>
+              <GovernanceActionDialog confirmLabel="Generate password" description={`Generate a temporary password for ${detail.display_name}. It will be shown once here.`} disabled={busy !== null} onConfirm={() => resetPassword("generate_temp_password")} title={`Generate password for ${detail.display_name}?`}>
+                <Button disabled={busy !== null} variant="outline">Generate temporary</Button>
+              </GovernanceActionDialog>
+              <GovernanceActionDialog confirmLabel="Generate reset link" description={`Generate a 24-hour reset link for ${detail.display_name}. You can send it later.`} disabled={busy !== null} onConfirm={() => resetPassword("reset_link")} title={`Generate reset link for ${detail.display_name}?`}>
+                <Button disabled={busy !== null}>Generate reset link</Button>
+              </GovernanceActionDialog>
+            </div>
+            {passwordResult ? <div className="break-all rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success" role="status">{passwordResult}</div> : null}
           </CardContent>
         </Card>
       </div>

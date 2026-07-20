@@ -348,6 +348,11 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
+class PasswordResetRequest(BaseModel):
+    token: str
+    new_password: str
+
+
 class OrganizationProfileUpdateRequest(BaseModel):
     display_name: str | None = None
     legal_name: str | None = None
@@ -364,6 +369,16 @@ class OrganizationProfileUpdateRequest(BaseModel):
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PHONE_RE = re.compile(r"^\+?[0-9][0-9\s().\-]{5,19}$")
 _POSTAL_RE = re.compile(r"^[A-Z0-9][A-Z0-9 \-]{1,9}$")
+
+
+def _generate_temporary_password() -> str:
+    # Avoid punctuation so the one-time handoff password is easier to read aloud.
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(14))
+
+
+def _console_reset_base_url() -> str:
+    return os.environ.get("CONSOLE_RESET_BASE_URL") or os.environ.get("CLUEXP_CONSOLE_BASE_URL") or "https://console.cluexp.com"
 _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 _MAX_TEXT = 200
 _MAX_URL = 500
@@ -716,6 +731,11 @@ class AdminUserProfileUpdateRequest(BaseModel):
     role: str | None = None  # organization-membership role; ignored for platform admins
 
 
+class AdminPasswordResetRequest(BaseModel):
+    mode: str
+    password: str | None = None
+
+
 class PlatformAdminCreateRequest(BaseModel):
     display_name: str
     password: str
@@ -1055,6 +1075,19 @@ async def change_password(
     )
     if not changed:
         raise HTTPException(status_code=422, detail="Current password is incorrect")
+    return {"status": "updated"}
+
+
+@app.post("/auth/password/reset")
+async def reset_password(payload: PasswordResetRequest) -> dict[str, Any]:
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    claims = decode_access_token(payload.token)
+    if not claims or claims.get("purpose") != "password_reset" or not claims.get("sub"):
+        raise HTTPException(status_code=422, detail="Reset link is invalid or expired")
+    result = await store.set_user_password(UUID(str(claims["sub"])), payload.new_password)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
     return {"status": "updated"}
 
 
@@ -1611,6 +1644,55 @@ async def reactivate_user(
         reason=reason.strip()[:280] if reason else None, metadata={"status": result.get("status")},
     )
     return result
+
+
+@app.post("/admin/users/{user_id}/password")
+async def admin_reset_user_password(
+    user_id: UUID,
+    payload: AdminPasswordResetRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    mode = payload.mode.strip()
+    if mode not in {"set_temp_password", "generate_temp_password", "reset_link"}:
+        raise HTTPException(status_code=422, detail="mode must be set_temp_password, generate_temp_password, or reset_link")
+
+    detail = await store.get_user_admin_detail(user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if mode == "reset_link":
+        token = create_access_token(
+            {"sub": str(user_id), "purpose": "password_reset", "jti": str(uuid4())},
+            expires_in=60 * 60 * 24,
+        )
+        reset_url = f"{_console_reset_base_url().rstrip('/')}/reset-password?token={token}"
+        await _record_admin_governance_event(
+            session, entity_type="user", entity_id=user_id, action="generate_password_reset_link",
+            reason=None, metadata={"expires_in_seconds": 60 * 60 * 24},
+        )
+        return {
+            "mode": mode,
+            "reset_url": reset_url,
+            "expires_in_seconds": 60 * 60 * 24,
+            "user": detail,
+        }
+
+    password = payload.password if mode == "set_temp_password" else _generate_temporary_password()
+    if not password or len(password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    result = await store.set_user_password(user_id, password)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id,
+        action="set_temp_password" if mode == "set_temp_password" else "generate_temp_password",
+        reason=None, metadata={"delivery": "manual"},
+    )
+    response: dict[str, Any] = {"mode": mode, "user": result}
+    if mode == "generate_temp_password":
+        response["temporary_password"] = password
+    return response
 
 
 @app.delete("/admin/users/{user_id}")

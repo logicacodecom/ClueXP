@@ -1,12 +1,14 @@
 "use client";
 
-import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input } from "@cluexp/console-ui";
-import { Building2, Check, ShieldCheck, UserRound, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, EmptyState, Input, PageHeader, StatCard } from "@cluexp/console-ui";
+import { Building2, CalendarClock, Check, Mail, Phone, RefreshCw, Search, ShieldCheck, UserRound, X } from "lucide-react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
+import { GovernanceActionDialog } from "../governance-action-dialog";
 
-type ApprovalType = "technicians" | "organizations";
 type Decision = "approve" | "reject";
+
 interface Registration {
   kind: "technician" | "organization";
   id: string;
@@ -18,13 +20,34 @@ interface Registration {
   created_at?: string | null;
 }
 
+function formatDate(value?: string | null) {
+  if (!value) return "Not recorded";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not recorded";
+  return date.toLocaleDateString();
+}
+
+function approvalPath(item: Registration) {
+  return `/api/approvals/${item.kind === "technician" ? "technicians" : "organizations"}/${encodeURIComponent(item.id)}`;
+}
+
+function recordPath(item: Registration) {
+  return item.kind === "technician" ? `/technicians/${item.id}` : `/companies/${item.id}`;
+}
+
+function matchesQuery(item: Registration, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  return [item.display_name, item.email, item.phone, item.status, item.vetting_status, item.id]
+    .some((value) => String(value ?? "").toLowerCase().includes(normalized));
+}
+
 export default function ApprovalsPage() {
-  const [type, setType] = useState<ApprovalType>("technicians");
-  const [id, setId] = useState("");
-  const [busy, setBusy] = useState<Decision | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -42,16 +65,19 @@ export default function ApprovalsPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function decide(decision: Decision) {
-    setBusy(decision);
+  async function decide(item: Registration, decision: Decision, reason = "") {
+    setBusy(`${item.kind}:${item.id}:${decision}`);
     setMessage(null);
     try {
-      const response = await fetch(`/api/approvals/${type}/${encodeURIComponent(id.trim())}/${decision}`, { method: "POST" });
+      const response = await fetch(`${approvalPath(item)}/${decision}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || `Unable to ${decision}`);
-      setMessage(decision === "approve" ? "Access approved." : "Registration rejected.");
-      setId("");
       await refresh();
+      setMessage(`${item.display_name} ${decision === "approve" ? "approved" : "declined"}.`);
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : `Unable to ${decision}`);
     } finally {
@@ -59,76 +85,156 @@ export default function ApprovalsPage() {
     }
   }
 
-  const Icon = type === "technicians" ? UserRound : Building2;
+  const technicians = useMemo(
+    () => registrations.filter((item) => item.kind === "technician" && matchesQuery(item, query)),
+    [query, registrations]
+  );
+  const organizations = useMemo(
+    () => registrations.filter((item) => item.kind === "organization" && matchesQuery(item, query)),
+    [query, registrations]
+  );
+  const allTechnicians = registrations.filter((item) => item.kind === "technician").length;
+  const allOrganizations = registrations.filter((item) => item.kind === "organization").length;
+
   return (
     <AppFrame>
-      <div className="mx-auto max-w-3xl space-y-6">
-        <header>
-          <div className="text-xs font-semibold uppercase text-muted-foreground">Network governance</div>
-          <h1 className="mt-2 text-3xl font-semibold">Access approvals</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Approve or reject a pending technician or provider organization by its registration ID.</p>
-        </header>
-        <Card>
+      <PageHeader
+        kicker="Network governance"
+        title="Access Approvals"
+        description="Review technician and company registrations separately. Each card has its own view, approve, and decline actions."
+        actions={<Button disabled={loading} onClick={() => void refresh()} variant="outline"><RefreshCw className="size-4" />{loading ? "Refreshing" : "Refresh"}</Button>}
+      />
+
+      <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard icon={ShieldCheck} intent={registrations.length ? "warn" : "success"} label="Pending total" value={String(registrations.length)} />
+        <StatCard icon={UserRound} intent={allTechnicians ? "warn" : "neutral"} label="Technicians" value={String(allTechnicians)} />
+        <StatCard icon={Building2} intent={allOrganizations ? "warn" : "neutral"} label="Companies" value={String(allOrganizations)} />
+        <StatCard icon={ShieldCheck} label="Control" trend="confirmation required" value="Guarded" />
+      </div>
+
+      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="relative min-w-0 md:w-96">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input aria-label="Search approvals" className="pl-9" placeholder="Search name, email, phone, or status" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </div>
+        {message ? <div className="rounded-md border border-border bg-card px-3 py-2 text-sm" role="status">{message}</div> : null}
+      </div>
+
+      {loading ? <div className="rounded-md border border-border p-5 text-sm text-muted-foreground">Loading approvals...</div> : null}
+      {!loading && registrations.length === 0 ? (
+        <EmptyState icon={ShieldCheck} title="No approvals waiting" description="New company and technician registrations will appear here." />
+      ) : null}
+
+      {!loading && registrations.length > 0 ? (
+        <div className="grid gap-6 2xl:grid-cols-2">
+          <ApprovalSection
+            busy={busy}
+            description="People requesting technician access and dispatch eligibility."
+            emptyDescription="No technician approvals match the current search."
+            icon={UserRound}
+            items={technicians}
+            onDecide={decide}
+            title="Technician approvals"
+          />
+          <ApprovalSection
+            busy={busy}
+            description="Provider companies requesting network access."
+            emptyDescription="No company approvals match the current search."
+            icon={Building2}
+            items={organizations}
+            onDecide={decide}
+            title="Company approvals"
+          />
+        </div>
+      ) : null}
+    </AppFrame>
+  );
+}
+
+function ApprovalSection({
+  busy,
+  description,
+  emptyDescription,
+  icon: Icon,
+  items,
+  onDecide,
+  title
+}: {
+  busy: string | null;
+  description: string;
+  emptyDescription: string;
+  icon: typeof UserRound;
+  items: Registration[];
+  onDecide: (item: Registration, decision: Decision, reason?: string) => Promise<void>;
+  title: string;
+}) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <h2 className="font-condensed text-xl font-bold uppercase">{title}</h2>
+        <p className="text-sm text-muted-foreground">{description}</p>
+      </div>
+      {items.length === 0 ? (
+        <div className="rounded-md border border-border p-5 text-sm text-muted-foreground">{emptyDescription}</div>
+      ) : items.map((item) => (
+        <Card className="transition-colors hover:border-primary/35" key={`${item.kind}:${item.id}`}>
           <CardHeader>
-            <div className="flex items-start gap-3">
-              <div className="grid size-10 place-items-center rounded-md bg-secondary"><Icon className="size-5 text-primary" /></div>
-              <div><CardTitle>Registration decision</CardTitle><CardDescription>IDs are available in the registration response and platform audit trail.</CardDescription></div>
-              <Badge className="ml-auto" variant="warn">Platform admin</Badge>
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="grid size-11 place-items-center rounded-md border border-border bg-secondary text-primary">
+                <Icon className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <CardTitle>{item.display_name}</CardTitle>
+                <CardDescription>{item.email || item.phone || "No contact method on file"}</CardDescription>
+              </div>
+              <Badge variant="warn">{item.status.replaceAll("_", " ")}</Badge>
             </div>
           </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="grid grid-cols-2 gap-3">
-              <button className={`min-h-12 rounded-md border px-4 text-left font-medium ${type === "technicians" ? "border-primary bg-primary/10" : "border-border"}`} onClick={() => setType("technicians")} type="button">Technician</button>
-              <button className={`min-h-12 rounded-md border px-4 text-left font-medium ${type === "organizations" ? "border-primary bg-primary/10" : "border-border"}`} onClick={() => setType("organizations")} type="button">Organization</button>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 text-sm sm:grid-cols-2">
+              <Detail icon={Mail} label="Email" value={item.email || "Not provided"} />
+              <Detail icon={Phone} label="Phone" value={item.phone || "Not provided"} />
+              <Detail icon={ShieldCheck} label="Vetting" value={item.vetting_status?.replaceAll("_", " ") || item.status.replaceAll("_", " ")} />
+              <Detail icon={CalendarClock} label="Submitted" value={formatDate(item.created_at)} />
             </div>
-            <label className="block space-y-2 text-sm font-medium">
-              Registration ID
-              <Input autoComplete="off" placeholder="UUID from registration or audit event" value={id} onChange={(event) => setId(event.target.value)} />
-            </label>
-            {message ? <div className="rounded-md border border-border bg-secondary p-3 text-sm" role="status">{message}</div> : null}
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button disabled={!id.trim() || busy !== null} variant="outline" onClick={() => void decide("reject")}><X className="size-4" />Reject</Button>
-              <Button disabled={!id.trim() || busy !== null} onClick={() => void decide("approve")}><Check className="size-4" />Approve</Button>
+            <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:flex-wrap sm:justify-end">
+              <Button asChild variant="outline"><Link href={recordPath(item)}>View</Link></Button>
+              <GovernanceActionDialog
+                confirmLabel={`Approve ${item.kind === "technician" ? "technician" : "company"}`}
+                description={`Approve ${item.display_name} for production access.`}
+                disabled={busy !== null}
+                onConfirm={(reason) => onDecide(item, "approve", reason)}
+                title={`Approve ${item.display_name}?`}
+              >
+                <Button disabled={busy !== null}><Check className="size-4" />Approve</Button>
+              </GovernanceActionDialog>
+              <GovernanceActionDialog
+                confirmLabel={`Decline ${item.kind === "technician" ? "technician" : "company"}`}
+                description={`Decline ${item.display_name}. A reason is required for the audit trail.`}
+                disabled={busy !== null}
+                onConfirm={(reason) => onDecide(item, "reject", reason)}
+                reasonRequired
+                title={`Decline ${item.display_name}?`}
+                variant="destructive"
+              >
+                <Button disabled={busy !== null} variant="outline"><X className="size-4" />Decline</Button>
+              </GovernanceActionDialog>
             </div>
           </CardContent>
         </Card>
-        <section className="space-y-3" aria-busy={loading}>
-          <div className="flex items-end justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-semibold">Pending registrations</h2>
-              <p className="text-sm text-muted-foreground">Newest requests awaiting a platform decision.</p>
-            </div>
-            <Button variant="outline" disabled={loading} onClick={() => void refresh()}>Refresh</Button>
-          </div>
-          {loading ? <div className="rounded-md border border-border p-5 text-sm text-muted-foreground">Loading registrations…</div> : null}
-          {!loading && registrations.length === 0 ? <div className="rounded-md border border-border p-5 text-sm text-muted-foreground">No pending registrations.</div> : null}
-          {registrations.map((registration) => (
-            <button
-              className="flex min-h-16 w-full items-center gap-4 rounded-md border border-border bg-card p-4 text-left transition hover:border-primary/50"
-              key={`${registration.kind}-${registration.id}`}
-              onClick={() => {
-                setType(registration.kind === "technician" ? "technicians" : "organizations");
-                setId(registration.id);
-                window.scrollTo({ top: 0, behavior: "smooth" });
-              }}
-              type="button"
-            >
-              <div className="grid size-10 shrink-0 place-items-center rounded-md bg-secondary">
-                {registration.kind === "technician" ? <UserRound className="size-5" /> : <Building2 className="size-5" />}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-semibold">{registration.display_name}</div>
-                <div className="truncate text-sm text-muted-foreground">{registration.email || registration.phone || registration.id}</div>
-              </div>
-              <Badge variant="warn">{registration.kind}</Badge>
-            </button>
-          ))}
-        </section>
-        <div className="flex items-start gap-3 rounded-md border border-info/30 bg-info/5 p-4 text-sm text-info">
-          <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-          Approval activates dispatch eligibility only when the backend verification rules succeed.
-        </div>
+      ))}
+    </section>
+  );
+}
+
+function Detail({ icon: Icon, label, value }: { icon: typeof Mail; label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-secondary/35 p-3">
+      <div className="flex items-center gap-1 text-xs font-semibold uppercase text-muted-foreground">
+        <Icon className="size-3" />
+        {label}
       </div>
-    </AppFrame>
+      <div className="mt-1 truncate text-foreground">{value}</div>
+    </div>
   );
 }

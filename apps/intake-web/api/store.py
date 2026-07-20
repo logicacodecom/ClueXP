@@ -792,6 +792,9 @@ class Store:
     async def delete_or_archive_user(self, user_id: UUID, *, reason: str) -> dict | None:  # pragma: no cover
         return None
 
+    async def set_user_password(self, user_id: UUID, password: str) -> dict | None:  # pragma: no cover
+        return None
+
     async def create_platform_admin(self, data: dict) -> dict:  # pragma: no cover
         raise NotImplementedError
 
@@ -3143,6 +3146,18 @@ class InMemoryStore(Store):
 
     async def delete_or_archive_user(self, user_id: UUID, *, reason: str) -> dict | None:
         return None
+
+    async def set_user_password(self, user_id: UUID, password: str) -> dict | None:
+        user = self.users.get(str(user_id))
+        if user is None:
+            return None
+        user["password_hash"] = hash_password(password)
+        return {
+            "id": str(user_id),
+            "display_name": user.get("display_name"),
+            "email": user.get("email"),
+            "phone": user.get("phone"),
+        }
 
     async def create_platform_admin(self, data: dict) -> dict:
         raise NotImplementedError("platform admin creation requires the Postgres store")
@@ -7099,6 +7114,19 @@ class PostgresStore(Store):
             "id": str(row[0]), "display_name": row[1], "status": row[2],
             "action": "archived", "references": references, "reason": reason,
         }
+
+    async def set_user_password(self, user_id: UUID, password: str) -> dict | None:
+        uid = str(user_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update users set password_hash = %s, updated_at = now() where id = %s"
+                " returning id, display_name, email, phone",
+                (hash_password(password), uid),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "display_name": row[1], "email": row[2], "phone": row[3]}
 
     async def create_platform_admin(self, data: dict) -> dict:
         email = (data.get("email") or "").strip() or None

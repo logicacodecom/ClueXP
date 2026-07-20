@@ -4,6 +4,7 @@ export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (
     pathname.startsWith("/signin") ||
+    pathname.startsWith("/reset-password") ||
     pathname.startsWith("/api/") ||
     pathname.startsWith("/_next/") ||
     pathname === "/icon.png" ||
