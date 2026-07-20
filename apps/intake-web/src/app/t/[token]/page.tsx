@@ -429,9 +429,57 @@ export default function TokenTrackingPage() {
     }
   }, [screen]);
 
+  const submitReviewIfSelected = async () => {
+    if (!reviewData.rating || reviewSubmitted || !customerActions.can_review) return true;
+    const response = await fetch(`/api/t/${token}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rating: reviewData.rating,
+        tags: reviewData.tags,
+        comment: reviewData.comment || null
+      })
+    });
+
+    if (response.status === 401) {
+      setError(locale === "es"
+        ? "Sesión expirada, por favor actualice la página"
+        : "Session expired, please refresh the page");
+      return false;
+    }
+
+    if (response.status === 403) {
+      setError(locale === "es"
+        ? "No está autorizado para calificar este trabajo"
+        : "Not authorized to review this job");
+      return false;
+    }
+
+    if (response.status === 409) {
+      setError(locale === "es"
+        ? "El estado ha cambiado, actualizando..."
+        : "Status changed, refreshing...");
+      setTimeout(() => void loadTracking(), 1000);
+      return false;
+    }
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      setError(data.detail ?? (locale === "es"
+        ? "Error al enviar la reseña"
+        : "Error submitting review"));
+      return false;
+    }
+
+    setReviewSubmitted(true);
+    return true;
+  };
+
   const handleConfirm = async () => {
     setBusy(true);
     try {
+      if (!(await submitReviewIfSelected())) return;
+
       const response = await fetch(`/api/t/${token}/confirm`, { method: "POST" });
 
       if (response.status === 401) {
@@ -573,66 +621,6 @@ export default function TokenTrackingPage() {
       setScreen("cancelled");
       setCancelReasonOpen(false);
       setCancelReason("");
-    } catch (err) {
-      setError(locale === "es"
-        ? "Error de red, intente de nuevo"
-        : "Network error, please try again");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSubmitReview = async () => {
-    if (!reviewData.rating) return;
-
-    setBusy(true);
-    try {
-      const response = await fetch(`/api/t/${token}/review`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          rating: reviewData.rating,
-          tags: reviewData.tags,
-          comment: reviewData.comment || null
-        })
-      });
-      
-      if (response.status === 401) {
-        setError(locale === "es" 
-          ? "Sesión expirada, por favor actualice la página"
-          : "Session expired, please refresh the page");
-        setBusy(false);
-        return;
-      }
-      
-      if (response.status === 403) {
-        setError(locale === "es"
-          ? "No está autorizado para calificar este trabajo"
-          : "Not authorized to review this job");
-        setBusy(false);
-        return;
-      }
-      
-      if (response.status === 409) {
-        setError(locale === "es"
-          ? "El estado ha cambiado, actualizando..."
-          : "Status changed, refreshing...");
-        setTimeout(() => void loadTracking(), 1000);
-        setBusy(false);
-        return;
-      }
-      
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        setError(data.detail ?? (locale === "es"
-          ? "Error al enviar la reseña"
-          : "Error submitting review"));
-        setBusy(false);
-        return;
-      }
-      
-      setReviewSubmitted(true);
-      setScreen("completed_confirmed");
     } catch (err) {
       setError(locale === "es"
         ? "Error de red, intente de nuevo"
@@ -1130,16 +1118,6 @@ export default function TokenTrackingPage() {
                 value={reviewData.comment}
                 onChange={(e) => setReviewData(prev => ({ ...prev, comment: e.target.value }))}
               />
-              {customerActions.can_review ? (
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={!reviewData.rating}
-                  onClick={handleSubmitReview}
-                >
-                  {locale === "es" ? "Enviar reseña" : "Submit review"}
-                </button>
-              ) : null}
             </div>
           )}
           <div className="stack">
@@ -1147,9 +1125,12 @@ export default function TokenTrackingPage() {
               <button
                 className="primary"
                 type="button"
+                disabled={busy}
                 onClick={handleConfirm}
               >
-                {locale === "es" ? "Confirmar completado" : "Confirm complete"}
+                {reviewData.rating
+                  ? (locale === "es" ? "Confirmar y enviar reseña" : "Confirm & submit review")
+                  : (locale === "es" ? "Confirmar completado" : "Confirm complete")}
               </button>
             ) : null}
             {customerActions.can_dispute ? (
