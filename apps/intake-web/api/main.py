@@ -2211,8 +2211,9 @@ async def decline_my_affiliation(
 async def upload_my_photo(
     file: UploadFile = File(...), session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Upload a profile headshot to the public technician-media bucket and mark it
-    `pending` review. Customer exposure stays gated on approval (Slice E)."""
+    """Upload a profile headshot to the public technician-media bucket. Self-service
+    photos are auto-approved for now (a real Ops/admin review workflow is deferred;
+    the /admin/technicians/*/photo routes remain for that later work)."""
     tid = _me_technician_id(session)
     content = await file.read()
     try:

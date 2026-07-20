@@ -2267,8 +2267,10 @@ class InMemoryStore(Store):
         if tech is None:
             return None
         tech["profile_photo_url"] = url
-        tech["profile_photo_status"] = "pending"
-        return {"photo_url": url, "photo_status": "pending"}
+        # Technician self-service photos are auto-approved for now; a real Ops/admin
+        # review workflow is deferred (the /admin/technicians/*/photo routes remain).
+        tech["profile_photo_status"] = "approved"
+        return {"photo_url": url, "photo_status": "approved"}
 
     async def set_technician_photo_status(self, technician_id: UUID, status: str) -> dict | None:
         tid = str(technician_id)
@@ -5484,14 +5486,16 @@ class PostgresStore(Store):
     async def set_technician_photo(self, technician_id: UUID, url: str) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "update technicians set profile_photo_url = %s, profile_photo_status = 'pending'"
+                # Technician self-service photos are auto-approved for now; a real
+                # Ops/admin review workflow is deferred (the /admin routes remain).
+                "update technicians set profile_photo_url = %s, profile_photo_status = 'approved'"
                 " where id = %s returning id",
                 (url, str(technician_id)),
             )
             row = await cur.fetchone()
         if row is None:
             return None
-        return {"photo_url": url, "photo_status": "pending"}
+        return {"photo_url": url, "photo_status": "approved"}
 
     async def set_technician_photo_status(self, technician_id: UUID, status: str) -> dict | None:
         async with await self._connect() as conn:
