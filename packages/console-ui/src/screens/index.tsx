@@ -508,6 +508,23 @@ function rankedScore(techId: string) {
   return scores[techId] ?? { score: 50, reasons: ["Eligible profile", "Service-area match pending", "Availability check pending"] };
 }
 
+interface PlacePrediction {
+  description: string;
+  place_id: string;
+}
+
+interface PlacesAutocompleteResponse {
+  predictions?: PlacePrediction[];
+}
+
+type GeocodeResponse =
+  | {
+      resolved: true;
+      formatted_address?: string;
+      geocode_confidence: string;
+    }
+  | { resolved: false };
+
 export function ProviderNewRequest() {
   const org = organizationById(orgId);
   const [form, setForm] = useState({
@@ -523,9 +540,41 @@ export function ProviderNewRequest() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
+  const [placePredictions, setPlacePredictions] = useState<PlacePrediction[]>([]);
+  const [placesLoading, setPlacesLoading] = useState(false);
+  const [addressStatus, setAddressStatus] = useState<"manual" | "selected" | "unresolved">("manual");
+  const [geocodeConfidence, setGeocodeConfidence] = useState<string | null>(null);
 
   function update(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
+    if (field === "address") {
+      setAddressStatus("manual");
+      setGeocodeConfidence(null);
+    }
+  }
+
+  async function selectPlace(description: string) {
+    update("address", description);
+    setPlacePredictions([]);
+    setPlacesLoading(true);
+    try {
+      const response = await fetch(`/api/geocode?q=${encodeURIComponent(description)}`, { cache: "no-store" });
+      const body = await response.json().catch(() => ({})) as GeocodeResponse;
+      if (!response.ok) throw new Error("Unable to verify address");
+      if (body.resolved) {
+        setForm((current) => ({ ...current, address: body.formatted_address || description }));
+        setAddressStatus("selected");
+        setGeocodeConfidence(body.geocode_confidence);
+      } else {
+        setAddressStatus("unresolved");
+        setGeocodeConfidence("none");
+      }
+    } catch {
+      setAddressStatus("unresolved");
+      setGeocodeConfidence("none");
+    } finally {
+      setPlacesLoading(false);
+    }
   }
 
   async function createRequest() {
@@ -554,6 +603,28 @@ export function ProviderNewRequest() {
     }
   }
 
+  useEffect(() => {
+    const address = form.address.trim();
+    if (address.length < 3 || addressStatus === "selected") {
+      setPlacePredictions([]);
+      setPlacesLoading(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setPlacesLoading(true);
+      try {
+        const response = await fetch(`/api/places/autocomplete?q=${encodeURIComponent(address)}`, { cache: "no-store" });
+        const body = await response.json().catch(() => ({})) as PlacesAutocompleteResponse;
+        setPlacePredictions(response.ok ? (body.predictions || []).slice(0, 5) : []);
+      } catch {
+        setPlacePredictions([]);
+      } finally {
+        setPlacesLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [form.address, addressStatus]);
+
   return (
     <div>
       <PageHeader
@@ -574,7 +645,31 @@ export function ProviderNewRequest() {
             <div className="grid gap-4 md:grid-cols-2">
               <label className="space-y-2 text-sm font-medium">Customer name<Input placeholder="Customer display name" value={form.customer_name} onChange={(event) => update("customer_name", event.target.value)} /></label>
               <label className="space-y-2 text-sm font-medium">Customer phone<Input placeholder="Verified phone" value={form.customer_phone} onChange={(event) => update("customer_phone", event.target.value)} /></label>
-              <label className="space-y-2 text-sm font-medium">Service address<Input placeholder="Address or landmark" value={form.address} onChange={(event) => update("address", event.target.value)} /></label>
+              <label className="relative space-y-2 text-sm font-medium">
+                Service address
+                <div className="relative">
+                  <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                  <Input className="pl-9" placeholder="Start typing address or landmark" value={form.address} onChange={(event) => update("address", event.target.value)} autoComplete="off" />
+                </div>
+                <div className="min-h-5 text-xs text-muted-foreground" role="status">
+                  {placesLoading ? "Checking address suggestions..." : addressStatus === "selected" ? `Address verified${geocodeConfidence ? ` · ${geocodeConfidence} confidence` : ""}` : addressStatus === "unresolved" ? "Using typed address. Dispatch may need to confirm location." : "Select a suggestion when available, or keep the caller's exact wording."}
+                </div>
+                {placePredictions.length > 0 ? (
+                  <div className="absolute left-0 right-0 top-full z-20 overflow-hidden rounded-md border border-border bg-popover shadow-lg">
+                    {placePredictions.map((prediction) => (
+                      <button
+                        className="flex w-full items-start gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                        key={prediction.place_id}
+                        type="button"
+                        onClick={() => void selectPlace(prediction.description)}
+                      >
+                        <MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <span>{prediction.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </label>
               <label className="space-y-2 text-sm font-medium">Source channel<Input placeholder="Phone, website, QR, referral" value={form.source_channel} onChange={(event) => update("source_channel", event.target.value)} /></label>
             </div>
             <div className="grid gap-4 md:grid-cols-3">

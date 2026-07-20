@@ -2,7 +2,7 @@
 
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { Layers, LineChart, Radar, Receipt, Users as UsersIcon, Wallet } from "lucide-react";
+import { Layers, LineChart, PhoneCall, Radar, Receipt, Users as UsersIcon, Wallet } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -36,6 +36,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const providerNav = [
     mappedNav[0],
     { ...defaultNav[0], label: "Operations", href: "/operations", icon: Radar },
+    { ...defaultNav[0], label: "Call Intake", href: "/intake/new", icon: PhoneCall },
     ...mappedNav.slice(1),
     { ...defaultNav[0], label: "Recovery", href: "/recovery" },
     { ...defaultNav[0], label: "Completed", href: "/completed" },
