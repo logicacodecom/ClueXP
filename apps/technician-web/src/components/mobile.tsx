@@ -142,22 +142,17 @@ export function TechnicianTopBar({
 }) {
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-border/80 bg-background/96 px-4 pb-3 backdrop-blur-xl">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
           <img className="h-6 w-auto object-contain" src="/logo.png" alt="ClueXP" />
-          <div className="truncate text-base font-black leading-tight">{title}</div>
+          <div className="truncate font-condensed text-lg font-bold uppercase leading-tight">{title}</div>
         </div>
-        <span className="shrink-0 border border-border bg-card-strong px-2.5 py-1 text-[11px] font-black uppercase text-muted">Field app</span>
-      </div>
-      <div className="flex items-center gap-2.5">
-        <AvailabilityToggle profile={profile} />
-        <div className="min-w-0 flex-1 text-right">
-          <div className="text-[10px] font-black uppercase tracking-[.08em] text-muted">Dispatch</div>
-          <div className="text-sm font-black leading-none">Manual assignment</div>
+        <div className="flex items-center gap-2.5">
+          <AvailabilityToggle profile={profile} />
+          <Link className="touch-target flex items-center justify-center rounded-full border border-border bg-card" href="/profile" aria-label="Open account">
+            <Users className="size-5" />
+          </Link>
         </div>
-        <Link className="touch-target flex items-center justify-center rounded-full border border-border bg-card text-sm font-black" href="/profile" aria-label="Open account">
-          <Users className="size-5" />
-        </Link>
       </div>
     </header>
   );

@@ -56,7 +56,7 @@ export function PhotoUpload({
     setMessage(null);
     try {
       await onUpload(file);
-      setMessage("Photo uploaded successfully. Pending review.");
+      setMessage("Photo updated.");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Failed to upload photo.");
     } finally {
@@ -67,11 +67,10 @@ export function PhotoUpload({
   const getStatusColor = () => {
     switch (photoStatus) {
       case "approved":
-        return "border-green-500 ring-2 ring-green-500/30";
-      case "rejected":
-        return "border-red-500 ring-2 ring-red-500/30";
       case "pending":
-        return "border-yellow-500 ring-2 ring-yellow-500/30";
+        return "border-success ring-2 ring-success/25";
+      case "rejected":
+        return "border-danger ring-2 ring-danger/25";
       default:
         return "border-border";
     }
@@ -80,13 +79,12 @@ export function PhotoUpload({
   const getStatusLabel = () => {
     switch (photoStatus) {
       case "approved":
-        return { text: "Photo approved", color: "text-green-600 bg-green-50" };
-      case "rejected":
-        return { text: "Photo needs replacement", color: "text-red-600 bg-red-50" };
       case "pending":
-        return { text: "Pending review", color: "text-yellow-600 bg-yellow-50" };
+        return { text: "Photo added", color: "text-success bg-success/10" };
+      case "rejected":
+        return { text: "Photo needs replacement", color: "text-danger bg-danger/10" };
       default:
-        return { text: "No photo", color: "text-muted" };
+        return { text: "No photo", color: "text-muted bg-card-strong" };
     }
   };
 
@@ -107,7 +105,7 @@ export function PhotoUpload({
             {statusLabel.text}
           </div>
           {photoStatus === "rejected" && (
-            <p className="mt-1 text-xs text-red-600">Please upload a new photo to continue</p>
+            <p className="mt-1 text-xs text-danger">Please upload a new photo to continue</p>
           )}
         </div>
       </div>

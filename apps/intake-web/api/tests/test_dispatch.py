@@ -2726,16 +2726,18 @@ def test_list_technician_affiliations_self_scoped():
     assert rows[0]["status"] == "pending_invite" and rows[0]["organization_id"] == org
 
 
-def test_set_technician_photo_marks_pending_and_not_customer_exposed():
+def test_set_technician_photo_auto_approves_and_is_customer_exposed():
+    # Self-service photos are auto-approved for now (real Ops/admin review is
+    # deferred); the Slice E exposure gate itself is unchanged and still keys
+    # off profile_photo_status, so an approved photo is immediately exposed.
     store = InMemoryStore()
     tid = str(uuid4())
     store._technicians = [{"id": tid, "display_name": "T", "profile_photo_status": "none"}]
     result = asyncio.run(store.set_technician_photo(UUID(tid), "https://cdn.example/x.jpg"))
-    assert result == {"photo_url": "https://cdn.example/x.jpg", "photo_status": "pending"}
-    assert store._technicians[0]["profile_photo_status"] == "pending"
-    # Slice E gate: a pending photo is NOT exposed to the customer.
+    assert result == {"photo_url": "https://cdn.example/x.jpg", "photo_status": "approved"}
+    assert store._technicians[0]["profile_photo_status"] == "approved"
     status = _status_for(store, str(uuid4()), tid)
-    assert status["assignment"]["technician_photo_url"] is None
+    assert status["assignment"]["technician_photo_url"] == "https://cdn.example/x.jpg"
 
 
 # --- Slice D/E backend completion: photo review + provider suspend/end ---------

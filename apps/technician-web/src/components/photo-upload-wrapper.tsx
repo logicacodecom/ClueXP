@@ -33,7 +33,7 @@ export function PhotoUploadWrapper({ currentPhotoUrl, photoStatus }: PhotoUpload
         throw new Error(body.detail || "Failed to upload photo");
       }
 
-      setMessage(body.message || "Photo uploaded successfully. Pending review.");
+      setMessage("Photo updated.");
       router.refresh();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Failed to upload photo");

@@ -212,6 +212,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
   const [tipAmount, setTipAmount] = useState("");
   const [closeoutLines, setCloseoutLines] = useState<CloseoutLineDraft[]>(() => [newCloseoutLine()]);
   const [collectDone, setCollectDone] = useState(() => Boolean(initialJob.collection_items?.length));
+  const [refreshingLoc, setRefreshingLoc] = useState(false);
   const currentIndex = stageIndexForJob(job.status);
   const stage = stageForJob(job.status);
 
@@ -307,6 +308,19 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
     const id = window.setInterval(() => void shareLocation(), 25_000);
     return () => window.clearInterval(id);
   }, [job.status, shareLocation]);
+
+  // Manual location refresh: push a fresh fix, then re-pull the job so the
+  // server-authoritative "dispatch sees your location" line updates.
+  const refreshLocation = useCallback(async () => {
+    if (refreshingLoc) return;
+    setRefreshingLoc(true);
+    try {
+      await shareLocation();
+      await refreshJob(true);
+    } finally {
+      setRefreshingLoc(false);
+    }
+  }, [refreshingLoc, shareLocation, refreshJob]);
 
   const points = useMemo(() => {
     const next: MapPoint[] = [];
@@ -505,7 +519,7 @@ export function ActiveJobWorkflow({ initialJob }: { initialJob: TechnicianJob })
           </button>
         </div>
 
-        <JobTruth job={job} mapsHref={mapsHref} />
+        <JobTruth job={job} mapsHref={mapsHref} onRefreshLocation={refreshLocation} refreshingLoc={refreshingLoc} />
         <JobDetails job={job} />
 
         {location.state === "error" ? <OperationalAlert tone="danger" text={location.detail} /> : null}
@@ -600,7 +614,7 @@ function MapFallback({ job }: { job: TechnicianJob }) {
   );
 }
 
-function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | null }) {
+function JobTruth({ job, mapsHref, onRefreshLocation, refreshingLoc }: { job: TechnicianJob; mapsHref: string | null; onRefreshLocation: () => void; refreshingLoc: boolean }) {
   const showTravelMeta = job.status === "assigned" || job.status === "en_route";
   const distance = showTravelMeta ? distanceLabel(job) : null;
   const eta = showTravelMeta ? etaLabel(job) : null;
@@ -622,7 +636,7 @@ function JobTruth({ job, mapsHref }: { job: TechnicianJob; mapsHref: string | nu
           {distance != null ? <MetaChip label="Distance" value={distance} /> : null}
         </div>
       ) : null}
-      {job.technician_location_updated_at ? <LocationFreshness fresh={job.technician_location_is_fresh} updatedAt={job.technician_location_updated_at} /> : null}
+      {job.technician_location_updated_at ? <LocationFreshness fresh={job.technician_location_is_fresh} updatedAt={job.technician_location_updated_at} onRefresh={onRefreshLocation} refreshing={refreshingLoc} /> : null}
       {photos.length > 0 ? <IntakePhotos photos={photos} /> : null}
       {mapsHref ? <a className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 border border-border bg-card px-4 font-condensed text-base font-semibold uppercase tracking-[.04em]" href={mapsHref} target="_blank" rel="noreferrer">Open turn-by-turn navigation <ExternalLink className="size-4" /></a> : null}
     </section>
@@ -670,13 +684,24 @@ function JobDetails({ job }: { job: TechnicianJob }) {
   );
 }
 
-function LocationFreshness({ fresh, updatedAt }: { fresh?: boolean | null; updatedAt: string }) {
+function LocationFreshness({ fresh, updatedAt, onRefresh, refreshing }: { fresh?: boolean | null; updatedAt: string; onRefresh: () => void; refreshing: boolean }) {
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-1.5 text-xs">
-      <span className={`size-2 rounded-full ${fresh ? "bg-success" : "bg-primary"}`} />
-      <span className="text-muted">Dispatch sees your location:</span>
-      <span className={fresh ? "text-success" : "text-primary"}>{fresh ? "fresh" : "stale"}</span>
-      <span className="text-muted">· updated {formatSyncAge(updatedAt)}</span>
+    <div className="mt-4 flex items-center gap-2">
+      <div className="flex flex-1 flex-wrap items-center gap-1.5 text-xs">
+        <span className={`size-2 rounded-full ${fresh ? "bg-success" : "bg-primary"}`} />
+        <span className="text-muted">Dispatch sees your location:</span>
+        <span className={fresh ? "text-success" : "text-primary"}>{fresh ? "fresh" : "stale"}</span>
+        <span className="text-muted">· updated {formatSyncAge(updatedAt)}</span>
+      </div>
+      <button
+        className="touch-target flex shrink-0 items-center gap-1.5 border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted disabled:opacity-50"
+        disabled={refreshing}
+        onClick={onRefresh}
+        type="button"
+      >
+        <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
+        Refresh
+      </button>
     </div>
   );
 }

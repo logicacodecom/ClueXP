@@ -1,9 +1,20 @@
 import { headers } from "next/headers";
-import { AppFrame, Screen, Section, icons } from "@/components/mobile";
+import type { ReactNode } from "react";
+import { AppFrame, Screen } from "@/components/mobile";
 import { AvailabilityToggle, SignOutButton } from "@/components/client-widgets";
 import { ProfileEditor } from "@/components/profile-editor";
 import { PhotoUploadWrapper } from "@/components/photo-upload-wrapper";
+import { BellRing, ChevronRight, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
+
+function FieldSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="mt-6">
+      <p className="field-kicker">{title}</p>
+      <div className="mt-2">{children}</div>
+    </section>
+  );
+}
 
 async function getSession(): Promise<Record<string, unknown> | null> {
   try {
@@ -34,53 +45,60 @@ export default async function ProfilePage() {
   const photoUrl = typeof tech?.photo_url === "string" ? tech.photo_url : null;
   const photoStatus = tech?.photo_status as "pending" | "approved" | "rejected" | null | undefined;
 
-  return (
-    <AppFrame title="Profile">
-      <Screen>
-        <div className="mb-4 border-b border-border pb-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <p className="font-bold">{displayName}</p>
-                <span className="text-sm text-muted">Independent technician</span>
-              </div>
-              <p className="mt-2 text-sm text-muted">
-                {String(session?.organization_name ?? "No provider affiliation")}
-              </p>
-            </div>
-            <div className="flex size-14 items-center justify-center rounded-full bg-card-strong text-xl font-black">
-              {initials}
-            </div>
-          </div>
-        </div>
+  const vetting = String(tech?.vetting_status ?? "verified");
+  const verified = vetting === "verified";
 
-        <Section title="Dispatch status">
-          <div className="flex items-center justify-between rounded-xl border border-border bg-card p-3">
+  return (
+    <AppFrame title="Account">
+      <Screen>
+        <header className="flex items-start justify-between gap-4 border-b border-border pb-5">
+          <div className="min-w-0">
+            <h1 className="font-condensed text-3xl font-bold uppercase leading-none">{displayName}</h1>
+            <p className="mt-2 text-sm text-muted">
+              {String(session?.organization_name ?? "No provider affiliation")}
+            </p>
+            <p className="mt-1 font-mono text-xs text-muted">ID {String(tech?.id ?? "—").slice(0, 8).toUpperCase()}</p>
+            {verified ? (
+              <span className="mt-3 inline-flex items-center gap-1.5 border border-success/40 bg-success/10 px-2.5 py-1 text-xs font-semibold text-success">
+                <ShieldCheck className="size-3.5" />Identity verified
+              </span>
+            ) : (
+              <span className="mt-3 inline-flex items-center gap-1.5 border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary capitalize">
+                {vetting.replaceAll("_", " ")}
+              </span>
+            )}
+          </div>
+          <div className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-card-strong font-condensed text-xl font-bold">
+            {photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img alt={displayName} className="size-full object-cover" src={photoUrl} />
+            ) : initials}
+          </div>
+        </header>
+
+        <FieldSection title="Dispatch status">
+          <div className="flex items-center justify-between border border-border bg-card p-3">
             <div className="flex items-center gap-3">
-              <icons.BellRing className="size-5 text-muted" />
+              <BellRing className="size-5 text-muted" />
               <div>
-                <div className="text-sm font-bold">Availability</div>
-                <div className="text-xs text-muted">Show/hide from dispatch</div>
+                <div className="text-sm font-semibold">Availability</div>
+                <div className="text-xs text-muted">Show or hide yourself from dispatch</div>
               </div>
             </div>
             <AvailabilityToggle />
           </div>
-          <p className="mt-3 text-xs text-muted">
-            Go online to receive job offers. GPS updates live in App settings.
-          </p>
-        </Section>
+          <p className="mt-2 text-xs leading-5 text-muted">Go online to receive job offers. Location updates live in Settings.</p>
+        </FieldSection>
 
-        <Section title="Photo">
-          <div className="rounded-xl border border-border bg-card p-4">
+        <FieldSection title="Photo">
+          <div className="border border-border bg-card p-4">
             <PhotoUploadWrapper
               currentPhotoUrl={photoUrl || undefined}
               photoStatus={photoStatus || undefined}
             />
           </div>
-          <p className="mt-3 text-xs text-muted">
-            Upload a clear headshot. Photos are reviewed before appearing on jobs.
-          </p>
-        </Section>
+          <p className="mt-2 text-xs leading-5 text-muted">Upload a clear headshot. Photos are reviewed before appearing on jobs.</p>
+        </FieldSection>
 
         <ProfileEditor
           initialName={displayName}
@@ -89,40 +107,33 @@ export default async function ProfilePage() {
           initialSkills={Array.isArray(tech?.skills) ? tech.skills.map(String) : []}
         />
 
-        <Section title="Trust profile">
+        <FieldSection title="Trust profile">
           <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-xl bg-card p-3">
-              <div className="text-[10px] font-bold uppercase text-muted">Role</div>
-              <div className="font-bold">{roles[0] ?? "technician"}</div>
-            </div>
-            <div className="rounded-xl bg-card p-3">
-              <div className="text-[10px] font-bold uppercase text-muted">Global status</div>
-              <div className="font-bold">{String(tech?.status ?? "active")}</div>
-            </div>
-            <div className="rounded-xl bg-card p-3">
-              <div className="text-[10px] font-bold uppercase text-muted">Vetting</div>
-              <div className="font-bold">{String(tech?.vetting_status ?? "verified")}</div>
-            </div>
-            <div className="rounded-xl bg-card p-3">
-              <div className="text-[10px] font-bold uppercase text-muted">Display name</div>
-              <div className="font-bold">{String(user?.display_name ?? "--")}</div>
-            </div>
-          </div>
-        </Section>
-
-        <Section title="Profile tools">
-          <div className="space-y-2">
-            <Link className="touch-target flex w-full items-center justify-between rounded-xl border border-border bg-card p-3" href="/settings">
-              <div className="flex items-center gap-3">
-                <icons.Headphones className="size-5 text-muted" />
-                <span className="font-bold">App settings</span>
+            {[
+              ["Role", roles[0] ?? "technician"],
+              ["Global status", String(tech?.status ?? "active")],
+              ["Vetting", vetting],
+              ["Affiliation", String(session?.organization_name ?? "None")]
+            ].map(([label, value]) => (
+              <div className="border border-border bg-card p-3" key={label}>
+                <div className="text-[10px] font-bold uppercase tracking-[.08em] text-muted">{label}</div>
+                <div className="mt-1 truncate font-semibold capitalize">{value}</div>
               </div>
-              <span className="text-sm text-muted">Language, GPS update, device controls</span>
-            </Link>
+            ))}
           </div>
-        </Section>
+        </FieldSection>
 
-        <SignOutButton />
+        <FieldSection title="More">
+          <Link className="touch-target flex w-full items-center justify-between border border-border bg-card p-3" href="/settings">
+            <span className="flex items-center gap-3">
+              <SlidersHorizontal className="size-5 text-muted" />
+              <span className="font-semibold">Settings</span>
+            </span>
+            <span className="flex items-center gap-2 text-sm text-muted">Language, location, privacy <ChevronRight className="size-4" /></span>
+          </Link>
+        </FieldSection>
+
+        <div className="mt-6"><SignOutButton /></div>
       </Screen>
     </AppFrame>
   );

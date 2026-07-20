@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { Screen, TechnicianShell } from "@/components/mobile";
 import { ActiveJobWorkflow, type TechnicianJob } from "@/components/active-job-workflow";
 import { LiveOffersFeed } from "@/components/live-offers";
+import { LocationRefresh } from "@/components/location-refresh";
 
 type ActiveJobRead =
   | { state: "ready"; job: TechnicianJob }
@@ -61,6 +62,7 @@ export default async function JobsPage() {
             </div>
           </div>
           <div className="space-y-3">
+            <LocationRefresh />
             <LiveOffersFeed />
             {activeJobRead.state === "empty" ? (
               <div className="border-y border-border py-5">
