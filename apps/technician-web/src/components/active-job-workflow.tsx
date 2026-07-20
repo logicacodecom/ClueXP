@@ -154,7 +154,6 @@ function closeoutLineError(line: CloseoutLineDraft, index = 0) {
   if (moneyValue(line.quantity || "1") <= 0) return `${spec.label}: quantity must be greater than zero.`;
   if (!line.unit_amount.trim() || moneyValue(line.unit_amount) < 0) return `${spec.label}: enter an amount.`;
   if (spec.requiresProvidedBy && !line.provided_by) return `${spec.label}: choose who provided it.`;
-  if (spec.requiresNote && !line.note.trim()) return `${spec.label}: add the required note.`;
   return null;
 }
 
@@ -848,8 +847,8 @@ function CloseoutPanel({ id, lines, subtotal, method, tip, done, busy, onAdd, on
           ) : null}
           {spec.requiresNote ? (
             <label className="mt-2 block">
-              <span className="field-kicker">Required note</span>
-              <input className="field-input mt-1" value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Add context for this line" />
+              <span className="field-kicker">Optional note</span>
+              <input className="field-input mt-1" value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Add context if needed" />
             </label>
           ) : null}
         </div>;

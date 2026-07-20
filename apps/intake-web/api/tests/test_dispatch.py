@@ -2122,7 +2122,7 @@ def test_structured_closeout_respects_max_line_items():
         app_store.get_user_session = _orig
 
 
-def test_structured_closeout_requires_part_source_and_note():
+def test_structured_closeout_requires_part_source_but_note_is_optional():
     from api.main import store as app_store
 
     tech_uid, jid = str(uuid4()), str(uuid4())
@@ -2165,8 +2165,11 @@ def test_structured_closeout_requires_part_source_and_note():
             },
             headers={"Authorization": f"Bearer {access}"},
         )
-        assert response.status_code == 422
-        assert "requires a note" in response.text
+        assert response.status_code == 200, response.text
+        line = response.json()["closeout"]["line_items"][0]
+        assert line["item_type_code"] == "key_code_purchase"
+        assert line["provided_by"] == "company"
+        assert line["note"] is None
     finally:
         app_store.get_user_session = _orig
 

@@ -3861,8 +3861,6 @@ async def _build_closeout_report(
         if item_type.get("requires_provided_by") and provided_by not in {"company", "technician", "customer", "third_party"}:
             raise HTTPException(status_code=422, detail=f"{item_type['label']} requires provided_by")
         note = (str(raw.get("note") or "").strip() or None)
-        if item_type.get("requires_note") and not note:
-            raise HTTPException(status_code=422, detail=f"{item_type['label']} requires a note")
         subtotal_cents += line_cents
         if taxable:
             taxable_subtotal_cents += line_cents
