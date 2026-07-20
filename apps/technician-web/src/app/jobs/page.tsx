@@ -48,7 +48,7 @@ export default async function JobsPage() {
     );
   }
   return (
-      <TechnicianShell title="Work">
+      <TechnicianShell>
       <Screen>
         <div className="pt-3">
           <div className="mb-5 flex items-end justify-between gap-3">
