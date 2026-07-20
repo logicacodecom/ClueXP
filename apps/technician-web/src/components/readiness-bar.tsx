@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, BellOff, LocateFixed, RefreshCw, ShieldCheck, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, LocateFixed, RefreshCw, ShieldCheck, Wifi, WifiOff } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -46,16 +46,27 @@ function toneText(tone: Tone) {
   return "text-muted";
 }
 
+function toneBorder(tone: Tone) {
+  if (tone === "success") return "border-success";
+  if (tone === "warn") return "border-primary";
+  if (tone === "danger") return "border-danger";
+  return "border-border";
+}
+
 /**
- * Persistent readiness bar (spec §5.3) — four independently verified
- * dimensions, each tap-to-expand into the exact cause and a real one-tap fix.
- * "Ready for offers" only requires Available + Connection: those are the two
- * dimensions the backend actually gates dispatch on today. Location and
- * Alerts are honest, improvable advisories (dispatch can fall back to the
- * technician's service-area center without a live fix, and this PWA relies on
- * foreground polling, not push, so alerts are a real enhancement — this
- * component fires an actual browser Notification on new offers when granted
- * — not a hard requirement).
+ * Persistent readiness bar (spec §5.3, design 1g/1h) — four independently
+ * verified dimensions, each tap-to-expand into the exact cause and a real
+ * one-tap fix. "Ready for offers" requires Available + Connection + having
+ * shared a location fix at least once — matching the mock's blocking
+ * behavior for "Location access is off". Freshness beyond that first fix is
+ * advisory only (dispatch can still fall back to the technician's
+ * service-area center), so staleness colors the cell amber without re-
+ * blocking Ready every few minutes — this app has no background location,
+ * only manual refresh, so a hard freshness gate would be a punishing loop.
+ * Alerts stays a non-blocking advisory: this PWA relies on foreground
+ * polling, not push, so it's a real enhancement (this component fires an
+ * actual browser Notification on new offers when granted) rather than a
+ * requirement.
  */
 export function WorkReadiness({ children }: { children: ReactNode }) {
   const [available, setAvailable] = useState<boolean | null>(null);
@@ -176,6 +187,27 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
   }, [notifPermission]);
 
   const locationFresh = locationAt ? Date.now() - new Date(locationAt).getTime() < LOCATION_FRESH_MS : false;
+  const locationShared = locationAt !== null;
+
+  // Named cause + real one-tap fix, in priority order — matches design 1h's
+  // "NOT RECEIVING OFFERS" + cause + dominant fix pattern for every blocker.
+  const blocker: { tone: Tone; icon: LucideIcon; cause: string; detail: string; action?: Cell["action"] } | null =
+    !online
+      ? {
+          tone: "danger",
+          icon: WifiOff,
+          cause: "No connection",
+          detail: "Reconnect to the internet — offers can't reach you until it's back.",
+        }
+      : !locationShared
+        ? {
+            tone: "warn",
+            icon: LocateFixed,
+            cause: "Location access is off",
+            detail: locError || "ClueXP needs your location while you're available so companies can send offers near you.",
+            action: { label: "Fix location access", busy: locBusy, onClick: refreshLocation }
+          }
+        : null;
 
   const cells: Cell[] = [
     {
@@ -283,10 +315,24 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
               {availBusy ? "Going online…" : "Go online"}
             </button>
           </div>
-        ) : !online ? (
+        ) : blocker ? (
           <div className="border-y border-border py-8 text-center">
-            <div className="font-condensed text-3xl font-bold uppercase leading-none text-danger">No connection</div>
-            <p className="mx-auto mt-2 max-w-[18rem] text-sm leading-6 text-muted">Offers can't reach you until your connection is back.</p>
+            <div className={`mx-auto flex size-16 items-center justify-center rounded-full border-2 ${toneBorder(blocker.tone)} ${toneText(blocker.tone)}`}>
+              <blocker.icon className="size-7" />
+            </div>
+            <div className={`mt-4 flex items-center justify-center gap-2 font-condensed text-2xl font-bold uppercase leading-none ${toneText(blocker.tone)}`}>
+              <AlertTriangle className="size-5" />Not receiving offers
+            </div>
+            <p className="mt-3 text-sm font-semibold">{blocker.cause}</p>
+            <p className="mx-auto mt-1 max-w-[18rem] text-sm leading-6 text-muted">{blocker.detail}</p>
+            {blocker.action ? (
+              <button className="field-primary-action mt-5" disabled={blocker.action.busy} onClick={blocker.action.onClick} type="button">
+                {blocker.action.busy ? "Working…" : blocker.action.label}
+              </button>
+            ) : null}
+            <button className="field-secondary-action mt-3 w-full" disabled={availBusy} onClick={() => void toggleAvailable()} type="button">
+              {availBusy ? "Going offline…" : "Go offline"}
+            </button>
           </div>
         ) : (
           <>
@@ -295,6 +341,9 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
                 <ShieldCheck className="size-5" />Ready for offers
               </div>
               {verifiedAt ? <p className="mt-1 font-mono text-[11px] text-success/80">server-verified · {ageLabel(new Date(verifiedAt).toISOString())}</p> : null}
+              <button className="field-secondary-action mt-4 w-full" disabled={availBusy} onClick={() => void toggleAvailable()} type="button">
+                {availBusy ? "Going offline…" : "Go offline"}
+              </button>
             </div>
             {children}
           </>
