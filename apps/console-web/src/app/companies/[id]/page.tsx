@@ -2,7 +2,7 @@
 
 import { serviceSkillLabel } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, EmptyState, Input, PageHeader } from "@cluexp/console-ui";
-import { Building2 } from "lucide-react";
+import { Building2, Edit } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -24,7 +24,7 @@ interface OrganizationDetail {
 
 function statusVariant(status: string) {
   if (status === "active") return "success" as const;
-  if (status === "pending_review") return "warn" as const;
+  if (status.startsWith("pending")) return "warn" as const;
   if (status === "suspended" || status === "rejected") return "danger" as const;
   return "neutral" as const;
 }
@@ -320,18 +320,29 @@ export default function CompanyDetailPage() {
         <div>
           <h2 className="mb-3 text-lg font-semibold">Members</h2>
           <DataTable
-            columns={["Name", "Email", "Role", "Status", ""]}
+            columns={["Name", "Email", "Role", "Status", "Actions"]}
             rows={detail.members.map((m) => [
-              m.display_name, m.email || m.phone || "—", m.role.replaceAll("_", " "), m.status,
-              <Link className="text-sm font-medium text-primary hover:underline" href={`/users/${m.id}`} key={`${m.id}-view`}>Manage</Link>
+              m.display_name, m.email || m.phone || "—", m.role.replaceAll("_", " "),
+              <Badge key={`${m.id}-status`} variant={statusVariant(m.status)}>{m.status}</Badge>,
+              <Button aria-label={`Edit ${m.display_name}`} asChild className="size-11" key={`${m.id}-actions`} size="icon" title="Edit" variant="outline">
+                <Link href={`/users/${m.id}`}><Edit className="size-4" /></Link>
+              </Button>
             ])}
           />
         </div>
         <div>
           <h2 className="mb-3 text-lg font-semibold">Affiliated technicians</h2>
           <DataTable
-            columns={["Name", "Technician status", "Affiliation", "Type"]}
-            rows={detail.technicians.map((t) => [t.display_name, t.technician_status, t.affiliation_status, t.affiliation_type.replaceAll("_", " ")])}
+            columns={["Name", "Technician status", "Affiliation", "Type", "Actions"]}
+            rows={detail.technicians.map((t) => [
+              t.display_name,
+              <Badge key={`${t.id}-tstatus`} variant={statusVariant(t.technician_status)}>{t.technician_status.replaceAll("_", " ")}</Badge>,
+              <Badge key={`${t.id}-astatus`} variant={statusVariant(t.affiliation_status)}>{t.affiliation_status.replaceAll("_", " ")}</Badge>,
+              t.affiliation_type.replaceAll("_", " "),
+              <Button aria-label={`Edit ${t.display_name}`} asChild className="size-11" key={`${t.id}-actions`} size="icon" title="Edit" variant="outline">
+                <Link href={`/technicians/${t.id}`}><Edit className="size-4" /></Link>
+              </Button>
+            ])}
           />
         </div>
       </div>
