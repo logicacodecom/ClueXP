@@ -185,8 +185,30 @@ export function LanguageSelect({ className }: { className?: string }) {
   );
 }
 
-export function LanguageSettings({ className }: { className?: string }) {
+export function LanguageToggle({ className }: { className?: string }) {
   const { locale, setLocale, t } = useLocale();
+  return (
+    <div aria-label={t("language")} className={`inline-flex shrink-0 rounded-full border border-border bg-secondary p-1 ${className ?? ""}`} role="radiogroup">
+      {supportedLocales.map((item) => (
+        <button
+          aria-checked={locale === item}
+          className={`min-h-9 rounded-full px-4 text-sm font-medium transition-colors ${
+            locale === item ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          }`}
+          key={item}
+          onClick={() => setLocale(item)}
+          role="radio"
+          type="button"
+        >
+          {item === "en" ? t("english") : t("spanish")}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function LanguageSettings({ className }: { className?: string }) {
+  const { t } = useLocale();
   return (
     <section className={className}>
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -194,22 +216,7 @@ export function LanguageSettings({ className }: { className?: string }) {
           <h2 className="text-lg font-semibold">{t("language")}</h2>
           <p className="mt-1 text-sm text-muted-foreground">Used across this account on supported ClueXP apps.</p>
         </div>
-        <div aria-label={t("language")} className="inline-flex shrink-0 rounded-full border border-border bg-secondary p-1" role="radiogroup">
-          {supportedLocales.map((item) => (
-            <button
-              aria-checked={locale === item}
-              className={`min-h-9 rounded-full px-4 text-sm font-medium transition-colors ${
-                locale === item ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-              }`}
-              key={item}
-              onClick={() => setLocale(item)}
-              role="radio"
-              type="button"
-            >
-              {item === "en" ? t("english") : t("spanish")}
-            </button>
-          ))}
-        </div>
+        <LanguageToggle />
       </div>
     </section>
   );

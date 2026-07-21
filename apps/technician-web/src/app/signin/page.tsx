@@ -1,6 +1,6 @@
 "use client";
 
-import { LanguageSelect, sessionRequest, useLocale } from "@cluexp/app-core";
+import { LanguageToggle, sessionRequest, useLocale } from "@cluexp/app-core";
 import { ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { AppFrame, Screen } from "@/components/mobile";
@@ -36,7 +36,7 @@ export default function SignInPage() {
     <AppFrame nav={false} title={t("signIn")} topbar={false}>
       <Screen>
         <div className="flex min-h-[calc(100svh-90px)] flex-col justify-between py-5">
-          <div className="flex justify-end"><LanguageSelect /></div>
+          <div className="flex justify-end"><LanguageToggle /></div>
           <form className="space-y-5" onSubmit={submit}>
             <div>
               <div className="mb-5 flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground"><ShieldCheck className="size-6" /></div>
