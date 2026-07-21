@@ -228,7 +228,7 @@ export default function UsersPage() {
                     </GovernanceActionDialog>
                   ) : null}
                   <GovernanceActionDialog confirmLabel="Delete or archive" description={`If ${row.display_name} has no linked records, they will be deleted. If linked records exist, they will be archived instead.`} disabled={busy !== null} onConfirm={(reason) => deleteOrArchive(row, reason)} reasonRequired title={`Delete or archive ${row.display_name}?`} variant="destructive">
-                    <Button aria-label={`Delete ${row.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Delete" variant="ghost"><Trash2 className="size-4" /></Button>
+                    <Button aria-label={`Delete ${row.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Delete" variant="outline"><Trash2 className="size-4" /></Button>
                   </GovernanceActionDialog>
                 </>
               ) : null}

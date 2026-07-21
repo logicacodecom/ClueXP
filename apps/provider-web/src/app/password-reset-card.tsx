@@ -5,12 +5,12 @@ import { Check, Copy, KeyRound } from "lucide-react";
 import { useState } from "react";
 import { GovernanceActionDialog } from "./governance-action-dialog";
 
-type Mode = "set_temp_password" | "generate_temp_password";
+type Mode = "set_temp_password" | "generate_temp_password" | "reset_link";
 
 export function PasswordResetCard({
   userId,
   displayName,
-  helperText = "Use a temporary password for a direct handoff, or generate one to send later."
+  helperText = "Use a temporary password for a direct handoff, or generate a reset link to send later."
 }: {
   userId: string;
   displayName: string;
@@ -36,6 +36,7 @@ export function PasswordResetCard({
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Unable to reset password");
       if (body.temporary_password) setResult({ label: "Temporary password", value: body.temporary_password });
+      else if (body.reset_url) setResult({ label: "Reset link", value: body.reset_url });
       else setMessage("Temporary password set.");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to reset password");
@@ -74,7 +75,10 @@ export function PasswordResetCard({
             <Button disabled={busy !== null || temporary.length < 8} variant="outline">Set temporary</Button>
           </GovernanceActionDialog>
           <GovernanceActionDialog confirmLabel="Generate password" description={`Generate a temporary password for ${displayName}. It will be shown once here.`} disabled={busy !== null} onConfirm={() => resetPassword("generate_temp_password")} title={`Generate password for ${displayName}?`}>
-            <Button disabled={busy !== null}>Generate temporary</Button>
+            <Button disabled={busy !== null} variant="outline">Generate temporary</Button>
+          </GovernanceActionDialog>
+          <GovernanceActionDialog confirmLabel="Generate reset link" description={`Generate a 24-hour reset link for ${displayName}. You can send it later.`} disabled={busy !== null} onConfirm={() => resetPassword("reset_link")} title={`Generate reset link for ${displayName}?`}>
+            <Button disabled={busy !== null}>Generate reset link</Button>
           </GovernanceActionDialog>
         </div>
         {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}

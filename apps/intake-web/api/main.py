@@ -379,6 +379,8 @@ def _generate_temporary_password() -> str:
 
 def _console_reset_base_url() -> str:
     return os.environ.get("CONSOLE_RESET_BASE_URL") or os.environ.get("CLUEXP_CONSOLE_BASE_URL") or "https://console.cluexp.com"
+def _provider_reset_base_url() -> str:
+    return os.environ.get("PROVIDER_RESET_BASE_URL") or os.environ.get("CLUEXP_PROVIDER_BASE_URL") or "https://partners.cluexp.com"
 _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 _MAX_TEXT = 200
 _MAX_URL = 500
@@ -3569,10 +3571,28 @@ async def reset_provider_user_password(
 ) -> dict[str, Any]:
     require_any_role(session, {"provider_admin"})
     organization_id = _provider_organization_id(session)
-    await _require_provider_user_in_org(user_id, organization_id)
+    detail = await _require_provider_user_in_org(user_id, organization_id)
     mode = payload.mode.strip()
-    if mode not in {"set_temp_password", "generate_temp_password"}:
-        raise HTTPException(status_code=422, detail="mode must be set_temp_password or generate_temp_password")
+    if mode not in {"set_temp_password", "generate_temp_password", "reset_link"}:
+        raise HTTPException(status_code=422, detail="mode must be set_temp_password, generate_temp_password, or reset_link")
+
+    if mode == "reset_link":
+        token = create_access_token(
+            {"sub": str(user_id), "purpose": "password_reset", "jti": str(uuid4())},
+            expires_in=60 * 60 * 24,
+        )
+        reset_url = f"{_provider_reset_base_url().rstrip('/')}/reset-password?token={token}"
+        await _record_admin_governance_event(
+            session, entity_type="user", entity_id=user_id, action="generate_password_reset_link",
+            reason=None, metadata={"expires_in_seconds": 60 * 60 * 24, "organization_id": str(organization_id)},
+        )
+        return {
+            "mode": mode,
+            "reset_url": reset_url,
+            "expires_in_seconds": 60 * 60 * 24,
+            "user": detail,
+        }
+
     password = payload.password if mode == "set_temp_password" else _generate_temporary_password()
     if not password or len(password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
