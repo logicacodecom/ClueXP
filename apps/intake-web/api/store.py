@@ -3176,6 +3176,7 @@ class InMemoryStore(Store):
             }
             for u in self.users.values()
             if str(u.get("active_organization_id")) == oid
+            and (u.get("roles") or [None])[0] in ("dispatcher", "provider_admin")
         ]
 
     async def count_organization_members(self, organization_id: UUID) -> int:
@@ -7163,11 +7164,16 @@ class PostgresStore(Store):
         return int(row[0]) if row else 0
 
     async def list_organization_members(self, organization_id: UUID) -> list[dict]:
+        # Accepting a technician's company invite also writes a 'technician'-role
+        # row into this same table (see the invite-accept flow above), so this
+        # must stay scoped to company staff roles — otherwise technicians leak
+        # into the provider's "Users" (dispatcher/admin) directory.
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select u.id, u.display_name, u.email, u.phone, m.role, m.status, m.created_at"
                 " from user_organization_memberships m join users u on u.id = m.user_id"
-                " where m.organization_id = %s order by m.created_at",
+                " where m.organization_id = %s and m.role in ('dispatcher', 'provider_admin')"
+                " order by m.created_at",
                 (str(organization_id),),
             )
             rows = await cur.fetchall()
@@ -7182,7 +7188,8 @@ class PostgresStore(Store):
     async def count_organization_members(self, organization_id: UUID) -> int:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select count(*) from user_organization_memberships where organization_id = %s",
+                "select count(*) from user_organization_memberships"
+                " where organization_id = %s and role in ('dispatcher', 'provider_admin')",
                 (str(organization_id),),
             )
             row = await cur.fetchone()

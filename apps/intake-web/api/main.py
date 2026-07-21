@@ -3449,11 +3449,20 @@ async def _require_provider_user_in_org(user_id: UUID, organization_id: UUID) ->
     """404s (not 403) for a user outside the caller's own company, so a
     provider_admin can never learn that a given id exists in another tenant.
     The returned detail is narrowed to just this company's membership — a
-    user's affiliation with other companies must never leak cross-tenant."""
+    user's affiliation with other companies must never leak cross-tenant.
+    Membership role must be dispatcher/provider_admin: technicians also get a
+    membership row here when they sign up via a company invite (see
+    register_technician's dual-write into user_organization_memberships), but
+    their global account must never be reachable through these company-staff
+    endpoints — that's the /provider/technicians affiliation surface, not
+    this one."""
     detail = await store.get_user_admin_detail(user_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="User not found")
-    memberships = [m for m in detail.get("memberships") or [] if str(m.get("organization_id")) == str(organization_id)]
+    memberships = [
+        m for m in detail.get("memberships") or []
+        if str(m.get("organization_id")) == str(organization_id) and m.get("role") in PROVIDER_USER_ROLES
+    ]
     if not memberships:
         raise HTTPException(status_code=404, detail="User not found")
     return {**detail, "memberships": memberships}
