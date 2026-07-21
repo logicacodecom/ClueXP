@@ -4,7 +4,7 @@ import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, Input,
   PageHeader, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@cluexp/console-ui";
-import { AlertTriangle, Check, Copy, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
+import { AlertTriangle, Check, Copy, Eye, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
@@ -298,8 +298,8 @@ export default function TechniciansPage() {
                     <TableCell className="text-xs text-muted-foreground">{formatDate(t.affiliation.affiliated_at)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{timeAgo(t.location_updated_at)}</TableCell>
                     <TableCell className="text-right">
-                      <Button asChild size="sm" variant="outline">
-                        <Link href={`/technicians/${t.id}`}>View</Link>
+                      <Button aria-label={`View ${t.display_name ?? "technician"}`} asChild className="size-11" size="icon" title="View" variant="outline">
+                        <Link href={`/technicians/${t.id}`}><Eye className="size-4" /></Link>
                       </Button>
                     </TableCell>
                   </TableRow>

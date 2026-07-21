@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge, Button, DataTable, EmptyState, Input, PageHeader, StatCard } from "@cluexp/console-ui";
-import { Edit, Eye, PauseCircle, RotateCcw, Trash2, Users as UsersIcon } from "lucide-react";
+import { Edit, PauseCircle, RotateCcw, Trash2, Users as UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
@@ -145,21 +145,22 @@ export default function UsersPage() {
             row.role.replaceAll("_", " "),
             <Badge key={`${row.id}-status`} variant={statusVariant(row.status)}>{row.status}</Badge>,
             row.created_at ? new Date(row.created_at).toLocaleDateString() : "-",
-            <div className="flex min-w-[220px] flex-wrap items-center gap-2" key={`${row.id}-actions`}>
-              <Button asChild size="sm" variant="outline"><Link href={`/users/${row.id}`}><Eye className="size-4" />View</Link></Button>
-              <Button asChild size="sm" variant="outline"><Link href={`/users/${row.id}`}><Edit className="size-4" />Edit</Link></Button>
+            <div className="flex items-center gap-2" key={`${row.id}-actions`}>
+              <Button aria-label={`Edit ${row.display_name}`} asChild className="size-11" size="icon" title="Edit" variant="outline">
+                <Link href={`/users/${row.id}`}><Edit className="size-4" /></Link>
+              </Button>
               {row.status === "active" ? (
                 <GovernanceActionDialog confirmLabel="Suspend user" description={`Suspend ${row.display_name}. They will no longer be able to sign in.`} disabled={busy !== null} onConfirm={(reason) => runAction(row, "suspend", reason)} reasonRequired title={`Suspend ${row.display_name}?`} variant="destructive">
-                  <Button disabled={busy !== null} size="sm" variant="destructive"><PauseCircle className="size-4" />Suspend</Button>
+                  <Button aria-label={`Suspend ${row.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Suspend" variant="destructive"><PauseCircle className="size-4" /></Button>
                 </GovernanceActionDialog>
               ) : null}
               {row.status === "suspended" || row.status === "archived" ? (
                 <GovernanceActionDialog confirmLabel="Activate user" description={`Reactivate ${row.display_name} so they can sign in again.`} disabled={busy !== null} onConfirm={(reason) => runAction(row, "reactivate", reason)} title={`Activate ${row.display_name}?`}>
-                  <Button disabled={busy !== null} size="sm"><RotateCcw className="size-4" />Activate</Button>
+                  <Button aria-label={`Activate ${row.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Activate" variant="success"><RotateCcw className="size-4" /></Button>
                 </GovernanceActionDialog>
               ) : null}
               <GovernanceActionDialog confirmLabel="Delete or archive" description={`If ${row.display_name} has no linked records, they will be deleted. If linked records exist, they will be archived instead.`} disabled={busy !== null} onConfirm={(reason) => deleteOrArchive(row, reason)} reasonRequired title={`Delete or archive ${row.display_name}?`} variant="destructive">
-                <Button disabled={busy !== null} size="sm" variant="ghost"><Trash2 className="size-4" />Delete</Button>
+                <Button aria-label={`Delete ${row.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Delete" variant="outline"><Trash2 className="size-4" /></Button>
               </GovernanceActionDialog>
             </div>
           ])}
