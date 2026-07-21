@@ -3445,6 +3445,167 @@ async def create_provider_user(
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+async def _require_provider_user_in_org(user_id: UUID, organization_id: UUID) -> dict[str, Any]:
+    """404s (not 403) for a user outside the caller's own company, so a
+    provider_admin can never learn that a given id exists in another tenant.
+    The returned detail is narrowed to just this company's membership — a
+    user's affiliation with other companies must never leak cross-tenant."""
+    detail = await store.get_user_admin_detail(user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    memberships = [m for m in detail.get("memberships") or [] if str(m.get("organization_id")) == str(organization_id)]
+    if not memberships:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {**detail, "memberships": memberships}
+
+
+async def _guard_provider_admin_self_and_last(
+    session: dict[str, Any], user_id: UUID, organization_id: UUID, *, action: str
+) -> None:
+    """Mirrors _guard_platform_admin_self_and_last, scoped to one company: a
+    provider_admin may never suspend/delete their own account, and every
+    company must always keep at least one active provider_admin able to sign in."""
+    if str(session["user"].get("id")) == str(user_id):
+        raise HTTPException(status_code=409, detail=f"You cannot {action} your own account.")
+    members = await store.list_company_users_admin(organization_id)
+    target = next((m for m in members if m["id"] == str(user_id)), None)
+    if target and target.get("role") == "provider_admin" and target.get("status") == "active":
+        remaining = sum(1 for m in members if m.get("role") == "provider_admin" and m.get("status") == "active")
+        if remaining <= 1:
+            raise HTTPException(status_code=409, detail="At least one active admin must remain for this company.")
+
+
+@app.get("/provider/users/{user_id}")
+async def get_provider_user(
+    user_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    organization_id = _provider_organization_id(session)
+    return await _require_provider_user_in_org(user_id, organization_id)
+
+
+@app.patch("/provider/users/{user_id}")
+async def update_provider_user(
+    user_id: UUID,
+    payload: AdminUserProfileUpdateRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    await _require_provider_user_in_org(user_id, organization_id)
+    data = payload.model_dump(exclude_unset=True, exclude={"role"})
+    result = await store.update_user_profile(str(user_id), data)
+    if result == "email_taken":
+        raise HTTPException(status_code=409, detail="Email is already in use")
+    if result == "phone_taken":
+        raise HTTPException(status_code=409, detail="Phone is already in use")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.role is not None:
+        if payload.role not in PROVIDER_USER_ROLES:
+            raise HTTPException(status_code=422, detail=f"role must be one of {sorted(PROVIDER_USER_ROLES)}")
+        await store.update_organization_member_role(user_id, organization_id, payload.role)
+    return await _require_provider_user_in_org(user_id, organization_id)
+
+
+@app.post("/provider/users/{user_id}/suspend")
+async def suspend_provider_user(
+    user_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    await _require_provider_user_in_org(user_id, organization_id)
+    reason = (payload.reason if payload else None) or ""
+    if len(reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A suspension reason is required.")
+    await _guard_provider_admin_self_and_last(session, user_id, organization_id, action="suspend")
+    result = await store.set_user_account_status(user_id, "suspended")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    result["reason"] = reason.strip()[:280]
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id, action="suspend",
+        reason=result["reason"], metadata={"status": result.get("status"), "organization_id": str(organization_id)},
+    )
+    return result
+
+
+@app.post("/provider/users/{user_id}/reactivate")
+async def reactivate_provider_user(
+    user_id: UUID,
+    payload: AdminActionRequest | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    await _require_provider_user_in_org(user_id, organization_id)
+    result = await store.set_user_account_status(user_id, "active")
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    reason = (payload.reason if payload else None) or None
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id, action="reactivate",
+        reason=reason.strip()[:280] if reason else None,
+        metadata={"status": result.get("status"), "organization_id": str(organization_id)},
+    )
+    return result
+
+
+@app.post("/provider/users/{user_id}/password")
+async def reset_provider_user_password(
+    user_id: UUID,
+    payload: AdminPasswordResetRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    await _require_provider_user_in_org(user_id, organization_id)
+    mode = payload.mode.strip()
+    if mode not in {"set_temp_password", "generate_temp_password"}:
+        raise HTTPException(status_code=422, detail="mode must be set_temp_password or generate_temp_password")
+    password = payload.password if mode == "set_temp_password" else _generate_temporary_password()
+    if not password or len(password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    result = await store.set_user_password(user_id, password)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id,
+        action="set_temp_password" if mode == "set_temp_password" else "generate_temp_password",
+        reason=None, metadata={"delivery": "manual", "organization_id": str(organization_id)},
+    )
+    response: dict[str, Any] = {"mode": mode, "user": result}
+    if mode == "generate_temp_password":
+        response["temporary_password"] = password
+    return response
+
+
+@app.delete("/provider/users/{user_id}")
+async def delete_or_archive_provider_user(
+    user_id: UUID,
+    payload: AdminActionRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    organization_id = _provider_organization_id(session)
+    await _require_provider_user_in_org(user_id, organization_id)
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="A delete/archive reason is required.")
+    await _guard_provider_admin_self_and_last(session, user_id, organization_id, action="delete")
+    result = await store.delete_or_archive_user(user_id, reason=reason[:280])
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    action = {"deleted": "delete", "archived": "archive"}.get(str(result.get("action")), str(result.get("action")))
+    await _record_admin_governance_event(
+        session, entity_type="user", entity_id=user_id, action=action,
+        reason=result.get("reason"),
+        metadata={"status": result.get("status"), "references": result.get("references"), "organization_id": str(organization_id)},
+    )
+    return result
+
+
 # --- company (provider-managed) dispatch: org-scoped clones of the ops console ---
 # ClueXP is SaaS — the company's own dispatcher assigns the company's own
 # technicians. Everything is scoped to session.active_organization_id; a
