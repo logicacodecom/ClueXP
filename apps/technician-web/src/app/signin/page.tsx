@@ -36,7 +36,10 @@ export default function SignInPage() {
     <AppFrame nav={false} title={t("signIn")} topbar={false}>
       <Screen>
         <div className="flex min-h-[calc(100svh-90px)] flex-col justify-between py-5">
-          <div className="flex justify-end"><LanguageToggle /></div>
+          <div className="flex items-center justify-between">
+            <img alt="ClueXP" className="h-6 w-auto object-contain" src="/logo.png" />
+            <LanguageToggle />
+          </div>
           <form className="space-y-5" onSubmit={submit}>
             <div>
               <div className="mb-5 flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground"><ShieldCheck className="size-6" /></div>

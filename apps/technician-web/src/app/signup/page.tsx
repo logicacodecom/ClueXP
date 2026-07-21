@@ -54,7 +54,10 @@ export default function SignUpPage() {
   return (
     <AppFrame nav={false} title={t("signUp")} topbar={false}>
       <Screen>
-        <div className="flex justify-end py-4"><LanguageToggle /></div>
+        <div className="flex items-center justify-between py-4">
+          <img alt="ClueXP" className="h-6 w-auto object-contain" src="/logo.png" />
+          <LanguageToggle />
+        </div>
         <form className="space-y-4 pb-8" onSubmit={submit}>
           <div><h1 className="text-3xl font-black">{t("signUp")}</h1><p className="mt-2 text-sm text-muted">Technician access requires identity and compliance verification.</p></div>
           {inviteOrg ? <p className="rounded-xl border border-primary/40 bg-primary/10 p-3 text-sm font-bold" role="status">You were invited by {inviteOrg}. After signup you'll be linked to them for dispatch (pending your acceptance).</p> : null}
