@@ -5597,3 +5597,83 @@ def test_financial_overview_in_memory_finished_at_endpoint():
     assert narrow["period_metrics"]["job_count"] == 2  # march_job + undated_job
     assert narrow["period_metrics"]["customer_collected_cents"] == 40000  # 10000 + 30000, NOT the may job's 20000
     assert narrow["period"]["undated_job_count"] == 1
+
+
+# ── Job operational id (docs/JOB-OPERATIONAL-ID-SCOPE.md) ──────────────────
+
+def _create_branded_ticket(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    async def fake_resolve(slug):
+        return {
+            "intake_channel_id": str(uuid4()),
+            "origin_org_id": str(uuid4()),
+            "customer_owner_org_id": str(uuid4()),
+            "dispatch_cutover_enabled": False,
+            "organization_name": "Metro Key Partners",
+            "dispatch_phone": "+15551234567",
+        }
+
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    client = TestClient(app)
+    response = client.post("/tickets", json={"intake_channel": "metro-key", "access_type": "vehicle"})
+    assert response.status_code == 200, response.text
+    return client, response.json()
+
+
+def test_operational_id_format_is_utc_date_plus_daily_sequence(monkeypatch):
+    import re
+    from datetime import datetime, timezone
+
+    _, body = _create_branded_ticket(monkeypatch)
+    operational_id = body["operational_id"]
+    assert operational_id is not None
+    assert re.fullmatch(r"\d{11}", operational_id)
+    today_prefix = datetime.now(timezone.utc).strftime("%y%m%d")
+    assert operational_id.startswith(today_prefix)
+
+
+def test_operational_id_never_equals_the_internal_uuid(monkeypatch):
+    _, body = _create_branded_ticket(monkeypatch)
+    assert body["operational_id"] != body["ticket"]["ticket_id"]
+
+
+def test_operational_id_sequence_increments_across_jobs(monkeypatch):
+    _, first = _create_branded_ticket(monkeypatch)
+    _, second = _create_branded_ticket(monkeypatch)
+    first_seq = int(first["operational_id"][-5:])
+    second_seq = int(second["operational_id"][-5:])
+    assert second_seq == first_seq + 1
+    assert first["operational_id"] != second["operational_id"]
+
+
+def test_operational_id_stable_across_patch(monkeypatch):
+    client, created = _create_branded_ticket(monkeypatch)
+    ticket_id = created["ticket"]["ticket_id"]
+    original_operational_id = created["operational_id"]
+
+    patched = client.patch(f"/tickets/{ticket_id}", json={"access_type": "home"})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["operational_id"] == original_operational_id
+
+    refetched = client.get(f"/tickets/{ticket_id}")
+    assert refetched.json()["operational_id"] == original_operational_id
+
+
+def test_operational_id_appears_in_technician_job_history(monkeypatch):
+    from api.main import store as app_store
+
+    client, created = _create_branded_ticket(monkeypatch)
+    ticket_id = created["ticket"]["ticket_id"]
+    operational_id = created["operational_id"]
+
+    tech_id = str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[ticket_id] = "completed_confirmed"
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[ticket_id] = tech_id
+
+    history = asyncio.run(app_store.get_technician_job_history(UUID(tech_id)))
+    row = next(r for r in history if r["id"] == ticket_id)
+    assert row["operational_id"] == operational_id

@@ -125,6 +125,9 @@ class TicketEnvelope(BaseModel):
     # cutover-enabled channel; the legacy path leaves these null.
     tracking_token: str | None = None
     tracking_path: str | None = None
+    # Friendly public reference (docs/JOB-OPERATIONAL-ID-SCOPE.md) — the id
+    # clients should show/search on. jobs.id (the UUID) stays internal-only.
+    operational_id: str | None = None
 
 
 class PhotoIntentRequest(BaseModel):
@@ -843,6 +846,7 @@ async def envelope(ticket: Ticket) -> TicketEnvelope:
             "may_show_eta": ticket.may_show_eta(),
             "may_show_live_tracking": ticket.may_show_live_tracking(),
         },
+        operational_id=await store.get_operational_id(ticket.ticket_id),
     )
 
 

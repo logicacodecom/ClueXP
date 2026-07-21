@@ -20,6 +20,7 @@ type PaymentReport = { amount: number; currency: string; method: string; reporte
 
 type HistoryJob = {
   id: string;
+  operational_id?: string | null;
   status: string;
   address: string | null;
   situation: string | null;
@@ -199,7 +200,7 @@ export default function ActivityPage() {
                 {expanded ? (
                   <div className="mt-3 rounded-xl border border-border bg-card-strong p-3 text-sm">
                     <dl className="grid grid-cols-2 gap-2">
-                      <dt className="text-muted">Job ID</dt><dd className="truncate text-right font-bold">{job.id}</dd>
+                      <dt className="text-muted">Job ID</dt><dd className="truncate text-right font-bold">{job.operational_id ?? job.id}</dd>
                       <dt className="text-muted">Urgency</dt><dd className="text-right font-bold capitalize">{(job.urgency || "—").replaceAll("_", " ")}</dd>
                       <dt className="text-muted">Created</dt><dd className="text-right font-bold">{job.created_at ? new Date(job.created_at).toLocaleString() : "—"}</dd>
                       <dt className="text-muted">Review</dt><dd className="text-right font-bold">{job.review?.rating ? `${job.review.rating}/5` : "No review yet"}</dd>

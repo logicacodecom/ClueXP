@@ -592,6 +592,13 @@ def _new_tracking_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _format_operational_id(year: int, month: int, day: int, sequence: int) -> str:
+    """YYMMDDSSSSS — see docs/JOB-OPERATIONAL-ID-SCOPE.md. UTC calendar day +
+    a global daily sequence, minimum 5-digit padding (not a hard cap)."""
+    yy = f"{year:04d}"[-2:]  # last two digits, via slicing -- store.py is scanned for unescaped psycopg placeholders
+    return f"{yy}{month:02d}{day:02d}{sequence:05d}"
+
+
 def _trust_state_value(ticket: Ticket) -> str:
     state = ticket.trust_state
     return state.value if hasattr(state, "value") else str(state)
@@ -1096,6 +1103,10 @@ class Store:
     async def get_tracking_token(self, job_id: UUID) -> str | None:  # pragma: no cover
         raise NotImplementedError
 
+    # --- operational id (docs/JOB-OPERATIONAL-ID-SCOPE.md) ---
+    async def get_operational_id(self, job_id: UUID) -> str | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def resolve_tracking_token(self, token: str) -> str | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1415,11 +1426,22 @@ class InMemoryStore(Store):
 
     async def save(self, ticket: Ticket, origin: dict | None = None) -> None:
         self._tickets[ticket.ticket_id] = ticket
+        self._job_operational_id = getattr(self, "_job_operational_id", {})
+        jid = str(ticket.ticket_id)
+        if jid not in self._job_operational_id:
+            self._operational_id_counters = getattr(self, "_operational_id_counters", {})
+            key = (ticket.created_at.year, ticket.created_at.month, ticket.created_at.day)
+            sequence = self._operational_id_counters.get(key, 0) + 1
+            self._operational_id_counters[key] = sequence
+            self._job_operational_id[jid] = _format_operational_id(*key, sequence)
         origin = origin or {}
         owner_org = origin.get("customer_owner_org_id") or origin.get("origin_org_id")
         if owner_org:
             self._job_org = getattr(self, "_job_org", {})
             self._job_org[str(ticket.ticket_id)] = str(owner_org)
+
+    async def get_operational_id(self, job_id: UUID) -> str | None:
+        return getattr(self, "_job_operational_id", {}).get(str(job_id))
 
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:
         # No DB locally — public ClueXP intake (no owning org).
@@ -2789,6 +2811,7 @@ class InMemoryStore(Store):
             closeout = await self.get_job_closeout(UUID(jid))
             out.append({
                 "id": jid, "status": status,
+                "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
                 "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
                 "technician_display_name": None,
                 "access_type": getattr(self, "_job_access_type", {}).get(jid),
@@ -3088,6 +3111,7 @@ class InMemoryStore(Store):
                 continue
             out.append({
                 "id": jid, "status": status,
+                "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
                 "review": await self.get_job_review(UUID(jid)),
                 "payments": await self.get_payment_reports(UUID(jid)),
                 "closeout": await self.get_job_closeout(UUID(jid)),
@@ -3766,6 +3790,32 @@ class PostgresStore(Store):
             await conn.execute(
                 "create unique index if not exists idx_jobs_tracking_token on jobs (tracking_token)"
             )
+            # Operational ID (docs/JOB-OPERATIONAL-ID-SCOPE.md) — additive, mirrors the
+            # tracking_token self-heal above. NOT NULL + backfill for existing rows are
+            # owned by migration 0038; this only ensures a fresh/behind DB can accept
+            # new jobs before that migration runs.
+            for _col in (
+                "operational_id text",
+                "operational_year integer",
+                "operational_month integer",
+                "operational_day integer",
+                "operational_sequence integer",
+            ):
+                await conn.execute(f"alter table jobs add column if not exists {_col}")
+            await conn.execute(
+                "create unique index if not exists idx_jobs_operational_id on jobs (operational_id)"
+            )
+            await conn.execute(
+                "create table if not exists job_operational_id_counters ("
+                "  year integer not null,"
+                "  month integer not null,"
+                "  day integer not null,"
+                "  next_sequence integer not null,"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  unique (year, month, day)"
+                ")"
+            )
             await conn.execute(
                 "create table if not exists users ("
                 "  id uuid primary key default gen_random_uuid(),"
@@ -4252,20 +4302,39 @@ class PostgresStore(Store):
                 row = await cur.fetchone()
                 customer_id = row[0] if row else None
 
+            existing = await (
+                await conn.execute(
+                    "select operational_id, operational_year, operational_month,"
+                    " operational_day, operational_sequence from jobs where id = %s",
+                    (str(ticket.ticket_id),),
+                )
+            ).fetchone()
+            if existing and existing[0]:
+                operational_id, op_year, op_month, op_day, op_seq = existing
+            else:
+                operational_id, op_year, op_month, op_day, op_seq = (
+                    await self._next_operational_id(conn, ticket.created_at)
+                )
+
             await conn.execute(
                 "insert into jobs ("
                 "  id, customer_id, fulfillment_technician_id,"
                 "  origin_org_id, customer_owner_org_id, intake_channel_id,"
                 "  trust_state, status, access_type,"
                 "  situation, urgency, lat, lng, address, detail, price_quote,"
-                "  final_charge, tracking_token, created_at, updated_at"
+                "  final_charge, tracking_token, created_at, updated_at,"
+                "  operational_id, operational_year, operational_month,"
+                "  operational_day, operational_sequence"
                 ") values ("
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s, %s, %s, %s, %s,"
-                "  %s, %s, %s, now()"
+                "  %s, %s, %s, now(),"
+                "  %s, %s, %s, %s, %s"
                 ")"
+                # operational_id and its components are intentionally absent from the
+                # SET clause below — assigned once above, immutable on every later save.
                 " on conflict (id) do update set"
                 "  customer_id = coalesce(excluded.customer_id, jobs.customer_id),"
                 "  fulfillment_technician_id = excluded.fulfillment_technician_id,"
@@ -4314,8 +4383,42 @@ class PostgresStore(Store):
                     Jsonb(payload.get("final_charge")) if payload.get("final_charge") else None,
                     _new_tracking_token(),
                     ticket.created_at,
+                    operational_id,
+                    op_year,
+                    op_month,
+                    op_day,
+                    op_seq,
                 ),
             )
+
+    async def _next_operational_id(
+        self, conn, created_at: datetime
+    ) -> tuple[str, int, int, int, int]:
+        """Atomically claim the next global daily sequence number (docs/JOB-
+        OPERATIONAL-ID-SCOPE.md). One row per UTC day; INSERT..ON CONFLICT..
+        RETURNING is a single statement, so this is race-safe under concurrent
+        job creation without an explicit transaction."""
+        year, month, day = created_at.year, created_at.month, created_at.day
+        cur = await conn.execute(
+            "insert into job_operational_id_counters"
+            " (year, month, day, next_sequence, created_at, updated_at)"
+            " values (%s, %s, %s, 1, now(), now())"
+            " on conflict (year, month, day) do update"
+            " set next_sequence = job_operational_id_counters.next_sequence + 1,"
+            "     updated_at = now()"
+            " returning next_sequence",
+            (year, month, day),
+        )
+        sequence = (await cur.fetchone())[0]
+        return _format_operational_id(year, month, day, sequence), year, month, day, sequence
+
+    async def get_operational_id(self, job_id: UUID) -> str | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select operational_id from jobs where id = %s", (str(job_id),)
+            )
+            row = await cur.fetchone()
+            return row[0] if row else None
 
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:
         if not slug:
@@ -6172,7 +6275,7 @@ class PostgresStore(Store):
                 " coalesce(j.confirmed_at, j.closed_at, j.cancelled_at, j.disputed_at, j.updated_at),"
                 " j.fulfillment_technician_id, t.display_name, j.access_type,"
                 " j.fulfillment_org_id, j.customer_owner_org_id,"
-                " r.rating, r.comment, r.created_at"
+                " r.rating, r.comment, r.created_at, j.operational_id"
                 " from jobs j"
                 " left join technicians t on t.id = j.fulfillment_technician_id"
                 " left join lateral ("
@@ -6190,7 +6293,7 @@ class PostgresStore(Store):
         return [
             {
                 "id": str(r[0]), "status": r[1], "address": r[2], "situation": r[3],
-                "urgency": r[4],
+                "urgency": r[4], "operational_id": r[15],
                 "created_at": r[5].isoformat() if r[5] else None,
                 "finished_at": r[6].isoformat() if r[6] else None,
                 "fulfillment_technician_id": str(r[7]) if r[7] else None,
