@@ -168,10 +168,10 @@ export default function DocumentsPage() {
                   </div>
                   <Badge variant="warn">pending photo</Badge>
                   <GovernanceActionDialog confirmLabel="Reject photo" description={`Reject the profile photo for ${photo.display_name || "this technician"}.`} disabled={isBusy} onConfirm={() => decidePhoto(photo, "rejected")} title={`Reject ${photo.display_name || "technician"} photo?`} variant="destructive">
-                    <Button disabled={isBusy} variant="outline"><X className="size-4" />Reject</Button>
+                    <Button aria-label={`Reject ${photo.display_name || "technician"} photo`} className="size-11" disabled={isBusy} size="icon" title="Reject" variant="outline"><X className="size-4" /></Button>
                   </GovernanceActionDialog>
                   <GovernanceActionDialog confirmLabel="Approve photo" description={`Approve the profile photo for ${photo.display_name || "this technician"}.`} disabled={isBusy} onConfirm={() => decidePhoto(photo, "approved")} title={`Approve ${photo.display_name || "technician"} photo?`}>
-                    <Button disabled={isBusy}><Check className="size-4" />Approve</Button>
+                    <Button aria-label={`Approve ${photo.display_name || "technician"} photo`} className="size-11" disabled={isBusy} size="icon" title="Approve" variant="success"><Check className="size-4" /></Button>
                   </GovernanceActionDialog>
                 </div>
               );
@@ -190,10 +190,10 @@ export default function DocumentsPage() {
                   <Badge variant="warn">pending review</Badge>
                   <Button disabled={isBusy} variant="outline" onClick={() => void openTechDoc(doc)}>Open file</Button>
                   <GovernanceActionDialog confirmLabel="Reject document" description={`Reject ${doc.document_type.replaceAll("_", " ")} for ${doc.technician_name || "this technician"}.`} disabled={isBusy} onConfirm={(reason) => decideTechDoc(doc, "rejected", reason)} reasonRequired title={`Reject ${doc.document_type.replaceAll("_", " ")}?`} variant="destructive">
-                    <Button disabled={isBusy} variant="outline"><X className="size-4" />Reject</Button>
+                    <Button aria-label={`Reject ${doc.document_type.replaceAll("_", " ")}`} className="size-11" disabled={isBusy} size="icon" title="Reject" variant="outline"><X className="size-4" /></Button>
                   </GovernanceActionDialog>
                   <GovernanceActionDialog confirmLabel="Approve document" description={`Approve ${doc.document_type.replaceAll("_", " ")} for ${doc.technician_name || "this technician"}.`} disabled={isBusy} onConfirm={() => decideTechDoc(doc, "approved")} title={`Approve ${doc.document_type.replaceAll("_", " ")}?`}>
-                    <Button disabled={isBusy}><Check className="size-4" />Approve</Button>
+                    <Button aria-label={`Approve ${doc.document_type.replaceAll("_", " ")}`} className="size-11" disabled={isBusy} size="icon" title="Approve" variant="success"><Check className="size-4" /></Button>
                   </GovernanceActionDialog>
                 </div>
               );
@@ -210,10 +210,10 @@ export default function DocumentsPage() {
                 <Badge variant="warn">pending review</Badge>
                 <Button disabled={busy === document.id} variant="outline" onClick={() => void openDocument(document)}>Open file</Button>
                 <GovernanceActionDialog confirmLabel="Reject document" description={`Reject ${document.document_type.replaceAll("_", " ")} for ${document.owner_name || document.owner_type}.`} disabled={busy === document.id} onConfirm={() => decide(document, "rejected")} title={`Reject ${document.document_type.replaceAll("_", " ")}?`} variant="destructive">
-                  <Button disabled={busy === document.id} variant="outline"><X className="size-4" />Reject</Button>
+                  <Button aria-label={`Reject ${document.document_type.replaceAll("_", " ")}`} className="size-11" disabled={busy === document.id} size="icon" title="Reject" variant="outline"><X className="size-4" /></Button>
                 </GovernanceActionDialog>
                 <GovernanceActionDialog confirmLabel="Verify document" description={`Verify ${document.document_type.replaceAll("_", " ")} for ${document.owner_name || document.owner_type}.`} disabled={busy === document.id} onConfirm={() => decide(document, "verified")} title={`Verify ${document.document_type.replaceAll("_", " ")}?`}>
-                  <Button disabled={busy === document.id}><Check className="size-4" />Verify</Button>
+                  <Button aria-label={`Verify ${document.document_type.replaceAll("_", " ")}`} className="size-11" disabled={busy === document.id} size="icon" title="Verify" variant="success"><Check className="size-4" /></Button>
                 </GovernanceActionDialog>
               </div>
             ))}

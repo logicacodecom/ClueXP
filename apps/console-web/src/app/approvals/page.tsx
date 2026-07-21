@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, EmptyState, Input, PageHeader, StatCard } from "@cluexp/console-ui";
-import { Building2, CalendarClock, Check, Mail, Phone, RefreshCw, Search, ShieldCheck, UserRound, X } from "lucide-react";
+import { Building2, CalendarClock, Check, Eye, Mail, Phone, RefreshCw, Search, ShieldCheck, UserRound, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
@@ -197,8 +197,10 @@ function ApprovalSection({
               <Detail icon={ShieldCheck} label="Vetting" value={item.vetting_status?.replaceAll("_", " ") || item.status.replaceAll("_", " ")} />
               <Detail icon={CalendarClock} label="Submitted" value={formatDate(item.created_at)} />
             </div>
-            <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:flex-wrap sm:justify-end">
-              <Button asChild variant="outline"><Link href={recordPath(item)}>View</Link></Button>
+            <div className="flex gap-2 border-t border-border pt-4 sm:justify-end">
+              <Button aria-label={`View ${item.display_name}`} asChild className="size-11" size="icon" title="View" variant="outline">
+                <Link href={recordPath(item)}><Eye className="size-4" /></Link>
+              </Button>
               <GovernanceActionDialog
                 confirmLabel={`Approve ${item.kind === "technician" ? "technician" : "company"}`}
                 description={`Approve ${item.display_name} for production access.`}
@@ -206,7 +208,7 @@ function ApprovalSection({
                 onConfirm={(reason) => onDecide(item, "approve", reason)}
                 title={`Approve ${item.display_name}?`}
               >
-                <Button disabled={busy !== null}><Check className="size-4" />Approve</Button>
+                <Button aria-label={`Approve ${item.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Approve" variant="success"><Check className="size-4" /></Button>
               </GovernanceActionDialog>
               <GovernanceActionDialog
                 confirmLabel={`Decline ${item.kind === "technician" ? "technician" : "company"}`}
@@ -217,7 +219,7 @@ function ApprovalSection({
                 title={`Decline ${item.display_name}?`}
                 variant="destructive"
               >
-                <Button disabled={busy !== null} variant="outline"><X className="size-4" />Decline</Button>
+                <Button aria-label={`Decline ${item.display_name}`} className="size-11" disabled={busy !== null} size="icon" title="Decline" variant="outline"><X className="size-4" /></Button>
               </GovernanceActionDialog>
             </div>
           </CardContent>
