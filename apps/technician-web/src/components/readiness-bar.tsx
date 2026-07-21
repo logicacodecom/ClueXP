@@ -32,13 +32,6 @@ function ageLabel(iso: string) {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-function toneDot(tone: Tone) {
-  if (tone === "success") return "bg-success";
-  if (tone === "warn") return "bg-primary";
-  if (tone === "danger") return "bg-danger";
-  return "bg-muted";
-}
-
 function toneText(tone: Tone) {
   if (tone === "success") return "text-success";
   if (tone === "warn") return "text-primary";
@@ -265,6 +258,7 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
       <div className="grid grid-cols-4 divide-x divide-border border border-border bg-card">
         {cells.map((cell) => {
           const open = openCell === cell.key;
+          const Icon = cell.icon;
           return (
             <button
               className={`flex min-h-[58px] flex-col items-center justify-center gap-1 px-1 py-2 ${open ? "bg-card-strong" : ""}`}
@@ -273,7 +267,7 @@ export function WorkReadiness({ children }: { children: ReactNode }) {
               type="button"
               aria-expanded={open}
             >
-              <span className={`size-2 rounded-full ${toneDot(cell.tone)}`} />
+              <Icon className={`size-4 ${toneText(cell.tone)}`} />
               <span className="text-[11px] font-semibold text-muted">{cell.label}</span>
             </button>
           );
