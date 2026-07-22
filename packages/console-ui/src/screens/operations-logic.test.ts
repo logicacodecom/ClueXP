@@ -76,6 +76,19 @@ test("mergeOperationsRows: overlapping id prefers queue pending-dispatch fields,
   assert.equal(row.active_status_started_at, iso(5));
 });
 
+test("mergeOperationsRows: preserves operational id for dispatcher-facing labels", () => {
+  const queueOnly = first(mergeOperationsRows([queueRow({ id: "uuid-request", operational_id: "26072000001" })], []));
+  const jobOnly = first(mergeOperationsRows([], [jobRow({ id: "uuid-job", status: "en_route", operational_id: "26072000002" })]));
+  const overlapped = first(mergeOperationsRows(
+    [queueRow({ id: "uuid-shared", operational_id: "26072000004" })],
+    [jobRow({ id: "uuid-shared", status: "pending_dispatch", operational_id: "26072000003" })],
+  ));
+
+  assert.equal(queueOnly.operational_id, "26072000001");
+  assert.equal(jobOnly.operational_id, "26072000002");
+  assert.equal(overlapped.operational_id, "26072000004");
+});
+
 test("waitingMinutes only applies to requests; ongoingMinutes only to active jobs", () => {
   const request = first(mergeOperationsRows([queueRow({ id: "r1", created_at: iso(12) })], []));
   const active = first(mergeOperationsRows([], [jobRow({ id: "a1", status: "in_progress", active_status_started_at: iso(8) })]));

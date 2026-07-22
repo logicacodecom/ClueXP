@@ -164,6 +164,10 @@ function candidateDistance(candidate: Candidate, unit: "mi" | "km"): string {
   return "distance unknown";
 }
 
+function jobDisplayId(job: { id: string; operational_id?: string | null }) {
+  return job.operational_id?.trim() || "No operation ID";
+}
+
 /** The production operations workspace: map + work queue + technician roster
  * in one screen, composed client-side from the existing queue/jobs/fleet
  * endpoints (see docs/PROVIDER-DISPATCHER-OPERATIONS-PROMPT.md). Additive —
@@ -293,6 +297,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     if (search) {
       list = list.filter((r) =>
         r.id.toLowerCase().includes(search) ||
+        (r.operational_id ?? "").toLowerCase().includes(search) ||
         (r.address ?? "").toLowerCase().includes(search) ||
         (r.situation ?? "").toLowerCase().includes(search));
     }
@@ -421,13 +426,13 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const requestPoints: MapPoint[] = sorted
     .filter((r) => r.isRequest && r.lat != null && r.lng != null)
     .map((r): MapPoint => ({
-      lat: r.lat!, lng: r.lng!, kind: "request", id: r.id, label: r.address ?? r.id,
+      lat: r.lat!, lng: r.lng!, kind: "request", id: r.id, label: r.address ?? jobDisplayId(r),
       risk: toMapRisk(requestRisk(r, now, ackSlaMinutes, stalledMinutes)),
       selected: r.id === highlightedWorkId,
     }));
   const jobPoints: MapPoint[] = sorted
     .filter((r) => !r.isRequest && r.lat != null && r.lng != null)
-    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? r.id, selected: r.id === highlightedWorkId }));
+    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? jobDisplayId(r), selected: r.id === highlightedWorkId }));
   const techPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.current_lat != null && t.current_lng != null)
     .map((t): MapPoint => ({
@@ -437,7 +442,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     }));
   const allPoints = [...requestPoints, ...jobPoints, ...techPoints];
   const selectedWorkPoint = selectedRow?.lat != null && selectedRow.lng != null
-    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? selectedRow.id, selected: true } satisfies MapPoint
+    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? jobDisplayId(selectedRow), selected: true } satisfies MapPoint
     : null;
   const selectedTechPoint = selectedTech?.current_lat != null && selectedTech.current_lng != null
     ? { lat: selectedTech.current_lat, lng: selectedTech.current_lng, kind: "tech", id: selectedTech.id, label: selectedTech.display_name ?? selectedTech.id, status: selectedTech.marker_status ?? undefined, selected: true } satisfies MapPoint
@@ -693,7 +698,7 @@ function WorkQueuePanel({
         <Input
           className="flex-none"
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="Search address, situation, or id"
+          placeholder="Search address, situation, or operation ID"
           value={search}
         />
         <div className="flex-1 space-y-2 overflow-y-auto">
@@ -708,6 +713,7 @@ function WorkQueuePanel({
             const riskLabel = RISK_LABEL[risk];
             const isSelected = row.id === selectedId;
             const isLinked = !isSelected && row.id === highlightJobId;
+            const displayId = jobDisplayId(row);
             return (
               <div
                 className={cn(
@@ -726,7 +732,7 @@ function WorkQueuePanel({
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      {row.isRequest ? "Request" : "Job"} <span className="font-mono normal-case tracking-normal">{row.id}</span>
+                      {row.isRequest ? "Request" : "Job"} <span className="font-mono normal-case tracking-normal">{displayId}</span>
                     </div>
                     <div className="font-medium">{row.address ?? "No address"}</div>
                   </div>
@@ -837,7 +843,7 @@ function TechnicianRosterPanel({
                     ) : null}
                     {tech.active_job ? (
                       <div className="mt-1 truncate text-xs text-muted-foreground">
-                        {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status} · {tech.active_job.address ?? tech.active_job.id}
+                        {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status} · {tech.active_job.address ?? jobDisplayId(tech.active_job)}
                       </div>
                     ) : null}
                     {skills.codes.length > 0 ? (
@@ -915,6 +921,7 @@ function FocusedActionBar({
 }) {
   if (!row && !tech) return null;
   const canAssign = Boolean(row?.isRequest && tech && !activeOffer);
+  const rowDisplayId = row ? jobDisplayId(row) : null;
   const timeLabel = row
     ? row.isRequest
       ? `Waiting ${formatMinutes(waitingMinutes(row, now))}`
@@ -934,7 +941,7 @@ function FocusedActionBar({
         {row ? (
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-semibold">{row.isRequest ? "Request" : "Job"} {row.id}</span>
+              <span className="font-semibold">{row.isRequest ? "Request" : "Job"} {rowDisplayId}</span>
               <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
               {timeLabel ? <span className="text-muted-foreground">{timeLabel}</span> : null}
               {exception ? <Badge variant="warn">Review required</Badge> : null}
@@ -947,7 +954,7 @@ function FocusedActionBar({
         ) : tech ? (
           <div className="min-w-0 flex-1 text-sm">
             <span className="font-semibold">{tech.display_name ?? tech.id}</span>
-            <span className="ml-2 text-muted-foreground">{tech.active_job ? `Current job ${tech.active_job.id}` : "No active job"}</span>
+            <span className="ml-2 text-muted-foreground">{tech.active_job ? `Current job ${jobDisplayId(tech.active_job)}` : "No active job"}</span>
           </div>
         ) : null}
         <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Cancel</Button>

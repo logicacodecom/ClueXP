@@ -8,6 +8,7 @@ const STATUS_PENDING_DISPATCH = "pending_dispatch";
 
 export type QueueRow = {
   id: string;
+  operational_id?: string | null;
   address: string | null;
   lat: number | null;
   lng: number | null;
@@ -28,6 +29,7 @@ export type QueueRow = {
 
 export type ActiveJobRow = {
   id: string;
+  operational_id?: string | null;
   status: string;
   address: string | null;
   lat: number | null;
@@ -47,6 +49,7 @@ export type ActiveJobRow = {
 
 export type FleetActiveJob = {
   id: string;
+  operational_id?: string | null;
   status: string;
   address: string | null;
   lat: number | null;
@@ -74,6 +77,7 @@ export type FleetRow = {
 
 export type OperationsRow = {
   id: string;
+  operational_id?: string | null;
   status: string;
   isRequest: boolean;
   address: string | null;
@@ -109,6 +113,7 @@ export function mergeOperationsRows(queue: QueueRow[], jobs: ActiveJobRow[]): Op
   for (const j of jobs) {
     byId.set(j.id, {
       id: j.id,
+      operational_id: j.operational_id ?? null,
       status: j.status,
       isRequest: j.status === STATUS_PENDING_DISPATCH,
       address: j.address,
@@ -136,6 +141,7 @@ export function mergeOperationsRows(queue: QueueRow[], jobs: ActiveJobRow[]): Op
     const existing = byId.get(q.id);
     byId.set(q.id, {
       id: q.id,
+      operational_id: q.operational_id ?? existing?.operational_id ?? null,
       status: STATUS_PENDING_DISPATCH,
       isRequest: true,
       address: q.address ?? existing?.address ?? null,

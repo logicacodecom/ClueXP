@@ -2872,6 +2872,7 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
             "rating": tech.get("rating"),
             "active_job": {
                 "id": active_job["id"],
+                "operational_id": active_job.get("operational_id"),
                 "status": active_job.get("status"),
                 "address": active_job.get("address"),
                 "lat": active_job.get("lat"),

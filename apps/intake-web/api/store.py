@@ -2129,7 +2129,9 @@ class InMemoryStore(Store):
             ]
             last_decline_reason = declined[-1].get("decline_reason") if declined else None
             result.append({
-                "id": jid, "address": None, "lat": None, "lng": None,
+                "id": jid,
+                "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
+                "address": None, "lat": None, "lng": None,
                 "access_type": None, "situation": None, "urgency": None,
                 "created_at": None, "customer_owner_org_id": owner_org,
                 "fulfillment_policy": None, "dispatch_attempts": 0,
@@ -2459,6 +2461,7 @@ class InMemoryStore(Store):
                 loc_updated = tech.get("location_updated_at")
                 return {
                     "id": jid,
+                    "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
                     "status": statuses[jid],
                     "access_type": getattr(self, "_job_access_type", {}).get(jid),
                     "situation": getattr(self, "_job_situation", {}).get(jid),
@@ -2566,7 +2569,9 @@ class InMemoryStore(Store):
             loc = job_loc.get(jid)
             timestamps = job_timestamps.get(jid, {})
             out.append({
-                "id": jid, "status": status,
+                "id": jid,
+                "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
+                "status": status,
                 "address": getattr(self, "_job_address", {}).get(jid),
                 "access_type": getattr(self, "_job_access_type", {}).get(jid),
                 "situation": getattr(self, "_job_situation", {}).get(jid),
@@ -5161,7 +5166,7 @@ class PostgresStore(Store):
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select j.id, j.status, j.access_type, j.situation, j.address, j.lat, j.lng,"
+                "select j.id, j.operational_id, j.status, j.access_type, j.situation, j.address, j.lat, j.lng,"
                 " j.detail, t.current_lat, t.current_lng, t.location_updated_at,"
                 " m.photo_paths"
                 " from jobs j"
@@ -5179,27 +5184,28 @@ class PostgresStore(Store):
             row = await cur.fetchone()
         if not row:
             return None
-        dist = haversine_km(row[5], row[6], row[8], row[9])
+        dist = haversine_km(row[6], row[7], row[9], row[10])
         dist_km = dist if dist != float("inf") else None
         eta_min, eta_max = eta_range_from_km(dist_km)
         return {
             "id": str(row[0]),
-            "status": row[1],
-            "access_type": row[2],
-            "situation": row[3],
-            "address": row[4],
-            "lat": row[5],
-            "lng": row[6],
-            "detail": row[7] or {},
-            "technician_current_lat": row[8],
-            "technician_current_lng": row[9],
-            "technician_location_updated_at": row[10].isoformat() if row[10] else None,
+            "operational_id": row[1],
+            "status": row[2],
+            "access_type": row[3],
+            "situation": row[4],
+            "address": row[5],
+            "lat": row[6],
+            "lng": row[7],
+            "detail": row[8] or {},
+            "technician_current_lat": row[9],
+            "technician_current_lng": row[10],
+            "technician_location_updated_at": row[11].isoformat() if row[11] else None,
             "technician_location_is_fresh": location_is_fresh(
-                row[10],
+                row[11],
                 now=datetime.now(timezone.utc),
                 threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
             ),
-            "photo_paths": list(row[11] or []),
+            "photo_paths": list(row[12] or []),
             "distance_km": round(dist_km, 2) if dist_km is not None else None,
             "distance_mi": round(dist_km * 0.621371, 2) if dist_km is not None else None,
             "eta_min": eta_min,
@@ -5220,7 +5226,7 @@ class PostgresStore(Store):
             params = (str(org_id), str(org_id))
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select j.id, j.address, j.lat, j.lng, j.access_type, j.situation,"
+                "select j.id, j.operational_id, j.address, j.lat, j.lng, j.access_type, j.situation,"
                 " j.urgency, j.created_at, j.customer_owner_org_id,"
                 " j.fulfillment_policy, j.dispatch_attempts, j.detail,"
                 " o.id as offer_id, o.technician_id as offered_tech_id, o.expires_at,"
@@ -5250,25 +5256,26 @@ class PostgresStore(Store):
         return [
             {
                 "id": str(r[0]),
-                "address": r[1],
-                "lat": r[2],
-                "lng": r[3],
-                "access_type": r[4],
-                "situation": r[5],
-                "urgency": r[6],
-                "created_at": r[7].isoformat() if r[7] else None,
-                "customer_owner_org_id": str(r[8]) if r[8] else None,
-                "fulfillment_policy": r[9],
-                "dispatch_attempts": r[10] or 0,
-                "detail": r[11] or {},
-                "offer_active": r[12] is not None,
-                "offer_id": str(r[12]) if r[12] else None,
-                "offered_technician_id": str(r[13]) if r[13] else None,
-                "offer_expires_at": r[14].isoformat() if r[14] else None,
-                "last_decline_reason": r[15],
-                "decline_count": r[16] or 0,
-                "photo_count": r[17] or 0,
-                "photo_paths": list(r[18] or []),
+                "operational_id": r[1],
+                "address": r[2],
+                "lat": r[3],
+                "lng": r[4],
+                "access_type": r[5],
+                "situation": r[6],
+                "urgency": r[7],
+                "created_at": r[8].isoformat() if r[8] else None,
+                "customer_owner_org_id": str(r[9]) if r[9] else None,
+                "fulfillment_policy": r[10],
+                "dispatch_attempts": r[11] or 0,
+                "detail": r[12] or {},
+                "offer_active": r[13] is not None,
+                "offer_id": str(r[13]) if r[13] else None,
+                "offered_technician_id": str(r[14]) if r[14] else None,
+                "offer_expires_at": r[15].isoformat() if r[15] else None,
+                "last_decline_reason": r[16],
+                "decline_count": r[17] or 0,
+                "photo_count": r[18] or 0,
+                "photo_paths": list(r[19] or []),
             }
             for r in rows
         ]
@@ -5331,8 +5338,8 @@ class PostgresStore(Store):
         surfaced by their LAST KNOWN location only (they must have coordinates).
         Each row carries a derived ``marker_status`` for the map:
           free     — active, available, no active job   (green)
-          busy     — has an active job                   (red)
-          inactive — not active / unavailable            (yellow, last known)
+          busy     — has an active job                   (amber)
+          inactive — not active / unavailable            (gray, last known)
         """
         active = ["assigned", "en_route", "arrived", "in_progress"]
         if org_id is None:
@@ -5359,7 +5366,8 @@ class PostgresStore(Store):
                 "select t.id, t.display_name, t.skills, t.is_available,"
                 " t.current_lat, t.current_lng, t.location_updated_at,"
                 " t.status, t.phone, t.profile_photo_url, t.profile_photo_status,"
-                " j.id as job_id, j.status as job_status, j.address as job_address,"
+                " j.id as job_id, j.operational_id as job_operational_id,"
+                " j.status as job_status, j.address as job_address,"
                 " j.lat as job_lat, j.lng as job_lng, j.access_type, j.situation"
                 " from technicians t"
                 " left join jobs j"
@@ -5395,12 +5403,13 @@ class PostgresStore(Store):
                 "marker_status": marker_status,
                 "active_job": {
                     "id": str(r[11]),
-                    "status": r[12],
-                    "address": r[13],
-                    "lat": r[14],
-                    "lng": r[15],
-                    "access_type": r[16],
-                    "situation": r[17],
+                    "operational_id": r[12],
+                    "status": r[13],
+                    "address": r[14],
+                    "lat": r[15],
+                    "lng": r[16],
+                    "access_type": r[17],
+                    "situation": r[18],
                 } if has_job else None,
             })
         return out
@@ -5852,7 +5861,7 @@ class PostgresStore(Store):
         ]
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select j.id, j.status, j.address, j.access_type, j.situation, j.urgency,"
+                "select j.id, j.operational_id, j.status, j.address, j.access_type, j.situation, j.urgency,"
                 " j.created_at, j.fulfillment_technician_id, j.lat, j.lng,"
                 " t.display_name, t.location_updated_at,"
                 " j.assigned_at, j.en_route_at, j.arrived_at, j.in_progress_at,"
@@ -5875,27 +5884,28 @@ class PostgresStore(Store):
         out: list[dict] = []
         for r in rows:
             timestamps = {
-                "assigned_at": r[12].isoformat() if r[12] else None,
-                "en_route_at": r[13].isoformat() if r[13] else None,
-                "arrived_at": r[14].isoformat() if r[14] else None,
-                "in_progress_at": r[15].isoformat() if r[15] else None,
-                "completed_pending_at": r[16].isoformat() if r[16] else None,
-                "disputed_at": r[17].isoformat() if r[17] else None,
+                "assigned_at": r[13].isoformat() if r[13] else None,
+                "en_route_at": r[14].isoformat() if r[14] else None,
+                "arrived_at": r[15].isoformat() if r[15] else None,
+                "in_progress_at": r[16].isoformat() if r[16] else None,
+                "completed_pending_at": r[17].isoformat() if r[17] else None,
+                "disputed_at": r[18].isoformat() if r[18] else None,
             }
             out.append({
-                "id": str(r[0]), "status": r[1], "address": r[2], "access_type": r[3],
-                "situation": r[4], "urgency": r[5],
-                "created_at": r[6].isoformat() if r[6] else None,
-                "fulfillment_technician_id": str(r[7]) if r[7] else None,
-                "lat": r[8],
-                "lng": r[9],
-                "technician_display_name": r[10],
-                "technician_location_updated_at": r[11].isoformat() if r[11] else None,
-                "active_status_started_at": _active_status_started_at(r[1], timestamps),
-                "offer_active": r[18] is not None,
-                "offer_id": str(r[18]) if r[18] else None,
-                "offer_expires_at": r[19].isoformat() if r[19] else None,
-                "last_issue": r[20],
+                "id": str(r[0]), "operational_id": r[1], "status": r[2],
+                "address": r[3], "access_type": r[4],
+                "situation": r[5], "urgency": r[6],
+                "created_at": r[7].isoformat() if r[7] else None,
+                "fulfillment_technician_id": str(r[8]) if r[8] else None,
+                "lat": r[9],
+                "lng": r[10],
+                "technician_display_name": r[11],
+                "technician_location_updated_at": r[12].isoformat() if r[12] else None,
+                "active_status_started_at": _active_status_started_at(r[2], timestamps),
+                "offer_active": r[19] is not None,
+                "offer_id": str(r[19]) if r[19] else None,
+                "offer_expires_at": r[20].isoformat() if r[20] else None,
+                "last_issue": r[21],
             })
         return out
 
