@@ -627,9 +627,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           <WorkQueuePanel
             rows={visibleRows}
             totalCount={rows.length}
-            tab={tab}
-            riskOnly={riskOnly}
-            onClearFilter={() => { setTab("all"); setRiskOnly(false); }}
             now={now}
             ackSlaMinutes={ackSlaMinutes}
             stalledMinutes={stalledMinutes}
@@ -641,8 +638,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           <TechnicianRosterPanel
             techs={visibleTechs}
             totalCount={(fleet ?? []).length}
-            filter={techFilter}
-            onClearFilter={() => setTechFilter("all")}
             now={now}
             selectedId={selectedTech?.id ?? null}
             highlightId={highlightedTechId}
@@ -803,18 +798,15 @@ function ControlledListScroller({
 }
 
 function WorkQueuePanel({
-  ackSlaMinutes, highlightJobId, now, onClearFilter, onSelect, riskOnly, rows, selectedId, stalledMinutes, tab, totalCount,
+  ackSlaMinutes, highlightJobId, now, onSelect, rows, selectedId, stalledMinutes, totalCount,
 }: {
   ackSlaMinutes: number;
   highlightJobId: string | null;
   now: number;
-  onClearFilter: () => void;
   onSelect: (row: OperationsRow) => void;
-  riskOnly: boolean;
   rows: OperationsRow[];
   selectedId: string | null;
   stalledMinutes: number;
-  tab: QueueTab;
   totalCount: number;
 }) {
   const list = useControlledListRange(rows.length);
@@ -824,15 +816,6 @@ function WorkQueuePanel({
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <CardTitle>Work queue</CardTitle>
-            {tab !== "all" || riskOnly ? (
-              <button
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                onClick={onClearFilter}
-                type="button"
-              >
-                {riskOnly ? "SLA risk" : tab === "requests" ? "Requests" : "Active jobs"} <X className="size-3" />
-              </button>
-            ) : null}
           </div>
           <ListRangeControls count={rows.length} label="work queue" onScrollBy={list.scrollBy} range={list.range} />
         </div>
@@ -904,16 +887,14 @@ function WorkQueuePanel({
 }
 
 function TechnicianRosterPanel({
-  candidateById, candidatesError, candidatesLoading, distanceUnit, filter, highlightId, now, onClearFilter, onFocusJob, onSelect, selectedId, techs, totalCount,
+  candidateById, candidatesError, candidatesLoading, distanceUnit, highlightId, now, onFocusJob, onSelect, selectedId, techs, totalCount,
 }: {
   candidateById: Map<string, Candidate>;
   candidatesError: string | null;
   candidatesLoading: boolean;
   distanceUnit: "mi" | "km";
-  filter: TechFilter;
   highlightId: string | null;
   now: number;
-  onClearFilter: () => void;
   onFocusJob: (jobId: string) => void;
   onSelect: (tech: FleetRow) => void;
   selectedId: string | null;
@@ -927,15 +908,6 @@ function TechnicianRosterPanel({
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <CardTitle>Technicians</CardTitle>
-            {filter !== "all" ? (
-              <button
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                onClick={onClearFilter}
-                type="button"
-              >
-                {filter} <X className="size-3" />
-              </button>
-            ) : null}
           </div>
           <ListRangeControls count={techs.length} label="technician roster" onScrollBy={list.scrollBy} range={list.range} />
         </div>

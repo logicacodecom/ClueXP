@@ -2,6 +2,64 @@
 
 Use this prompt with Codex or Claude to refine the existing provider dispatcher operations page. The finished workspace must let a dispatcher identify the right technician and assign a request without leaving `/operations`.
 
+## Implementation status
+
+Current status as of 2026-07-22: `/operations` exists and has received the first production refinement pass. The page now uses the existing route and shared `DispatcherOperations` screen instead of creating a second dispatcher page.
+
+Completed in the current pass:
+
+- Reused the existing `/operations` route in `apps/provider-web/src/app/operations/page.tsx`
+- Refined the main screen in `packages/console-ui/src/screens/operations.tsx`
+- Kept the map on the left and resized the desktop grid to give the work queue and technician roster more room
+- Removed the repeated queue and technician filter rows inside the panels
+- Removed the explanatory descriptions inside the work queue and technician roster panels
+- Made the top metric blocks filter work and technicians
+- Added Busy and All Techs technician metrics
+- Added selected work plus selected technician state so a dispatcher can keep a request selected while choosing a technician
+- Reordered the technician roster by candidate ranking when a request is selected
+- Added inline assignment from `/operations` through the existing assignment API
+- Removed the `Open assignment` navigation from the focused request experience
+- Added a focused-operation action bar below the workspace
+- Added technician avatar or initials fallback in the roster
+- Added status rings to technician cards
+- Added neutral skill codes and `+N` overflow instead of raw backend skill identifiers
+- Added a full-width skill-code legend below the workspace
+- Added skill-code mapping and technician summary helpers in `packages/console-ui/src/screens/operations-logic.ts`
+- Added tests for skill-code mapping, skill-chip limits, and technician summary counts
+- Updated `GoogleMapView` so data refreshes update markers without recreating the map instance
+- Converted the top metrics into a compact grouped Work and Technicians strip
+- Moved updated time and icon-only refresh into the operations strip
+- Removed the large visual page subtitle
+- Added integrated list range indicators and up/down controls to the work queue and technician roster
+- Removed active-filter chips from the work queue and technician roster headers; the top metric strip is the only visible filter state
+- Removed the local work queue search bar to preserve working height
+- Refined technician cards to show avatar/initials, full name, optional active-job chip, and compact skill codes only
+- Moved technician availability and location freshness into the avatar tooltip
+- Made the active-job chip on a technician card focus the related job
+- Added portrait-style technician map markers, blue request diamonds, violet active-job squares, selected-marker treatment, and map pan-to-selection
+- Added truthful map coverage/distribution summary and missing-coordinate map notices
+- Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
+- Preserved existing `/map` and `/queue` pages
+
+Checks run:
+
+- `npm run test --workspace @cluexp/console-ui`
+- `npm run typecheck --workspace @cluexp/console-ui`
+- `npm run build --workspace @cluexp/provider-web`
+- `git diff --check`
+
+Known gaps after the current pass:
+
+- The map does not yet expose **Fit operations** and **Return to selection** controls.
+- Request and active-job map callouts still need operation ID, service type, waiting/ongoing time, address, assignment, and exception context.
+- Request and active-job map markers still need waiting/ongoing time chips for at-risk, exception, hover, keyboard focus, and selected states.
+- Map clustering by type is not implemented.
+- Selection does not yet bring the matching queue or roster card into view with the polished list controls.
+- Active-job exception handling currently shows a generic review signal. Add specific explanations and in-page review or resolution actions.
+- Inline assignment has a warning override path, but it still needs the final compact confirmation step before sending an offer.
+- Candidate rank badges on map markers are not implemented.
+- Idle auto-scan remains optional Phase 2 polish.
+
 ## Prompt
 
 You are working in the ClueXP provider app. Refine the professional dispatcher operations workspace inspired by this reference image:
@@ -103,8 +161,8 @@ Auto-rotation can be added, but only as a restrained dispatcher-console behavior
 
 Rules:
 
-- Auto-scan only when no request, job, technician, search field, assignment action, drawer, or modal is active.
-- Pause immediately on hover, focus, keyboard use, click, scroll, search input, or any selection.
+- Auto-scan only when no request, job, technician, assignment action, drawer, or modal is active.
+- Pause immediately on hover, focus, keyboard use, click, scroll, or any selection.
 - Resume only after a calm idle period, for example 20-30 seconds without user activity.
 - Advance slowly, for example every 8-12 seconds.
 - Move one card group at a time, never jump abruptly.
@@ -118,19 +176,19 @@ Auto-scan is a Phase 2 polish item. The first implementation should prioritize i
 Show compact metrics that also work as the primary filters. Do not repeat these filters inside the queue or technician panels.
 
 - Work metrics: Unassigned, SLA at Risk, Active Jobs, and All Work.
-- Workforce metrics: Available, Busy, Offline, and All Technicians.
+- Technicians metrics: Available, Busy, Offline, and All Technicians.
 - Live/update state and Refresh.
 
-Clicking a work metric filters the work queue. Clicking a workforce metric filters the technician roster. Visually group the two metric sets so simultaneous work and workforce filters do not look contradictory.
+Clicking a work metric filters the work queue. Clicking a technicians metric filters the technician roster. Visually group the two metric sets so simultaneous work and technician filters do not look contradictory.
 
 Treat this as an operational filter strip rather than a row of oversized dashboard cards. Keep each target large enough to click comfortably, but minimize vertical height so the map and lists retain as much working space as possible. A suitable compact presentation is:
 
 - `WORK — Unassigned 0 · At risk 0 · Active 1 · All 1`
-- `WORKFORCE — Available 5 · Busy 0 · Offline 1 · All 6`
+- `TECHNICIANS — Available 5 · Busy 0 · Offline 1 · All 6`
 
-The exact responsive layout may wrap, but the Work and Workforce group labels must remain visible. Do not let the active-filter styling compete with critical alerts or the focused-operation selection.
+The exact responsive layout may wrap, but the Work and Technicians group labels must remain visible. Do not let the active-filter styling compete with critical alerts or the focused-operation selection.
 
-Keep availability counts truthful and separate from location reliability. If technicians have stale or missing location, show a compact workforce-health warning adjacent to the Workforce group, for example `5 location issues`. Clicking it should focus or filter the affected technicians when that behavior is supported.
+Keep availability counts truthful and separate from location reliability. If technicians have stale or missing location, show compact technician-health context where it does not consume roster space, for example in the map coverage summary. Clicking a location-health warning may focus or filter the affected technicians when that behavior is supported.
 
 Move refresh out of the page title area and into the compact operations strip. A suitable treatment is:
 
@@ -138,7 +196,7 @@ Move refresh out of the page title area and into the compact operations strip. A
 
 Refresh is specific to the operations workspace. Do not move it into the global provider shell header unless the shell already has a standard page-level refresh slot.
 
-Show the active filter in the related panel header with a compact removable label, such as `Requests ×` or `Available ×`. Keep the queue search field. Do not add a second row of tabs or segmented filters inside either panel.
+Do not repeat the active filter inside the work queue or technician panel headers. The top metric strip is the only visible filter state and reset control. Panel headers should stay visually clean: title on the left, compact `Showing X-Y of N` plus integrated up/down controls on the right. Do not add a second row of tabs, segmented filters, removable filter tags, or a local work queue search field inside either panel.
 
 ## Map requirements
 
@@ -266,21 +324,21 @@ If the selected request or job has no coordinates, do not leave the dispatcher t
 
 The queue panel should combine current requests and active jobs into one operational work column. Remove the explanatory sentence below the panel heading. Use top metric blocks for filtering instead of local tabs or segmented controls.
 
-Use a compact header such as `Work Queue · 12`, followed by the active-filter label and search field.
+Use a compact header such as `Work Queue`, with the range indicator and integrated list controls on the same header line. Do not show the total count or active-filter tag beside the header title; the top Work metric label already carries the total and active-filter state.
 
 If the queue overflows, use the integrated list controls described above instead of relying on an obvious internal scrollbar. The top visible cards should always be the highest operational priority when there is no selected work item.
 
-Each item should show:
+Each visible item should be compact and show:
 
 - Job/request identifier.
-- Customer or location summary.
 - Status.
 - Priority or SLA state.
 - Waiting time for unassigned/pending requests.
 - Ongoing time for active jobs.
 - Assigned technician, if any.
-- Address or service area.
 - Short operational context such as access type, issue type, or service category when available.
+
+Do not make the address the dominant text inside the work card. Keep address available through the map marker/callout and card hover/title where useful. The card should prioritize operation ID, status, related time, normalized job/service type, risk, and assignment context.
 
 Sort order:
 
@@ -293,7 +351,7 @@ Avoid making the list feel like a colorful spreadsheet. Use neutral cards/rows w
 
 ## Technician roster panel
 
-Show all technicians with clear operational status. Remove the explanatory sentence below the panel heading. Use top workforce metrics for filtering instead of local tabs.
+Show all technicians with clear operational status. Remove the explanatory sentence below the panel heading. Use top Technicians metrics for filtering instead of local tabs.
 
 Suggested groups:
 
@@ -306,19 +364,19 @@ Suggested groups:
 
 Important: only show statuses that the actual backend data supports. If the current API only supports `free`, `busy`, and `inactive`, start with those and design the component so richer statuses can be added later.
 
-Each technician card should show:
+Each technician card should stay extremely compact. Visible content should show:
 
 - A 40-44 px circular profile image when an authorized image URL exists.
 - Initials as the fallback when no profile image exists.
-- Name.
-- Current status.
-- Current job, if assigned.
-- Location freshness, for example "updated 2 min ago" or "stale".
-- Up to three neutral skill-code rectangles, plus `+N` for remaining skills.
+- Complete display name.
+- Current job chip only when assigned; clicking the chip should focus/select the related job.
+- Up to three very small neutral skill-code rectangles, plus `+N` for remaining skills.
 - Workload indicator, if available.
 - Next availability or shift end, only if real data exists.
 
-The technician's full display name is operationally critical and must not be reduced to an ambiguous first-name fragment such as `Marcus…`. Prefer a two-line name or move the status badge below or beside it so the full name remains readable. If truncation is unavoidable at an unusually narrow width, expose the complete name on hover, keyboard focus, and to assistive technology.
+Do not show visible `Location stale`, `Location no location`, `No active job`, or large availability/status badges inside each technician card. Availability/status and location freshness should be available on hover/focus of the avatar or initials, while the avatar status ring gives the fast visual scan. The bottom focused-operation action bar may show richer selected-technician context when needed.
+
+The technician's full display name is operationally critical and must not be reduced to an ambiguous first-name fragment such as `Marcus…`. Prefer a two-line name and keep competing right-side labels out of the name row so the full name remains readable. If truncation is unavoidable at an unusually narrow width, expose the complete name on hover, keyboard focus, and to assistive technology.
 
 If the roster overflows, use the integrated list controls described above. With no selected work item, the first visible technicians should be the most usable available technicians. With a request selected, candidate-ranked technicians should occupy the top of the roster.
 
@@ -329,13 +387,13 @@ Use a thin status ring around the profile image:
 - Offline or unavailable: gray.
 - Actionable technician problem: red.
 
-Keep a text status label. Do not communicate status through the ring alone. Treat availability and location trust as separate signals. For example, a technician can be `Available` with `Location stale · 11h ago`.
+Keep status and location available to assistive technology and hover/focus disclosure, but do not repeat them as always-visible text in the roster card body. Treat availability and location trust as separate signals. For example, an Available technician keeps a green ring even if the avatar tooltip says `Available · Location stale · 11h ago`.
 
-The status ring must represent technician status only. A stale or missing location must not replace a green Available ring with an amber ring. Show location trust separately with amber warning text or a GPS warning icon:
+The status ring must represent technician status only. A stale or missing location must not replace a green Available ring with an amber ring. Show location trust separately through avatar tooltip/focus text and map coverage warnings; add an icon only where it does not create card clutter:
 
-- Green ring + `Available` + amber `Location stale · 4h ago`.
-- Amber ring + `Busy` + neutral fresh-location text.
-- Gray ring + `Offline` + the last known location time when available.
+- Green ring + avatar tooltip `Available · Location stale · 4h ago`.
+- Amber ring + avatar tooltip `Busy · Location fresh`.
+- Gray ring + avatar tooltip `Offline · Location stale · 4h ago`.
 
 With no selected work item, order the roster by operational usability rather than alphabetically within a status group:
 
@@ -410,6 +468,7 @@ Treat the sources as follows:
 - `/api/provider/jobs` is authoritative for the full active and recoverable job set, including assigned, en route, arrived, in progress, customer-confirmation-pending, and disputed states. It exposes map-ready job coordinates, assigned technician display context, technician location freshness, and `active_status_started_at` for reliable current-status timers when the status has an authoritative lifecycle timestamp.
 - `/api/provider/jobs` may also include `pending_dispatch`; combine records by `job.id`. Prefer the queue record for pending-dispatch fields and the jobs record for active/recovery status fields.
 - `/api/provider/fleet` is authoritative for technician status, location freshness, roster grouping, and map projection. Do not rely on fleet alone as the complete source of active/recoverable jobs.
+- Provider manual-request creation should geocode the submitted address server-side with the existing `geocode(address)` helper. When geocoding resolves, persist the formatted address, `lat`, `lng`, and `geocode_confidence`; when it fails or returns no result, still create the request and let `/operations` show the missing-coordinate explanation. Keep the Google Maps API key server-side only.
 
 Data needed for jobs/requests:
 
@@ -463,7 +522,7 @@ When a dispatcher selects an unassigned request:
 7. Highlight the selected request and technician markers. Draw a subtle connecting line when both locations exist.
 8. Show a full-width focused-operation action bar above the skill legend:
 
-`REQUEST CX-1048 · Waiting 18m    Jordan Lee · ETA 12m    Cancel    Assign`
+`REQUEST CX-1048 · Waiting 18m    Jordan Lee · ETA 12m    Close    Assign`
 
 9. Keep **Assign** disabled until the dispatcher selects an eligible technician.
 10. Revalidate the request and technician before assignment.
@@ -611,7 +670,7 @@ Run the existing relevant checks for the provider app and shared UI package.
 - The map remains on the left on desktop.
 - Work queue and technician roster appear as separate operational columns on the right.
 - The queue and technician panels do not repeat explanatory subtitles or local filter rows.
-- Compact, visibly labeled Work and Workforce metric groups filter the queue and technician roster and show clear active-filter state without consuming excessive workspace height.
+- Compact, visibly labeled Work and Technicians metric groups filter the queue and technician roster and show clear active-filter state without consuming excessive workspace height.
 - The visual explanatory subtitle is removed; the workspace relies on layout, labels, and accessible context instead.
 - Live/update state and Refresh sit with the operations metric strip rather than consuming title-area height.
 - Stale or missing technician locations are summarized separately from technician availability counts.
@@ -622,7 +681,7 @@ Run the existing relevant checks for the provider app and shared UI package.
 - Map clusters preserve type identity instead of combining technicians, requests, and jobs into one generic marker.
 - Current requests show waiting time.
 - Active jobs show ongoing time when reliable data exists.
-- Technicians show status and location freshness.
+- Technician cards expose status and location freshness through the avatar/initial tooltip or focus disclosure, while preserving a compact visible card body.
 - Technician cards show an authorized profile image or initials fallback.
 - Technician cards preserve the complete display name at normal dispatcher widths.
 - Technician cards show no more than three neutral skill codes plus `+N`.
