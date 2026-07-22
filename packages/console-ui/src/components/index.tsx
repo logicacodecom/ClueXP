@@ -34,8 +34,10 @@ import {
   KeyRound,
   LayoutDashboard,
   Map,
+  Maximize2,
   Menu,
   MessageSquare,
+  Minimize2,
   MoreHorizontal,
   Navigation,
   Phone,
@@ -393,6 +395,42 @@ function initialsFor(name?: string) {
     .toUpperCase() || "OP";
 }
 
+/** Toggles native browser fullscreen for the whole app. Uses the Fullscreen
+ * API directly (no dependency); hides itself where the API is unavailable
+ * (e.g. iOS Safari). Tracks fullscreenchange so the icon stays correct even
+ * when the user exits with Esc/F11. */
+function FullscreenToggle() {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [supported, setSupported] = useState(false);
+  useEffect(() => {
+    setSupported(typeof document !== "undefined" && document.documentElement.requestFullscreen != null);
+    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  if (!supported) return null;
+  const toggle = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen().catch(() => {});
+  };
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          aria-pressed={isFullscreen}
+          onClick={toggle}
+          size="icon"
+          variant="outline"
+        >
+          {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function Topbar({
   activePath = "/dashboard",
   modeBadge,
@@ -443,6 +481,7 @@ export function Topbar({
       <Badge variant="outline">Production</Badge>
       <Badge variant="neutral">{modeBadge}</Badge>
       <Badge className="hidden sm:inline-flex" variant="outline">{roleLabel(session?.active_role)}</Badge>
+      <FullscreenToggle />
       <Button asChild aria-label="Open dashboard notifications" size="icon" variant="outline"><Link href="/dashboard"><Bell className="size-4" /></Link></Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
