@@ -192,6 +192,50 @@ function activeJobExceptionLabel(row: OperationsRow, now: number): string | null
   return null;
 }
 
+function operationMapCallout(
+  row: OperationsRow,
+  now: number,
+  ackSlaMinutes: number,
+  stalledMinutes: number,
+  candidateCount?: number,
+): NonNullable<MapPoint["callout"]> {
+  const displayId = jobDisplayId(row);
+  const status = JOB_STATUS_LABEL[row.status] ?? row.status;
+  const time = row.isRequest
+    ? `Waiting ${formatMinutes(waitingMinutes(row, now))}`
+    : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`;
+  const risk = row.isRequest ? requestRisk(row, now, ackSlaMinutes, stalledMinutes) : "normal";
+  const riskLabel = row.isRequest ? RISK_LABEL[risk] : activeJobExceptionLabel(row, now);
+  const assignment = row.technician_display_name
+    ? `Assigned: ${row.technician_display_name}`
+    : row.isRequest
+      ? row.offer_active ? "Offer active" : "Awaiting assignment"
+      : "No technician on record";
+  const lines = [
+    row.address ?? "No address on file",
+    assignment,
+    row.isRequest && candidateCount != null ? `${candidateCount} candidate${candidateCount === 1 ? "" : "s"} ranked` : null,
+    riskLabel,
+  ].filter(Boolean) as string[];
+
+  return {
+    title: `${row.isRequest ? "Request" : "Job"} ${displayId}`,
+    meta: [status, time, normalizedJobType(row)],
+    lines,
+  };
+}
+
+function requestChipTone(risk: RequestRisk): NonNullable<MapPoint["chipTone"]> {
+  if (risk === "critical" || risk === "stalled") return "critical";
+  if (risk === "ack_breached") return "warn";
+  return "info";
+}
+
+function activeJobChipTone(row: OperationsRow, now: number): NonNullable<MapPoint["chipTone"]> {
+  if (row.status === "disputed") return "critical";
+  return activeJobExceptionLabel(row, now) ? "warn" : "neutral";
+}
+
 /** The production operations workspace: map + work queue + technician roster
  * in one screen, composed client-side from the existing queue/jobs/fleet
  * endpoints (see docs/PROVIDER-DISPATCHER-OPERATIONS-PROMPT.md). Additive —
@@ -441,17 +485,53 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     }
   }
 
+  const selectedRequestCandidateCount = selectedRow?.isRequest ? candidates?.candidates.length : undefined;
   const requestPoints: MapPoint[] = sorted
     .filter((r) => r.isRequest && r.lat != null && r.lng != null)
-    .map((r): MapPoint => ({
-      lat: r.lat!, lng: r.lng!, kind: "request", id: r.id, label: r.address ?? jobDisplayId(r),
-      risk: toMapRisk(requestRisk(r, now, ackSlaMinutes, stalledMinutes)),
-      markerLabel: "R",
-      selected: r.id === highlightedWorkId,
-    }));
+    .map((r): MapPoint => {
+      const risk = requestRisk(r, now, ackSlaMinutes, stalledMinutes);
+      const selected = r.id === highlightedWorkId;
+      return {
+        lat: r.lat!,
+        lng: r.lng!,
+        kind: "request",
+        id: r.id,
+        label: r.address ?? jobDisplayId(r),
+        risk: toMapRisk(risk),
+        markerLabel: "R",
+        selected,
+        chip: formatMinutes(waitingMinutes(r, now)),
+        chipTone: requestChipTone(risk),
+        chipVisible: selected || risk !== "normal",
+        callout: operationMapCallout(
+          r,
+          now,
+          ackSlaMinutes,
+          stalledMinutes,
+          r.id === selectedRow?.id ? selectedRequestCandidateCount : undefined,
+        ),
+      };
+    });
   const jobPoints: MapPoint[] = sorted
     .filter((r) => !r.isRequest && r.lat != null && r.lng != null)
-    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? jobDisplayId(r), markerLabel: "J", selected: r.id === highlightedWorkId }));
+    .map((r): MapPoint => {
+      const selected = r.id === highlightedWorkId;
+      const exception = activeJobExceptionLabel(r, now);
+      const ongoing = ongoingMinutes(r, now);
+      return {
+        lat: r.lat!,
+        lng: r.lng!,
+        kind: "job",
+        id: r.id,
+        label: r.address ?? jobDisplayId(r),
+        markerLabel: "J",
+        selected,
+        chip: ongoing != null ? formatMinutes(ongoing) : undefined,
+        chipTone: activeJobChipTone(r, now),
+        chipVisible: selected || Boolean(exception),
+        callout: operationMapCallout(r, now, ackSlaMinutes, stalledMinutes),
+      };
+    });
   const techPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.current_lat != null && t.current_lng != null)
     .map((t): MapPoint => ({
@@ -464,7 +544,25 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     }));
   const allPoints = [...requestPoints, ...jobPoints, ...techPoints];
   const selectedWorkPoint = selectedRow?.lat != null && selectedRow.lng != null
-    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? jobDisplayId(selectedRow), markerLabel: selectedRow.isRequest ? "R" : "J", selected: true } satisfies MapPoint
+    ? {
+      lat: selectedRow.lat,
+      lng: selectedRow.lng,
+      kind: selectedRow.isRequest ? "request" : "job",
+      id: selectedRow.id,
+      label: selectedRow.address ?? jobDisplayId(selectedRow),
+      markerLabel: selectedRow.isRequest ? "R" : "J",
+      selected: true,
+      chip: selectedRow.isRequest
+        ? formatMinutes(waitingMinutes(selectedRow, now))
+        : ongoingMinutes(selectedRow, now) != null
+          ? formatMinutes(ongoingMinutes(selectedRow, now))
+          : undefined,
+      chipTone: selectedRow.isRequest
+        ? requestChipTone(requestRisk(selectedRow, now, ackSlaMinutes, stalledMinutes))
+        : activeJobChipTone(selectedRow, now),
+      chipVisible: true,
+      callout: operationMapCallout(selectedRow, now, ackSlaMinutes, stalledMinutes, selectedRow.isRequest ? selectedRequestCandidateCount : undefined),
+    } satisfies MapPoint
     : null;
   const selectedTechPoint = selectedTech?.current_lat != null && selectedTech.current_lng != null
     ? {

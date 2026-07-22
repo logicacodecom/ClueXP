@@ -38,6 +38,8 @@ Completed in the current pass:
 - Made the active-job chip on a technician card focus the related job
 - Added portrait-style technician map markers, blue request diamonds, violet active-job squares, selected-marker treatment, and map pan-to-selection
 - Added truthful map coverage/distribution summary and missing-coordinate map notices
+- Added request and active-job map callouts with operation ID, status, service type, waiting/ongoing time, address, assignment, and exception/candidate context
+- Added compact request/job map time chips: risk and exception chips stay visible, normal chips appear on hover/focus/selection
 - Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
 - Preserved existing `/map` and `/queue` pages
 
@@ -51,8 +53,6 @@ Checks run:
 Known gaps after the current pass:
 
 - The map does not yet expose **Fit operations** and **Return to selection** controls.
-- Request and active-job map callouts still need operation ID, service type, waiting/ongoing time, address, assignment, and exception context.
-- Request and active-job map markers still need waiting/ongoing time chips for at-risk, exception, hover, keyboard focus, and selected states.
 - Map clustering by type is not implemented.
 - Selection does not yet bring the matching queue or roster card into view with the polished list controls.
 - Active-job exception handling currently shows a generic review signal. Add specific explanations and in-page review or resolution actions.

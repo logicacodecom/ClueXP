@@ -24,6 +24,14 @@ export type MapPoint = {
   initials?: string;
   stale?: boolean;
   markerLabel?: string;
+  chip?: string;
+  chipTone?: "info" | "warn" | "critical" | "neutral";
+  chipVisible?: boolean;
+  callout?: {
+    title: string;
+    meta?: string[];
+    lines?: string[];
+  };
 };
 
 const TECH_STATUS_COLOR: Record<NonNullable<MapPoint["status"]>, string> = {
@@ -81,10 +89,138 @@ function htmlEscape(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function calloutHtml(callout: NonNullable<MapPoint["callout"]>): string {
+  const meta = callout.meta?.filter(Boolean) ?? [];
+  const lines = callout.lines?.filter(Boolean) ?? [];
+  return `
+    <div style="min-width:220px;max-width:280px;color:#e5e7eb;background:#111827;font:500 12px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="font-weight:800;font-size:13px;line-height:1.25;color:#f8fafc;margin-bottom:6px;">${htmlEscape(callout.title)}</div>
+      ${meta.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${meta.map((item) => `<span style="border:1px solid #374151;border-radius:999px;padding:2px 6px;color:#cbd5e1;background:#1f2937;">${htmlEscape(item)}</span>`).join("")}</div>` : ""}
+      ${lines.length > 0 ? `<div style="display:grid;gap:3px;color:#cbd5e1;line-height:1.35;">${lines.map((line) => `<div>${htmlEscape(line)}</div>`).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
 function techMarkerBorder(point: MapPoint): string {
   if (point.status === "free") return "#22c55e";
   if (point.status === "busy") return "#f59e0b";
   return "#64748b";
+}
+
+function workMarkerTone(point: MapPoint) {
+  if (point.kind === "request") {
+    return {
+      fill: "#3b82f6",
+      stroke: REQUEST_RISK_COLOR[point.risk ?? "normal"],
+      chip: point.chipTone === "critical" ? "#ef4444" : point.chipTone === "warn" ? "#f59e0b" : "#2563eb",
+      shape: "diamond" as const,
+    };
+  }
+  return {
+    fill: "#8b5cf6",
+    stroke: point.chipTone === "critical" ? "#ef4444" : point.chipTone === "warn" ? "#f59e0b" : point.selected ? "#f8fafc" : "#0b0d10",
+    chip: point.chipTone === "critical" ? "#ef4444" : point.chipTone === "warn" ? "#f59e0b" : "#7c3aed",
+    shape: "square" as const,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createWorkOverlay(point: MapPoint, maps: any, map: any, onClick: (point: MapPoint) => void, onHover: (point: MapPoint, open: boolean) => void) {
+  const overlay = new maps.OverlayView();
+  const tone = workMarkerTone(point);
+  const size = point.selected ? 38 : 32;
+  const shell = document.createElement("button");
+  shell.type = "button";
+  shell.title = point.label ?? "";
+  shell.style.position = "absolute";
+  shell.style.minWidth = `${size}px`;
+  shell.style.height = point.chip ? `${size + 18}px` : `${size}px`;
+  shell.style.padding = "0";
+  shell.style.border = "0";
+  shell.style.background = "transparent";
+  shell.style.cursor = "pointer";
+  shell.style.transform = "translate(-50%, -100%)";
+  shell.style.zIndex = point.selected ? "950" : point.kind === "request" ? "55" : "50";
+  shell.style.filter = point.selected ? "drop-shadow(0 0 0.55rem rgba(255,191,0,0.7))" : "drop-shadow(0 0.25rem 0.4rem rgba(0,0,0,0.35))";
+  shell.setAttribute("aria-label", point.label ?? (point.kind === "request" ? "Request" : "Job"));
+  const marker = document.createElement("span");
+  marker.style.position = "absolute";
+  marker.style.left = "50%";
+  marker.style.top = "0";
+  marker.style.width = `${size}px`;
+  marker.style.height = `${size}px`;
+  marker.style.display = "grid";
+  marker.style.placeItems = "center";
+  marker.style.transform = tone.shape === "diamond" ? "translateX(-50%) rotate(45deg)" : "translateX(-50%)";
+  marker.style.borderRadius = tone.shape === "diamond" ? "4px" : "8px";
+  marker.style.background = tone.fill;
+  marker.style.border = `${point.selected ? 4 : point.risk && point.risk !== "normal" ? 3 : 2}px solid ${tone.stroke}`;
+  marker.style.boxSizing = "border-box";
+  const label = document.createElement("span");
+  label.textContent = point.markerLabel ?? (point.kind === "request" ? "R" : "J");
+  label.style.color = "#f8fafc";
+  label.style.font = "800 10px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  label.style.transform = tone.shape === "diamond" ? "rotate(-45deg)" : "none";
+  marker.appendChild(label);
+  shell.appendChild(marker);
+  if (point.chip) {
+    const chip = document.createElement("span");
+    chip.textContent = point.chip;
+    chip.style.position = "absolute";
+    chip.style.left = "50%";
+    chip.style.bottom = "0";
+    chip.style.transform = "translateX(-50%) translateY(0)";
+    chip.style.padding = "1px 5px";
+    chip.style.borderRadius = "999px";
+    chip.style.border = "1px solid #0b0d10";
+    chip.style.background = tone.chip;
+    chip.style.color = point.chipTone === "warn" ? "#0b0d10" : "#f8fafc";
+    chip.style.font = "800 10px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    chip.style.whiteSpace = "nowrap";
+    chip.style.opacity = point.chipVisible || point.selected ? "1" : "0";
+    chip.style.transition = "opacity 120ms ease, transform 120ms ease";
+    shell.appendChild(chip);
+  }
+  const chipEl = point.chip ? shell.lastElementChild as HTMLElement | null : null;
+  const show = () => {
+    if (chipEl) {
+      chipEl.style.opacity = "1";
+      chipEl.style.transform = "translateX(-50%) translateY(-1px)";
+    }
+    onHover(point, true);
+  };
+  const hide = () => {
+    if (chipEl && !point.chipVisible && !point.selected) {
+      chipEl.style.opacity = "0";
+      chipEl.style.transform = "translateX(-50%) translateY(0)";
+    }
+    onHover(point, false);
+  };
+  shell.addEventListener("mouseenter", show);
+  shell.addEventListener("mouseleave", hide);
+  shell.addEventListener("focus", show);
+  shell.addEventListener("blur", hide);
+  shell.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onClick(point);
+  });
+  overlay.onAdd = () => {
+    overlay.getPanes()?.overlayMouseTarget.appendChild(shell);
+  };
+  overlay.draw = () => {
+    const projection = overlay.getProjection();
+    if (!projection) return;
+    const pixel = projection.fromLatLngToDivPixel(new maps.LatLng(point.lat, point.lng));
+    if (!pixel) return;
+    shell.style.left = `${pixel.x}px`;
+    shell.style.top = `${pixel.y}px`;
+  };
+  overlay.onRemove = () => {
+    shell.remove();
+  };
+  overlay.setMap(map);
+  return overlay;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -296,11 +432,46 @@ export function GoogleMapView({
     polylinesRef.current = [];
 
     const bounds = new maps.LatLngBounds();
+    const infoWindow = new maps.InfoWindow({
+      disableAutoPan: true,
+      maxWidth: 300,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let selectedMarker: any | null = null;
+    let selectedContent: string | null = null;
+    let selectedPosition: { lat: number; lng: number } | null = null;
     points.forEach((p) => {
       const pos = { lat: p.lat, lng: p.lng };
       bounds.extend(pos);
+      const content = p.callout ? calloutHtml(p.callout) : null;
+      const openInfoAtPosition = () => {
+        if (!content) return;
+        infoWindow.setContent(content);
+        infoWindow.setPosition(pos);
+        infoWindow.open({ map });
+      };
       if (richMarkers && p.kind === "tech") {
         markersRef.current.push(createTechOverlay(p, maps, map, (point) => onMarkerClickRef.current?.(point)));
+        return;
+      }
+      if (richMarkers && p.kind !== "tech" && p.chip) {
+        markersRef.current.push(createWorkOverlay(
+          p,
+          maps,
+          map,
+          (point) => {
+            openInfoAtPosition();
+            onMarkerClickRef.current?.(point);
+          },
+          (_point, open) => {
+            if (open) openInfoAtPosition();
+            if (!open && !p.selected) infoWindow.close();
+          },
+        ));
+        if (p.selected && content) {
+          selectedContent = content;
+          selectedPosition = pos;
+        }
         return;
       }
       const marker = new maps.Marker({
@@ -319,7 +490,27 @@ export function GoogleMapView({
         } : undefined,
         zIndex: p.selected ? 1000 : undefined,
       });
-      marker.addListener("click", () => onMarkerClickRef.current?.(p));
+      if (content) {
+        marker.addListener("mouseover", () => {
+          infoWindow.setContent(content);
+          infoWindow.open({ anchor: marker, map });
+        });
+        marker.addListener("mouseout", () => {
+          if (!p.selected) infoWindow.close();
+        });
+        if (p.selected) {
+          selectedMarker = marker;
+          selectedContent = content;
+          selectedPosition = null;
+        }
+      }
+      marker.addListener("click", () => {
+        if (content) {
+          infoWindow.setContent(content);
+          infoWindow.open({ anchor: marker, map });
+        }
+        onMarkerClickRef.current?.(p);
+      });
       markersRef.current.push(marker);
     });
 
@@ -359,6 +550,14 @@ export function GoogleMapView({
         map.fitBounds(bounds, 56);
       }
       hasFitBoundsRef.current = true;
+    }
+    if (selectedMarker && selectedContent) {
+      infoWindow.setContent(selectedContent);
+      infoWindow.open({ anchor: selectedMarker, map });
+    } else if (selectedPosition && selectedContent) {
+      infoWindow.setContent(selectedContent);
+      infoWindow.setPosition(selectedPosition);
+      infoWindow.open({ map });
     }
   }, [status, points, connect, pairs, richMarkers]);
 
