@@ -662,6 +662,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
                     pairs={focusPairs}
                     focusPoint={mapFocusPoint}
                     richMarkers
+                    showViewportControls
                     onMarkerClick={(point) => {
                       if (!point.id) return;
                       if (point.kind === "tech") {

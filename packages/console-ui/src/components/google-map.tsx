@@ -361,6 +361,7 @@ const DARK_STYLE = [
  *   onMarkerClick — called with the MapPoint when a marker is clicked
  *   fallback    — rendered when Maps key is absent or script fails
  *   focusPoint  — selected point to pan toward without rebuilding the map
+ *   showViewportControls — opt-in map controls for dense operations screens
  *   richMarkers — opt-in shape differentiation (job = square, request = diamond)
  *                 for consoles that show technicians, jobs, and requests together.
  *                 Defaults off so existing callers render exactly as before.
@@ -373,6 +374,7 @@ export function GoogleMapView({
   pairs,
   points,
   richMarkers = false,
+  showViewportControls = false,
 }: {
   connect?: boolean;
   fallback?: ReactNode;
@@ -381,6 +383,7 @@ export function GoogleMapView({
   pairs?: [MapPoint, MapPoint][];
   points: MapPoint[];
   richMarkers?: boolean;
+  showViewportControls?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -569,11 +572,59 @@ export function GoogleMapView({
     if (typeof currentZoom !== "number" || currentZoom < 13) map.setZoom(13);
   }, [status, focusPoint?.id, focusPoint?.kind, focusPoint?.lat, focusPoint?.lng]);
 
+  const fitOperations = () => {
+    const maps = mapsRef.current;
+    const map = mapRef.current;
+    if (status !== "ready" || !maps || !map || points.length === 0) return;
+    if (points.length === 1) {
+      const [point] = points;
+      if (!point) return;
+      map.panTo({ lat: point.lat, lng: point.lng });
+      map.setZoom(14);
+      return;
+    }
+    const bounds = new maps.LatLngBounds();
+    points.forEach((point) => bounds.extend({ lat: point.lat, lng: point.lng }));
+    map.fitBounds(bounds, 56);
+  };
+
+  const returnToSelection = () => {
+    const map = mapRef.current;
+    if (status !== "ready" || !map || !focusPoint) return;
+    map.panTo({ lat: focusPoint.lat, lng: focusPoint.lng });
+    const currentZoom = typeof map.getZoom === "function" ? map.getZoom() : null;
+    if (typeof currentZoom !== "number" || currentZoom < 13) map.setZoom(13);
+  };
+
   if (!MAPS_KEY || status === "error") return <>{fallback}</>;
   return (
     <>
       <div ref={ref} className="absolute inset-0" />
       {status !== "ready" ? <div className="absolute inset-0 animate-pulse bg-card-strong/50" /> : null}
+      {showViewportControls ? (
+        <div className="absolute right-3 top-3 flex items-center gap-2">
+          <button
+            aria-label="Fit operations"
+            className="rounded-md border border-border bg-background/90 px-2.5 py-2 text-[11px] font-semibold uppercase text-foreground shadow-sm backdrop-blur transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={status !== "ready" || points.length === 0}
+            onClick={fitOperations}
+            title="Fit operations"
+            type="button"
+          >
+            Fit
+          </button>
+          <button
+            aria-label="Return to selection"
+            className="rounded-md border border-border bg-background/90 px-2.5 py-2 text-[11px] font-semibold uppercase text-foreground shadow-sm backdrop-blur transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={status !== "ready" || !focusPoint}
+            onClick={returnToSelection}
+            title="Return to selection"
+            type="button"
+          >
+            Return
+          </button>
+        </div>
+      ) : null}
     </>
   );
 }
