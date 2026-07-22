@@ -508,19 +508,37 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       />
 
       <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-md border border-border bg-card/40 p-2 [scrollbar-width:thin]" aria-label="Operations insight filters">
-        <span className="shrink-0 px-1 text-[11px] font-semibold uppercase text-muted-foreground">Work</span>
+        <button
+          aria-pressed={tab === "all" && !riskOnly}
+          className={cn(
+            "shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold uppercase transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            tab === "all" && !riskOnly ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground",
+          )}
+          onClick={() => { setTab("all"); setRiskOnly(false); }}
+          type="button"
+        >
+          Work ({rows.length})
+        </button>
         <div className="flex shrink-0 items-center gap-2 border-r border-border pr-2">
           <MetricTile label="Unassigned" value={String(summary.unassigned)} active={tab === "requests" && !riskOnly} onClick={() => { setTab("requests"); setRiskOnly(false); }} />
           <MetricTile label="At risk" value={String(summary.atRisk)} intent="danger" active={riskOnly} onClick={() => { setTab("requests"); setRiskOnly(true); }} />
           <MetricTile label="Active jobs" value={String(summary.activeJobs)} active={tab === "active"} onClick={() => { setTab("active"); setRiskOnly(false); }} />
-          <MetricTile label="All work" value={String(rows.length)} active={tab === "all" && !riskOnly} onClick={() => { setTab("all"); setRiskOnly(false); }} />
         </div>
-        <span className="shrink-0 px-1 text-[11px] font-semibold uppercase text-muted-foreground">Technicians</span>
+        <button
+          aria-pressed={techFilter === "all"}
+          className={cn(
+            "shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold uppercase transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            techFilter === "all" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground",
+          )}
+          onClick={() => setTechFilter("all")}
+          type="button"
+        >
+          Technicians ({summary.allTechnicians})
+        </button>
         <div className="flex shrink-0 items-center gap-2">
           <MetricTile label="Available" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
           <MetricTile label="Busy" value={String(summary.busyTechnicians)} intent="warn" active={techFilter === "Busy"} onClick={() => setTechFilter((f) => (f === "Busy" ? "all" : "Busy"))} />
           <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
-          <MetricTile label="All techs" value={String(summary.allTechnicians)} active={techFilter === "all"} onClick={() => setTechFilter("all")} />
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2 pl-2 text-[11px] text-muted-foreground">
           {locationIssueCount > 0 ? <span className="font-medium text-warn">{locationIssueCount} location issues</span> : null}
