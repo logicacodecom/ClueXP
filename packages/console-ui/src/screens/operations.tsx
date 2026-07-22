@@ -178,18 +178,58 @@ function jobDisplayId(job: { id: string; operational_id?: string | null }) {
   return job.operational_id?.trim() || "No operation ID";
 }
 
-function activeJobExceptionLabel(row: OperationsRow, now: number): string | null {
+type ActiveJobException = {
+  action: string;
+  detail: string;
+  label: string;
+  severity: "critical" | "warn";
+};
+
+function activeJobException(row: OperationsRow, now: number): ActiveJobException | null {
   if (row.isRequest) return null;
-  if (row.status === "disputed") return "Dispute requires provider response";
+  if (row.status === "disputed") {
+    return {
+      action: "Open dispute review",
+      detail: row.last_issue
+        ? `Customer dispute is open: ${row.last_issue}`
+        : "Customer dispute is open. Review the timeline, notes, and close with an audited resolution.",
+      label: "Dispute",
+      severity: "critical",
+    };
+  }
   const ongoing = ongoingMinutes(row, now);
   if (row.status === "completed_pending_customer") {
-    return `Customer confirmation overdue${ongoing != null ? ` · ${formatMinutes(ongoing)}` : ""}`;
+    return {
+      action: "Open confirmation",
+      detail: `Customer confirmation is still pending${ongoing != null ? ` after ${formatMinutes(ongoing)}` : ""}. Confirm by phone in job detail only when the customer has approved receipt.`,
+      label: "Awaiting customer",
+      severity: "warn",
+    };
   }
-  if (row.technician_location_updated_at && locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES).stale) {
-    return `Technician location stale · ${locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES).label.replace("stale · ", "")}`;
+  const freshness = row.technician_location_updated_at
+    ? locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES)
+    : null;
+  if (freshness?.stale) {
+    return {
+      action: "Focus technician",
+      detail: `Assigned technician location is stale (${freshness.label.replace("stale · ", "")}). Verify the technician before dispatching nearby work.`,
+      label: "Stale tech location",
+      severity: "warn",
+    };
   }
-  if ((ongoing ?? 0) >= 180) return `Long-running job · ${formatMinutes(ongoing)}`;
+  if ((ongoing ?? 0) >= 180) {
+    return {
+      action: "Review job detail",
+      detail: `This job has been active for ${formatMinutes(ongoing)}. Check notes or technician status before assigning nearby requests.`,
+      label: "Long-running",
+      severity: "warn",
+    };
+  }
   return null;
+}
+
+function activeJobExceptionLabel(row: OperationsRow, now: number): string | null {
+  return activeJobException(row, now)?.label ?? null;
 }
 
 function operationMapCallout(
@@ -205,7 +245,8 @@ function operationMapCallout(
     ? `Waiting ${formatMinutes(waitingMinutes(row, now))}`
     : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`;
   const risk = row.isRequest ? requestRisk(row, now, ackSlaMinutes, stalledMinutes) : "normal";
-  const riskLabel = row.isRequest ? RISK_LABEL[risk] : activeJobExceptionLabel(row, now);
+  const exception = row.isRequest ? null : activeJobException(row, now);
+  const riskLabel = row.isRequest ? RISK_LABEL[risk] : exception?.detail;
   const assignment = row.technician_display_name
     ? `Assigned: ${row.technician_display_name}`
     : row.isRequest
@@ -788,6 +829,11 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           onConfirmAssign={() => void assignSelectedTechnician()}
           onConfirmOverride={() => void assignSelectedTechnician(overrideReason.trim())}
           onDismissConfirm={() => setConfirmingAssignment(false)}
+          onFocusAssignedTech={() => {
+            if (!selectedRow?.fulfillment_technician_id) return;
+            setSelectedTechId(selectedRow.fulfillment_technician_id);
+            setMapFocus({ kind: "tech", id: selectedRow.fulfillment_technician_id });
+          }}
           overrideFor={overrideFor}
           overrideReason={overrideReason}
           row={selectedRow}
@@ -976,6 +1022,7 @@ function WorkQueuePanel({
           {rows.map((row) => {
             const risk = requestRisk(row, now, ackSlaMinutes, stalledMinutes);
             const riskLabel = RISK_LABEL[risk];
+            const exception = activeJobException(row, now);
             const isSelected = row.id === selectedId;
             const isLinked = !isSelected && row.id === highlightJobId;
             const displayId = jobDisplayId(row);
@@ -1008,6 +1055,7 @@ function WorkQueuePanel({
                     </div>
                   </div>
                   {riskLabel ? <Badge variant={RISK_VARIANT[risk]}>{riskLabel}</Badge> : null}
+                  {exception ? <Badge variant={exception.severity === "critical" ? "danger" : "warn"}>{exception.label}</Badge> : null}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {row.technician_display_name
@@ -1171,6 +1219,7 @@ function FocusedActionBar({
   onConfirmAssign,
   onConfirmOverride,
   onDismissConfirm,
+  onFocusAssignedTech,
   overrideFor,
   overrideReason,
   row,
@@ -1190,6 +1239,7 @@ function FocusedActionBar({
   onConfirmAssign: () => void;
   onConfirmOverride: () => void;
   onDismissConfirm: () => void;
+  onFocusAssignedTech: () => void;
   overrideFor: string | null;
   overrideReason: string;
   row: OperationsRow | null;
@@ -1205,7 +1255,7 @@ function FocusedActionBar({
       : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`
     : null;
   const eta = candidate?.eta_min != null ? `ETA ${candidate.eta_min}-${candidate.eta_max}m` : "ETA unknown";
-  const exceptionLabel = row ? activeJobExceptionLabel(row, now) : null;
+  const exception = row ? activeJobException(row, now) : null;
 
   return (
     <div className="mt-3 rounded-md border border-primary/30 bg-card px-4 py-3 shadow-sm">
@@ -1216,7 +1266,7 @@ function FocusedActionBar({
               <span className="font-semibold">{row.isRequest ? "Request" : "Job"} {rowDisplayId}</span>
               <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
               {timeLabel ? <span className="text-muted-foreground">{timeLabel}</span> : null}
-              {exceptionLabel ? <Badge variant="warn">{exceptionLabel}</Badge> : null}
+              {exception ? <Badge variant={exception.severity === "critical" ? "danger" : "warn"}>{exception.label}</Badge> : null}
               {activeOffer ? <Badge variant="warn">Offer active</Badge> : null}
             </div>
             <div className="mt-1 truncate text-xs text-muted-foreground">
@@ -1229,7 +1279,22 @@ function FocusedActionBar({
             <span className="ml-2 text-muted-foreground">{tech.active_job ? `Current job ${jobDisplayId(tech.active_job)}` : "No active job"}</span>
           </div>
         ) : null}
-        {exceptionLabel ? <Button size="sm" variant="outline">Review job</Button> : null}
+        {exception ? (
+          <Button
+            onClick={() => {
+              if (exception.action === "Focus technician") {
+                onFocusAssignedTech();
+              } else if (typeof window !== "undefined" && row) {
+                window.location.assign(`/jobs/${encodeURIComponent(row.id)}`);
+              }
+            }}
+            size="sm"
+            type="button"
+            variant={exception.severity === "critical" ? "destructive" : "outline"}
+          >
+            {exception.action}
+          </Button>
+        ) : null}
         <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Close</Button>
         {row?.isRequest ? (
           <Button disabled={!canAssign || assigning || confirmingAssignment} onClick={onAssign} size="sm">
@@ -1239,6 +1304,16 @@ function FocusedActionBar({
       </div>
       {candidateFlags.length > 0 && row?.isRequest && tech ? (
         <div className="mt-2 text-xs text-warn">Flagged assignment: {candidateFlags.join(", ")}.</div>
+      ) : null}
+      {exception && row && !row.isRequest ? (
+        <div className={cn(
+          "mt-3 rounded-md border p-2 text-xs",
+          exception.severity === "critical" ? "border-destructive/35 bg-destructive/10 text-destructive" : "border-warn/35 bg-warn/10 text-warn",
+        )}
+        >
+          <div className="font-semibold">{exception.label}</div>
+          <div className="mt-0.5 text-muted-foreground">{exception.detail}</div>
+        </div>
       ) : null}
       {confirmingAssignment && row?.isRequest && tech ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-primary/35 bg-primary/10 p-2 text-xs">
