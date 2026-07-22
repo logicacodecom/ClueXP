@@ -841,7 +841,20 @@ function useControlledListRange(count: number) {
     ref.current?.scrollBy({ top: direction * 260, behavior: "smooth" });
   }, []);
 
-  return { ref, range, scrollBy, updateRange };
+  const scrollToId = useCallback((id: string | null) => {
+    if (!id) return;
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el) return;
+      const target = Array.from(el.querySelectorAll<HTMLElement>("[data-scroll-id]"))
+        .find((item) => item.dataset.scrollId === id);
+      if (!target) return;
+      target.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      window.setTimeout(updateRange, 180);
+    });
+  }, [updateRange]);
+
+  return { ref, range, scrollBy, scrollToId, updateRange };
 }
 
 function ListRangeControls({
@@ -909,6 +922,11 @@ function WorkQueuePanel({
   totalCount: number;
 }) {
   const list = useControlledListRange(rows.length);
+  const { scrollToId } = list;
+  useEffect(() => {
+    scrollToId(selectedId);
+  }, [scrollToId, selectedId]);
+
   return (
     <Card className="flex flex-col overflow-hidden xl:h-full">
       <CardHeader className="flex-none py-3">
@@ -947,6 +965,7 @@ function WorkQueuePanel({
                   !isSelected && !isLinked && (risk === "critical" || risk === "stalled") && "border-destructive/35 bg-destructive/5",
                   !isSelected && !isLinked && risk === "ack_breached" && "border-warn/35 bg-warn/5",
                 )}
+                data-scroll-id={row.id}
                 key={row.id}
                 onClick={() => onSelect(row)}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(row); } }}
@@ -1001,6 +1020,11 @@ function TechnicianRosterPanel({
   totalCount: number;
 }) {
   const list = useControlledListRange(techs.length);
+  const { scrollToId } = list;
+  useEffect(() => {
+    scrollToId(selectedId);
+  }, [scrollToId, selectedId]);
+
   return (
     <Card className="flex flex-1 flex-col overflow-hidden xl:min-h-0">
       <CardHeader className="flex-none py-3">
@@ -1042,6 +1066,7 @@ function TechnicianRosterPanel({
                   isSelected && "border-primary bg-primary/5",
                   !isSelected && isLinked && "border-primary/40",
                 )}
+                data-scroll-id={tech.id}
                 key={tech.id}
                 onClick={() => onSelect(tech)}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(tech); } }}
