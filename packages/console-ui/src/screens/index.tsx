@@ -352,7 +352,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
     <div>
       <PageHeader
         kicker={mode === "org" ? "Company dispatch queue" : "Ops dispatch queue"}
-        title="Live Dispatch Queue"
+        title="Live Queue"
         description="All pending jobs in arrival order. Click a job to view candidates and send an assignment offer."
         actions={
           <div className="flex flex-wrap gap-2">
