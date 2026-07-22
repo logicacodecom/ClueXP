@@ -25,6 +25,8 @@ export type MapPoint = {
   stale?: boolean;
   rankBadge?: string;
   markerLabel?: string;
+  clusterCount?: number;
+  clusterMembers?: Array<{ lat: number; lng: number }>;
   chip?: string;
   chipTone?: "info" | "warn" | "critical" | "neutral";
   chipVisible?: boolean;
@@ -53,6 +55,55 @@ const REQUEST_RISK_COLOR: Record<NonNullable<MapPoint["risk"]>, string> = {
 // requests (diamond) on the same map.
 const JOB_SQUARE_PATH = "M -7,-7 7,-7 7,7 -7,7 Z";
 const REQUEST_DIAMOND_PATH = "M 0,-9 9,0 0,9 -9,0 Z";
+
+function clusterMapPoints(points: MapPoint[]): MapPoint[] {
+  const buckets = new Map<string, MapPoint[]>();
+  const singles: MapPoint[] = [];
+  for (const point of points) {
+    if (point.selected) {
+      singles.push(point);
+      continue;
+    }
+    const key = `${point.kind}:${Math.round(point.lat * 1_000)}:${Math.round(point.lng * 1_000)}`;
+    buckets.set(key, [...(buckets.get(key) ?? []), point]);
+  }
+  const clustered: MapPoint[] = [];
+  for (const bucket of buckets.values()) {
+    if (bucket.length < 2) {
+      clustered.push(bucket[0]!);
+      continue;
+    }
+    const first = bucket[0]!;
+    const lat = bucket.reduce((sum, point) => sum + point.lat, 0) / bucket.length;
+    const lng = bucket.reduce((sum, point) => sum + point.lng, 0) / bucket.length;
+    const available = bucket.filter((point) => point.kind === "tech" && point.status === "free").length;
+    const busy = bucket.filter((point) => point.kind === "tech" && point.status === "busy").length;
+    const inactive = bucket.filter((point) => point.kind === "tech" && point.status === "inactive").length;
+    const warningCount = bucket.filter((point) => point.risk === "critical" || point.chipTone === "critical" || point.stale).length;
+    clustered.push({
+      ...first,
+      id: undefined,
+      lat,
+      lng,
+      label: `${bucket.length} ${first.kind === "tech" ? "technicians" : first.kind === "request" ? "requests" : "active jobs"}`,
+      markerLabel: String(bucket.length),
+      clusterCount: bucket.length,
+      clusterMembers: bucket.map((point) => ({ lat: point.lat, lng: point.lng })),
+      rankBadge: undefined,
+      selected: false,
+      stale: warningCount > 0,
+      chip: undefined,
+      callout: {
+        title: `${bucket.length} ${first.kind === "tech" ? "technicians" : first.kind === "request" ? "requests" : "active jobs"}`,
+        meta: first.kind === "tech"
+          ? [`${available} available`, `${busy} busy`, `${inactive} offline`]
+          : [first.kind === "request" ? "Request cluster" : "Active-job cluster"],
+        lines: warningCount > 0 ? [`${warningCount} item${warningCount === 1 ? "" : "s"} need attention`] : ["Click to fit these items"],
+      },
+    });
+  }
+  return [...singles, ...clustered];
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function iconFor(p: MapPoint, maps: any, richMarkers: boolean) {
@@ -382,6 +433,7 @@ const DARK_STYLE = [
  *   fallback    — rendered when Maps key is absent or script fails
  *   focusPoint  — selected point to pan toward without rebuilding the map
  *   showViewportControls — opt-in map controls for dense operations screens
+ *   clusterMarkers — opt-in lightweight type-preserving clustering for dense operations maps
  *   richMarkers — opt-in shape differentiation (job = square, request = diamond)
  *                 for consoles that show technicians, jobs, and requests together.
  *                 Defaults off so existing callers render exactly as before.
@@ -395,7 +447,9 @@ export function GoogleMapView({
   points,
   richMarkers = false,
   showViewportControls = false,
+  clusterMarkers = false,
 }: {
+  clusterMarkers?: boolean;
   connect?: boolean;
   fallback?: ReactNode;
   focusPoint?: MapPoint | null;
@@ -463,7 +517,8 @@ export function GoogleMapView({
     let selectedMarker: any | null = null;
     let selectedContent: string | null = null;
     let selectedPosition: { lat: number; lng: number } | null = null;
-    points.forEach((p) => {
+    const renderPoints = clusterMarkers ? clusterMapPoints(points) : points;
+    renderPoints.forEach((p) => {
       const pos = { lat: p.lat, lng: p.lng };
       bounds.extend(pos);
       const content = p.callout ? calloutHtml(p.callout) : null;
@@ -473,11 +528,11 @@ export function GoogleMapView({
         infoWindow.setPosition(pos);
         infoWindow.open({ map });
       };
-      if (richMarkers && p.kind === "tech") {
+      if (richMarkers && p.kind === "tech" && !p.clusterCount) {
         markersRef.current.push(createTechOverlay(p, maps, map, (point) => onMarkerClickRef.current?.(point)));
         return;
       }
-      if (richMarkers && p.kind !== "tech" && p.chip) {
+      if (richMarkers && p.kind !== "tech" && p.chip && !p.clusterCount) {
         markersRef.current.push(createWorkOverlay(
           p,
           maps,
@@ -528,6 +583,16 @@ export function GoogleMapView({
         }
       }
       marker.addListener("click", () => {
+        if (p.clusterMembers && p.clusterMembers.length > 1) {
+          const clusterBounds = new maps.LatLngBounds();
+          p.clusterMembers.forEach((member) => clusterBounds.extend(member));
+          map.fitBounds(clusterBounds, 64);
+          if (content) {
+            infoWindow.setContent(content);
+            infoWindow.open({ anchor: marker, map });
+          }
+          return;
+        }
         if (content) {
           infoWindow.setContent(content);
           infoWindow.open({ anchor: marker, map });
@@ -582,7 +647,7 @@ export function GoogleMapView({
       infoWindow.setPosition(selectedPosition);
       infoWindow.open({ map });
     }
-  }, [status, points, connect, pairs, richMarkers]);
+  }, [status, points, connect, pairs, richMarkers, clusterMarkers]);
 
   useEffect(() => {
     const map = mapRef.current;

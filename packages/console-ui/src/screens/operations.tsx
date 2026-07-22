@@ -718,6 +718,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
               <div className="absolute inset-0 bg-[#101720]">
                 {allPoints.length > 0 ? (
                   <GoogleMapView
+                    clusterMarkers
                     points={allPoints}
                     pairs={focusPairs}
                     focusPoint={mapFocusPoint}

@@ -45,6 +45,7 @@ Completed in the current pass:
 - Added a compact inline assignment confirmation step before sending a normal technician offer
 - Added top-three candidate rank badges on technician map markers when a request is selected
 - Added specific active-job exception explanations and real actions in the focused operation bar
+- Added lightweight type-preserving map clustering for nearby technicians, requests, and active jobs
 - Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
 - Preserved existing `/map` and `/queue` pages
 
@@ -57,7 +58,6 @@ Checks run:
 
 Known gaps after the current pass:
 
-- Map clustering by type is not implemented.
 - Idle auto-scan remains optional Phase 2 polish.
 
 ## Prompt
