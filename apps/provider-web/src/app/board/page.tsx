@@ -86,8 +86,8 @@ function DispatchBoard() {
   return (
     <div className="space-y-6">
       <PageHeader
-        kicker="Operations"
-        title="Dispatch Board"
+        kicker="Dispatch"
+        title="Jobs Board"
         description="Your company's active jobs by operational stage. Jobs needing attention surface first. Refreshes every 30s."
         actions={
           <Button variant="outline" onClick={() => void load()} disabled={loading}>

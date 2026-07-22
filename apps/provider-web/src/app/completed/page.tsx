@@ -183,8 +183,8 @@ function CompletedJobs() {
   return (
     <div className="space-y-6">
       <PageHeader
-        kicker="Reports"
-        title="Completed Jobs"
+        kicker="Dispatch"
+        title="Jobs Completed"
         description="Finished work, customer confirmation state, reviews, and closeout-derived earnings split between technician and company."
         actions={
           <Button variant="outline" onClick={() => void load()} disabled={state === "loading"}>

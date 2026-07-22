@@ -211,7 +211,7 @@ function RecoveryWorkspace() {
   return (
     <div className="space-y-6">
       <PageHeader
-        kicker="Operations"
+        kicker="Dispatch"
         title="Recovery Workspace"
         description="Provider-scoped exception handling for active jobs. Every recovery action requires a reason and is written to the audit trail."
         actions={

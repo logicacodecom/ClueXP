@@ -1708,7 +1708,7 @@ export function FleetMap({ mode }: { mode: ConsoleMode }) {
 
   return (
     <div>
-      <PageHeader kicker="Live fleet" title="Fleet Map" description={mode === "org" ? "Your company's technicians — free (green) and busy (red) by live location, inactive (yellow) by last known. Click a marker for details. Refreshes every 45s." : "All active technicians and their current jobs. Click a marker for details. Refreshes every 45s."} actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
+      <PageHeader kicker="Live fleet" title={mode === "org" ? "Coverage" : "Fleet Map"} description={mode === "org" ? "Your company's technicians — free (green) and busy (red) by live location, inactive (yellow) by last known. Click a marker for details. Refreshes every 45s." : "All active technicians and their current jobs. Click a marker for details. Refreshes every 45s."} actions={<Button variant="outline" onClick={fetchFleet}>Refresh</Button>} />
       <div className="mb-6 grid gap-4 md:grid-cols-4">
         <StatCard label="Technicians" value={fleet ? String(fleet.length) : "—"} />
         <StatCard label="Free" value={fleet ? String(free) : "—"} intent="success" />
