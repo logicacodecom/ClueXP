@@ -491,7 +491,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     <div>
       <PageHeader
         kicker="Dispatcher workspace"
-        title="Operations"
+        title={mode === "org" ? "Copilot" : "Operations"}
       />
 
       <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-md border border-border bg-card/40 p-2 [scrollbar-width:thin]" aria-label="Operations insight filters">
