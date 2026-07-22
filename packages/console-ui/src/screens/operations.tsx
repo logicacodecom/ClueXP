@@ -507,31 +507,28 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
         title="Operations"
       />
 
-      <div className="mb-4 grid gap-3 xl:grid-cols-2">
-        <MetricGroup label="Work" target="Work Queue">
+      <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-md border border-border bg-card/40 p-2 [scrollbar-width:thin]" aria-label="Operations insight filters">
+        <span className="shrink-0 px-1 text-[11px] font-semibold uppercase text-muted-foreground">Work</span>
+        <div className="flex shrink-0 items-center gap-2 border-r border-border pr-2">
           <MetricTile label="Unassigned" value={String(summary.unassigned)} active={tab === "requests" && !riskOnly} onClick={() => { setTab("requests"); setRiskOnly(false); }} />
           <MetricTile label="At risk" value={String(summary.atRisk)} intent="danger" active={riskOnly} onClick={() => { setTab("requests"); setRiskOnly(true); }} />
           <MetricTile label="Active jobs" value={String(summary.activeJobs)} active={tab === "active"} onClick={() => { setTab("active"); setRiskOnly(false); }} />
           <MetricTile label="All work" value={String(rows.length)} active={tab === "all" && !riskOnly} onClick={() => { setTab("all"); setRiskOnly(false); }} />
-        </MetricGroup>
-        <MetricGroup
-          label="Workforce"
-          target="Technicians"
-          actions={
-            <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-muted-foreground">
-              {locationIssueCount > 0 ? <span className="text-warn">{locationIssueCount} location issues</span> : null}
-              <span>{lastUpdated ? `Live · Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading…"}</span>
-              <Button className="h-7 px-2 text-[11px]" variant="outline" onClick={() => void fetchAll()}>
-                <RefreshCw className="size-3" />Refresh
-              </Button>
-            </div>
-          }
-        >
+        </div>
+        <span className="shrink-0 px-1 text-[11px] font-semibold uppercase text-muted-foreground">Technicians</span>
+        <div className="flex shrink-0 items-center gap-2">
           <MetricTile label="Available" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
           <MetricTile label="Busy" value={String(summary.busyTechnicians)} intent="warn" active={techFilter === "Busy"} onClick={() => setTechFilter((f) => (f === "Busy" ? "all" : "Busy"))} />
           <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
           <MetricTile label="All techs" value={String(summary.allTechnicians)} active={techFilter === "all"} onClick={() => setTechFilter("all")} />
-        </MetricGroup>
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2 pl-2 text-[11px] text-muted-foreground">
+          {locationIssueCount > 0 ? <span className="font-medium text-warn">{locationIssueCount} location issues</span> : null}
+          <span>{lastUpdated ? `Live · Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading..."}</span>
+          <Button className="h-7 px-2 text-[11px]" variant="outline" onClick={() => void fetchAll()}>
+            <RefreshCw className="size-3" />Refresh
+          </Button>
+        </div>
       </div>
 
       {sourceErrors.length > 0 ? (
@@ -677,23 +674,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   );
 }
 
-function MetricGroup({ actions, children, label, target }: { actions?: ReactNode; children: ReactNode; label: string; target: string }) {
-  return (
-    <section className="rounded-md border border-border bg-card/40 p-2" aria-label={`${label} metrics filter ${target}`}>
-      <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-2">
-          <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
-          <div className="text-[11px] text-muted-foreground">{target}</div>
-        </div>
-        {actions ?? null}
-      </div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        {children}
-      </div>
-    </section>
-  );
-}
-
 function MetricTile({
   active, intent, label, onClick, value,
 }: { active?: boolean; intent?: "danger" | "success" | "warn"; label: string; onClick?: () => void; value: string }) {
@@ -701,15 +681,15 @@ function MetricTile({
     <button
       aria-pressed={Boolean(active)}
       className={cn(
-        "rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "inline-flex h-9 min-w-[116px] items-center justify-between gap-3 rounded-md border px-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/35",
       )}
       onClick={onClick}
       type="button"
     >
-      <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
+      <div className="whitespace-nowrap text-[11px] font-medium uppercase text-muted-foreground">{label}</div>
       <div className={cn(
-        "mt-0.5 text-lg font-semibold tabular-nums text-foreground",
+        "text-base font-semibold tabular-nums text-foreground",
         intent === "danger" && "text-destructive",
         intent === "warn" && "text-warn",
         intent === "success" && "text-success",
