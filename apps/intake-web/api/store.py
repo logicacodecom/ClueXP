@@ -5351,7 +5351,7 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select t.id, t.display_name, t.skills, t.is_available,"
                 " t.current_lat, t.current_lng, t.location_updated_at,"
-                " t.status, t.phone,"
+                " t.status, t.phone, t.profile_photo_url, t.profile_photo_status,"
                 " j.id as job_id, j.status as job_status, j.address as job_address,"
                 " j.lat as job_lat, j.lng as job_lng, j.access_type, j.situation"
                 " from technicians t"
@@ -5365,7 +5365,7 @@ class PostgresStore(Store):
             rows = await cur.fetchall()
         out: list[dict] = []
         for r in rows:
-            has_job = r[9] is not None
+            has_job = r[11] is not None
             tech_active = r[7] == "active"
             if has_job:
                 marker_status = "busy"
@@ -5383,15 +5383,17 @@ class PostgresStore(Store):
                 "location_updated_at": r[6].isoformat() if r[6] else None,
                 "status": r[7],
                 "phone": r[8],
+                "profile_photo_url": r[9] if r[10] == "approved" else None,
+                "profile_photo_status": r[10],
                 "marker_status": marker_status,
                 "active_job": {
-                    "id": str(r[9]),
-                    "status": r[10],
-                    "address": r[11],
-                    "lat": r[12],
-                    "lng": r[13],
-                    "access_type": r[14],
-                    "situation": r[15],
+                    "id": str(r[11]),
+                    "status": r[12],
+                    "address": r[13],
+                    "lat": r[14],
+                    "lng": r[15],
+                    "access_type": r[16],
+                    "situation": r[17],
                 } if has_job else None,
             })
         return out

@@ -59,6 +59,7 @@ export type FleetRow = {
   id: string;
   display_name: string | null;
   profile_photo_url?: string | null;
+  profile_photo_status?: string | null;
   photo_url?: string | null;
   skills: string[];
   is_available: boolean;
