@@ -9,7 +9,10 @@ import {
   ongoingMinutes,
   requestRisk,
   sortOperationsRows,
+  skillCodeFor,
+  summarizeOperations,
   technicianStatusLabel,
+  technicianSkillCodes,
   waitingMinutes,
   type ActiveJobRow,
   type FleetRow,
@@ -166,6 +169,36 @@ test("locationFreshness flags stale once past the threshold, without pretending 
   assert.deepEqual(locationFreshness(null, NOW, 15), { label: "no location", stale: true });
   assert.equal(locationFreshness(iso(3), NOW, 15).stale, false);
   assert.equal(locationFreshness(iso(20), NOW, 15).stale, true);
+});
+
+test("skillCodeFor maps backend skill identifiers to dispatcher-facing codes", () => {
+  assert.deepEqual(skillCodeFor("LOCKSMITH.RESIDENTIAL_LOCKOUT"), { code: "LOCK", label: "Lockout" });
+  assert.deepEqual(skillCodeFor("locksmith.commercial_rekey"), { code: "COM", label: "Commercial" });
+  assert.deepEqual(skillCodeFor("locksmith.vehicle_lockout"), { code: "AUTO", label: "Automotive" });
+});
+
+test("technicianSkillCodes deduplicates and limits skill chips", () => {
+  const result = technicianSkillCodes([
+    "LOCKSMITH.RESIDENTIAL_LOCKOUT",
+    "residential",
+    "commercial",
+    "vehicle",
+    "safe_service",
+  ]);
+  assert.deepEqual(result.codes.map((item) => item.code), ["LOCK", "RES", "COM"]);
+  assert.equal(result.overflow, 2);
+});
+
+test("summarizeOperations includes all workforce metric counts", () => {
+  const summary = summarizeOperations([], [
+    fleetRow({ id: "t1", marker_status: "free" }),
+    fleetRow({ id: "t2", marker_status: "busy" }),
+    fleetRow({ id: "t3", marker_status: "inactive" }),
+  ], NOW, 5, 15);
+  assert.equal(summary.availableTechnicians, 1);
+  assert.equal(summary.busyTechnicians, 1);
+  assert.equal(summary.offlineTechnicians, 1);
+  assert.equal(summary.allTechnicians, 3);
 });
 
 test("compareOperationsRows treats every request as ranked before every active job", () => {

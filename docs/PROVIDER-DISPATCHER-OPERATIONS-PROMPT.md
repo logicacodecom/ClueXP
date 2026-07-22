@@ -1,10 +1,10 @@
-# Provider Dispatcher Operations Workspace - Implementation Prompt
+# Refine the provider dispatcher operations workspace
 
-Use this prompt with Codex or Claude to implement the new provider dispatcher operations page.
+Use this prompt with Codex or Claude to refine the existing provider dispatcher operations page. The finished workspace must let a dispatcher identify the right technician and assign a request without leaving `/operations`.
 
 ## Prompt
 
-You are working in the ClueXP provider app. Build a professional dispatcher operations workspace inspired by this reference image:
+You are working in the ClueXP provider app. Refine the professional dispatcher operations workspace inspired by this reference image:
 
 - `docs/design-ref/ui/Dispatch/provider_dispatcher_operations_reference/screen.png`
 
@@ -12,7 +12,7 @@ Use the reference for the overall operational shape only: a dense job/request li
 
 Important: inspect the existing codebase first and reuse current provider app patterns, shared UI components, APIs, auth assumptions, and styling conventions. Do not invent a separate stack or redesign the whole provider app.
 
-## Product Goal
+## Product goal
 
 Create a dispatcher page that gives a full live operations picture in one screen:
 
@@ -24,7 +24,7 @@ Create a dispatcher page that gives a full live operations picture in one screen
 
 The result should feel like a serious operations console: dense, calm, readable, fast to scan, and useful during repeated daily dispatch work.
 
-## Existing Repo Context
+## Existing repository context
 
 The provider app already has separate map and queue pages:
 
@@ -36,49 +36,50 @@ The provider app already has separate map and queue pages:
 
 Reuse or refactor from the existing `FleetMap` and `LiveQueue` behavior rather than starting from a blank page.
 
-## Recommended Route
+## Recommended route
 
-Add a new page first:
+Use the existing page:
 
 - Route: `/operations`
 - Navigation label: `Operations`
 
-Keep the existing `/map` and `/queue` pages unchanged for now. The operations page can eventually replace them after validation, but the first implementation should be additive.
+Keep the existing `/map` and `/queue` pages unchanged. The operations page can eventually replace them after validation.
 
 ## Layout
 
-Desktop-first layout:
+Use a desktop-first layout that gives the decision panels enough room:
 
-- Left: live map, approximately 55-60% width.
-- Middle/right: work queue panel, approximately 23-27% width.
-- Far right: technician roster panel, approximately 17-20% width.
+- Left: live map, approximately 45-50% width.
+- Middle: work queue panel, approximately 27-31% width.
+- Far right: technician roster panel, approximately 22-25% width.
 
 The page should fit inside the existing provider shell. The map and both right-side panels should fill the available viewport height. The queue and technician panels should scroll independently.
 
 Suggested page structure:
 
-- Top operations bar with key metrics and global filters.
+- Top operations bar with clickable metric filters.
 - Main workspace below:
   - Dispatch map.
   - Work queue panel.
   - Technician roster panel.
+- Full-width focused-operation action bar when a request or job is selected.
+- Full-width, one-line skill-code legend below the workspace.
 
-## Top Operations Bar
+## Top operations bar
 
-Show compact metrics that also work as quick filters:
+Show compact metrics that also work as the primary filters. Do not repeat these filters inside the queue or technician panels.
 
-- Unassigned requests.
-- SLA at risk.
-- Active jobs.
-- Available technicians.
-- Delayed or offline technicians.
-- Last updated time.
+- Work metrics: Unassigned, SLA at Risk, Active Jobs, and All Work.
+- Workforce metrics: Available, Busy, Offline, and All Technicians.
+- Last updated time and Refresh.
 
-Clicking a metric should filter or focus the map and panels where practical.
+Clicking a work metric filters the work queue. Clicking a workforce metric filters the technician roster. Visually group the two metric sets so simultaneous work and workforce filters do not look contradictory.
 
-## Map Requirements
+Show the active filter in the related panel header with a compact removable label, such as `Requests ×` or `Available ×`. Keep the queue search field. Do not add a second row of tabs or segmented filters inside either panel.
 
-The map should remain the visual anchor of the page.
+## Map requirements
+
+Keep the map on the left as operational context, but do not let it crowd the work and technician columns.
 
 Show different marker types for:
 
@@ -92,23 +93,21 @@ Map interactions:
 
 - Selecting a request/job highlights the matching row in the queue.
 - Selecting a technician highlights the technician in the roster.
-- Selecting an unassigned request should show or prepare compatible technician candidates if that data is available.
+- Selecting an unassigned request focuses its marker and ranks compatible technicians in the roster.
 - Selecting an active job should highlight the assigned technician if known.
 - Selecting a technician should highlight their current job or service area if known.
+- Selecting a queue or roster item should pan or zoom the map without recreating the map instance.
+- Selecting a request and technician should highlight both markers and may draw a subtle connecting line.
 
 Include clustering if there are many markers, using the existing map approach where possible.
 
 The page must still be useful if map data is missing or the map key fails. The queue and technician columns should remain operational.
 
-## Work Queue Panel
+## Work queue panel
 
-The queue panel should combine current requests and active jobs into one operational work column.
+The queue panel should combine current requests and active jobs into one operational work column. Remove the explanatory sentence below the panel heading. Use top metric blocks for filtering instead of local tabs or segmented controls.
 
-Suggested tabs or segmented control:
-
-- Requests
-- Active jobs
-- Scheduled, only if existing data supports it
+Use a compact header such as `Work Queue · 12`, followed by the active-filter label and search field.
 
 Each item should show:
 
@@ -131,9 +130,9 @@ Sort order:
 
 Avoid making the list feel like a colorful spreadsheet. Use neutral cards/rows with narrow semantic accents, badges, and clear status text.
 
-## Technician Roster Panel
+## Technician roster panel
 
-Show all technicians with clear operational status.
+Show all technicians with clear operational status. Remove the explanatory sentence below the panel heading. Use top workforce metrics for filtering instead of local tabs.
 
 Suggested groups:
 
@@ -146,19 +145,46 @@ Suggested groups:
 
 Important: only show statuses that the actual backend data supports. If the current API only supports `free`, `busy`, and `inactive`, start with those and design the component so richer statuses can be added later.
 
-Each technician row should show:
+Each technician card should show:
 
+- A 40-44 px circular profile image when an authorized image URL exists.
+- Initials as the fallback when no profile image exists.
 - Name.
 - Current status.
 - Current job, if assigned.
 - Location freshness, for example "updated 2 min ago" or "stale".
-- Skill or service category tags, if available.
+- Up to three neutral skill-code rectangles, plus `+N` for remaining skills.
 - Workload indicator, if available.
 - Next availability or shift end, only if real data exists.
 
-Technician status should be readable without relying only on color.
+Use a thin status ring around the profile image:
 
-## Time Semantics
+- Available: green.
+- Busy: amber.
+- Offline or unavailable: gray.
+- Actionable technician problem: red.
+
+Keep a text status label. Do not communicate status through the ring alone. Treat availability and location trust as separate signals. For example, a technician can be `Available` with `Location stale · 11h ago`.
+
+Do not display internal skill identifiers such as `LOCKSMITH.RESIDENTIAL_LOCKOUT`. Map backend skills to stable dispatcher codes such as:
+
+- `RES`: Residential.
+- `COM`: Commercial.
+- `AUTO`: Automotive.
+- `SAFE`: Safe service.
+- `LOCK`: Lockout.
+- `REKEY`: Rekeying.
+- `ACCESS`: Access control.
+
+Use one neutral visual style for all skill codes. Do not assign colors to skills because colors are reserved for operational status and risk.
+
+Show a one-line skill legend across the full workspace width below the map, queue, and roster:
+
+`SKILL CODES  RES Residential · COM Commercial · AUTO Automotive · SAFE Safe Service · REKEY Rekeying · ACCESS Access Control`
+
+Keep the legend outside the map so it does not cover map controls or attribution. If the catalog exceeds one line, show the common codes followed by `All codes…`. On narrow screens, collapse the legend into an expandable row instead of adding horizontal scrolling.
+
+## Time semantics
 
 Be precise with timers.
 
@@ -168,7 +194,7 @@ Be precise with timers.
 - SLA countdown should use existing provider SLA settings if present.
 - Client timers can tick locally, but data should refresh on the existing polling rhythm unless the repo already has realtime infrastructure.
 
-## Status And Color Direction
+## Status and color direction
 
 Use semantic colors carefully:
 
@@ -177,12 +203,14 @@ Use semantic colors carefully:
 - Waiting/new: blue or neutral with blue accent.
 - Active/on job: teal or violet.
 - Available technician: green.
-- Busy technician: blue or purple.
-- Offline/inactive/stale: gray.
+- Busy technician: amber.
+- Offline/inactive: gray.
+- Stale or missing location: amber warning text or icon independent of technician availability.
+- Technician blocked by an actionable problem: red.
 
 Do not make the whole interface saturated. Use colors as signal accents, not as the background of every row. Red should mean actionable risk, not just decoration.
 
-## Data And API Requirements
+## Data and API requirements
 
 This is a production operations workspace, so the data composition must use the existing provider endpoints without relying on a single partial feed:
 
@@ -218,6 +246,7 @@ Data needed for technicians:
 
 - ID.
 - Name.
+- Authorized profile image URL, if available.
 - Status.
 - Availability.
 - Current latitude/longitude.
@@ -228,26 +257,58 @@ Data needed for technicians:
 
 Preserve tenant boundaries and existing provider authorization. Do not expose cross-tenant data.
 
-## Core Interactions
+## Core interactions
 
-Implement these in the initial production slice:
+Implement these interactions without navigating away from `/operations`:
 
 - Select a queue item and focus it on the map.
 - Select a map marker and focus the related queue or technician row.
 - Select a technician and focus them on the map.
-- Filter by status/risk/availability.
+- Filter work and technicians through the top metric blocks.
 - Show useful empty, loading, partial error, stale location, and missing coordinate states.
+- Preserve map position, filters, list scroll positions, and selection context during assignment.
 
-Assignment interaction can be phase 2 unless the existing queue assignment flow is easy to reuse safely.
+### Selecting an unassigned request
 
-If assignment is included:
+When a dispatcher selects an unassigned request:
 
-- Use the existing candidates and assign APIs.
-- Revalidate before assignment.
-- Confirm the chosen technician and request.
-- Handle failure without losing dispatcher context.
+1. Highlight and pin the selected request card in view.
+2. Pan or zoom the map to the request marker and apply a selected-marker treatment.
+3. Reorder the technician roster by dispatch suitability: availability, online state, required skills, current location, estimated time of arrival, distance, and workload.
+4. Keep all technicians accessible. Visually de-emphasize incompatible or offline technicians instead of silently removing them.
+5. Show assignment context on each candidate card, including estimated time of arrival, distance, location freshness, skill match, and workload when available.
+6. Let the dispatcher select a technician from the roster.
+7. Highlight the selected request and technician markers. Draw a subtle connecting line when both locations exist.
+8. Show a full-width focused-operation action bar above the skill legend:
 
-## Responsive Behavior
+`REQUEST CX-1048 · Waiting 18m    Jordan Lee · ETA 12m    Cancel    Assign`
+
+9. Keep **Assign** disabled until the dispatcher selects an eligible technician.
+10. Revalidate the request and technician before assignment.
+11. Show a compact confirmation with the request, technician, estimated time of arrival, and skill match.
+12. Submit through the existing assignment API.
+13. On success, update the request, technician, metrics, map, and queue in place. Keep the dispatcher on `/operations`.
+14. On failure, preserve all context and explain how to recover.
+
+If an offer already exists, show the offered technician and countdown in the action bar. Provide supported actions such as **Recall Offer** or **Select Another Technician**.
+
+### Selecting an active job
+
+When a dispatcher selects an active job:
+
+1. Highlight the job card and focus its map marker.
+2. Highlight and pin the assigned technician at the top of the roster.
+3. Connect the technician and job markers when both locations exist.
+4. Show job status, ongoing time, assigned technician, and location warnings in the focused-operation action bar.
+5. Detect active-job exceptions, including unusually long service, overdue customer confirmation, dispute, and stale technician location.
+6. Show a clear warning when dispatcher review is required.
+7. Open supported job-management actions in an in-page drawer. Do not navigate away or replace the roster.
+
+### Exiting focused-operation mode
+
+Exit focused-operation mode when the dispatcher presses `Esc`, clicks the selected item again, or chooses **Cancel**. Restore the previous ordering and preserve scroll positions.
+
+## Responsive behavior
 
 This is primarily a dispatcher desktop view.
 
@@ -257,7 +318,7 @@ For smaller screens:
 - Below around 900px, use tabs or segmented views for Map, Work, and Tech.
 - Do not remove functionality on smaller screens.
 
-## Accessibility And Usability
+## Accessibility and usability
 
 Requirements:
 
@@ -279,7 +340,7 @@ The page should handle active operations without feeling heavy.
 - Debounce search/filter inputs.
 - Keep list rendering efficient for larger queues.
 
-## Suggested Implementation Shape
+## Suggested implementation shape
 
 Likely files/components:
 
@@ -299,16 +360,16 @@ Prefer extracting reusable logic from the existing `LiveQueue` and `FleetMap` on
 
 Phase 1:
 
-- Add `/operations`.
-- Compose queue and fleet data.
-- Show map, work queue, technician roster, metrics, filters, timers, selection synchronization, and core loading/error states.
+- Keep the existing `/operations` route and composed data feeds.
+- Refine the layout, metric filtering, technician cards, skill codes, full-width legend, and selection synchronization.
+- Keep the map instance stable and update markers in place.
 
 Phase 2:
 
-- Add or reuse assignment workflow.
-- Show candidate technicians for selected requests.
-- Add detail drawer.
-- Improve SLA and delay explanations.
+- Complete the inline focused-operation and assignment workflow.
+- Rank candidate technicians inside the roster.
+- Add the focused-operation action bar and in-page management drawer.
+- Add active-job exception detection and explanations.
 
 Phase 3:
 
@@ -317,7 +378,7 @@ Phase 3:
 - Shift, workload, break, and conflict logic.
 - Notification and escalation workflows.
 
-## Non-Goals For Initial Production Slice
+## Non-goals for the initial production slice
 
 Do not include these in the first implementation unless explicitly requested:
 
@@ -338,30 +399,43 @@ Recommended coverage:
 - Time formatting and waiting/ongoing timer derivation.
 - Risk/status sorting.
 - Technician status mapping.
+- Technician profile fallback and skill-code mapping.
 - Queue/map/technician selection synchronization.
+- Candidate ranking and focused-operation mode.
 - Empty states.
 - Partial API failure states.
 - Missing coordinates.
-- Assignment flow, if implemented.
+- Assignment revalidation, confirmation, success, and failure recovery.
+- Filter and scroll-position preservation.
 
 Run the existing relevant checks for the provider app and shared UI package.
 
-## Acceptance Criteria
+## Acceptance criteria
 
 - `/operations` is available in the provider app navigation for dispatcher/provider users.
 - The map remains on the left on desktop.
 - Work queue and technician roster appear as separate operational columns on the right.
+- The queue and technician panels do not repeat explanatory subtitles or local filter rows.
+- Top metric blocks filter the queue and technician roster and show clear active-filter state.
 - Current requests show waiting time.
 - Active jobs show ongoing time when reliable data exists.
 - Technicians show status and location freshness.
+- Technician cards show an authorized profile image or initials fallback.
+- Technician cards show no more than three neutral skill codes plus `+N`.
+- A neutral, full-width, one-line skill-code legend appears below the workspace.
+- Availability and location trust remain separate signals.
 - Status/risk colors are clear but not visually overwhelming.
 - Selecting items synchronizes map, queue, and technician context.
+- Selecting a request ranks candidates and enables assignment without leaving `/operations`.
+- Selecting an active job highlights its assigned technician and surfaces operational exceptions.
+- The technician roster remains visible during request and job actions.
+- The map does not reset its viewport during polling, timer updates, or selection changes.
 - The page handles loading, empty, partial failure, stale GPS, and missing coordinate states.
 - Existing `/map` and `/queue` pages still work.
 - No cross-tenant data exposure is introduced.
 - Relevant tests/checks pass.
 
-## Open Decisions To Resolve While Implementing
+## Open decisions to resolve during implementation
 
 Before coding deeply, inspect the data and answer:
 
@@ -369,9 +443,12 @@ Before coding deeply, inspect the data and answer:
 - Does `active_status_started_at` exist for the current active/recovery status? If not, show a truthful fallback for that row rather than using `created_at` as ongoing time.
 - Are technician statuses richer than `free`, `busy`, and `inactive`? If not, design for richer future statuses but display only real ones.
 - Is scheduled work available in the current queue data? If not, omit the Scheduled tab in the initial production slice.
-- Is assignment safe to include in phase 1 using existing APIs, or should it remain phase 2?
+- Which candidate fields are authoritative for estimated time of arrival, distance, skill match, workload, and current availability?
+- Does the technician API expose an authorized profile image URL? If not, use initials and do not add image storage in this refinement.
+- Which active-job durations and states require dispatcher warnings or escalation?
+- Which skill identifiers need dispatcher-facing codes, and who owns that mapping?
 - Does the app already have realtime infrastructure? If not, use existing polling patterns.
 
-## Implementation Instruction
+## Implementation instruction
 
-Build phase 1 first. Keep the change focused, production-oriented, and consistent with the existing provider app. After implementation, provide a short summary of files changed, behavior added, and checks run.
+Refine the existing screen in focused increments. Start with layout and map stability, then technician cards and filtering, followed by focused-operation mode and inline assignment. Keep the change production-oriented and consistent with the provider app. After implementation, summarize the files changed, behavior added, and checks run.

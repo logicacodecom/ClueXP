@@ -119,82 +119,109 @@ export function GoogleMapView({
   richMarkers?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapsRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const markersRef = useRef<any[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const polylinesRef = useRef<any[]>([]);
+  const hasFitBoundsRef = useRef(false);
+  const onMarkerClickRef = useRef(onMarkerClick);
   const [status, setStatus] = useState<"idle" | "ready" | "error">("idle");
 
   useEffect(() => {
-    if (!MAPS_KEY || points.length === 0) { setStatus("error"); return; }
+    onMarkerClickRef.current = onMarkerClick;
+  }, [onMarkerClick]);
+
+  useEffect(() => {
+    if (!MAPS_KEY) { setStatus("error"); return; }
     let cancelled = false;
     loadMaps(MAPS_KEY)
       .then((m) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const maps = m as any;
         if (cancelled || !ref.current) return;
-        const map = new maps.Map(ref.current, {
+        mapsRef.current = maps;
+        mapRef.current = new maps.Map(ref.current, {
           disableDefaultUI: true,
           gestureHandling: "greedy",
           clickableIcons: false,
           backgroundColor: "#101720",
           styles: DARK_STYLE,
         });
-        const bounds = new maps.LatLngBounds();
-        points.forEach((p) => {
-          const pos = { lat: p.lat, lng: p.lng };
-          bounds.extend(pos);
-          const marker = new maps.Marker({
-            position: pos,
-            map,
-            title: p.label,
-            // Inactive techs render at reduced opacity — they are shown by their
-            // last known location only, not a live position.
-            opacity: p.kind === "tech" && p.status === "inactive" ? 0.7 : 1,
-            icon: iconFor(p, maps, richMarkers),
-          });
-          if (onMarkerClick) {
-            marker.addListener("click", () => onMarkerClick(p));
-          }
-        });
-
-        if (connect && points.length >= 2) {
-          new maps.Polyline({
-            path: points.map((p) => ({ lat: p.lat, lng: p.lng })),
-            map,
-            geodesic: true,
-            strokeOpacity: 0,
-            icons: [{
-              icon: { path: "M 0,-1 0,1", strokeOpacity: 0.8, strokeColor: "#ffbf00", scale: 3 },
-              offset: "0",
-              repeat: "12px",
-            }],
-          });
-        }
-
-        if (pairs && pairs.length > 0) {
-          pairs.forEach(([tech, job]) => {
-            new maps.Polyline({
-              path: [{ lat: tech.lat, lng: tech.lng }, { lat: job.lat, lng: job.lng }],
-              map,
-              geodesic: true,
-              strokeOpacity: 0,
-              icons: [{
-                icon: { path: "M 0,-1 0,1", strokeOpacity: 0.6, strokeColor: "#ffbf00", scale: 2 },
-                offset: "0",
-                repeat: "10px",
-              }],
-            });
-          });
-        }
-
-        if (points.length === 1) {
-          map.setCenter(points[0]);
-          map.setZoom(14);
-        } else {
-          map.fitBounds(bounds, 56);
-        }
         setStatus("ready");
       })
       .catch(() => { if (!cancelled) setStatus("error"); });
     return () => { cancelled = true; };
-  }, [points, connect, pairs, onMarkerClick, richMarkers]);
+  }, []);
+
+  useEffect(() => {
+    const maps = mapsRef.current;
+    const map = mapRef.current;
+    if (status !== "ready" || !maps || !map) return;
+
+    markersRef.current.forEach((marker) => marker.setMap(null));
+    polylinesRef.current.forEach((line) => line.setMap(null));
+    markersRef.current = [];
+    polylinesRef.current = [];
+
+    const bounds = new maps.LatLngBounds();
+    points.forEach((p) => {
+      const pos = { lat: p.lat, lng: p.lng };
+      bounds.extend(pos);
+      const marker = new maps.Marker({
+        position: pos,
+        map,
+        title: p.label,
+        // Inactive techs render at reduced opacity — they are shown by their
+        // last known location only, not a live position.
+        opacity: p.kind === "tech" && p.status === "inactive" ? 0.7 : 1,
+        icon: iconFor(p, maps, richMarkers),
+      });
+      marker.addListener("click", () => onMarkerClickRef.current?.(p));
+      markersRef.current.push(marker);
+    });
+
+    if (connect && points.length >= 2) {
+      polylinesRef.current.push(new maps.Polyline({
+        path: points.map((p) => ({ lat: p.lat, lng: p.lng })),
+        map,
+        geodesic: true,
+        strokeOpacity: 0,
+        icons: [{
+          icon: { path: "M 0,-1 0,1", strokeOpacity: 0.8, strokeColor: "#ffbf00", scale: 3 },
+          offset: "0",
+          repeat: "12px",
+        }],
+      }));
+    }
+
+    pairs?.forEach(([tech, job]) => {
+      polylinesRef.current.push(new maps.Polyline({
+        path: [{ lat: tech.lat, lng: tech.lng }, { lat: job.lat, lng: job.lng }],
+        map,
+        geodesic: true,
+        strokeOpacity: 0,
+        icons: [{
+          icon: { path: "M 0,-1 0,1", strokeOpacity: 0.6, strokeColor: "#ffbf00", scale: 2 },
+          offset: "0",
+          repeat: "10px",
+        }],
+      }));
+    });
+
+    if (!hasFitBoundsRef.current && points.length > 0) {
+      if (points.length === 1) {
+        map.setCenter(points[0]);
+        map.setZoom(14);
+      } else {
+        map.fitBounds(bounds, 56);
+      }
+      hasFitBoundsRef.current = true;
+    }
+  }, [status, points, connect, pairs, richMarkers]);
 
   if (!MAPS_KEY || status === "error") return <>{fallback}</>;
   return (

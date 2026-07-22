@@ -3,19 +3,22 @@
 import type { ConsoleMode } from "@cluexp/api-client";
 import {
   AlertTriangle,
+  CheckCircle2,
   ClipboardCheck,
+  MapPin,
+  Route,
   UserRound,
+  X,
 } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GoogleMapView } from "../components/google-map";
 import type { MapPoint } from "../components/google-map";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import {
   Badge,
   Button,
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
   EmptyState,
@@ -25,6 +28,7 @@ import {
 } from "../components";
 import { cn } from "../lib/cn";
 import {
+  DEFAULT_SKILL_LEGEND,
   formatMinutes,
   groupTechnicians,
   locationFreshness,
@@ -34,6 +38,7 @@ import {
   sortOperationsRows,
   summarizeOperations,
   technicianStatusLabel,
+  technicianSkillCodes,
   waitingMinutes,
 } from "./operations-logic";
 import type {
@@ -102,7 +107,6 @@ function toMapRisk(risk: RequestRisk): "normal" | "watch" | "critical" {
   return "normal";
 }
 
-type Selection = { kind: "tech" | "job" | "request"; id: string } | null;
 type QueueTab = "all" | "requests" | "active";
 type TechFilter = "all" | TechnicianStatusLabel;
 
@@ -112,11 +116,16 @@ type Candidate = {
   is_online: boolean;
   is_busy: boolean;
   skills_match: boolean;
+  organization_supports_skill?: boolean;
+  technician_supports_skill?: boolean;
   distance_mi?: number | null;
   distance_km?: number | null;
   dist_km?: number | null;
   eta_min: number | null;
   eta_max: number | null;
+  current_lat?: number | null;
+  current_lng?: number | null;
+  active_job?: FleetRow["active_job"];
 };
 
 type CandidatesResponse = { candidates: Candidate[]; distance_unit?: "mi" | "km" };
@@ -148,12 +157,18 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
-  const [selected, setSelected] = useState<Selection>(null);
+  const [selectedWork, setSelectedWork] = useState<{ kind: "job" | "request"; id: string } | null>(null);
+  const [selectedTechId, setSelectedTechId] = useState<string | null>(null);
   const [tab, setTab] = useState<QueueTab>("all");
   const [riskOnly, setRiskOnly] = useState(false);
   const [techFilter, setTechFilter] = useState<TechFilter>("all");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [assigning, setAssigning] = useState(false);
+  const [assignedMessage, setAssignedMessage] = useState<string | null>(null);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [overrideFor, setOverrideFor] = useState<string | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -232,15 +247,37 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     return list;
   }, [sorted, tab, riskOnly, search, now]);
 
-  const visibleTechs = techFilter === "all" ? (fleet ?? []) : techGroups[techFilter];
-
-  const selectedRow = selected && selected.kind !== "tech" ? sorted.find((r) => r.id === selected.id) ?? null : null;
-  const selectedTech = selected?.kind === "tech" ? (fleet ?? []).find((t) => t.id === selected.id) ?? null : null;
-  const highlightTechId = selected?.kind === "tech" ? selected.id : selectedRow?.fulfillment_technician_id ?? null;
-  const highlightJobId = selectedRow ? selectedRow.id : selectedTech?.active_job?.id ?? null;
-
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
+
+  const selectedRow = selectedWork ? sorted.find((r) => r.id === selectedWork.id) ?? null : null;
+  const selectedTech = selectedTechId ? (fleet ?? []).find((t) => t.id === selectedTechId) ?? null : null;
+  const candidateById = useMemo(
+    () => new Map((candidates?.candidates ?? []).map((candidate) => [candidate.id, candidate])),
+    [candidates],
+  );
+  const selectedCandidate = selectedTechId ? candidateById.get(selectedTechId) ?? null : null;
+  const activeOffer = Boolean(selectedRow?.isRequest && selectedRow.offer_active);
+  const highlightedTechId = selectedTechId ?? selectedRow?.fulfillment_technician_id ?? null;
+  const highlightedWorkId = selectedRow?.id ?? selectedTech?.active_job?.id ?? null;
+  const visibleTechs = useMemo(() => {
+    const base = techFilter === "all" ? (fleet ?? []) : techGroups[techFilter];
+    if (!selectedRow) return base;
+    const candidateRank = new Map((candidates?.candidates ?? []).map((candidate, index) => [candidate.id, index]));
+    return [...base].sort((a, b) => {
+      if (selectedRow.isRequest) {
+        const aRank = candidateRank.get(a.id);
+        const bRank = candidateRank.get(b.id);
+        if (aRank != null || bRank != null) return (aRank ?? 9999) - (bRank ?? 9999);
+      }
+      if (!selectedRow.isRequest) {
+        if (a.id === selectedRow.fulfillment_technician_id) return -1;
+        if (b.id === selectedRow.fulfillment_technician_id) return 1;
+      }
+      return (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id);
+    });
+  }, [candidates, fleet, selectedRow, techFilter, techGroups]);
+
   useEffect(() => {
     if (!selectedRow?.isRequest) { setCandidates(null); setCandidatesError(null); return; }
     let cancelled = false;
@@ -252,6 +289,72 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       .catch((err) => { if (!cancelled) setCandidatesError(err instanceof Error ? err.message : "Failed to load candidates"); });
     return () => { cancelled = true; };
   }, [selectedRow?.id, selectedRow?.isRequest, apiPrefix]);
+
+  const selectWork = useCallback((row: OperationsRow) => {
+    setAssignError(null);
+    setAssignedMessage(null);
+    setOverrideFor(null);
+    setOverrideReason("");
+    setSelectedWork((current) => current?.id === row.id ? null : { kind: row.isRequest ? "request" : "job", id: row.id });
+    if (!row.isRequest && row.fulfillment_technician_id) setSelectedTechId(row.fulfillment_technician_id);
+    if (row.isRequest && row.fulfillment_technician_id) setSelectedTechId(row.fulfillment_technician_id);
+  }, []);
+
+  const clearFocus = useCallback(() => {
+    setSelectedWork(null);
+    setSelectedTechId(null);
+    setAssignError(null);
+    setAssignedMessage(null);
+    setOverrideFor(null);
+    setOverrideReason("");
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearFocus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [clearFocus]);
+
+  function candidateFlags(candidate: Candidate | null) {
+    if (!candidate) return [];
+    return [
+      !candidate.is_online && "offline or stale",
+      candidate.is_busy && "busy",
+      candidate.organization_supports_skill === false && "company capability missing",
+      candidate.organization_supports_skill !== false && candidate.technician_supports_skill === false && "technician skill missing",
+      candidate.skills_match === false && candidate.organization_supports_skill !== false && candidate.technician_supports_skill !== false && "skill mismatch",
+    ].filter(Boolean) as string[];
+  }
+
+  function isCandidateFlagged(candidate: Candidate | null) {
+    return candidateFlags(candidate).length > 0;
+  }
+
+  async function assignSelectedTechnician(reason?: string) {
+    if (!selectedRow?.isRequest || !selectedTechId) return;
+    setAssigning(true);
+    setAssignError(null);
+    setAssignedMessage(null);
+    try {
+      const res = await fetch(`${apiPrefix}/queue/${selectedRow.id}/assign`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(reason ? { technician_id: selectedTechId, override_reason: reason } : { technician_id: selectedTechId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `${res.status}`);
+      setAssignedMessage(`Offer sent to ${selectedTech?.display_name ?? selectedCandidate?.display_name ?? selectedTechId}.`);
+      setOverrideFor(null);
+      setOverrideReason("");
+      await fetchAll();
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "Assignment failed");
+    } finally {
+      setAssigning(false);
+    }
+  }
 
   const requestPoints: MapPoint[] = sorted
     .filter((r) => r.isRequest && r.lat != null && r.lng != null)
@@ -269,6 +372,13 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       label: t.display_name ?? t.id, status: t.marker_status ?? undefined,
     }));
   const allPoints = [...requestPoints, ...jobPoints, ...techPoints];
+  const selectedWorkPoint = selectedRow?.lat != null && selectedRow.lng != null
+    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? selectedRow.id } satisfies MapPoint
+    : null;
+  const selectedTechPoint = selectedTech?.current_lat != null && selectedTech.current_lng != null
+    ? { lat: selectedTech.current_lat, lng: selectedTech.current_lng, kind: "tech", id: selectedTech.id, label: selectedTech.display_name ?? selectedTech.id, status: selectedTech.marker_status ?? undefined } satisfies MapPoint
+    : null;
+  const focusPairs: [MapPoint, MapPoint][] = selectedWorkPoint && selectedTechPoint ? [[selectedTechPoint, selectedWorkPoint]] : [];
 
   const initialLoad = queue === null && activeJobs === null && fleet === null && !queueError && !jobsError && !fleetError;
   const sourceErrors = [
@@ -291,13 +401,15 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
         }
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-8">
         <MetricTile label="Unassigned" value={String(summary.unassigned)} active={tab === "requests" && !riskOnly} onClick={() => { setTab("requests"); setRiskOnly(false); }} />
         <MetricTile label="SLA at risk" value={String(summary.atRisk)} intent="danger" active={riskOnly} onClick={() => { setTab("requests"); setRiskOnly(true); }} />
         <MetricTile label="Active jobs" value={String(summary.activeJobs)} active={tab === "active"} onClick={() => { setTab("active"); setRiskOnly(false); }} />
-        <MetricTile label="Available techs" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
-        <MetricTile label="Offline techs" value={String(summary.offlineTechnicians)} intent="warn" active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
         <MetricTile label="All work" value={String(rows.length)} active={tab === "all" && !riskOnly} onClick={() => { setTab("all"); setRiskOnly(false); }} />
+        <MetricTile label="Available" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
+        <MetricTile label="Busy" value={String(summary.busyTechnicians)} intent="warn" active={techFilter === "Busy"} onClick={() => setTechFilter((f) => (f === "Busy" ? "all" : "Busy"))} />
+        <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
+        <MetricTile label="All techs" value={String(summary.allTechnicians)} active={techFilter === "all"} onClick={() => setTechFilter("all")} />
       </div>
 
       {sourceErrors.length > 0 ? (
@@ -310,15 +422,21 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       {initialLoad ? (
         <LoadingSkeleton />
       ) : (
-        <div className="grid gap-4 xl:h-[calc(100vh-260px)] xl:min-h-[560px] xl:grid-cols-[58fr_26fr_18fr]">
+        <>
+        <div className="grid gap-4 xl:h-[calc(100vh-310px)] xl:min-h-[560px] xl:grid-cols-[48fr_29fr_23fr]">
           <Card className="overflow-hidden xl:h-full">
             <CardContent className="relative h-[420px] p-0 xl:h-full">
               <div className="absolute inset-0 bg-[#101720]">
                 {allPoints.length > 0 ? (
                   <GoogleMapView
                     points={allPoints}
+                    pairs={focusPairs}
                     richMarkers
-                    onMarkerClick={(point) => setSelected({ kind: point.kind === "tech" ? "tech" : point.kind === "request" ? "request" : "job", id: point.id! })}
+                    onMarkerClick={(point) => {
+                      if (!point.id) return;
+                      if (point.kind === "tech") setSelectedTechId(point.id);
+                      else setSelectedWork({ kind: point.kind === "request" ? "request" : "job", id: point.id });
+                    }}
                     fallback={
                       <div className="absolute inset-0 grid content-start gap-2 overflow-y-auto p-4 text-xs text-muted-foreground">
                         <div className="mb-1 font-medium text-foreground">Map key not configured — list view</div>
@@ -327,7 +445,11 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
                             className="rounded-md border border-border bg-background/90 px-3 py-2 text-left"
                             key={`${point.kind}-${point.id}`}
                             type="button"
-                            onClick={() => setSelected({ kind: point.kind === "tech" ? "tech" : point.kind === "request" ? "request" : "job", id: point.id! })}
+                            onClick={() => {
+                              if (!point.id) return;
+                              if (point.kind === "tech") setSelectedTechId(point.id);
+                              else setSelectedWork({ kind: point.kind === "request" ? "request" : "job", id: point.id });
+                            }}
                           >
                             <span className="font-medium text-foreground">{point.label}</span>
                             <span className="ml-2 tabular-nums">{point.lat.toFixed(4)}, {point.lng.toFixed(4)}</span>
@@ -353,35 +475,57 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
             rows={visibleRows}
             totalCount={rows.length}
             tab={tab}
-            onTabChange={setTab}
+            riskOnly={riskOnly}
+            onClearFilter={() => { setTab("all"); setRiskOnly(false); }}
             search={searchInput}
             onSearchChange={setSearchInput}
             now={now}
             selectedId={selectedRow?.id ?? null}
-            highlightJobId={highlightJobId}
-            onSelect={(row) => setSelected({ kind: row.isRequest ? "request" : "job", id: row.id })}
+            highlightJobId={highlightedWorkId}
+            onSelect={selectWork}
           />
 
-          <div className="flex flex-col gap-4 xl:h-full xl:overflow-hidden">
-            <SelectionDetails
-              row={selectedRow}
-              tech={selectedTech}
-              candidates={candidates}
-              candidatesError={candidatesError}
-              onDismiss={() => setSelected(null)}
-            />
-            <TechnicianRosterPanel
-              techs={visibleTechs}
-              totalCount={(fleet ?? []).length}
-              filter={techFilter}
-              onFilterChange={setTechFilter}
-              now={now}
-              selectedId={selectedTech?.id ?? null}
-              highlightId={highlightTechId}
-              onSelect={(tech) => setSelected({ kind: "tech", id: tech.id })}
-            />
-          </div>
+          <TechnicianRosterPanel
+            techs={visibleTechs}
+            totalCount={(fleet ?? []).length}
+            filter={techFilter}
+            onClearFilter={() => setTechFilter("all")}
+            now={now}
+            selectedId={selectedTech?.id ?? null}
+            highlightId={highlightedTechId}
+            candidateById={candidateById}
+            candidatesLoading={Boolean(selectedRow?.isRequest && !candidates && !candidatesError)}
+            candidatesError={selectedRow?.isRequest ? candidatesError : null}
+            distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
+            onSelect={(tech) => { setSelectedTechId((current) => current === tech.id ? null : tech.id); setAssignedMessage(null); setAssignError(null); }}
+          />
         </div>
+        <FocusedActionBar
+          assignError={assignError}
+          assignedMessage={assignedMessage}
+          assigning={assigning}
+          activeOffer={activeOffer}
+          candidate={selectedCandidate}
+          candidateFlags={candidateFlags(selectedCandidate)}
+          onAssign={() => {
+            if (selectedCandidate && isCandidateFlagged(selectedCandidate)) {
+              setOverrideFor(selectedCandidate.id);
+              setOverrideReason("");
+            } else {
+              void assignSelectedTechnician();
+            }
+          }}
+          onCancel={clearFocus}
+          onConfirmOverride={() => void assignSelectedTechnician(overrideReason.trim())}
+          overrideFor={overrideFor}
+          overrideReason={overrideReason}
+          row={selectedRow}
+          setOverrideReason={setOverrideReason}
+          tech={selectedTech}
+          now={now}
+        />
+        <SkillLegend />
+        </>
       )}
     </div>
   );
@@ -414,13 +558,14 @@ function MetricTile({
 }
 
 function WorkQueuePanel({
-  highlightJobId, now, onSearchChange, onSelect, onTabChange, rows, search, selectedId, tab, totalCount,
+  highlightJobId, now, onClearFilter, onSearchChange, onSelect, riskOnly, rows, search, selectedId, tab, totalCount,
 }: {
   highlightJobId: string | null;
   now: number;
+  onClearFilter: () => void;
   onSearchChange: (value: string) => void;
   onSelect: (row: OperationsRow) => void;
-  onTabChange: (tab: QueueTab) => void;
+  riskOnly: boolean;
   rows: OperationsRow[];
   search: string;
   selectedId: string | null;
@@ -430,27 +575,20 @@ function WorkQueuePanel({
   return (
     <Card className="flex flex-col overflow-hidden xl:h-full">
       <CardHeader className="flex-none">
-        <div>
-          <CardTitle>Work queue</CardTitle>
-          <CardDescription>Requests and active jobs in one prioritized column.</CardDescription>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Work queue · {rows.length}</CardTitle>
+          {tab !== "all" || riskOnly ? (
+            <button
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              onClick={onClearFilter}
+              type="button"
+            >
+              {riskOnly ? "SLA risk" : tab === "requests" ? "Requests" : "Active jobs"} <X className="size-3" />
+            </button>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-3 overflow-hidden p-4 pt-0">
-        <div className="flex flex-none flex-wrap items-center gap-2">
-          {(["all", "requests", "active"] as const).map((value) => (
-            <button
-              className={cn(
-                "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
-                tab === value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-              key={value}
-              onClick={() => onTabChange(value)}
-              type="button"
-            >
-              {value === "all" ? "All" : value === "requests" ? "Requests" : "Active jobs"}
-            </button>
-          ))}
-        </div>
         <Input
           className="flex-none"
           onChange={(event) => onSearchChange(event.target.value)}
@@ -514,12 +652,16 @@ function WorkQueuePanel({
 }
 
 function TechnicianRosterPanel({
-  filter, highlightId, now, onFilterChange, onSelect, selectedId, techs, totalCount,
+  candidateById, candidatesError, candidatesLoading, distanceUnit, filter, highlightId, now, onClearFilter, onSelect, selectedId, techs, totalCount,
 }: {
+  candidateById: Map<string, Candidate>;
+  candidatesError: string | null;
+  candidatesLoading: boolean;
+  distanceUnit: "mi" | "km";
   filter: TechFilter;
   highlightId: string | null;
   now: number;
-  onFilterChange: (filter: TechFilter) => void;
+  onClearFilter: () => void;
   onSelect: (tech: FleetRow) => void;
   selectedId: string | null;
   techs: FleetRow[];
@@ -528,27 +670,22 @@ function TechnicianRosterPanel({
   return (
     <Card className="flex flex-1 flex-col overflow-hidden xl:min-h-0">
       <CardHeader className="flex-none">
-        <div>
-          <CardTitle>Technicians</CardTitle>
-          <CardDescription>Status, current job, and location freshness.</CardDescription>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Technicians · {techs.length}</CardTitle>
+          {filter !== "all" ? (
+            <button
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              onClick={onClearFilter}
+              type="button"
+            >
+              {filter} <X className="size-3" />
+            </button>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-3 overflow-hidden p-4 pt-0">
-        <div className="flex flex-none flex-wrap items-center gap-2">
-          {(["all", "Available", "Busy", "Offline"] as const).map((value) => (
-            <button
-              className={cn(
-                "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
-                filter === value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-              key={value}
-              onClick={() => onFilterChange(value)}
-              type="button"
-            >
-              {value === "all" ? "All" : value}
-            </button>
-          ))}
-        </div>
+        {candidatesLoading ? <div className="text-xs text-muted-foreground">Ranking technicians for selected request…</div> : null}
+        {candidatesError ? <div className="text-xs text-destructive">Candidate ranking unavailable: {candidatesError}</div> : null}
         <div className="flex-1 space-y-2 overflow-y-auto">
           {techs.length === 0 ? (
             <EmptyState
@@ -559,8 +696,11 @@ function TechnicianRosterPanel({
           ) : techs.map((tech) => {
             const status = technicianStatusLabel(tech.marker_status);
             const fresh = locationFreshness(tech.location_updated_at, now, LOCATION_STALE_MINUTES);
+            const candidate = candidateById.get(tech.id) ?? null;
             const isSelected = tech.id === selectedId;
             const isLinked = !isSelected && tech.id === highlightId;
+            const skills = technicianSkillCodes(tech.skills);
+            const photoUrl = tech.profile_photo_url ?? tech.photo_url ?? null;
             return (
               <div
                 className={cn(
@@ -574,19 +714,34 @@ function TechnicianRosterPanel({
                 role="button"
                 tabIndex={0}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{tech.display_name ?? tech.id}</span>
-                  <Badge variant={TECH_STATUS_VARIANT[status]}>{status}</Badge>
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">Location {fresh.label}</div>
-                {tech.active_job ? (
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status} · {tech.active_job.address ?? tech.active_job.id}
+                <div className="flex items-start gap-3">
+                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} status={status} stale={fresh.stale} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 truncate font-medium">{tech.display_name ?? tech.id}</span>
+                      <Badge variant={TECH_STATUS_VARIANT[status]}>{status}</Badge>
+                    </div>
+                    <div className={cn("mt-1 text-xs text-muted-foreground", fresh.stale && "text-warn")}>Location {fresh.label}</div>
+                    {candidate ? (
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <span><Route className="mr-1 inline size-3" />{candidateDistance(candidate, distanceUnit)}</span>
+                        <span>ETA {candidate.eta_min != null ? `${candidate.eta_min}-${candidate.eta_max}m` : "unknown"}</span>
+                        <Badge variant={candidate.skills_match ? "success" : "outline"}>{candidate.skills_match ? "Skill match" : "Check skill"}</Badge>
+                      </div>
+                    ) : null}
+                    {tech.active_job ? (
+                      <div className="mt-1 truncate text-xs text-muted-foreground">
+                        {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status} · {tech.active_job.address ?? tech.active_job.id}
+                      </div>
+                    ) : null}
+                    {skills.codes.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {skills.codes.map((skill) => <Badge className="normal-case" key={skill.code} title={skill.label} variant="outline">{skill.code}</Badge>)}
+                        {skills.overflow > 0 ? <Badge variant="outline">+{skills.overflow}</Badge> : null}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-                {tech.skills.length > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-1">{tech.skills.map((skill) => <Badge key={skill} variant="outline">{skill}</Badge>)}</div>
-                ) : null}
+                </div>
               </div>
             );
           })}
@@ -596,72 +751,138 @@ function TechnicianRosterPanel({
   );
 }
 
-function SelectionDetails({
-  candidates, candidatesError, onDismiss, row, tech,
+function initialsFor(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? "");
+}
+
+function TechAvatar({
+  name, photoUrl, stale, status,
+}: { name: string; photoUrl: string | null; stale: boolean; status: TechnicianStatusLabel }) {
+  const ringClass = stale
+    ? "ring-warn"
+    : status === "Available"
+      ? "ring-success"
+      : status === "Busy"
+        ? "ring-warn"
+        : "ring-muted-foreground/45";
+  return (
+    <Avatar className={cn("size-11 border-background ring-2 ring-offset-2 ring-offset-background", ringClass)}>
+      {photoUrl ? <AvatarImage alt={name} className="object-cover" src={photoUrl} /> : null}
+      <AvatarFallback>{initialsFor(name).toUpperCase()}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+function FocusedActionBar({
+  activeOffer,
+  assignError,
+  assignedMessage,
+  assigning,
+  candidate,
+  candidateFlags,
+  now,
+  onAssign,
+  onCancel,
+  onConfirmOverride,
+  overrideFor,
+  overrideReason,
+  row,
+  setOverrideReason,
+  tech,
 }: {
-  candidates: CandidatesResponse | null;
-  candidatesError: string | null;
-  onDismiss: () => void;
+  activeOffer: boolean;
+  assignError: string | null;
+  assignedMessage: string | null;
+  assigning: boolean;
+  candidate: Candidate | null;
+  candidateFlags: string[];
+  now: number;
+  onAssign: () => void;
+  onCancel: () => void;
+  onConfirmOverride: () => void;
+  overrideFor: string | null;
+  overrideReason: string;
   row: OperationsRow | null;
+  setOverrideReason: (value: string) => void;
   tech: FleetRow | null;
 }) {
   if (!row && !tech) return null;
-  const distanceUnit = candidates?.distance_unit === "km" ? "km" : "mi";
+  const canAssign = Boolean(row?.isRequest && tech && !activeOffer);
+  const timeLabel = row
+    ? row.isRequest
+      ? `Waiting ${formatMinutes(waitingMinutes(row, now))}`
+      : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`
+    : null;
+  const eta = candidate?.eta_min != null ? `ETA ${candidate.eta_min}-${candidate.eta_max}m` : "ETA unknown";
+  const exception = row && !row.isRequest && (
+    row.status === "completed_pending_customer" ||
+    row.status === "disputed" ||
+    (ongoingMinutes(row, now) ?? 0) >= 180 ||
+    (row.technician_location_updated_at && locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES).stale)
+  );
+
   return (
-    <Card className="flex-none border-primary/30">
-      <CardHeader>
-        <CardTitle>{row ? (row.isRequest ? "Request" : "Active job") : "Technician"}</CardTitle>
-        <Button onClick={onDismiss} size="sm" variant="ghost">Close</Button>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm">
+    <div className="mt-3 rounded-md border border-primary/30 bg-card px-4 py-3 shadow-sm">
+      <div className="flex flex-wrap items-center gap-3">
         {row ? (
-          <>
-            <div className="text-muted-foreground">{row.address ?? row.id}</div>
-            <div className="flex flex-wrap gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-semibold">{row.isRequest ? "Request" : "Job"} {row.id}</span>
               <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
-              {row.technician_display_name ? <Badge variant="outline">Tech: {row.technician_display_name}</Badge> : null}
+              {timeLabel ? <span className="text-muted-foreground">{timeLabel}</span> : null}
+              {exception ? <Badge variant="warn">Review required</Badge> : null}
+              {activeOffer ? <Badge variant="warn">Offer active</Badge> : null}
             </div>
-            {row.last_decline_reason ? <div className="text-xs text-muted-foreground">Last decline: “{row.last_decline_reason}”</div> : null}
-            {row.last_issue ? <div className="text-xs text-muted-foreground">Last issue: {row.last_issue.replace(/^tech_issue:/, "")}</div> : null}
-            {row.isRequest ? (
-              <div className="space-y-2">
-                <div className="text-xs font-medium uppercase text-muted-foreground">Candidate technicians</div>
-                {candidatesError ? <div className="text-xs text-destructive">{candidatesError}</div> : null}
-                {!candidates && !candidatesError ? <div className="text-xs text-muted-foreground">Loading candidates…</div> : null}
-                {candidates?.candidates.length === 0 ? <div className="text-xs text-muted-foreground">No eligible technicians found.</div> : null}
-                {(candidates?.candidates ?? []).slice(0, 5).map((candidate) => (
-                  <div className="rounded-md border border-border p-2 text-xs" key={candidate.id}>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-foreground">{candidate.display_name ?? candidate.id}</span>
-                      <Badge variant={candidate.is_online ? "success" : "neutral"}>{candidate.is_online ? "Online" : "Offline"}</Badge>
-                    </div>
-                    <div className="mt-1 text-muted-foreground">
-                      {candidateDistance(candidate, distanceUnit)} · ETA {candidate.eta_min != null ? `${candidate.eta_min}–${candidate.eta_max}m` : "unknown"}
-                      {candidate.is_busy ? " · busy" : ""}{candidate.skills_match ? " · skill match" : ""}
-                    </div>
-                  </div>
-                ))}
-                <Button asChild size="sm"><Link href={`/queue/${row.id}`}>Open assignment</Link></Button>
-              </div>
-            ) : null}
-          </>
-        ) : null}
-        {tech ? (
-          <>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant={TECH_STATUS_VARIANT[technicianStatusLabel(tech.marker_status)]}>{technicianStatusLabel(tech.marker_status)}</Badge>
+            <div className="mt-1 truncate text-xs text-muted-foreground">
+              <MapPin className="mr-1 inline size-3" />{row.address ?? "No address"}{tech ? ` · ${tech.display_name ?? tech.id} · ${eta}` : ""}
             </div>
-            {tech.active_job ? (
-              <div className="text-muted-foreground">
-                Current job: {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status} · {tech.active_job.address ?? tech.active_job.id}
-              </div>
-            ) : (
-              <div className="text-muted-foreground">No active job</div>
-            )}
-            {tech.phone ? <div className="text-muted-foreground">Contact: <a className="underline" href={`tel:${tech.phone}`}>{tech.phone}</a></div> : null}
-          </>
+          </div>
+        ) : tech ? (
+          <div className="min-w-0 flex-1 text-sm">
+            <span className="font-semibold">{tech.display_name ?? tech.id}</span>
+            <span className="ml-2 text-muted-foreground">{tech.active_job ? `Current job ${tech.active_job.id}` : "No active job"}</span>
+          </div>
         ) : null}
-      </CardContent>
-    </Card>
+        <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Cancel</Button>
+        {row?.isRequest ? (
+          <Button disabled={!canAssign || assigning} onClick={onAssign} size="sm">
+            <CheckCircle2 className="size-4" />{assigning ? "Sending…" : activeOffer ? "Offer pending" : "Assign"}
+          </Button>
+        ) : null}
+      </div>
+      {candidateFlags.length > 0 && row?.isRequest && tech ? (
+        <div className="mt-2 text-xs text-warn">Flagged assignment: {candidateFlags.join(", ")}.</div>
+      ) : null}
+      {overrideFor && tech?.id === overrideFor ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-warn/35 bg-warn/10 p-2">
+          <Input
+            className="min-w-[260px] flex-1"
+            onChange={(event) => setOverrideReason(event.target.value)}
+            placeholder="Reason for overriding dispatch warnings"
+            value={overrideReason}
+          />
+          <Button disabled={assigning || overrideReason.trim().length < 3} onClick={onConfirmOverride} size="sm">
+            Confirm override
+          </Button>
+        </div>
+      ) : null}
+      {assignError ? <div className="mt-2 text-xs text-destructive">{assignError}</div> : null}
+      {assignedMessage ? <div className="mt-2 text-xs text-success">{assignedMessage}</div> : null}
+    </div>
+  );
+}
+
+function SkillLegend() {
+  return (
+    <div className="mt-2 rounded-md border border-border bg-card px-3 py-2 text-[11px] text-muted-foreground">
+      <span className="mr-2 font-semibold uppercase text-foreground">Skill codes</span>
+      {DEFAULT_SKILL_LEGEND.map((item, index) => (
+        <span key={item.code}>
+          {index > 0 ? <span className="mx-1">·</span> : null}
+          <span className="font-semibold text-foreground">{item.code}</span> {item.label}
+        </span>
+      ))}
+    </div>
   );
 }

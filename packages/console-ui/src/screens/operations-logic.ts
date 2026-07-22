@@ -58,6 +58,8 @@ export type FleetActiveJob = {
 export type FleetRow = {
   id: string;
   display_name: string | null;
+  profile_photo_url?: string | null;
+  photo_url?: string | null;
   skills: string[];
   is_available: boolean;
   current_lat: number | null;
@@ -185,6 +187,51 @@ export function formatMinutes(mins: number | null): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
+const SKILL_CODE_MAP: Array<[RegExp, { code: string; label: string }]> = [
+  [/commercial|business/i, { code: "COM", label: "Commercial" }],
+  [/auto|vehicle|car/i, { code: "AUTO", label: "Automotive" }],
+  [/safe/i, { code: "SAFE", label: "Safe service" }],
+  [/rekey/i, { code: "REKEY", label: "Rekeying" }],
+  [/access|control|badge|keycard/i, { code: "ACCESS", label: "Access control" }],
+  [/lockout|locked|unlock/i, { code: "LOCK", label: "Lockout" }],
+  [/residential|home|house/i, { code: "RES", label: "Residential" }],
+];
+
+export const DEFAULT_SKILL_LEGEND: Array<{ code: string; label: string }> = [
+  { code: "RES", label: "Residential" },
+  { code: "COM", label: "Commercial" },
+  { code: "AUTO", label: "Automotive" },
+  { code: "SAFE", label: "Safe service" },
+  { code: "LOCK", label: "Lockout" },
+  { code: "REKEY", label: "Rekeying" },
+  { code: "ACCESS", label: "Access control" },
+];
+
+export function skillCodeFor(skill: string): { code: string; label: string } {
+  const normalized = skill.trim();
+  for (const [pattern, mapped] of SKILL_CODE_MAP) {
+    if (pattern.test(normalized)) return mapped;
+  }
+  const cleaned = normalized
+    .split(/[._:\-/\s]+/)
+    .filter(Boolean)
+    .at(-1) ?? normalized;
+  return {
+    code: cleaned.slice(0, 5).toUpperCase() || "SKILL",
+    label: cleaned.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
+  };
+}
+
+export function technicianSkillCodes(skills: string[], limit = 3): { codes: Array<{ code: string; label: string }>; overflow: number } {
+  const unique = new Map<string, { code: string; label: string }>();
+  for (const skill of skills) {
+    const mapped = skillCodeFor(skill);
+    if (!unique.has(mapped.code)) unique.set(mapped.code, mapped);
+  }
+  const codes = [...unique.values()];
+  return { codes: codes.slice(0, limit), overflow: Math.max(0, codes.length - limit) };
+}
+
 export type RequestRisk = "normal" | "ack_breached" | "stalled" | "critical";
 
 /** Same semantics as LiveQueue's dispatch-SLA risk, reimplemented for the
@@ -255,7 +302,9 @@ export type OperationsSummary = {
   atRisk: number;
   activeJobs: number;
   availableTechnicians: number;
+  busyTechnicians: number;
   offlineTechnicians: number;
+  allTechnicians: number;
 };
 
 export function summarizeOperations(
@@ -276,6 +325,8 @@ export function summarizeOperations(
     atRisk,
     activeJobs,
     availableTechnicians: groups.Available.length,
+    busyTechnicians: groups.Busy.length,
     offlineTechnicians: groups.Offline.length,
+    allTechnicians: fleet.length,
   };
 }
