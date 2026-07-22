@@ -100,7 +100,7 @@ export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  group?: "Operations" | "Workforce" | "Financial" | "Reports" | "Admin";
+  group?: "Dispatch" | "CRM" | "Operations" | "Workforce" | "Financial" | "Reports" | "Admin";
   cluexpOnly?: boolean;
 }
 
@@ -321,7 +321,8 @@ export function Sidebar({
   onToggle: () => void;
   surfaceLabel: string;
 }) {
-  const groups = ["Operations", "Workforce", "Financial", "Reports", "Admin"] as const;
+  const groups = ["Dispatch", "CRM", "Operations", "Workforce", "Financial", "Reports", "Admin"] as const;
+  const ungrouped = nav.filter((item) => !item.group);
   const activeHref = resolveActiveNavHref(nav, activePath);
   return (
     <aside className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200 lg:flex", collapsed ? "w-[76px]" : "w-[264px]")}>
@@ -334,8 +335,15 @@ export function Sidebar({
         ) : null}
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-4">
+        {ungrouped.length > 0 ? (
+          <div className="mb-5">
+            <div className="space-y-1">
+              {ungrouped.map((item) => <SidebarItem active={item.href === activeHref} collapsed={collapsed} item={item} key={item.href} />)}
+            </div>
+          </div>
+        ) : null}
         {groups.map((group) => {
-          const items = nav.filter((item) => (item.group ?? "Operations") === group);
+          const items = nav.filter((item) => item.group === group);
           if (items.length === 0) return null;
           return (
             <div className="mb-5" key={group}>
