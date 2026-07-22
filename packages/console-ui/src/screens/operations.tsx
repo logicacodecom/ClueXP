@@ -541,10 +541,9 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2 pl-2 text-[11px] text-muted-foreground">
-          {locationIssueCount > 0 ? <span className="font-medium text-warn">{locationIssueCount} location issues</span> : null}
-          <span>{lastUpdated ? `Live · Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading..."}</span>
-          <Button className="h-7 px-2 text-[11px]" variant="outline" onClick={() => void fetchAll()}>
-            <RefreshCw className="size-3" />Refresh
+          <span>{lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading..."}</span>
+          <Button aria-label="Refresh" className="h-7 w-7 p-0" title="Refresh" variant="outline" onClick={() => void fetchAll()}>
+            <RefreshCw className="size-3.5" />
           </Button>
         </div>
       </div>
