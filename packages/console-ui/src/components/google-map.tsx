@@ -18,6 +18,12 @@ export type MapPoint = {
   risk?: "normal" | "watch" | "critical";
   // Selected points are rendered with a stronger outline and lifted z-index.
   selected?: boolean;
+  // Optional rich-marker identity/freshness fields used by the dispatcher
+  // operations map. Other map consumers can ignore them.
+  avatarUrl?: string | null;
+  initials?: string;
+  stale?: boolean;
+  markerLabel?: string;
 };
 
 const TECH_STATUS_COLOR: Record<NonNullable<MapPoint["status"]>, string> = {
@@ -49,15 +55,129 @@ function iconFor(p: MapPoint, maps: any, richMarkers: boolean) {
     return { path: maps.SymbolPath.CIRCLE, scale: selected ? 10 : 8, fillColor: techColor, fillOpacity: 1, strokeColor, strokeWeight: selected ? 4 : 3 };
   }
   if (richMarkers && p.kind === "request") {
-    return { path: REQUEST_DIAMOND_PATH, scale: selected ? 1.25 : 1, fillColor: REQUEST_RISK_COLOR[p.risk ?? "normal"], fillOpacity: 1, strokeColor, strokeWeight };
+    return {
+      path: REQUEST_DIAMOND_PATH,
+      scale: selected ? 1.45 : 1.15,
+      fillColor: "#3b82f6",
+      fillOpacity: 1,
+      strokeColor: REQUEST_RISK_COLOR[p.risk ?? "normal"],
+      strokeWeight: selected ? 5 : p.risk && p.risk !== "normal" ? 4 : 2,
+    };
   }
   if (richMarkers && p.kind === "job") {
-    return { path: JOB_SQUARE_PATH, scale: selected ? 1.25 : 1, fillColor: "#8b5cf6", fillOpacity: 1, strokeColor, strokeWeight };
+    return { path: JOB_SQUARE_PATH, scale: selected ? 1.45 : 1.15, fillColor: "#8b5cf6", fillOpacity: 1, strokeColor, strokeWeight };
   }
   // Legacy rendering for "job"/"request" outside richMarkers mode — unchanged
   // from the original circle so /map, /queue, and /jobs/assign keep their
   // current look exactly.
   return { path: maps.SymbolPath.CIRCLE, scale: 9, fillColor: "#62a8ff", fillOpacity: 1, strokeColor: "#0b0d10", strokeWeight: 3 };
+}
+
+function htmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function techMarkerBorder(point: MapPoint): string {
+  if (point.status === "free") return "#22c55e";
+  if (point.status === "busy") return "#f59e0b";
+  return "#64748b";
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createTechOverlay(point: MapPoint, maps: any, map: any, onClick: (point: MapPoint) => void) {
+  const overlay = new maps.OverlayView();
+  const size = point.selected ? { width: 50, height: 62, avatar: 32 } : { width: 42, height: 54, avatar: 27 };
+  const border = techMarkerBorder(point);
+  const shell = document.createElement("button");
+  shell.type = "button";
+  shell.title = point.label ?? "";
+  shell.style.position = "absolute";
+  shell.style.width = `${size.width}px`;
+  shell.style.height = `${size.height}px`;
+  shell.style.padding = "0";
+  shell.style.border = "0";
+  shell.style.background = "transparent";
+  shell.style.cursor = "pointer";
+  shell.style.transform = "translate(-50%, -100%)";
+  shell.style.zIndex = point.selected ? "1000" : point.status === "free" ? "40" : point.status === "busy" ? "35" : "30";
+  shell.style.filter = point.selected ? "drop-shadow(0 0 0.65rem rgba(255,191,0,0.75))" : "drop-shadow(0 0.35rem 0.45rem rgba(0,0,0,0.35))";
+  shell.style.opacity = point.status === "inactive" ? "0.72" : "1";
+  shell.setAttribute("aria-label", point.label ?? "Technician");
+  shell.innerHTML = `
+    <svg width="${size.width}" height="${size.height}" viewBox="0 0 42 54" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M21 52 C21 52 3 34 3 20 C3 9.5 11.2 2 21 2 C30.8 2 39 9.5 39 20 C39 34 21 52 21 52 Z" fill="#111827" stroke="${border}" stroke-width="${point.selected ? 4 : 3}"/>
+      <circle cx="21" cy="20" r="13.8" fill="#f8fafc" stroke="#0b0d10" stroke-width="2"/>
+    </svg>
+  `;
+  const avatar = document.createElement("div");
+  avatar.style.position = "absolute";
+  avatar.style.left = "50%";
+  avatar.style.top = point.selected ? "6px" : "7px";
+  avatar.style.width = `${size.avatar}px`;
+  avatar.style.height = `${size.avatar}px`;
+  avatar.style.transform = "translateX(-50%)";
+  avatar.style.borderRadius = "999px";
+  avatar.style.overflow = "hidden";
+  avatar.style.display = "grid";
+  avatar.style.placeItems = "center";
+  avatar.style.background = "#1f2937";
+  avatar.style.color = "#f8fafc";
+  avatar.style.font = "700 11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  avatar.style.letterSpacing = "0";
+  if (point.avatarUrl) {
+    const image = document.createElement("img");
+    image.src = point.avatarUrl;
+    image.alt = "";
+    image.style.width = "100%";
+    image.style.height = "100%";
+    image.style.objectFit = "cover";
+    avatar.appendChild(image);
+  } else {
+    avatar.innerHTML = htmlEscape((point.initials ?? "?").slice(0, 2).toUpperCase());
+  }
+  shell.appendChild(avatar);
+  if (point.stale) {
+    const warning = document.createElement("span");
+    warning.textContent = "!";
+    warning.style.position = "absolute";
+    warning.style.right = point.selected ? "6px" : "5px";
+    warning.style.top = point.selected ? "7px" : "8px";
+    warning.style.width = "14px";
+    warning.style.height = "14px";
+    warning.style.borderRadius = "999px";
+    warning.style.display = "grid";
+    warning.style.placeItems = "center";
+    warning.style.background = "#f59e0b";
+    warning.style.color = "#0b0d10";
+    warning.style.font = "800 10px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    warning.style.border = "1px solid #0b0d10";
+    shell.appendChild(warning);
+  }
+  shell.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onClick(point);
+  });
+  overlay.onAdd = () => {
+    overlay.getPanes()?.overlayMouseTarget.appendChild(shell);
+  };
+  overlay.draw = () => {
+    const projection = overlay.getProjection();
+    if (!projection) return;
+    const pixel = projection.fromLatLngToDivPixel(new maps.LatLng(point.lat, point.lng));
+    if (!pixel) return;
+    shell.style.left = `${pixel.x}px`;
+    shell.style.top = `${pixel.y}px`;
+  };
+  overlay.onRemove = () => {
+    shell.remove();
+  };
+  overlay.setMap(map);
+  return overlay;
 }
 
 const MAPS_KEY = process.env.NEXT_PUBLIC_MAPS_BROWSER_KEY;
@@ -179,6 +299,10 @@ export function GoogleMapView({
     points.forEach((p) => {
       const pos = { lat: p.lat, lng: p.lng };
       bounds.extend(pos);
+      if (richMarkers && p.kind === "tech") {
+        markersRef.current.push(createTechOverlay(p, maps, map, (point) => onMarkerClickRef.current?.(point)));
+        return;
+      }
       const marker = new maps.Marker({
         position: pos,
         map,
@@ -187,6 +311,12 @@ export function GoogleMapView({
         // last known location only, not a live position.
         opacity: p.kind === "tech" && p.status === "inactive" ? 0.7 : 1,
         icon: iconFor(p, maps, richMarkers),
+        label: richMarkers && p.kind !== "tech" ? {
+          text: p.markerLabel ?? (p.kind === "request" ? "R" : "J"),
+          color: "#f8fafc",
+          fontSize: "10px",
+          fontWeight: "800",
+        } : undefined,
         zIndex: p.selected ? 1000 : undefined,
       });
       marker.addListener("click", () => onMarkerClickRef.current?.(p));

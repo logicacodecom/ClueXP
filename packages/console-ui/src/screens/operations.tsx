@@ -3,15 +3,18 @@
 import type { ConsoleMode } from "@cluexp/api-client";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   CheckCircle2,
   ClipboardCheck,
   MapPin,
+  RefreshCw,
   Route,
   UserRound,
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMapView } from "../components/google-map";
 import type { MapPoint } from "../components/google-map";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
@@ -115,11 +118,16 @@ const TECH_SORT_RANK: Record<TechnicianStatusLabel, number> = {
   Offline: 2,
 };
 
-function compareTechnicians(a: FleetRow, b: FleetRow) {
+function compareTechnicians(a: FleetRow, b: FleetRow, now: number) {
   const aStatus = technicianStatusLabel(a.marker_status);
   const bStatus = technicianStatusLabel(b.marker_status);
   const statusDelta = TECH_SORT_RANK[aStatus] - TECH_SORT_RANK[bStatus];
   if (statusDelta !== 0) return statusDelta;
+  const aFresh = locationFreshness(a.location_updated_at, now, LOCATION_STALE_MINUTES);
+  const bFresh = locationFreshness(b.location_updated_at, now, LOCATION_STALE_MINUTES);
+  const aTrust = a.current_lat == null || a.current_lng == null ? 2 : aFresh.stale ? 1 : 0;
+  const bTrust = b.current_lat == null || b.current_lng == null ? 2 : bFresh.stale ? 1 : 0;
+  if (aTrust !== bTrust) return aTrust - bTrust;
   return (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id);
 }
 
@@ -166,6 +174,20 @@ function candidateDistance(candidate: Candidate, unit: "mi" | "km"): string {
 
 function jobDisplayId(job: { id: string; operational_id?: string | null }) {
   return job.operational_id?.trim() || "No operation ID";
+}
+
+function activeJobExceptionLabel(row: OperationsRow, now: number): string | null {
+  if (row.isRequest) return null;
+  if (row.status === "disputed") return "Dispute requires provider response";
+  const ongoing = ongoingMinutes(row, now);
+  if (row.status === "completed_pending_customer") {
+    return `Customer confirmation overdue${ongoing != null ? ` · ${formatMinutes(ongoing)}` : ""}`;
+  }
+  if (row.technician_location_updated_at && locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES).stale) {
+    return `Technician location stale · ${locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES).label.replace("stale · ", "")}`;
+  }
+  if ((ongoing ?? 0) >= 180) return `Long-running job · ${formatMinutes(ongoing)}`;
+  return null;
 }
 
 /** The production operations workspace: map + work queue + technician roster
@@ -330,9 +352,9 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
         if (a.id === selectedRow.fulfillment_technician_id) return -1;
         if (b.id === selectedRow.fulfillment_technician_id) return 1;
       }
-      return compareTechnicians(a, b);
+      return compareTechnicians(a, b, now);
     });
-  }, [candidates, fleet, selectedRow, techFilter, techGroups]);
+  }, [candidates, fleet, now, selectedRow, techFilter, techGroups]);
 
   useEffect(() => {
     if (!selectedRow?.isRequest) { setCandidates(null); setCandidatesError(null); return; }
@@ -428,27 +450,49 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     .map((r): MapPoint => ({
       lat: r.lat!, lng: r.lng!, kind: "request", id: r.id, label: r.address ?? jobDisplayId(r),
       risk: toMapRisk(requestRisk(r, now, ackSlaMinutes, stalledMinutes)),
+      markerLabel: "R",
       selected: r.id === highlightedWorkId,
     }));
   const jobPoints: MapPoint[] = sorted
     .filter((r) => !r.isRequest && r.lat != null && r.lng != null)
-    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? jobDisplayId(r), selected: r.id === highlightedWorkId }));
+    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? jobDisplayId(r), markerLabel: "J", selected: r.id === highlightedWorkId }));
   const techPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.current_lat != null && t.current_lng != null)
     .map((t): MapPoint => ({
       lat: t.current_lat!, lng: t.current_lng!, kind: "tech", id: t.id,
       label: t.display_name ?? t.id, status: t.marker_status ?? undefined,
+      avatarUrl: t.profile_photo_url ?? t.photo_url ?? null,
+      initials: initialsFor(t.display_name ?? t.id),
+      stale: locationFreshness(t.location_updated_at, now, LOCATION_STALE_MINUTES).stale,
       selected: t.id === highlightedTechId,
     }));
   const allPoints = [...requestPoints, ...jobPoints, ...techPoints];
   const selectedWorkPoint = selectedRow?.lat != null && selectedRow.lng != null
-    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? jobDisplayId(selectedRow), selected: true } satisfies MapPoint
+    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? jobDisplayId(selectedRow), markerLabel: selectedRow.isRequest ? "R" : "J", selected: true } satisfies MapPoint
     : null;
   const selectedTechPoint = selectedTech?.current_lat != null && selectedTech.current_lng != null
-    ? { lat: selectedTech.current_lat, lng: selectedTech.current_lng, kind: "tech", id: selectedTech.id, label: selectedTech.display_name ?? selectedTech.id, status: selectedTech.marker_status ?? undefined, selected: true } satisfies MapPoint
+    ? {
+      lat: selectedTech.current_lat,
+      lng: selectedTech.current_lng,
+      kind: "tech",
+      id: selectedTech.id,
+      label: selectedTech.display_name ?? selectedTech.id,
+      status: selectedTech.marker_status ?? undefined,
+      avatarUrl: selectedTech.profile_photo_url ?? selectedTech.photo_url ?? null,
+      initials: initialsFor(selectedTech.display_name ?? selectedTech.id),
+      stale: locationFreshness(selectedTech.location_updated_at, now, LOCATION_STALE_MINUTES).stale,
+      selected: true,
+    } satisfies MapPoint
     : null;
-  const mapFocusPoint = mapFocus?.kind === "tech" ? selectedTechPoint : selectedWorkPoint;
+  const mapFocusPoint = mapFocus?.kind === "tech" ? selectedTechPoint : selectedWorkPoint ?? selectedTechPoint;
   const focusPairs: [MapPoint, MapPoint][] = selectedWorkPoint && selectedTechPoint ? [[selectedTechPoint, selectedWorkPoint]] : [];
+  const mappedTechCount = techPoints.length;
+  const locationIssueCount = (fleet ?? []).filter((tech) => {
+    if (tech.current_lat == null || tech.current_lng == null) return true;
+    return locationFreshness(tech.location_updated_at, now, LOCATION_STALE_MINUTES).stale;
+  }).length;
+  const availableMappedCount = techPoints.filter((point) => point.status === "free").length;
+  const selectedWorkMissingLocation = Boolean(selectedRow && (selectedRow.lat == null || selectedRow.lng == null));
 
   const initialLoad = queue === null && activeJobs === null && fleet === null && !queueError && !jobsError && !fleetError;
   const sourceErrors = [
@@ -460,15 +504,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       <PageHeader
         kicker="Dispatcher workspace"
         title="Operations"
-        description="Live map, work queue, and technician roster in one screen for scanning, prioritizing, and monitoring dispatch."
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              {lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading…"}
-            </span>
-            <Button variant="outline" onClick={() => void fetchAll()}>Refresh</Button>
-          </div>
-        }
       />
 
       <div className="mb-4 grid gap-3 xl:grid-cols-2">
@@ -478,7 +513,19 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           <MetricTile label="Active jobs" value={String(summary.activeJobs)} active={tab === "active"} onClick={() => { setTab("active"); setRiskOnly(false); }} />
           <MetricTile label="All work" value={String(rows.length)} active={tab === "all" && !riskOnly} onClick={() => { setTab("all"); setRiskOnly(false); }} />
         </MetricGroup>
-        <MetricGroup label="Workforce" target="Technicians">
+        <MetricGroup
+          label="Workforce"
+          target="Technicians"
+          actions={
+            <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-muted-foreground">
+              {locationIssueCount > 0 ? <span className="text-warn">{locationIssueCount} location issues</span> : null}
+              <span>{lastUpdated ? `Live · Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading…"}</span>
+              <Button className="h-7 px-2 text-[11px]" variant="outline" onClick={() => void fetchAll()}>
+                <RefreshCw className="size-3" />Refresh
+              </Button>
+            </div>
+          }
+        >
           <MetricTile label="Available" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
           <MetricTile label="Busy" value={String(summary.busyTechnicians)} intent="warn" active={techFilter === "Busy"} onClick={() => setTechFilter((f) => (f === "Busy" ? "all" : "Busy"))} />
           <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
@@ -497,7 +544,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
         <LoadingSkeleton />
       ) : (
         <>
-        <div className="grid gap-4 xl:h-[calc(100vh-310px)] xl:min-h-[560px] xl:grid-cols-[48fr_29fr_23fr]">
+        <div className="grid gap-4 xl:h-[calc(100vh-260px)] xl:min-h-[560px] xl:grid-cols-[48fr_29fr_23fr]">
           <Card className="overflow-hidden xl:h-full">
             <CardContent className="relative h-[420px] p-0 xl:h-full">
               <div className="absolute inset-0 bg-[#101720]">
@@ -549,10 +596,19 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
                   <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">No location data yet</div>
                 )}
               </div>
+              <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-border bg-background/90 px-3 py-2 text-[11px] font-medium uppercase text-muted-foreground backdrop-blur">
+                Tech coverage · {mappedTechCount} of {(fleet ?? []).length} mapped · {availableMappedCount} available
+                {locationIssueCount > 0 ? <span className="text-warn"> · {locationIssueCount} location issues</span> : null}
+              </div>
+              {selectedWorkMissingLocation && selectedTechPoint ? (
+                <div className="absolute left-3 right-3 top-14 rounded-md border border-warn/35 bg-background/95 px-3 py-2 text-xs text-warn shadow-sm backdrop-blur">
+                  Selected {selectedRow?.isRequest ? "request" : "job"} has no coordinates. Showing the assigned technician's last reported location.
+                </div>
+              ) : null}
               <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-background/90 px-3 py-2 text-xs text-muted-foreground backdrop-blur">
-                <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#22c55e" }} />Available tech</span>
-                <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#f59e0b" }} />Busy tech</span>
-                <span className="inline-flex items-center gap-1.5"><span className="size-2.5" style={{ background: "#8b5cf6" }} />Active job</span>
+                <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-t-full rounded-bl-full border-2 border-success bg-card rotate-45" />Available tech</span>
+                <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-t-full rounded-bl-full border-2 border-warn bg-card rotate-45" />Busy tech</span>
+                <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-sm" style={{ background: "#8b5cf6" }} />Active job</span>
                 <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rotate-45" style={{ background: "#3b82f6" }} />Request</span>
               </div>
             </CardContent>
@@ -620,12 +676,15 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   );
 }
 
-function MetricGroup({ children, label, target }: { children: ReactNode; label: string; target: string }) {
+function MetricGroup({ actions, children, label, target }: { actions?: ReactNode; children: ReactNode; label: string; target: string }) {
   return (
     <section className="rounded-md border border-border bg-card/40 p-2" aria-label={`${label} metrics filter ${target}`}>
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
-        <div className="text-[11px] text-muted-foreground">{target}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
+          <div className="text-[11px] text-muted-foreground">{target}</div>
+        </div>
+        {actions ?? null}
       </div>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {children}
@@ -641,7 +700,7 @@ function MetricTile({
     <button
       aria-pressed={Boolean(active)}
       className={cn(
-        "rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/35",
       )}
       onClick={onClick}
@@ -649,7 +708,7 @@ function MetricTile({
     >
       <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
       <div className={cn(
-        "mt-1 text-xl font-semibold tabular-nums text-foreground",
+        "mt-0.5 text-lg font-semibold tabular-nums text-foreground",
         intent === "danger" && "text-destructive",
         intent === "warn" && "text-warn",
         intent === "success" && "text-success",
@@ -658,6 +717,73 @@ function MetricTile({
         {value}
       </div>
     </button>
+  );
+}
+
+function ControlledListScroller({
+  children,
+  count,
+  empty,
+  label,
+}: {
+  children: ReactNode;
+  count: number;
+  empty: ReactNode;
+  label: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState({ start: count > 0 ? 1 : 0, end: count, canUp: false, canDown: false });
+
+  const updateRange = useCallback(() => {
+    const el = ref.current;
+    if (!el || count === 0) {
+      setRange({ start: count > 0 ? 1 : 0, end: count, canUp: false, canDown: false });
+      return;
+    }
+    const canUp = el.scrollTop > 2;
+    const canDown = el.scrollTop + el.clientHeight < el.scrollHeight - 2;
+    const estimatedVisible = Math.max(1, Math.min(count, Math.round(el.clientHeight / 116)));
+    const maxStart = Math.max(1, count - estimatedVisible + 1);
+    const scrollable = Math.max(1, el.scrollHeight - el.clientHeight);
+    const start = Math.min(maxStart, Math.max(1, Math.floor((el.scrollTop / scrollable) * maxStart) + 1));
+    const end = Math.min(count, start + estimatedVisible - 1);
+    setRange({ start, end, canUp, canDown });
+  }, [count]);
+
+  useEffect(() => {
+    updateRange();
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateRange);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [updateRange]);
+
+  const scrollBy = useCallback((direction: 1 | -1) => {
+    ref.current?.scrollBy({ top: direction * 260, behavior: "smooth" });
+  }, []);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span>{count > 0 ? `Showing ${range.start}-${range.end} of ${count}` : `Showing 0 of 0`}</span>
+        <div className="flex items-center gap-1" aria-label={`${label} list controls`}>
+          <Button aria-label={`Scroll ${label} up`} className="h-7 w-7 p-0" disabled={!range.canUp} onClick={() => scrollBy(-1)} size="sm" type="button" variant="outline">
+            <ChevronUp className="size-3.5" />
+          </Button>
+          <Button aria-label={`Scroll ${label} down`} className="h-7 w-7 p-0" disabled={!range.canDown} onClick={() => scrollBy(1)} size="sm" type="button" variant="outline">
+            <ChevronDown className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+      <div
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:thin]"
+        onScroll={updateRange}
+        ref={ref}
+      >
+        {count === 0 ? empty : children}
+      </div>
+    </div>
   );
 }
 
@@ -701,14 +827,18 @@ function WorkQueuePanel({
           placeholder="Search address, situation, or operation ID"
           value={search}
         />
-        <div className="flex-1 space-y-2 overflow-y-auto">
-          {rows.length === 0 ? (
+        <ControlledListScroller
+          count={rows.length}
+          label="work queue"
+          empty={
             <EmptyState
               icon={ClipboardCheck}
               title={totalCount === 0 ? "No open work" : "No matches"}
               description={totalCount === 0 ? "Requests and active jobs will appear here as they come in." : "Nothing matches the current filters."}
             />
-          ) : rows.map((row) => {
+          }
+        >
+          {rows.map((row) => {
             const risk = requestRisk(row, now, ackSlaMinutes, stalledMinutes);
             const riskLabel = RISK_LABEL[risk];
             const isSelected = row.id === selectedId;
@@ -757,7 +887,7 @@ function WorkQueuePanel({
               </div>
             );
           })}
-        </div>
+        </ControlledListScroller>
       </CardContent>
     </Card>
   );
@@ -798,14 +928,18 @@ function TechnicianRosterPanel({
       <CardContent className="flex flex-1 flex-col gap-3 overflow-hidden p-4 pt-0">
         {candidatesLoading ? <div className="text-xs text-muted-foreground">Ranking technicians for selected request…</div> : null}
         {candidatesError ? <div className="text-xs text-destructive">Candidate ranking unavailable: {candidatesError}</div> : null}
-        <div className="flex-1 space-y-2 overflow-y-auto">
-          {techs.length === 0 ? (
+        <ControlledListScroller
+          count={techs.length}
+          label="technician roster"
+          empty={
             <EmptyState
               icon={UserRound}
               title={totalCount === 0 ? "No technicians" : "No matches"}
               description={totalCount === 0 ? "Technicians will appear here once your roster reports location." : "No technicians match the current filter."}
             />
-          ) : techs.map((tech) => {
+          }
+        >
+          {techs.map((tech) => {
             const status = technicianStatusLabel(tech.marker_status);
             const fresh = locationFreshness(tech.location_updated_at, now, LOCATION_STALE_MINUTES);
             const candidate = candidateById.get(tech.id) ?? null;
@@ -827,10 +961,10 @@ function TechnicianRosterPanel({
                 tabIndex={0}
               >
                 <div className="flex items-start gap-3">
-                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} status={status} stale={fresh.stale} />
+                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} status={status} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
-                      <span className="min-w-0 truncate font-medium">{tech.display_name ?? tech.id}</span>
+                      <span className="min-w-0 break-words font-medium leading-tight" title={tech.display_name ?? tech.id}>{tech.display_name ?? tech.id}</span>
                       <Badge variant={TECH_STATUS_VARIANT[status]}>{status}</Badge>
                     </div>
                     <div className={cn("mt-1 text-xs text-muted-foreground", fresh.stale && "text-warn")}>Location {fresh.label}</div>
@@ -857,7 +991,7 @@ function TechnicianRosterPanel({
               </div>
             );
           })}
-        </div>
+        </ControlledListScroller>
       </CardContent>
     </Card>
   );
@@ -869,15 +1003,13 @@ function initialsFor(name: string) {
 }
 
 function TechAvatar({
-  name, photoUrl, stale, status,
-}: { name: string; photoUrl: string | null; stale: boolean; status: TechnicianStatusLabel }) {
-  const ringClass = stale
-    ? "ring-warn"
-    : status === "Available"
-      ? "ring-success"
-      : status === "Busy"
-        ? "ring-warn"
-        : "ring-muted-foreground/45";
+  name, photoUrl, status,
+}: { name: string; photoUrl: string | null; status: TechnicianStatusLabel }) {
+  const ringClass = status === "Available"
+    ? "ring-success"
+    : status === "Busy"
+      ? "ring-warn"
+      : "ring-muted-foreground/45";
   return (
     <Avatar className={cn("size-11 border-background ring-2 ring-offset-2 ring-offset-background", ringClass)}>
       {photoUrl ? <AvatarImage alt={name} className="object-cover" src={photoUrl} /> : null}
@@ -928,12 +1060,7 @@ function FocusedActionBar({
       : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`
     : null;
   const eta = candidate?.eta_min != null ? `ETA ${candidate.eta_min}-${candidate.eta_max}m` : "ETA unknown";
-  const exception = row && !row.isRequest && (
-    row.status === "completed_pending_customer" ||
-    row.status === "disputed" ||
-    (ongoingMinutes(row, now) ?? 0) >= 180 ||
-    (row.technician_location_updated_at && locationFreshness(row.technician_location_updated_at, now, LOCATION_STALE_MINUTES).stale)
-  );
+  const exceptionLabel = row ? activeJobExceptionLabel(row, now) : null;
 
   return (
     <div className="mt-3 rounded-md border border-primary/30 bg-card px-4 py-3 shadow-sm">
@@ -944,7 +1071,7 @@ function FocusedActionBar({
               <span className="font-semibold">{row.isRequest ? "Request" : "Job"} {rowDisplayId}</span>
               <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
               {timeLabel ? <span className="text-muted-foreground">{timeLabel}</span> : null}
-              {exception ? <Badge variant="warn">Review required</Badge> : null}
+              {exceptionLabel ? <Badge variant="warn">{exceptionLabel}</Badge> : null}
               {activeOffer ? <Badge variant="warn">Offer active</Badge> : null}
             </div>
             <div className="mt-1 truncate text-xs text-muted-foreground">
@@ -957,7 +1084,8 @@ function FocusedActionBar({
             <span className="ml-2 text-muted-foreground">{tech.active_job ? `Current job ${jobDisplayId(tech.active_job)}` : "No active job"}</span>
           </div>
         ) : null}
-        <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Cancel</Button>
+        {exceptionLabel ? <Button size="sm" variant="outline">Review job</Button> : null}
+        <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Close</Button>
         {row?.isRequest ? (
           <Button disabled={!canAssign || assigning} onClick={onAssign} size="sm">
             <CheckCircle2 className="size-4" />{assigning ? "Sending…" : activeOffer ? "Offer pending" : "Assign"}
