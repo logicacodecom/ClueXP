@@ -3661,6 +3661,7 @@ _DISPATCH_SETTING_FIELDS = {
     "ack_sla_minutes": "dispatch_ack_sla_minutes",
     "stalled_minutes": "dispatch_stalled_minutes",
     "distance_unit": "dispatch_distance_unit",
+    "operations_refresh_seconds": "dispatch_operations_refresh_seconds",
 }
 
 
@@ -3695,6 +3696,7 @@ class ProviderDispatchSettingsUpdate(BaseModel):
     ack_sla_minutes: int | None = None
     stalled_minutes: int | None = None
     distance_unit: str | None = None
+    operations_refresh_seconds: int | None = None
 
 
 @app.patch("/provider/settings/dispatch")

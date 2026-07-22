@@ -10,6 +10,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GoogleMapView } from "../components/google-map";
 import type { MapPoint } from "../components/google-map";
@@ -60,6 +61,7 @@ function positiveMinutes(value: string | undefined, fallback: number): number {
 const ACK_SLA_MINUTES = positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_ACK_SLA_MINUTES, 5);
 const STALLED_MINUTES = Math.max(ACK_SLA_MINUTES, positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 15));
 const LOCATION_STALE_MINUTES = positiveMinutes(process.env.NEXT_PUBLIC_LOCATION_STALE_MINUTES, 15);
+const OPERATIONS_REFRESH_SECONDS = positiveMinutes(process.env.NEXT_PUBLIC_OPERATIONS_REFRESH_SECONDS, 30);
 
 const JOB_STATUS_LABEL: Record<string, string> = {
   pending_dispatch: "Unassigned",
@@ -130,6 +132,13 @@ type Candidate = {
 
 type CandidatesResponse = { candidates: Candidate[]; distance_unit?: "mi" | "km" };
 
+type DispatchNumberSetting = { value: number; is_override: boolean; platform_default: number };
+type DispatchSettingsResponse = {
+  ack_sla_minutes?: DispatchNumberSetting;
+  stalled_minutes?: DispatchNumberSetting;
+  operations_refresh_seconds?: DispatchNumberSetting;
+};
+
 function candidateDistance(candidate: Candidate, unit: "mi" | "km"): string {
   if (unit === "km") {
     if (candidate.distance_km != null) return `${candidate.distance_km} km`;
@@ -154,8 +163,10 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [queueError, setQueueError] = useState<string | null>(null);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [fleetError, setFleetError] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [dispatchSettings, setDispatchSettings] = useState<DispatchSettingsResponse | null>(null);
 
   const [selectedWork, setSelectedWork] = useState<{ kind: "job" | "request"; id: string } | null>(null);
   const [selectedTechId, setSelectedTechId] = useState<string | null>(null);
@@ -203,22 +214,48 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     }
   }, [apiPrefix]);
 
+  const fetchDispatchSettings = useCallback(async () => {
+    if (mode !== "org") {
+      setDispatchSettings(null);
+      setSettingsError(null);
+      return;
+    }
+    try {
+      const res = await fetch(`${apiPrefix}/settings/dispatch`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      setDispatchSettings(await res.json());
+      setSettingsError(null);
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : "Failed to load dispatch settings");
+    }
+  }, [apiPrefix, mode]);
+
   const fetchAll = useCallback(async () => {
-    await Promise.allSettled([fetchQueue(), fetchJobs(), fetchFleet()]);
+    await Promise.allSettled([fetchQueue(), fetchJobs(), fetchFleet(), fetchDispatchSettings()]);
     setLastUpdated(Date.now());
-  }, [fetchQueue, fetchJobs, fetchFleet]);
+  }, [fetchQueue, fetchJobs, fetchFleet, fetchDispatchSettings]);
+
+  const ackSlaMinutes = dispatchSettings?.ack_sla_minutes?.value ?? ACK_SLA_MINUTES;
+  const stalledMinutes = Math.max(
+    ackSlaMinutes,
+    dispatchSettings?.stalled_minutes?.value ?? STALLED_MINUTES,
+  );
+  const operationsRefreshMs = positiveMinutes(
+    String(dispatchSettings?.operations_refresh_seconds?.value ?? OPERATIONS_REFRESH_SECONDS),
+    OPERATIONS_REFRESH_SECONDS,
+  ) * 1000;
 
   useEffect(() => {
     fetchAll();
-    const id = window.setInterval(fetchAll, 30_000);
+    const id = window.setInterval(fetchAll, operationsRefreshMs);
     return () => window.clearInterval(id);
-  }, [fetchAll]);
+  }, [fetchAll, operationsRefreshMs]);
 
   // Ticks the waiting/ongoing timers between polls without re-fetching.
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    const id = window.setInterval(() => setNow(Date.now()), operationsRefreshMs);
     return () => window.clearInterval(id);
-  }, []);
+  }, [operationsRefreshMs]);
 
   useEffect(() => {
     const id = window.setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 250);
@@ -226,10 +263,10 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   }, [searchInput]);
 
   const rows = useMemo(() => mergeOperationsRows(queue ?? [], activeJobs ?? []), [queue, activeJobs]);
-  const sorted = useMemo(() => sortOperationsRows(rows, now, ACK_SLA_MINUTES, STALLED_MINUTES), [rows, now]);
+  const sorted = useMemo(() => sortOperationsRows(rows, now, ackSlaMinutes, stalledMinutes), [rows, now, ackSlaMinutes, stalledMinutes]);
   const summary = useMemo(
-    () => summarizeOperations(rows, fleet ?? [], now, ACK_SLA_MINUTES, STALLED_MINUTES),
-    [rows, fleet, now],
+    () => summarizeOperations(rows, fleet ?? [], now, ackSlaMinutes, stalledMinutes),
+    [rows, fleet, now, ackSlaMinutes, stalledMinutes],
   );
   const techGroups = useMemo(() => groupTechnicians(fleet ?? []), [fleet]);
 
@@ -237,7 +274,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     let list = sorted;
     if (tab === "requests") list = list.filter((r) => r.isRequest);
     if (tab === "active") list = list.filter((r) => !r.isRequest);
-    if (riskOnly) list = list.filter((r) => r.isRequest && requestRisk(r, now, ACK_SLA_MINUTES, STALLED_MINUTES) !== "normal");
+    if (riskOnly) list = list.filter((r) => r.isRequest && requestRisk(r, now, ackSlaMinutes, stalledMinutes) !== "normal");
     if (search) {
       list = list.filter((r) =>
         r.id.toLowerCase().includes(search) ||
@@ -245,7 +282,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
         (r.situation ?? "").toLowerCase().includes(search));
     }
     return list;
-  }, [sorted, tab, riskOnly, search, now]);
+  }, [sorted, tab, riskOnly, search, now, ackSlaMinutes, stalledMinutes]);
 
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
@@ -360,7 +397,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     .filter((r) => r.isRequest && r.lat != null && r.lng != null)
     .map((r): MapPoint => ({
       lat: r.lat!, lng: r.lng!, kind: "request", id: r.id, label: r.address ?? r.id,
-      risk: toMapRisk(requestRisk(r, now, ACK_SLA_MINUTES, STALLED_MINUTES)),
+      risk: toMapRisk(requestRisk(r, now, ackSlaMinutes, stalledMinutes)),
     }));
   const jobPoints: MapPoint[] = sorted
     .filter((r) => !r.isRequest && r.lat != null && r.lng != null)
@@ -382,7 +419,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
 
   const initialLoad = queue === null && activeJobs === null && fleet === null && !queueError && !jobsError && !fleetError;
   const sourceErrors = [
-    queueError && "requests", jobsError && "active jobs", fleetError && "technician roster",
+    queueError && "requests", jobsError && "active jobs", fleetError && "technician roster", settingsError && "dispatch settings",
   ].filter(Boolean) as string[];
 
   return (
@@ -401,15 +438,19 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
         }
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-8">
-        <MetricTile label="Unassigned" value={String(summary.unassigned)} active={tab === "requests" && !riskOnly} onClick={() => { setTab("requests"); setRiskOnly(false); }} />
-        <MetricTile label="SLA at risk" value={String(summary.atRisk)} intent="danger" active={riskOnly} onClick={() => { setTab("requests"); setRiskOnly(true); }} />
-        <MetricTile label="Active jobs" value={String(summary.activeJobs)} active={tab === "active"} onClick={() => { setTab("active"); setRiskOnly(false); }} />
-        <MetricTile label="All work" value={String(rows.length)} active={tab === "all" && !riskOnly} onClick={() => { setTab("all"); setRiskOnly(false); }} />
-        <MetricTile label="Available" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
-        <MetricTile label="Busy" value={String(summary.busyTechnicians)} intent="warn" active={techFilter === "Busy"} onClick={() => setTechFilter((f) => (f === "Busy" ? "all" : "Busy"))} />
-        <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
-        <MetricTile label="All techs" value={String(summary.allTechnicians)} active={techFilter === "all"} onClick={() => setTechFilter("all")} />
+      <div className="mb-4 grid gap-3 xl:grid-cols-2">
+        <MetricGroup label="Work" target="Work Queue">
+          <MetricTile label="Unassigned" value={String(summary.unassigned)} active={tab === "requests" && !riskOnly} onClick={() => { setTab("requests"); setRiskOnly(false); }} />
+          <MetricTile label="At risk" value={String(summary.atRisk)} intent="danger" active={riskOnly} onClick={() => { setTab("requests"); setRiskOnly(true); }} />
+          <MetricTile label="Active jobs" value={String(summary.activeJobs)} active={tab === "active"} onClick={() => { setTab("active"); setRiskOnly(false); }} />
+          <MetricTile label="All work" value={String(rows.length)} active={tab === "all" && !riskOnly} onClick={() => { setTab("all"); setRiskOnly(false); }} />
+        </MetricGroup>
+        <MetricGroup label="Workforce" target="Technicians">
+          <MetricTile label="Available" value={String(summary.availableTechnicians)} intent="success" active={techFilter === "Available"} onClick={() => setTechFilter((f) => (f === "Available" ? "all" : "Available"))} />
+          <MetricTile label="Busy" value={String(summary.busyTechnicians)} intent="warn" active={techFilter === "Busy"} onClick={() => setTechFilter((f) => (f === "Busy" ? "all" : "Busy"))} />
+          <MetricTile label="Offline" value={String(summary.offlineTechnicians)} active={techFilter === "Offline"} onClick={() => setTechFilter((f) => (f === "Offline" ? "all" : "Offline"))} />
+          <MetricTile label="All techs" value={String(summary.allTechnicians)} active={techFilter === "all"} onClick={() => setTechFilter("all")} />
+        </MetricGroup>
       </div>
 
       {sourceErrors.length > 0 ? (
@@ -480,6 +521,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
             search={searchInput}
             onSearchChange={setSearchInput}
             now={now}
+            ackSlaMinutes={ackSlaMinutes}
+            stalledMinutes={stalledMinutes}
             selectedId={selectedRow?.id ?? null}
             highlightJobId={highlightedWorkId}
             onSelect={selectWork}
@@ -531,6 +574,20 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   );
 }
 
+function MetricGroup({ children, label, target }: { children: ReactNode; label: string; target: string }) {
+  return (
+    <section className="rounded-md border border-border bg-card/40 p-2" aria-label={`${label} metrics filter ${target}`}>
+      <div className="mb-2 flex items-center justify-between gap-2 px-1">
+        <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
+        <div className="text-[11px] text-muted-foreground">{target}</div>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {children}
+      </div>
+    </section>
+  );
+}
+
 function MetricTile({
   active, intent, label, onClick, value,
 }: { active?: boolean; intent?: "danger" | "success" | "warn"; label: string; onClick?: () => void; value: string }) {
@@ -558,8 +615,9 @@ function MetricTile({
 }
 
 function WorkQueuePanel({
-  highlightJobId, now, onClearFilter, onSearchChange, onSelect, riskOnly, rows, search, selectedId, tab, totalCount,
+  ackSlaMinutes, highlightJobId, now, onClearFilter, onSearchChange, onSelect, riskOnly, rows, search, selectedId, stalledMinutes, tab, totalCount,
 }: {
+  ackSlaMinutes: number;
   highlightJobId: string | null;
   now: number;
   onClearFilter: () => void;
@@ -569,6 +627,7 @@ function WorkQueuePanel({
   rows: OperationsRow[];
   search: string;
   selectedId: string | null;
+  stalledMinutes: number;
   tab: QueueTab;
   totalCount: number;
 }) {
@@ -603,7 +662,7 @@ function WorkQueuePanel({
               description={totalCount === 0 ? "Requests and active jobs will appear here as they come in." : "Nothing matches the current filters."}
             />
           ) : rows.map((row) => {
-            const risk = requestRisk(row, now, ACK_SLA_MINUTES, STALLED_MINUTES);
+            const risk = requestRisk(row, now, ackSlaMinutes, stalledMinutes);
             const riskLabel = RISK_LABEL[risk];
             const isSelected = row.id === selectedId;
             const isLinked = !isSelected && row.id === highlightJobId;

@@ -20,18 +20,20 @@ interface CloseoutItemType {
 }
 
 const LIMIT_KEYS = ["max_users_per_org", "max_technicians_per_org"] as const;
+const DISPATCH_KEYS = ["dispatch_operations_refresh_seconds"] as const;
 const FINANCIAL_KEYS = [
   "closeout_max_line_items",
   "closeout_default_tax_rate_basis_points",
   "closeout_card_fee_basis_points",
   "closeout_card_fee_fixed_cents"
 ] as const;
-const ALL_SETTING_KEYS = [...LIMIT_KEYS, ...FINANCIAL_KEYS] as const;
+const ALL_SETTING_KEYS = [...LIMIT_KEYS, ...DISPATCH_KEYS, ...FINANCIAL_KEYS] as const;
 type SettingKey = (typeof ALL_SETTING_KEYS)[number];
 
 const LABELS: Record<SettingKey, string> = {
   max_users_per_org: "Default max users per company",
   max_technicians_per_org: "Default max technicians per company",
+  dispatch_operations_refresh_seconds: "Default Operations refresh interval (seconds)",
   closeout_max_line_items: "Default max closeout line items",
   closeout_default_tax_rate_basis_points: "Default tax rate (basis points)",
   closeout_card_fee_basis_points: "Default card fee percent (basis points)",
@@ -144,6 +146,15 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {FINANCIAL_KEYS.map(renderSettingInput)}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Dispatch defaults</CardTitle>
+            <CardDescription>Fallbacks inherited by providers unless they set their own dispatch settings.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {DISPATCH_KEYS.map(renderSettingInput)}
           </CardContent>
         </Card>
         <Card>

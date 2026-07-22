@@ -3657,6 +3657,13 @@ class PostgresStore(Store):
                 " on conflict (key) do nothing"
             )
             await conn.execute(
+                "insert into global_settings"
+                " (key, value, value_type, description, is_secret, is_runtime_editable)"
+                " values ('dispatch_operations_refresh_seconds', '30'::jsonb, 'integer',"
+                "  'Seconds between automatic refreshes on the provider Operations workspace. Provider-overridable.', false, true)"
+                " on conflict (key) do nothing"
+            )
+            await conn.execute(
                 "create table if not exists service_categories ("
                 "  code text primary key,"
                 "  label text not null,"

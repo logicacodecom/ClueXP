@@ -3299,6 +3299,7 @@ def test_admin_global_settings_endpoints_authz_and_validation():
     r = client.get("/admin/global-settings", headers=hdr(admin, ["platform_admin"]))
     assert r.status_code == 200
     assert any(s["key"] == "dispatch_offer_ttl_seconds" for s in r.json()["settings"])
+    assert any(s["key"] == "dispatch_operations_refresh_seconds" for s in r.json()["settings"])
 
     # PATCH valid (admin) + boundaries.
     assert client.patch(path, json={"value": 300}, headers=hdr(admin, ["platform_admin"])).status_code == 200
@@ -4396,6 +4397,7 @@ def test_dispatch_settings_default_before_any_override():
         "ack_sla_minutes": {"value": 5, "is_override": False, "platform_default": 5},
         "stalled_minutes": {"value": 15, "is_override": False, "platform_default": 15},
         "distance_unit": {"value": "mi", "is_override": False, "platform_default": "mi"},
+        "operations_refresh_seconds": {"value": 30, "is_override": False, "platform_default": 30},
     }
 
 
@@ -4414,7 +4416,12 @@ def test_dispatch_settings_override_and_clear():
     # Set an override on both fields.
     r = client.patch(
         "/provider/settings/dispatch",
-        json={"ack_sla_minutes": 10, "stalled_minutes": 30, "distance_unit": "km"},
+        json={
+            "ack_sla_minutes": 10,
+            "stalled_minutes": 30,
+            "distance_unit": "km",
+            "operations_refresh_seconds": 45,
+        },
         headers=H,
     )
     assert r.status_code == 200
@@ -4422,6 +4429,7 @@ def test_dispatch_settings_override_and_clear():
     assert body["ack_sla_minutes"] == {"value": 10, "is_override": True, "platform_default": 5}
     assert body["stalled_minutes"] == {"value": 30, "is_override": True, "platform_default": 15}
     assert body["distance_unit"] == {"value": "km", "is_override": True, "platform_default": "mi"}
+    assert body["operations_refresh_seconds"] == {"value": 45, "is_override": True, "platform_default": 30}
 
     # Another org is unaffected (per-org, not global).
     other_org = str(uuid4())
@@ -4431,6 +4439,7 @@ def test_dispatch_settings_override_and_clear():
     other = client.get("/provider/settings/dispatch", headers={"Authorization": f"Bearer {other_access}"}).json()
     assert other["ack_sla_minutes"]["is_override"] is False
     assert other["distance_unit"]["value"] == "mi"
+    assert other["operations_refresh_seconds"]["value"] == 30
 
     # Clearing one field (explicit null) reverts just that field to the platform default.
     r2 = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": None}, headers=H)
@@ -4439,6 +4448,7 @@ def test_dispatch_settings_override_and_clear():
     assert body2["ack_sla_minutes"] == {"value": 5, "is_override": False, "platform_default": 5}
     assert body2["stalled_minutes"]["is_override"] is True  # untouched
     assert body2["distance_unit"]["is_override"] is True
+    assert body2["operations_refresh_seconds"]["is_override"] is True
 
 
 def test_dispatch_settings_rejects_ack_above_stalled_and_out_of_range():
@@ -4464,6 +4474,10 @@ def test_dispatch_settings_rejects_ack_above_stalled_and_out_of_range():
     # Invalid distance unit.
     bad_unit = client.patch("/provider/settings/dispatch", json={"distance_unit": "meters"}, headers=H)
     assert bad_unit.status_code == 422
+
+    # Invalid operations refresh interval.
+    bad_refresh = client.patch("/provider/settings/dispatch", json={"operations_refresh_seconds": 4}, headers=H)
+    assert bad_refresh.status_code == 422
 
     # No fields sent at all.
     r3 = client.patch("/provider/settings/dispatch", json={}, headers=H)

@@ -30,6 +30,7 @@ interface DispatchSettings {
   ack_sla_minutes: DispatchSettingField;
   stalled_minutes: DispatchSettingField;
   distance_unit: DispatchStringSettingField;
+  operations_refresh_seconds: DispatchSettingField;
 }
 
 interface IntakeSettings {
@@ -120,6 +121,7 @@ export default function SettingsPage() {
   const [ackSlaInput, setAckSlaInput] = useState("");
   const [stalledInput, setStalledInput] = useState("");
   const [distanceUnitInput, setDistanceUnitInput] = useState<"mi" | "km">("mi");
+  const [operationsRefreshInput, setOperationsRefreshInput] = useState("");
   const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
   const [dispatchBusy, setDispatchBusy] = useState(false);
   const [intakeSettings, setIntakeSettings] = useState<IntakeSettings | null>(null);
@@ -150,6 +152,7 @@ export default function SettingsPage() {
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
       setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
+      setOperationsRefreshInput(String(settings.operations_refresh_seconds?.value ?? 30));
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to load dispatch settings");
     }
@@ -348,7 +351,8 @@ export default function SettingsPage() {
         body: JSON.stringify({
           ack_sla_minutes: Number(ackSlaInput),
           stalled_minutes: Number(stalledInput),
-          distance_unit: distanceUnitInput
+          distance_unit: distanceUnitInput,
+          operations_refresh_seconds: Number(operationsRefreshInput)
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -358,6 +362,7 @@ export default function SettingsPage() {
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
       setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
+      setOperationsRefreshInput(String(settings.operations_refresh_seconds?.value ?? 30));
       setDispatchMessage("Dispatch settings saved.");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to save dispatch settings");
@@ -381,6 +386,7 @@ export default function SettingsPage() {
       setAckSlaInput(String(settings.ack_sla_minutes.value));
       setStalledInput(String(settings.stalled_minutes.value));
       setDistanceUnitInput(settings.distance_unit.value === "km" ? "km" : "mi");
+      setOperationsRefreshInput(String(settings.operations_refresh_seconds?.value ?? 30));
       setDispatchMessage("Reverted to the platform default.");
     } catch (cause) {
       setDispatchMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
@@ -828,10 +834,35 @@ export default function SettingsPage() {
                   ) : null}
                 </div>
               </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="operations-refresh-seconds">Operations refresh interval (seconds)</label>
+                <Input
+                  id="operations-refresh-seconds"
+                  inputMode="numeric"
+                  min={5}
+                  max={300}
+                  type="number"
+                  value={operationsRefreshInput}
+                  onChange={(event) => setOperationsRefreshInput(event.target.value)}
+                />
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {dispatchSettings?.operations_refresh_seconds?.is_override
+                    ? <>Overridden — platform default is {dispatchSettings.operations_refresh_seconds.platform_default}s.</>
+                    : <>Using the platform default.</>}
+                  {dispatchSettings?.operations_refresh_seconds?.is_override ? (
+                    <Button
+                      variant="ghost" className="h-auto px-1.5 py-0.5 text-xs"
+                      disabled={dispatchBusy} onClick={() => void resetDispatchField("operations_refresh_seconds")}
+                    >
+                      <TimerReset className="size-3" />Reset to default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
             </div>
             {dispatchMessage ? <div className="text-sm" role="status">{dispatchMessage}</div> : null}
             <Button
-              variant="outline" disabled={dispatchBusy || !ackSlaInput.trim() || !stalledInput.trim()}
+              variant="outline" disabled={dispatchBusy || !ackSlaInput.trim() || !stalledInput.trim() || !operationsRefreshInput.trim()}
               onClick={() => void saveDispatchSettings()}
             >
               <Save className="size-4" />{dispatchBusy ? "Saving…" : "Save dispatch settings"}

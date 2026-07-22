@@ -153,6 +153,15 @@ SETTINGS: dict[str, SettingSpec] = {
         validate=_one_of("mi", "km"),
         org_overridable=True,
     ),
+    "dispatch_operations_refresh_seconds": SettingSpec(
+        key="dispatch_operations_refresh_seconds",
+        value_type="integer",
+        description="Seconds between automatic refreshes on the provider Operations workspace.",
+        env="DISPATCH_OPERATIONS_REFRESH_SECONDS",
+        fallback=30,
+        validate=_int_range(5, 300),
+        org_overridable=True,
+    ),
     "intake_show_estimate": SettingSpec(
         key="intake_show_estimate",
         value_type="boolean",
