@@ -376,6 +376,14 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setAssignError(null);
   }, [selectedTechId, selectedWork]);
 
+  const focusJobFromTech = useCallback((jobId: string) => {
+    const nextWork = { kind: "job" as const, id: jobId };
+    setSelectedWork(nextWork);
+    setMapFocus(nextWork);
+    setAssignedMessage(null);
+    setAssignError(null);
+  }, []);
+
   const clearFocus = useCallback(() => {
     setSelectedWork(null);
     setSelectedTechId(null);
@@ -643,6 +651,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
             candidatesError={selectedRow?.isRequest ? candidatesError : null}
             distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
             onSelect={selectTech}
+            onFocusJob={focusJobFromTech}
           />
         </div>
         <FocusedActionBar
@@ -895,7 +904,7 @@ function WorkQueuePanel({
 }
 
 function TechnicianRosterPanel({
-  candidateById, candidatesError, candidatesLoading, distanceUnit, filter, highlightId, now, onClearFilter, onSelect, selectedId, techs, totalCount,
+  candidateById, candidatesError, candidatesLoading, distanceUnit, filter, highlightId, now, onClearFilter, onFocusJob, onSelect, selectedId, techs, totalCount,
 }: {
   candidateById: Map<string, Candidate>;
   candidatesError: string | null;
@@ -905,6 +914,7 @@ function TechnicianRosterPanel({
   highlightId: string | null;
   now: number;
   onClearFilter: () => void;
+  onFocusJob: (jobId: string) => void;
   onSelect: (tech: FleetRow) => void;
   selectedId: string | null;
   techs: FleetRow[];
@@ -953,6 +963,7 @@ function TechnicianRosterPanel({
             const isLinked = !isSelected && tech.id === highlightId;
             const skills = technicianSkillCodes(tech.skills);
             const photoUrl = tech.profile_photo_url ?? tech.photo_url ?? null;
+            const avatarTooltip = `${status} · Location ${fresh.label}`;
             return (
               <div
                 className={cn(
@@ -967,12 +978,11 @@ function TechnicianRosterPanel({
                 tabIndex={0}
               >
                 <div className="flex items-start gap-3">
-                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} status={status} />
+                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} status={status} title={avatarTooltip} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0 break-words font-medium leading-tight" title={tech.display_name ?? tech.id}>{tech.display_name ?? tech.id}</span>
                     </div>
-                    <div className={cn("mt-0.5 truncate text-[11px] text-muted-foreground", fresh.stale && "text-warn")} title={`Location ${fresh.label}`}>Location {fresh.stale ? "stale" : fresh.label}</div>
                     {candidate ? (
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         <span><Route className="mr-1 inline size-3" />{candidateDistance(candidate, distanceUnit)}</span>
@@ -981,16 +991,19 @@ function TechnicianRosterPanel({
                       </div>
                     ) : null}
                     {tech.active_job ? (
-                      <div className="mt-1 truncate text-xs text-muted-foreground" title={tech.active_job.address ?? undefined}>
-                        Current job {jobDisplayId(tech.active_job)} · {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status}
-                      </div>
-                    ) : (
-                      <div className="mt-1 text-xs text-muted-foreground">No active job</div>
-                    )}
+                      <button
+                        className="mt-1 inline-flex max-w-full items-center rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:border-primary/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={(event) => { event.stopPropagation(); onFocusJob(tech.active_job!.id); }}
+                        title={tech.active_job.address ?? `Focus job ${jobDisplayId(tech.active_job)}`}
+                        type="button"
+                      >
+                        <span className="truncate">Job {jobDisplayId(tech.active_job)}</span>
+                      </button>
+                    ) : null}
                     {skills.codes.length > 0 ? (
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        {skills.codes.map((skill) => <Badge className="px-1.5 py-0 text-[10px] leading-4 normal-case" key={skill.code} title={skill.label} variant="outline">{skill.code}</Badge>)}
-                        {skills.overflow > 0 ? <Badge className="px-1.5 py-0 text-[10px] leading-4" variant="outline">+{skills.overflow}</Badge> : null}
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {skills.codes.map((skill) => <Badge className="px-1 py-0 text-[9px] leading-3.5 normal-case" key={skill.code} title={skill.label} variant="outline">{skill.code}</Badge>)}
+                        {skills.overflow > 0 ? <Badge className="px-1 py-0 text-[9px] leading-3.5" variant="outline">+{skills.overflow}</Badge> : null}
                       </div>
                     ) : null}
                   </div>
@@ -1010,15 +1023,15 @@ function initialsFor(name: string) {
 }
 
 function TechAvatar({
-  name, photoUrl, status,
-}: { name: string; photoUrl: string | null; status: TechnicianStatusLabel }) {
+  name, photoUrl, status, title,
+}: { name: string; photoUrl: string | null; status: TechnicianStatusLabel; title: string }) {
   const ringClass = status === "Available"
     ? "ring-success"
     : status === "Busy"
       ? "ring-warn"
       : "ring-muted-foreground/45";
   return (
-    <Avatar className={cn("size-11 border-background ring-2 ring-offset-2 ring-offset-background", ringClass)}>
+    <Avatar className={cn("size-11 border-background ring-2 ring-offset-2 ring-offset-background", ringClass)} title={title}>
       {photoUrl ? <AvatarImage alt={name} className="object-cover" src={photoUrl} /> : null}
       <AvatarFallback>{initialsFor(name).toUpperCase()}</AvatarFallback>
     </Avatar>
