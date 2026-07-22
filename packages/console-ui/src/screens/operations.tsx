@@ -368,6 +368,10 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     () => new Map((candidates?.candidates ?? []).map((candidate) => [candidate.id, candidate])),
     [candidates],
   );
+  const candidateRankById = useMemo(
+    () => new Map((candidates?.candidates ?? []).map((candidate, index) => [candidate.id, index + 1])),
+    [candidates],
+  );
   const selectedCandidate = selectedTechId ? candidateById.get(selectedTechId) ?? null : null;
   const activeOffer = Boolean(selectedRow?.isRequest && selectedRow.offer_active);
   const highlightedTechId = selectedTechId ?? selectedRow?.fulfillment_technician_id ?? null;
@@ -544,14 +548,18 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     });
   const techPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.current_lat != null && t.current_lng != null)
-    .map((t): MapPoint => ({
-      lat: t.current_lat!, lng: t.current_lng!, kind: "tech", id: t.id,
-      label: t.display_name ?? t.id, status: t.marker_status ?? undefined,
-      avatarUrl: t.profile_photo_url ?? t.photo_url ?? null,
-      initials: initialsFor(t.display_name ?? t.id),
-      stale: locationFreshness(t.location_updated_at, now, LOCATION_STALE_MINUTES).stale,
-      selected: t.id === highlightedTechId,
-    }));
+    .map((t): MapPoint => {
+      const rank = selectedRow?.isRequest ? candidateRankById.get(t.id) : undefined;
+      return {
+        lat: t.current_lat!, lng: t.current_lng!, kind: "tech", id: t.id,
+        label: t.display_name ?? t.id, status: t.marker_status ?? undefined,
+        avatarUrl: t.profile_photo_url ?? t.photo_url ?? null,
+        initials: initialsFor(t.display_name ?? t.id),
+        stale: locationFreshness(t.location_updated_at, now, LOCATION_STALE_MINUTES).stale,
+        rankBadge: rank != null && rank <= 3 ? String(rank) : undefined,
+        selected: t.id === highlightedTechId,
+      };
+    });
   const allPoints = [...requestPoints, ...jobPoints, ...techPoints];
   const selectedWorkPoint = selectedRow?.lat != null && selectedRow.lng != null
     ? {
@@ -585,6 +593,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       avatarUrl: selectedTech.profile_photo_url ?? selectedTech.photo_url ?? null,
       initials: initialsFor(selectedTech.display_name ?? selectedTech.id),
       stale: locationFreshness(selectedTech.location_updated_at, now, LOCATION_STALE_MINUTES).stale,
+      rankBadge: selectedRow?.isRequest && candidateRankById.get(selectedTech.id) != null && candidateRankById.get(selectedTech.id)! <= 3 ? String(candidateRankById.get(selectedTech.id)) : undefined,
       selected: true,
     } satisfies MapPoint
     : null;

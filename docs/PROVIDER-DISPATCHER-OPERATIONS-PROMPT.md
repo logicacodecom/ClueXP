@@ -43,6 +43,7 @@ Completed in the current pass:
 - Added map viewport controls for **Fit operations** and **Return to selection**
 - Added selection-aware queue and roster scrolling so selected work/technicians are brought into view without resetting the dispatcher during normal refreshes
 - Added a compact inline assignment confirmation step before sending a normal technician offer
+- Added top-three candidate rank badges on technician map markers when a request is selected
 - Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
 - Preserved existing `/map` and `/queue` pages
 
@@ -57,7 +58,6 @@ Known gaps after the current pass:
 
 - Map clustering by type is not implemented.
 - Active-job exception handling currently shows a generic review signal. Add specific explanations and in-page review or resolution actions.
-- Candidate rank badges on map markers are not implemented.
 - Idle auto-scan remains optional Phase 2 polish.
 
 ## Prompt

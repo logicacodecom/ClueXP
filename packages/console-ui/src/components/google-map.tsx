@@ -23,6 +23,7 @@ export type MapPoint = {
   avatarUrl?: string | null;
   initials?: string;
   stale?: boolean;
+  rankBadge?: string;
   markerLabel?: string;
   chip?: string;
   chipTone?: "info" | "warn" | "critical" | "neutral";
@@ -292,6 +293,25 @@ function createTechOverlay(point: MapPoint, maps: any, map: any, onClick: (point
     warning.style.font = "800 10px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
     warning.style.border = "1px solid #0b0d10";
     shell.appendChild(warning);
+  }
+  if (point.rankBadge) {
+    const rank = document.createElement("span");
+    rank.textContent = point.rankBadge;
+    rank.style.position = "absolute";
+    rank.style.left = point.selected ? "4px" : "3px";
+    rank.style.top = point.selected ? "7px" : "8px";
+    rank.style.minWidth = "15px";
+    rank.style.height = "15px";
+    rank.style.padding = "0 4px";
+    rank.style.borderRadius = "999px";
+    rank.style.display = "grid";
+    rank.style.placeItems = "center";
+    rank.style.background = "#fbbf24";
+    rank.style.color = "#0b0d10";
+    rank.style.font = "900 10px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    rank.style.border = "1px solid #0b0d10";
+    rank.setAttribute("aria-hidden", "true");
+    shell.appendChild(rank);
   }
   shell.addEventListener("click", (event) => {
     event.preventDefault();
