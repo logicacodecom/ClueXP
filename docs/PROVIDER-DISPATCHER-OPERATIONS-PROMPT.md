@@ -46,6 +46,7 @@ Completed in the current pass:
 - Added top-three candidate rank badges on technician map markers when a request is selected
 - Added specific active-job exception explanations and real actions in the focused operation bar
 - Added lightweight type-preserving map clustering for nearby technicians, requests, and active jobs
+- Added restrained idle auto-scan for overflowing work and technician lists when no dispatcher action is active
 - Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
 - Preserved existing `/map` and `/queue` pages
 
@@ -58,7 +59,7 @@ Checks run:
 
 Known gaps after the current pass:
 
-- Idle auto-scan remains optional Phase 2 polish.
+- No known product-spec gaps remain in this prompt. Next improvements should come from dispatcher testing, production telemetry, or a fresh design brief.
 
 ## Prompt
 

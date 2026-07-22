@@ -66,6 +66,8 @@ const ACK_SLA_MINUTES = positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_ACK_SLA
 const STALLED_MINUTES = Math.max(ACK_SLA_MINUTES, positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 15));
 const LOCATION_STALE_MINUTES = positiveMinutes(process.env.NEXT_PUBLIC_LOCATION_STALE_MINUTES, 15);
 const OPERATIONS_REFRESH_SECONDS = positiveMinutes(process.env.NEXT_PUBLIC_OPERATIONS_REFRESH_SECONDS, 30);
+const AUTO_SCAN_IDLE_MS = 25_000;
+const AUTO_SCAN_STEP_MS = 10_000;
 
 const JOB_STATUS_LABEL: Record<string, string> = {
   pending_dispatch: "Unassigned",
@@ -784,30 +786,32 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
             </CardContent>
           </Card>
 
-          <WorkQueuePanel
-            rows={visibleRows}
-            totalCount={rows.length}
-            now={now}
-            ackSlaMinutes={ackSlaMinutes}
-            stalledMinutes={stalledMinutes}
-            selectedId={selectedRow?.id ?? null}
-            highlightJobId={highlightedWorkId}
-            onSelect={selectWork}
-          />
+        <WorkQueuePanel
+          rows={visibleRows}
+          totalCount={rows.length}
+          now={now}
+          ackSlaMinutes={ackSlaMinutes}
+          stalledMinutes={stalledMinutes}
+          selectedId={selectedRow?.id ?? null}
+          highlightJobId={highlightedWorkId}
+          autoScan={!selectedWork && !selectedTechId && !assigning && !confirmingAssignment && !overrideFor}
+          onSelect={selectWork}
+        />
 
-          <TechnicianRosterPanel
-            techs={visibleTechs}
+        <TechnicianRosterPanel
+          techs={visibleTechs}
             totalCount={(fleet ?? []).length}
             now={now}
             selectedId={selectedTech?.id ?? null}
             highlightId={highlightedTechId}
             candidateById={candidateById}
-            candidatesLoading={Boolean(selectedRow?.isRequest && !candidates && !candidatesError)}
-            candidatesError={selectedRow?.isRequest ? candidatesError : null}
-            distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
-            onSelect={selectTech}
-            onFocusJob={focusJobFromTech}
-          />
+          candidatesLoading={Boolean(selectedRow?.isRequest && !candidates && !candidatesError)}
+          candidatesError={selectedRow?.isRequest ? candidatesError : null}
+          distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
+          autoScan={!selectedWork && !selectedTechId && !assigning && !confirmingAssignment && !overrideFor}
+          onSelect={selectTech}
+          onFocusJob={focusJobFromTech}
+        />
         </div>
         <FocusedActionBar
           assignError={assignError}
@@ -878,9 +882,14 @@ function MetricTile({
 
 type ListRange = { start: number; end: number; canUp: boolean; canDown: boolean };
 
-function useControlledListRange(count: number) {
+function useControlledListRange(count: number, autoScan = false) {
   const ref = useRef<HTMLDivElement>(null);
+  const interactionUntilRef = useRef(Date.now() + AUTO_SCAN_IDLE_MS);
   const [range, setRange] = useState<ListRange>({ start: count > 0 ? 1 : 0, end: count, canUp: false, canDown: false });
+
+  const pauseAutoScan = useCallback(() => {
+    interactionUntilRef.current = Date.now() + AUTO_SCAN_IDLE_MS;
+  }, []);
 
   const updateRange = useCallback(() => {
     const el = ref.current;
@@ -907,9 +916,14 @@ function useControlledListRange(count: number) {
     return () => observer.disconnect();
   }, [updateRange]);
 
+  useEffect(() => {
+    if (autoScan) pauseAutoScan();
+  }, [autoScan, pauseAutoScan]);
+
   const scrollBy = useCallback((direction: 1 | -1) => {
+    pauseAutoScan();
     ref.current?.scrollBy({ top: direction * 260, behavior: "smooth" });
-  }, []);
+  }, [pauseAutoScan]);
 
   const scrollToId = useCallback((id: string | null) => {
     if (!id) return;
@@ -919,12 +933,31 @@ function useControlledListRange(count: number) {
       const target = Array.from(el.querySelectorAll<HTMLElement>("[data-scroll-id]"))
         .find((item) => item.dataset.scrollId === id);
       if (!target) return;
+      pauseAutoScan();
       target.scrollIntoView({ block: "nearest", behavior: "smooth" });
       window.setTimeout(updateRange, 180);
     });
-  }, [updateRange]);
+  }, [pauseAutoScan, updateRange]);
 
-  return { ref, range, scrollBy, scrollToId, updateRange };
+  useEffect(() => {
+    if (!autoScan || count < 2) return;
+    const id = window.setInterval(() => {
+      const el = ref.current;
+      if (!el) return;
+      if (Date.now() < interactionUntilRef.current) return;
+      if (el.scrollHeight <= el.clientHeight + 2) return;
+      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+      if (nearBottom) {
+        el.scrollTo({ top: 0, behavior: "smooth" });
+      } else {
+        el.scrollBy({ top: Math.max(180, Math.min(260, el.clientHeight * 0.65)), behavior: "smooth" });
+      }
+      window.setTimeout(updateRange, 180);
+    }, AUTO_SCAN_STEP_MS);
+    return () => window.clearInterval(id);
+  }, [autoScan, count, updateRange]);
+
+  return { ref, range, pauseAutoScan, scrollBy, scrollToId, updateRange };
 }
 
 function ListRangeControls({
@@ -958,19 +991,27 @@ function ControlledListScroller({
   count,
   empty,
   onScroll,
+  onUserActivity,
   scrollRef,
 }: {
   children: ReactNode;
   count: number;
   empty: ReactNode;
   onScroll: () => void;
+  onUserActivity: () => void;
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div
         className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:thin]"
+        onFocus={onUserActivity}
+        onKeyDown={onUserActivity}
+        onMouseEnter={onUserActivity}
+        onPointerDown={onUserActivity}
         onScroll={onScroll}
+        onTouchStart={onUserActivity}
+        onWheel={onUserActivity}
         ref={scrollRef}
       >
         {count === 0 ? empty : children}
@@ -980,9 +1021,10 @@ function ControlledListScroller({
 }
 
 function WorkQueuePanel({
-  ackSlaMinutes, highlightJobId, now, onSelect, rows, selectedId, stalledMinutes, totalCount,
+  ackSlaMinutes, autoScan, highlightJobId, now, onSelect, rows, selectedId, stalledMinutes, totalCount,
 }: {
   ackSlaMinutes: number;
+  autoScan: boolean;
   highlightJobId: string | null;
   now: number;
   onSelect: (row: OperationsRow) => void;
@@ -991,7 +1033,7 @@ function WorkQueuePanel({
   stalledMinutes: number;
   totalCount: number;
 }) {
-  const list = useControlledListRange(rows.length);
+  const list = useControlledListRange(rows.length, autoScan);
   const { scrollToId } = list;
   useEffect(() => {
     scrollToId(selectedId);
@@ -1011,6 +1053,7 @@ function WorkQueuePanel({
         <ControlledListScroller
           count={rows.length}
           onScroll={list.updateRange}
+          onUserActivity={list.pauseAutoScan}
           scrollRef={list.ref}
           empty={
             <EmptyState
@@ -1077,8 +1120,9 @@ function WorkQueuePanel({
 }
 
 function TechnicianRosterPanel({
-  candidateById, candidatesError, candidatesLoading, distanceUnit, highlightId, now, onFocusJob, onSelect, selectedId, techs, totalCount,
+  autoScan, candidateById, candidatesError, candidatesLoading, distanceUnit, highlightId, now, onFocusJob, onSelect, selectedId, techs, totalCount,
 }: {
+  autoScan: boolean;
   candidateById: Map<string, Candidate>;
   candidatesError: string | null;
   candidatesLoading: boolean;
@@ -1091,7 +1135,7 @@ function TechnicianRosterPanel({
   techs: FleetRow[];
   totalCount: number;
 }) {
-  const list = useControlledListRange(techs.length);
+  const list = useControlledListRange(techs.length, autoScan);
   const { scrollToId } = list;
   useEffect(() => {
     scrollToId(selectedId);
@@ -1113,6 +1157,7 @@ function TechnicianRosterPanel({
         <ControlledListScroller
           count={techs.length}
           onScroll={list.updateRange}
+          onUserActivity={list.pauseAutoScan}
           scrollRef={list.ref}
           empty={
             <EmptyState
