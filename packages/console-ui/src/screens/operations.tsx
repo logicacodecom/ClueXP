@@ -99,14 +99,28 @@ const RISK_VARIANT: Record<RequestRisk, BadgeVariant> = {
 
 const TECH_STATUS_VARIANT: Record<TechnicianStatusLabel, BadgeVariant> = {
   Available: "success",
-  Busy: "danger",
-  Offline: "warn",
+  Busy: "warn",
+  Offline: "outline",
 };
 
 function toMapRisk(risk: RequestRisk): "normal" | "watch" | "critical" {
   if (risk === "critical" || risk === "stalled") return "critical";
   if (risk === "ack_breached") return "watch";
   return "normal";
+}
+
+const TECH_SORT_RANK: Record<TechnicianStatusLabel, number> = {
+  Available: 0,
+  Busy: 1,
+  Offline: 2,
+};
+
+function compareTechnicians(a: FleetRow, b: FleetRow) {
+  const aStatus = technicianStatusLabel(a.marker_status);
+  const bStatus = technicianStatusLabel(b.marker_status);
+  const statusDelta = TECH_SORT_RANK[aStatus] - TECH_SORT_RANK[bStatus];
+  if (statusDelta !== 0) return statusDelta;
+  return (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id);
 }
 
 type QueueTab = "all" | "requests" | "active";
@@ -170,6 +184,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
 
   const [selectedWork, setSelectedWork] = useState<{ kind: "job" | "request"; id: string } | null>(null);
   const [selectedTechId, setSelectedTechId] = useState<string | null>(null);
+  const [mapFocus, setMapFocus] = useState<{ kind: "job" | "request" | "tech"; id: string } | null>(null);
   const [tab, setTab] = useState<QueueTab>("all");
   const [riskOnly, setRiskOnly] = useState(false);
   const [techFilter, setTechFilter] = useState<TechFilter>("all");
@@ -299,19 +314,18 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const highlightedWorkId = selectedRow?.id ?? selectedTech?.active_job?.id ?? null;
   const visibleTechs = useMemo(() => {
     const base = techFilter === "all" ? (fleet ?? []) : techGroups[techFilter];
-    if (!selectedRow) return base;
     const candidateRank = new Map((candidates?.candidates ?? []).map((candidate, index) => [candidate.id, index]));
     return [...base].sort((a, b) => {
-      if (selectedRow.isRequest) {
+      if (selectedRow?.isRequest) {
         const aRank = candidateRank.get(a.id);
         const bRank = candidateRank.get(b.id);
         if (aRank != null || bRank != null) return (aRank ?? 9999) - (bRank ?? 9999);
       }
-      if (!selectedRow.isRequest) {
+      if (selectedRow && !selectedRow.isRequest) {
         if (a.id === selectedRow.fulfillment_technician_id) return -1;
         if (b.id === selectedRow.fulfillment_technician_id) return 1;
       }
-      return (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id);
+      return compareTechnicians(a, b);
     });
   }, [candidates, fleet, selectedRow, techFilter, techGroups]);
 
@@ -328,18 +342,29 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   }, [selectedRow?.id, selectedRow?.isRequest, apiPrefix]);
 
   const selectWork = useCallback((row: OperationsRow) => {
+    const nextWork = selectedWork?.id === row.id ? null : { kind: row.isRequest ? "request" as const : "job" as const, id: row.id };
     setAssignError(null);
     setAssignedMessage(null);
     setOverrideFor(null);
     setOverrideReason("");
-    setSelectedWork((current) => current?.id === row.id ? null : { kind: row.isRequest ? "request" : "job", id: row.id });
+    setSelectedWork(nextWork);
+    setMapFocus(nextWork);
     if (!row.isRequest && row.fulfillment_technician_id) setSelectedTechId(row.fulfillment_technician_id);
     if (row.isRequest && row.fulfillment_technician_id) setSelectedTechId(row.fulfillment_technician_id);
-  }, []);
+  }, [selectedWork?.id]);
+
+  const selectTech = useCallback((tech: FleetRow) => {
+    const nextTechId = selectedTechId === tech.id ? null : tech.id;
+    setSelectedTechId(nextTechId);
+    setMapFocus(nextTechId ? { kind: "tech", id: tech.id } : selectedWork);
+    setAssignedMessage(null);
+    setAssignError(null);
+  }, [selectedTechId, selectedWork]);
 
   const clearFocus = useCallback(() => {
     setSelectedWork(null);
     setSelectedTechId(null);
+    setMapFocus(null);
     setAssignError(null);
     setAssignedMessage(null);
     setOverrideFor(null);
@@ -398,23 +423,26 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     .map((r): MapPoint => ({
       lat: r.lat!, lng: r.lng!, kind: "request", id: r.id, label: r.address ?? r.id,
       risk: toMapRisk(requestRisk(r, now, ackSlaMinutes, stalledMinutes)),
+      selected: r.id === highlightedWorkId,
     }));
   const jobPoints: MapPoint[] = sorted
     .filter((r) => !r.isRequest && r.lat != null && r.lng != null)
-    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? r.id }));
+    .map((r): MapPoint => ({ lat: r.lat!, lng: r.lng!, kind: "job", id: r.id, label: r.address ?? r.id, selected: r.id === highlightedWorkId }));
   const techPoints: MapPoint[] = (fleet ?? [])
     .filter((t) => t.current_lat != null && t.current_lng != null)
     .map((t): MapPoint => ({
       lat: t.current_lat!, lng: t.current_lng!, kind: "tech", id: t.id,
       label: t.display_name ?? t.id, status: t.marker_status ?? undefined,
+      selected: t.id === highlightedTechId,
     }));
   const allPoints = [...requestPoints, ...jobPoints, ...techPoints];
   const selectedWorkPoint = selectedRow?.lat != null && selectedRow.lng != null
-    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? selectedRow.id } satisfies MapPoint
+    ? { lat: selectedRow.lat, lng: selectedRow.lng, kind: selectedRow.isRequest ? "request" : "job", id: selectedRow.id, label: selectedRow.address ?? selectedRow.id, selected: true } satisfies MapPoint
     : null;
   const selectedTechPoint = selectedTech?.current_lat != null && selectedTech.current_lng != null
-    ? { lat: selectedTech.current_lat, lng: selectedTech.current_lng, kind: "tech", id: selectedTech.id, label: selectedTech.display_name ?? selectedTech.id, status: selectedTech.marker_status ?? undefined } satisfies MapPoint
+    ? { lat: selectedTech.current_lat, lng: selectedTech.current_lng, kind: "tech", id: selectedTech.id, label: selectedTech.display_name ?? selectedTech.id, status: selectedTech.marker_status ?? undefined, selected: true } satisfies MapPoint
     : null;
+  const mapFocusPoint = mapFocus?.kind === "tech" ? selectedTechPoint : selectedWorkPoint;
   const focusPairs: [MapPoint, MapPoint][] = selectedWorkPoint && selectedTechPoint ? [[selectedTechPoint, selectedWorkPoint]] : [];
 
   const initialLoad = queue === null && activeJobs === null && fleet === null && !queueError && !jobsError && !fleetError;
@@ -472,11 +500,18 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
                   <GoogleMapView
                     points={allPoints}
                     pairs={focusPairs}
+                    focusPoint={mapFocusPoint}
                     richMarkers
                     onMarkerClick={(point) => {
                       if (!point.id) return;
-                      if (point.kind === "tech") setSelectedTechId(point.id);
-                      else setSelectedWork({ kind: point.kind === "request" ? "request" : "job", id: point.id });
+                      if (point.kind === "tech") {
+                        setSelectedTechId(point.id);
+                        setMapFocus({ kind: "tech", id: point.id });
+                      } else {
+                        const nextWork = { kind: point.kind === "request" ? "request" as const : "job" as const, id: point.id };
+                        setSelectedWork(nextWork);
+                        setMapFocus(nextWork);
+                      }
                     }}
                     fallback={
                       <div className="absolute inset-0 grid content-start gap-2 overflow-y-auto p-4 text-xs text-muted-foreground">
@@ -488,8 +523,14 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
                             type="button"
                             onClick={() => {
                               if (!point.id) return;
-                              if (point.kind === "tech") setSelectedTechId(point.id);
-                              else setSelectedWork({ kind: point.kind === "request" ? "request" : "job", id: point.id });
+                              if (point.kind === "tech") {
+                                setSelectedTechId(point.id);
+                                setMapFocus({ kind: "tech", id: point.id });
+                              } else {
+                                const nextWork = { kind: point.kind === "request" ? "request" as const : "job" as const, id: point.id };
+                                setSelectedWork(nextWork);
+                                setMapFocus(nextWork);
+                              }
                             }}
                           >
                             <span className="font-medium text-foreground">{point.label}</span>
@@ -505,7 +546,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
               </div>
               <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-background/90 px-3 py-2 text-xs text-muted-foreground backdrop-blur">
                 <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#22c55e" }} />Available tech</span>
-                <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#ef4444" }} />Busy tech</span>
+                <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "#f59e0b" }} />Busy tech</span>
                 <span className="inline-flex items-center gap-1.5"><span className="size-2.5" style={{ background: "#8b5cf6" }} />Active job</span>
                 <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rotate-45" style={{ background: "#3b82f6" }} />Request</span>
               </div>
@@ -540,7 +581,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
             candidatesLoading={Boolean(selectedRow?.isRequest && !candidates && !candidatesError)}
             candidatesError={selectedRow?.isRequest ? candidatesError : null}
             distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
-            onSelect={(tech) => { setSelectedTechId((current) => current === tech.id ? null : tech.id); setAssignedMessage(null); setAssignError(null); }}
+            onSelect={selectTech}
           />
         </div>
         <FocusedActionBar
@@ -593,6 +634,7 @@ function MetricTile({
 }: { active?: boolean; intent?: "danger" | "success" | "warn"; label: string; onClick?: () => void; value: string }) {
   return (
     <button
+      aria-pressed={Boolean(active)}
       className={cn(
         "rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/35",
@@ -682,7 +724,12 @@ function WorkQueuePanel({
                 tabIndex={0}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <span className="font-medium">{row.address ?? row.id}</span>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {row.isRequest ? "Request" : "Job"} <span className="font-mono normal-case tracking-normal">{row.id}</span>
+                    </div>
+                    <div className="font-medium">{row.address ?? "No address"}</div>
+                  </div>
                   <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

@@ -11,17 +11,19 @@ export type MapPoint = {
   kind: "tech" | "job" | "request";
   label?: string;
   id?: string;
-  // Optional fleet classification for tech markers: free (green), busy (red),
-  // inactive / last-known (yellow). Absent → default amber tech marker.
+  // Optional fleet classification for tech markers: free (green), busy (amber),
+  // inactive / last-known (gray). Absent → default amber tech marker.
   status?: "free" | "busy" | "inactive";
   // Optional dispatch risk for request markers, used only in richMarkers mode.
   risk?: "normal" | "watch" | "critical";
+  // Selected points are rendered with a stronger outline and lifted z-index.
+  selected?: boolean;
 };
 
 const TECH_STATUS_COLOR: Record<NonNullable<MapPoint["status"]>, string> = {
   free: "#22c55e",
-  busy: "#ef4444",
-  inactive: "#eab308",
+  busy: "#f59e0b",
+  inactive: "#64748b",
 };
 
 const REQUEST_RISK_COLOR: Record<NonNullable<MapPoint["risk"]>, string> = {
@@ -39,15 +41,18 @@ const REQUEST_DIAMOND_PATH = "M 0,-9 9,0 0,9 -9,0 Z";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function iconFor(p: MapPoint, maps: any, richMarkers: boolean) {
+  const selected = Boolean(p.selected);
+  const strokeColor = selected ? "#f8fafc" : "#0b0d10";
+  const strokeWeight = selected ? 4 : 2;
   if (p.kind === "tech") {
     const techColor = p.status ? TECH_STATUS_COLOR[p.status] : "#ffbf00";
-    return { path: maps.SymbolPath.CIRCLE, scale: 8, fillColor: techColor, fillOpacity: 1, strokeColor: "#0b0d10", strokeWeight: 3 };
+    return { path: maps.SymbolPath.CIRCLE, scale: selected ? 10 : 8, fillColor: techColor, fillOpacity: 1, strokeColor, strokeWeight: selected ? 4 : 3 };
   }
   if (richMarkers && p.kind === "request") {
-    return { path: REQUEST_DIAMOND_PATH, scale: 1, fillColor: REQUEST_RISK_COLOR[p.risk ?? "normal"], fillOpacity: 1, strokeColor: "#0b0d10", strokeWeight: 2 };
+    return { path: REQUEST_DIAMOND_PATH, scale: selected ? 1.25 : 1, fillColor: REQUEST_RISK_COLOR[p.risk ?? "normal"], fillOpacity: 1, strokeColor, strokeWeight };
   }
   if (richMarkers && p.kind === "job") {
-    return { path: JOB_SQUARE_PATH, scale: 1, fillColor: "#8b5cf6", fillOpacity: 1, strokeColor: "#0b0d10", strokeWeight: 2 };
+    return { path: JOB_SQUARE_PATH, scale: selected ? 1.25 : 1, fillColor: "#8b5cf6", fillOpacity: 1, strokeColor, strokeWeight };
   }
   // Legacy rendering for "job"/"request" outside richMarkers mode — unchanged
   // from the original circle so /map, /queue, and /jobs/assign keep their
@@ -99,6 +104,7 @@ const DARK_STYLE = [
  *   pairs       — draw one dashed polyline per [techPoint, jobPoint] pair (fleet map)
  *   onMarkerClick — called with the MapPoint when a marker is clicked
  *   fallback    — rendered when Maps key is absent or script fails
+ *   focusPoint  — selected point to pan toward without rebuilding the map
  *   richMarkers — opt-in shape differentiation (job = square, request = diamond)
  *                 for consoles that show technicians, jobs, and requests together.
  *                 Defaults off so existing callers render exactly as before.
@@ -106,6 +112,7 @@ const DARK_STYLE = [
 export function GoogleMapView({
   connect = false,
   fallback,
+  focusPoint,
   onMarkerClick,
   pairs,
   points,
@@ -113,6 +120,7 @@ export function GoogleMapView({
 }: {
   connect?: boolean;
   fallback?: ReactNode;
+  focusPoint?: MapPoint | null;
   onMarkerClick?: (point: MapPoint) => void;
   pairs?: [MapPoint, MapPoint][];
   points: MapPoint[];
@@ -179,6 +187,7 @@ export function GoogleMapView({
         // last known location only, not a live position.
         opacity: p.kind === "tech" && p.status === "inactive" ? 0.7 : 1,
         icon: iconFor(p, maps, richMarkers),
+        zIndex: p.selected ? 1000 : undefined,
       });
       marker.addListener("click", () => onMarkerClickRef.current?.(p));
       markersRef.current.push(marker);
@@ -222,6 +231,14 @@ export function GoogleMapView({
       hasFitBoundsRef.current = true;
     }
   }, [status, points, connect, pairs, richMarkers]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (status !== "ready" || !map || !focusPoint) return;
+    map.panTo({ lat: focusPoint.lat, lng: focusPoint.lng });
+    const currentZoom = typeof map.getZoom === "function" ? map.getZoom() : null;
+    if (typeof currentZoom !== "number" || currentZoom < 13) map.setZoom(13);
+  }, [status, focusPoint?.id, focusPoint?.kind, focusPoint?.lat, focusPoint?.lng]);
 
   if (!MAPS_KEY || status === "error") return <>{fallback}</>;
   return (
