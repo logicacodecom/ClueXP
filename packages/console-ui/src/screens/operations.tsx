@@ -13,7 +13,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMapView } from "../components/google-map";
 import type { MapPoint } from "../components/google-map";
@@ -101,11 +101,12 @@ const RISK_VARIANT: Record<RequestRisk, BadgeVariant> = {
   critical: "critical",
 };
 
-const TECH_STATUS_VARIANT: Record<TechnicianStatusLabel, BadgeVariant> = {
-  Available: "success",
-  Busy: "warn",
-  Offline: "outline",
-};
+function normalizedJobType(row: { access_type: string | null; situation: string | null }) {
+  const parts = [row.access_type, row.situation]
+    .filter(Boolean)
+    .map((part) => String(part).replace(/[_-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()));
+  return parts.join(" / ") || "General service";
+}
 
 function toMapRisk(risk: RequestRisk): "normal" | "watch" | "critical" {
   if (risk === "critical" || risk === "stalled") return "critical";
@@ -215,8 +216,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [tab, setTab] = useState<QueueTab>("all");
   const [riskOnly, setRiskOnly] = useState(false);
   const [techFilter, setTechFilter] = useState<TechFilter>("all");
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
   const [assigning, setAssigning] = useState(false);
   const [assignedMessage, setAssignedMessage] = useState<string | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
@@ -299,11 +298,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     return () => window.clearInterval(id);
   }, [operationsRefreshMs]);
 
-  useEffect(() => {
-    const id = window.setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 250);
-    return () => window.clearTimeout(id);
-  }, [searchInput]);
-
   const rows = useMemo(() => mergeOperationsRows(queue ?? [], activeJobs ?? []), [queue, activeJobs]);
   const sorted = useMemo(() => sortOperationsRows(rows, now, ackSlaMinutes, stalledMinutes), [rows, now, ackSlaMinutes, stalledMinutes]);
   const summary = useMemo(
@@ -317,15 +311,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     if (tab === "requests") list = list.filter((r) => r.isRequest);
     if (tab === "active") list = list.filter((r) => !r.isRequest);
     if (riskOnly) list = list.filter((r) => r.isRequest && requestRisk(r, now, ackSlaMinutes, stalledMinutes) !== "normal");
-    if (search) {
-      list = list.filter((r) =>
-        r.id.toLowerCase().includes(search) ||
-        (r.operational_id ?? "").toLowerCase().includes(search) ||
-        (r.address ?? "").toLowerCase().includes(search) ||
-        (r.situation ?? "").toLowerCase().includes(search));
-    }
     return list;
-  }, [sorted, tab, riskOnly, search, now, ackSlaMinutes, stalledMinutes]);
+  }, [sorted, tab, riskOnly, now, ackSlaMinutes, stalledMinutes]);
 
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
@@ -635,8 +622,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
             tab={tab}
             riskOnly={riskOnly}
             onClearFilter={() => { setTab("all"); setRiskOnly(false); }}
-            search={searchInput}
-            onSearchChange={setSearchInput}
             now={now}
             ackSlaMinutes={ackSlaMinutes}
             stalledMinutes={stalledMinutes}
@@ -718,19 +703,11 @@ function MetricTile({
   );
 }
 
-function ControlledListScroller({
-  children,
-  count,
-  empty,
-  label,
-}: {
-  children: ReactNode;
-  count: number;
-  empty: ReactNode;
-  label: string;
-}) {
+type ListRange = { start: number; end: number; canUp: boolean; canDown: boolean };
+
+function useControlledListRange(count: number) {
   const ref = useRef<HTMLDivElement>(null);
-  const [range, setRange] = useState({ start: count > 0 ? 1 : 0, end: count, canUp: false, canDown: false });
+  const [range, setRange] = useState<ListRange>({ start: count > 0 ? 1 : 0, end: count, canUp: false, canDown: false });
 
   const updateRange = useCallback(() => {
     const el = ref.current;
@@ -740,7 +717,7 @@ function ControlledListScroller({
     }
     const canUp = el.scrollTop > 2;
     const canDown = el.scrollTop + el.clientHeight < el.scrollHeight - 2;
-    const estimatedVisible = Math.max(1, Math.min(count, Math.round(el.clientHeight / 116)));
+    const estimatedVisible = Math.max(1, Math.min(count, Math.round(el.clientHeight / 92)));
     const maxStart = Math.max(1, count - estimatedVisible + 1);
     const scrollable = Math.max(1, el.scrollHeight - el.clientHeight);
     const start = Math.min(maxStart, Math.max(1, Math.floor((el.scrollTop / scrollable) * maxStart) + 1));
@@ -761,23 +738,54 @@ function ControlledListScroller({
     ref.current?.scrollBy({ top: direction * 260, behavior: "smooth" });
   }, []);
 
+  return { ref, range, scrollBy, updateRange };
+}
+
+function ListRangeControls({
+  count,
+  label,
+  onScrollBy,
+  range,
+}: {
+  count: number;
+  label: string;
+  onScrollBy: (direction: 1 | -1) => void;
+  range: ListRange;
+}) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-        <span>{count > 0 ? `Showing ${range.start}-${range.end} of ${count}` : `Showing 0 of 0`}</span>
-        <div className="flex items-center gap-1" aria-label={`${label} list controls`}>
-          <Button aria-label={`Scroll ${label} up`} className="h-7 w-7 p-0" disabled={!range.canUp} onClick={() => scrollBy(-1)} size="sm" type="button" variant="outline">
-            <ChevronUp className="size-3.5" />
-          </Button>
-          <Button aria-label={`Scroll ${label} down`} className="h-7 w-7 p-0" disabled={!range.canDown} onClick={() => scrollBy(1)} size="sm" type="button" variant="outline">
-            <ChevronDown className="size-3.5" />
-          </Button>
-        </div>
+    <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+      <span className="whitespace-nowrap">{count > 0 ? `Showing ${range.start}-${range.end} of ${count}` : "Showing 0 of 0"}</span>
+      <div className="flex items-center gap-1" aria-label={`${label} list controls`}>
+        <Button aria-label={`Scroll ${label} up`} className="h-7 w-7 p-0" disabled={!range.canUp} onClick={() => onScrollBy(-1)} size="sm" type="button" variant="outline">
+          <ChevronUp className="size-3.5" />
+        </Button>
+        <Button aria-label={`Scroll ${label} down`} className="h-7 w-7 p-0" disabled={!range.canDown} onClick={() => onScrollBy(1)} size="sm" type="button" variant="outline">
+          <ChevronDown className="size-3.5" />
+        </Button>
       </div>
+    </div>
+  );
+}
+
+function ControlledListScroller({
+  children,
+  count,
+  empty,
+  onScroll,
+  scrollRef,
+}: {
+  children: ReactNode;
+  count: number;
+  empty: ReactNode;
+  onScroll: () => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
       <div
         className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:thin]"
-        onScroll={updateRange}
-        ref={ref}
+        onScroll={onScroll}
+        ref={scrollRef}
       >
         {count === 0 ? empty : children}
       </div>
@@ -786,48 +794,45 @@ function ControlledListScroller({
 }
 
 function WorkQueuePanel({
-  ackSlaMinutes, highlightJobId, now, onClearFilter, onSearchChange, onSelect, riskOnly, rows, search, selectedId, stalledMinutes, tab, totalCount,
+  ackSlaMinutes, highlightJobId, now, onClearFilter, onSelect, riskOnly, rows, selectedId, stalledMinutes, tab, totalCount,
 }: {
   ackSlaMinutes: number;
   highlightJobId: string | null;
   now: number;
   onClearFilter: () => void;
-  onSearchChange: (value: string) => void;
   onSelect: (row: OperationsRow) => void;
   riskOnly: boolean;
   rows: OperationsRow[];
-  search: string;
   selectedId: string | null;
   stalledMinutes: number;
   tab: QueueTab;
   totalCount: number;
 }) {
+  const list = useControlledListRange(rows.length);
   return (
     <Card className="flex flex-col overflow-hidden xl:h-full">
-      <CardHeader className="flex-none">
+      <CardHeader className="flex-none py-3">
         <div className="flex items-center justify-between gap-3">
-          <CardTitle>Work queue · {rows.length}</CardTitle>
-          {tab !== "all" || riskOnly ? (
-            <button
-              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-              onClick={onClearFilter}
-              type="button"
-            >
-              {riskOnly ? "SLA risk" : tab === "requests" ? "Requests" : "Active jobs"} <X className="size-3" />
-            </button>
-          ) : null}
+          <div className="flex min-w-0 items-center gap-2">
+            <CardTitle>Work queue</CardTitle>
+            {tab !== "all" || riskOnly ? (
+              <button
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                onClick={onClearFilter}
+                type="button"
+              >
+                {riskOnly ? "SLA risk" : tab === "requests" ? "Requests" : "Active jobs"} <X className="size-3" />
+              </button>
+            ) : null}
+          </div>
+          <ListRangeControls count={rows.length} label="work queue" onScrollBy={list.scrollBy} range={list.range} />
         </div>
       </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-3 overflow-hidden p-4 pt-0">
-        <Input
-          className="flex-none"
-          onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="Search address, situation, or operation ID"
-          value={search}
-        />
+      <CardContent className="flex flex-1 flex-col overflow-hidden p-4 pt-0">
         <ControlledListScroller
           count={rows.length}
-          label="work queue"
+          onScroll={list.updateRange}
+          scrollRef={list.ref}
           empty={
             <EmptyState
               icon={ClipboardCheck}
@@ -845,7 +850,7 @@ function WorkQueuePanel({
             return (
               <div
                 className={cn(
-                  "cursor-pointer rounded-md border p-3 transition-colors hover:border-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "cursor-pointer rounded-md border p-2.5 transition-colors hover:border-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   isSelected && "border-primary bg-primary/5",
                   !isSelected && isLinked && "border-primary/40",
                   !isSelected && !isLinked && (risk === "critical" || risk === "stalled") && "border-destructive/35 bg-destructive/5",
@@ -856,32 +861,30 @@ function WorkQueuePanel({
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(row); } }}
                 role="button"
                 tabIndex={0}
+                title={row.address ?? "No address"}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       {row.isRequest ? "Request" : "Job"} <span className="font-mono normal-case tracking-normal">{displayId}</span>
                     </div>
-                    <div className="font-medium">{row.address ?? "No address"}</div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
+                      <span>{row.isRequest ? `Waiting ${formatMinutes(waitingMinutes(row, now))}` : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`}</span>
+                      <span>{normalizedJobType(row)}</span>
+                    </div>
                   </div>
-                  <Badge variant={JOB_STATUS_VARIANT[row.status] ?? "neutral"}>{JOB_STATUS_LABEL[row.status] ?? row.status}</Badge>
+                  {riskLabel ? <Badge variant={RISK_VARIANT[risk]}>{riskLabel}</Badge> : null}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>{row.isRequest ? `Waiting ${formatMinutes(waitingMinutes(row, now))}` : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`}</span>
-                  {riskLabel ? <Badge variant={RISK_VARIANT[risk]}>{riskLabel}</Badge> : null}
-                  {row.urgency ? <Badge variant={row.urgency === "critical" ? "critical" : row.urgency === "high" ? "warn" : "outline"}>{row.urgency}</Badge> : null}
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {[row.access_type, row.situation].filter(Boolean).join(" · ") || "—"}
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
                   {row.technician_display_name
-                    ? `Assigned: ${row.technician_display_name}`
+                    ? <span>Assigned: {row.technician_display_name}</span>
                     : row.isRequest
-                      ? (row.offer_active ? "Offer sent" : "Awaiting assignment")
-                      : "No technician on record"}
+                      ? <span>{row.offer_active ? "Offer sent" : "Awaiting assignment"}</span>
+                      : <span>No technician on record</span>}
+                  {row.urgency ? <Badge variant={row.urgency === "critical" ? "critical" : row.urgency === "high" ? "warn" : "outline"}>{row.urgency}</Badge> : null}
+                  {row.lat == null || row.lng == null ? <span>No map point</span> : null}
                 </div>
-                {row.lat == null || row.lng == null ? <div className="mt-1 text-xs text-muted-foreground">No location on file</div> : null}
               </div>
             );
           })}
@@ -907,28 +910,33 @@ function TechnicianRosterPanel({
   techs: FleetRow[];
   totalCount: number;
 }) {
+  const list = useControlledListRange(techs.length);
   return (
     <Card className="flex flex-1 flex-col overflow-hidden xl:min-h-0">
-      <CardHeader className="flex-none">
+      <CardHeader className="flex-none py-3">
         <div className="flex items-center justify-between gap-3">
-          <CardTitle>Technicians · {techs.length}</CardTitle>
-          {filter !== "all" ? (
-            <button
-              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-              onClick={onClearFilter}
-              type="button"
-            >
-              {filter} <X className="size-3" />
-            </button>
-          ) : null}
+          <div className="flex min-w-0 items-center gap-2">
+            <CardTitle>Technicians</CardTitle>
+            {filter !== "all" ? (
+              <button
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                onClick={onClearFilter}
+                type="button"
+              >
+                {filter} <X className="size-3" />
+              </button>
+            ) : null}
+          </div>
+          <ListRangeControls count={techs.length} label="technician roster" onScrollBy={list.scrollBy} range={list.range} />
         </div>
       </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-3 overflow-hidden p-4 pt-0">
+      <CardContent className="flex flex-1 flex-col gap-2 overflow-hidden p-4 pt-0">
         {candidatesLoading ? <div className="text-xs text-muted-foreground">Ranking technicians for selected request…</div> : null}
         {candidatesError ? <div className="text-xs text-destructive">Candidate ranking unavailable: {candidatesError}</div> : null}
         <ControlledListScroller
           count={techs.length}
-          label="technician roster"
+          onScroll={list.updateRange}
+          scrollRef={list.ref}
           empty={
             <EmptyState
               icon={UserRound}
@@ -948,7 +956,7 @@ function TechnicianRosterPanel({
             return (
               <div
                 className={cn(
-                  "cursor-pointer rounded-md border p-3 transition-colors hover:border-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "cursor-pointer rounded-md border p-2.5 transition-colors hover:border-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   isSelected && "border-primary bg-primary/5",
                   !isSelected && isLinked && "border-primary/40",
                 )}
@@ -963,9 +971,8 @@ function TechnicianRosterPanel({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0 break-words font-medium leading-tight" title={tech.display_name ?? tech.id}>{tech.display_name ?? tech.id}</span>
-                      <Badge variant={TECH_STATUS_VARIANT[status]}>{status}</Badge>
                     </div>
-                    <div className={cn("mt-1 text-xs text-muted-foreground", fresh.stale && "text-warn")}>Location {fresh.label}</div>
+                    <div className={cn("mt-0.5 truncate text-[11px] text-muted-foreground", fresh.stale && "text-warn")} title={`Location ${fresh.label}`}>Location {fresh.stale ? "stale" : fresh.label}</div>
                     {candidate ? (
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         <span><Route className="mr-1 inline size-3" />{candidateDistance(candidate, distanceUnit)}</span>
@@ -974,14 +981,16 @@ function TechnicianRosterPanel({
                       </div>
                     ) : null}
                     {tech.active_job ? (
-                      <div className="mt-1 truncate text-xs text-muted-foreground">
-                        {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status} · {tech.active_job.address ?? jobDisplayId(tech.active_job)}
+                      <div className="mt-1 truncate text-xs text-muted-foreground" title={tech.active_job.address ?? undefined}>
+                        Current job {jobDisplayId(tech.active_job)} · {JOB_STATUS_LABEL[tech.active_job.status] ?? tech.active_job.status}
                       </div>
-                    ) : null}
+                    ) : (
+                      <div className="mt-1 text-xs text-muted-foreground">No active job</div>
+                    )}
                     {skills.codes.length > 0 ? (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {skills.codes.map((skill) => <Badge className="normal-case" key={skill.code} title={skill.label} variant="outline">{skill.code}</Badge>)}
-                        {skills.overflow > 0 ? <Badge variant="outline">+{skills.overflow}</Badge> : null}
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {skills.codes.map((skill) => <Badge className="px-1.5 py-0 text-[10px] leading-4 normal-case" key={skill.code} title={skill.label} variant="outline">{skill.code}</Badge>)}
+                        {skills.overflow > 0 ? <Badge className="px-1.5 py-0 text-[10px] leading-4" variant="outline">+{skills.overflow}</Badge> : null}
                       </div>
                     ) : null}
                   </div>

@@ -69,7 +69,7 @@ function EscalationQueue() {
   return (
     <div className="space-y-6">
       <PageHeader
-        kicker="Operations"
+        kicker="CRM"
         title="Escalations"
         description="Jobs that need a dispatcher decision — customer disputes and technician-reported field issues. Resolve them in the recovery workspace. Refreshes every 30s."
         actions={
