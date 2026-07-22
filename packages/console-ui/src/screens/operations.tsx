@@ -265,6 +265,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [assignError, setAssignError] = useState<string | null>(null);
   const [overrideFor, setOverrideFor] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+  const [confirmingAssignment, setConfirmingAssignment] = useState(false);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -406,6 +407,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setAssignedMessage(null);
     setOverrideFor(null);
     setOverrideReason("");
+    setConfirmingAssignment(false);
     setSelectedWork(nextWork);
     setMapFocus(nextWork);
     if (!row.isRequest && row.fulfillment_technician_id) setSelectedTechId(row.fulfillment_technician_id);
@@ -418,6 +420,9 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setMapFocus(nextTechId ? { kind: "tech", id: tech.id } : selectedWork);
     setAssignedMessage(null);
     setAssignError(null);
+    setOverrideFor(null);
+    setOverrideReason("");
+    setConfirmingAssignment(false);
   }, [selectedTechId, selectedWork]);
 
   const focusJobFromTech = useCallback((jobId: string) => {
@@ -426,6 +431,9 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setMapFocus(nextWork);
     setAssignedMessage(null);
     setAssignError(null);
+    setOverrideFor(null);
+    setOverrideReason("");
+    setConfirmingAssignment(false);
   }, []);
 
   const clearFocus = useCallback(() => {
@@ -436,6 +444,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setAssignedMessage(null);
     setOverrideFor(null);
     setOverrideReason("");
+    setConfirmingAssignment(false);
   }, []);
 
   useEffect(() => {
@@ -477,6 +486,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       setAssignedMessage(`Offer sent to ${selectedTech?.display_name ?? selectedCandidate?.display_name ?? selectedTechId}.`);
       setOverrideFor(null);
       setOverrideReason("");
+      setConfirmingAssignment(false);
       await fetchAll();
     } catch (err) {
       setAssignError(err instanceof Error ? err.message : "Assignment failed");
@@ -755,16 +765,20 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           activeOffer={activeOffer}
           candidate={selectedCandidate}
           candidateFlags={candidateFlags(selectedCandidate)}
+          confirmingAssignment={confirmingAssignment}
           onAssign={() => {
             if (selectedCandidate && isCandidateFlagged(selectedCandidate)) {
+              setConfirmingAssignment(false);
               setOverrideFor(selectedCandidate.id);
               setOverrideReason("");
             } else {
-              void assignSelectedTechnician();
+              setConfirmingAssignment(true);
             }
           }}
           onCancel={clearFocus}
+          onConfirmAssign={() => void assignSelectedTechnician()}
           onConfirmOverride={() => void assignSelectedTechnician(overrideReason.trim())}
+          onDismissConfirm={() => setConfirmingAssignment(false)}
           overrideFor={overrideFor}
           overrideReason={overrideReason}
           row={selectedRow}
@@ -1141,10 +1155,13 @@ function FocusedActionBar({
   assigning,
   candidate,
   candidateFlags,
+  confirmingAssignment,
   now,
   onAssign,
   onCancel,
+  onConfirmAssign,
   onConfirmOverride,
+  onDismissConfirm,
   overrideFor,
   overrideReason,
   row,
@@ -1157,10 +1174,13 @@ function FocusedActionBar({
   assigning: boolean;
   candidate: Candidate | null;
   candidateFlags: string[];
+  confirmingAssignment: boolean;
   now: number;
   onAssign: () => void;
   onCancel: () => void;
+  onConfirmAssign: () => void;
   onConfirmOverride: () => void;
+  onDismissConfirm: () => void;
   overrideFor: string | null;
   overrideReason: string;
   row: OperationsRow | null;
@@ -1203,13 +1223,28 @@ function FocusedActionBar({
         {exceptionLabel ? <Button size="sm" variant="outline">Review job</Button> : null}
         <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Close</Button>
         {row?.isRequest ? (
-          <Button disabled={!canAssign || assigning} onClick={onAssign} size="sm">
-            <CheckCircle2 className="size-4" />{assigning ? "Sending…" : activeOffer ? "Offer pending" : "Assign"}
+          <Button disabled={!canAssign || assigning || confirmingAssignment} onClick={onAssign} size="sm">
+            <CheckCircle2 className="size-4" />{assigning ? "Sending…" : activeOffer ? "Offer pending" : confirmingAssignment ? "Ready" : "Assign"}
           </Button>
         ) : null}
       </div>
       {candidateFlags.length > 0 && row?.isRequest && tech ? (
         <div className="mt-2 text-xs text-warn">Flagged assignment: {candidateFlags.join(", ")}.</div>
+      ) : null}
+      {confirmingAssignment && row?.isRequest && tech ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-primary/35 bg-primary/10 p-2 text-xs">
+          <span className="min-w-0 flex-1 text-muted-foreground">
+            Send offer for <span className="font-semibold text-foreground">Request {rowDisplayId}</span> to{" "}
+            <span className="font-semibold text-foreground">{tech.display_name ?? tech.id}</span>
+            {candidate ? <span> · {eta}</span> : null}?
+          </span>
+          <Button disabled={assigning} onClick={onDismissConfirm} size="sm" type="button" variant="outline">
+            Back
+          </Button>
+          <Button disabled={assigning} onClick={onConfirmAssign} size="sm" type="button">
+            <CheckCircle2 className="size-4" />{assigning ? "Sending…" : "Send offer"}
+          </Button>
+        </div>
       ) : null}
       {overrideFor && tech?.id === overrideFor ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-warn/35 bg-warn/10 p-2">

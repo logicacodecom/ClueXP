@@ -42,6 +42,7 @@ Completed in the current pass:
 - Added compact request/job map time chips: risk and exception chips stay visible, normal chips appear on hover/focus/selection
 - Added map viewport controls for **Fit operations** and **Return to selection**
 - Added selection-aware queue and roster scrolling so selected work/technicians are brought into view without resetting the dispatcher during normal refreshes
+- Added a compact inline assignment confirmation step before sending a normal technician offer
 - Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
 - Preserved existing `/map` and `/queue` pages
 
@@ -56,7 +57,6 @@ Known gaps after the current pass:
 
 - Map clustering by type is not implemented.
 - Active-job exception handling currently shows a generic review signal. Add specific explanations and in-page review or resolution actions.
-- Inline assignment has a warning override path, but it still needs the final compact confirmation step before sending an offer.
 - Candidate rank badges on map markers are not implemented.
 - Idle auto-scan remains optional Phase 2 polish.
 
