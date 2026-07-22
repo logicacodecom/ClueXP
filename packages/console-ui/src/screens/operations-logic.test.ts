@@ -6,6 +6,7 @@ import {
   groupTechnicians,
   locationFreshness,
   mergeOperationsRows,
+  missingCoordinateMessage,
   ongoingMinutes,
   requestRisk,
   sortOperationsRows,
@@ -182,6 +183,28 @@ test("locationFreshness flags stale once past the threshold, without pretending 
   assert.deepEqual(locationFreshness(null, NOW, 15), { label: "no location", stale: true });
   assert.equal(locationFreshness(iso(3), NOW, 15).stale, false);
   assert.equal(locationFreshness(iso(20), NOW, 15).stale, true);
+});
+
+test("missingCoordinateMessage distinguishes unresolved address from missing address", () => {
+  const unresolvedAddress = first(mergeOperationsRows([queueRow({ id: "addr", lat: null, lng: null, address: "123 Main St" })], []));
+  const noAddress = first(mergeOperationsRows([queueRow({ id: "none", lat: null, lng: null, address: null })], []));
+
+  assert.equal(
+    missingCoordinateMessage(unresolvedAddress, true),
+    "Address saved, but map coordinates are not resolved yet. Showing the assigned technician's last reported location.",
+  );
+  assert.equal(
+    missingCoordinateMessage(noAddress, true),
+    "Selected job has no address or coordinates. Showing the assigned technician's last reported location.",
+  );
+});
+
+test("missingCoordinateMessage does not imply technician location when none is visible", () => {
+  const unresolvedAddress = first(mergeOperationsRows([queueRow({ id: "addr", lat: null, lng: null, address: "123 Main St" })], []));
+  const noAddress = first(mergeOperationsRows([queueRow({ id: "none", lat: null, lng: null, address: null })], []));
+
+  assert.equal(missingCoordinateMessage(unresolvedAddress, false), "Address saved, but map coordinates are not resolved yet.");
+  assert.equal(missingCoordinateMessage(noAddress, false), "Selected job has no address or coordinates.");
 });
 
 test("skillCodeFor maps backend skill identifiers to dispatcher-facing codes", () => {

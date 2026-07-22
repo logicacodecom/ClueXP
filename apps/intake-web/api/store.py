@@ -1439,6 +1439,24 @@ class InMemoryStore(Store):
         if owner_org:
             self._job_org = getattr(self, "_job_org", {})
             self._job_org[str(ticket.ticket_id)] = str(owner_org)
+        loc = getattr(ticket, "location", None)
+        self._job_address = getattr(self, "_job_address", {})
+        self._job_loc = getattr(self, "_job_loc", {})
+        self._job_access_type = getattr(self, "_job_access_type", {})
+        self._job_situation = getattr(self, "_job_situation", {})
+        self._job_urgency = getattr(self, "_job_urgency", {})
+        self._job_created_at = getattr(self, "_job_created_at", {})
+        self._job_address[jid] = getattr(loc, "raw_text", None)
+        lat = getattr(loc, "lat", None)
+        lng = getattr(loc, "lng", None)
+        if lat is not None and lng is not None:
+            self._job_loc[jid] = (lat, lng)
+        else:
+            self._job_loc.pop(jid, None)
+        self._job_access_type[jid] = ticket.access_type.value if ticket.access_type else None
+        self._job_situation[jid] = ticket.situation.value if ticket.situation else None
+        self._job_urgency[jid] = ticket.urgency.value if ticket.urgency else None
+        self._job_created_at[jid] = ticket.created_at.isoformat() if ticket.created_at else None
 
     async def get_operational_id(self, job_id: UUID) -> str | None:
         return getattr(self, "_job_operational_id", {}).get(str(job_id))
@@ -2112,6 +2130,7 @@ class InMemoryStore(Store):
         statuses = getattr(self, "_job_status", {})
         offers = getattr(self, "_offers", {})
         job_org = getattr(self, "_job_org", {})
+        job_loc = getattr(self, "_job_loc", {})
         result = []
         for jid, status in statuses.items():
             if status != STATUS_PENDING_DISPATCH:
@@ -2128,12 +2147,18 @@ class InMemoryStore(Store):
                 if o.get("job_id") == jid and o.get("status") == "declined"
             ]
             last_decline_reason = declined[-1].get("decline_reason") if declined else None
+            loc = job_loc.get(jid)
             result.append({
                 "id": jid,
                 "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
-                "address": None, "lat": None, "lng": None,
-                "access_type": None, "situation": None, "urgency": None,
-                "created_at": None, "customer_owner_org_id": owner_org,
+                "address": getattr(self, "_job_address", {}).get(jid),
+                "lat": loc[0] if loc else None,
+                "lng": loc[1] if loc else None,
+                "access_type": getattr(self, "_job_access_type", {}).get(jid),
+                "situation": getattr(self, "_job_situation", {}).get(jid),
+                "urgency": getattr(self, "_job_urgency", {}).get(jid),
+                "created_at": getattr(self, "_job_created_at", {}).get(jid),
+                "customer_owner_org_id": owner_org,
                 "fulfillment_policy": None, "dispatch_attempts": 0,
                 "detail": getattr(self, "_job_detail", {}).get(jid, {}),
                 "offer_active": active_offer is not None,

@@ -304,6 +304,18 @@ export function locationFreshness(updatedAt: string | null, now: number, staleMi
   return { label: mins >= staleMinutes ? `stale · ${age}` : age, stale: mins >= staleMinutes };
 }
 
+export function missingCoordinateMessage(row: OperationsRow, showingTechnicianLocation: boolean): string {
+  const hasAddress = Boolean(row.address?.trim());
+  if (hasAddress) {
+    return showingTechnicianLocation
+      ? "Address saved, but map coordinates are not resolved yet. Showing the assigned technician's last reported location."
+      : "Address saved, but map coordinates are not resolved yet.";
+  }
+  return showingTechnicianLocation
+    ? "Selected job has no address or coordinates. Showing the assigned technician's last reported location."
+    : "Selected job has no address or coordinates.";
+}
+
 export type OperationsSummary = {
   unassigned: number;
   atRisk: number;

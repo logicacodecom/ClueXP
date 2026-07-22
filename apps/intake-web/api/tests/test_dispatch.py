@@ -919,11 +919,15 @@ def test_provider_queue_scoped_to_org():
     assert job_a in ids and job_b not in ids, "dispatcher must see only their own org's jobs"
 
 
-def test_provider_manual_request_enters_dispatch_queue():
+def test_provider_manual_request_enters_dispatch_queue(monkeypatch):
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
     from api.auth import create_access_token
 
+    async def unresolved(_address):
+        return None
+
+    monkeypatch.setattr("api.main.geocode", unresolved)
     org = str(uuid4())
     uid = str(uuid4())
     _seed_dispatcher(app_store, uid, org)
@@ -950,6 +954,93 @@ def test_provider_manual_request_enters_dispatch_queue():
     queued = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
     assert queued.status_code == 200, queued.text
     assert ticket_id in [job["id"] for job in queued.json()]
+
+
+def test_provider_manual_request_saves_resolved_geocode_and_queue_coordinates(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    async def resolved(address):
+        assert address == "350 Fifth Ave, New York, NY"
+        return {
+            "formatted_address": "350 5th Ave, New York, NY 10118, USA",
+            "lat": 40.7484405,
+            "lng": -73.9856644,
+            "geocode_confidence": "high",
+        }
+
+    monkeypatch.setattr("api.main.geocode", resolved)
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    created = client.post(
+        "/provider/requests",
+        json={
+            "customer_name": "Jamie Park",
+            "customer_phone": "(555) 014-0222",
+            "address": "350 Fifth Ave, New York, NY",
+            "access_type": "home",
+            "situation": "locked_out",
+            "urgency": "urgent",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert created.status_code == 200, created.text
+    ticket = created.json()["ticket"]
+    ticket_id = ticket["ticket_id"]
+    assert ticket["location"]["raw_text"] == "350 5th Ave, New York, NY 10118, USA"
+    assert ticket["location"]["lat"] == 40.7484405
+    assert ticket["location"]["lng"] == -73.9856644
+    assert ticket["location"]["geocode_confidence"] == "high"
+
+    queued = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+    assert queued.status_code == 200, queued.text
+    row = next(job for job in queued.json() if job["id"] == ticket_id)
+    assert row["address"] == "350 5th Ave, New York, NY 10118, USA"
+    assert row["lat"] == 40.7484405
+    assert row["lng"] == -73.9856644
+
+
+def test_provider_manual_request_succeeds_when_geocode_unresolved(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    async def unresolved(_address):
+        return None
+
+    monkeypatch.setattr("api.main.geocode", unresolved)
+    org = str(uuid4())
+    uid = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+
+    created = client.post(
+        "/provider/requests",
+        json={
+            "customer_name": "Riley Chen",
+            "customer_phone": "(555) 014-0333",
+            "address": "Unresolved service address",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert created.status_code == 200, created.text
+    ticket = created.json()["ticket"]
+    assert ticket["location"]["raw_text"] == "Unresolved service address"
+    assert ticket["location"]["lat"] is None
+    assert ticket["location"]["lng"] is None
+    assert ticket["location"]["geocode_confidence"] == "none"
+
+    queued = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+    row = next(job for job in queued.json() if job["id"] == ticket["ticket_id"])
+    assert row["address"] == "Unresolved service address"
+    assert row["lat"] is None
+    assert row["lng"] is None
 
 
 def test_provider_assign_happy_path_own_tech():

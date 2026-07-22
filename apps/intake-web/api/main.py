@@ -2557,13 +2557,28 @@ async def create_provider_request(
 ) -> TicketEnvelope:
     await latency()
     require_any_role(session, {"provider_admin", "dispatcher"})
+    try:
+        geocoded = await geocode(payload.address)
+    except Exception:
+        logger.exception("Provider manual request geocoding failed")
+        geocoded = None
+    location = (
+        {
+            "raw_text": geocoded.get("formatted_address") or payload.address,
+            "lat": geocoded.get("lat"),
+            "lng": geocoded.get("lng"),
+            "geocode_confidence": geocoded.get("geocode_confidence") or "low",
+        }
+        if geocoded and geocoded.get("lat") is not None and geocoded.get("lng") is not None
+        else {"raw_text": payload.address, "geocode_confidence": "none"}
+    )
     ticket = Ticket(
         channel="voice",
         status=TicketStatus.PARTIAL,
         access_type=_enum_or_default(AccessType, payload.access_type, AccessType.HOME),
         situation=_enum_or_default(Situation, payload.situation, Situation.LOCKED_OUT),
         urgency=_enum_or_default(Urgency, payload.urgency, Urgency.URGENT),
-        location={"raw_text": payload.address, "geocode_confidence": "none"},
+        location=location,
         additional_details=payload.notes,
     )
     origin = _manual_origin(session, payload)

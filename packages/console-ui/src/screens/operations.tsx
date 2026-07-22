@@ -36,6 +36,7 @@ import {
   formatMinutes,
   groupTechnicians,
   locationFreshness,
+  missingCoordinateMessage,
   mergeOperationsRows,
   ongoingMinutes,
   requestRisk,
@@ -600,9 +601,9 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
                 Tech coverage · {mappedTechCount} of {(fleet ?? []).length} mapped · {availableMappedCount} available
                 {locationIssueCount > 0 ? <span className="text-warn"> · {locationIssueCount} location issues</span> : null}
               </div>
-              {selectedWorkMissingLocation && selectedTechPoint ? (
+              {selectedWorkMissingLocation && selectedRow ? (
                 <div className="absolute left-3 right-3 top-14 rounded-md border border-warn/35 bg-background/95 px-3 py-2 text-xs text-warn shadow-sm backdrop-blur">
-                  Selected {selectedRow?.isRequest ? "request" : "job"} has no coordinates. Showing the assigned technician's last reported location.
+                  {missingCoordinateMessage(selectedRow, Boolean(selectedTechPoint))}
                 </div>
               ) : null}
               <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-background/90 px-3 py-2 text-xs text-muted-foreground backdrop-blur">
