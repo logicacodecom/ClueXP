@@ -10,6 +10,7 @@ import {
   MapPin,
   RefreshCw,
   Route,
+  Send,
   UserRound,
   X,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import {
   mergeOperationsRows,
   ongoingMinutes,
   requestRisk,
+  skillCodeFor,
   sortOperationsRows,
   summarizeOperations,
   technicianStatusLabel,
@@ -108,6 +110,11 @@ function normalizedJobType(row: { access_type: string | null; situation: string 
     .filter(Boolean)
     .map((part) => String(part).replace(/[_-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()));
   return parts.join(" / ") || "General service";
+}
+
+function requiredSkillCodesForRow(row: OperationsRow | null): Set<string> {
+  const values = [row?.access_type, row?.situation].filter(Boolean) as string[];
+  return new Set(values.map((value) => skillCodeFor(value).code));
 }
 
 function toMapRisk(risk: RequestRisk): "normal" | "watch" | "critical" {
@@ -306,9 +313,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [assigning, setAssigning] = useState(false);
   const [assignedMessage, setAssignedMessage] = useState<string | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
-  const [overrideFor, setOverrideFor] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
-  const [confirmingAssignment, setConfirmingAssignment] = useState(false);
+  const [assignmentModalTechId, setAssignmentModalTechId] = useState<string | null>(null);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -415,7 +421,9 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     () => new Map((candidates?.candidates ?? []).map((candidate, index) => [candidate.id, index + 1])),
     [candidates],
   );
-  const selectedCandidate = selectedTechId ? candidateById.get(selectedTechId) ?? null : null;
+  const assignmentModalTech = assignmentModalTechId ? (fleet ?? []).find((tech) => tech.id === assignmentModalTechId) ?? null : null;
+  const assignmentModalCandidate = assignmentModalTechId ? candidateById.get(assignmentModalTechId) ?? null : null;
+  const requiredSkillCodes = useMemo(() => requiredSkillCodesForRow(selectedRow), [selectedRow]);
   const activeOffer = Boolean(selectedRow?.isRequest && selectedRow.offer_active);
   const highlightedTechId = selectedTechId ?? selectedRow?.fulfillment_technician_id ?? null;
   const highlightedWorkId = selectedRow?.id ?? selectedTech?.active_job?.id ?? null;
@@ -452,9 +460,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     const nextWork = selectedWork?.id === row.id ? null : { kind: row.isRequest ? "request" as const : "job" as const, id: row.id };
     setAssignError(null);
     setAssignedMessage(null);
-    setOverrideFor(null);
     setOverrideReason("");
-    setConfirmingAssignment(false);
+    setAssignmentModalTechId(null);
     setSelectedWork(nextWork);
     setMapFocus(nextWork);
     if (!row.isRequest && row.fulfillment_technician_id) setSelectedTechId(row.fulfillment_technician_id);
@@ -467,9 +474,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setMapFocus(nextTechId ? { kind: "tech", id: tech.id } : selectedWork);
     setAssignedMessage(null);
     setAssignError(null);
-    setOverrideFor(null);
     setOverrideReason("");
-    setConfirmingAssignment(false);
+    setAssignmentModalTechId(null);
   }, [selectedTechId, selectedWork]);
 
   const focusJobFromTech = useCallback((jobId: string) => {
@@ -478,9 +484,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setMapFocus(nextWork);
     setAssignedMessage(null);
     setAssignError(null);
-    setOverrideFor(null);
     setOverrideReason("");
-    setConfirmingAssignment(false);
+    setAssignmentModalTechId(null);
   }, []);
 
   const clearFocus = useCallback(() => {
@@ -489,9 +494,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     setMapFocus(null);
     setAssignError(null);
     setAssignedMessage(null);
-    setOverrideFor(null);
     setOverrideReason("");
-    setConfirmingAssignment(false);
+    setAssignmentModalTechId(null);
   }, []);
 
   useEffect(() => {
@@ -513,12 +517,8 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
     ].filter(Boolean) as string[];
   }
 
-  function isCandidateFlagged(candidate: Candidate | null) {
-    return candidateFlags(candidate).length > 0;
-  }
-
-  async function assignSelectedTechnician(reason?: string) {
-    if (!selectedRow?.isRequest || !selectedTechId) return;
+  async function assignTechnician(technicianId: string, reason?: string) {
+    if (!selectedRow?.isRequest) return;
     setAssigning(true);
     setAssignError(null);
     setAssignedMessage(null);
@@ -526,14 +526,16 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
       const res = await fetch(`${apiPrefix}/queue/${selectedRow.id}/assign`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(reason ? { technician_id: selectedTechId, override_reason: reason } : { technician_id: selectedTechId }),
+        body: JSON.stringify(reason ? { technician_id: technicianId, override_reason: reason } : { technician_id: technicianId }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.detail || `${res.status}`);
-      setAssignedMessage(`Offer sent to ${selectedTech?.display_name ?? selectedCandidate?.display_name ?? selectedTechId}.`);
-      setOverrideFor(null);
+      const techName = (fleet ?? []).find((tech) => tech.id === technicianId)?.display_name
+        ?? candidateById.get(technicianId)?.display_name
+        ?? technicianId;
+      setAssignedMessage(`Offer sent to ${techName}.`);
       setOverrideReason("");
-      setConfirmingAssignment(false);
+      setAssignmentModalTechId(null);
       await fetchAll();
     } catch (err) {
       setAssignError(err instanceof Error ? err.message : "Assignment failed");
@@ -794,57 +796,65 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           stalledMinutes={stalledMinutes}
           selectedId={selectedRow?.id ?? null}
           highlightJobId={highlightedWorkId}
-          autoScan={!selectedWork && !selectedTechId && !assigning && !confirmingAssignment && !overrideFor}
+          autoScan={!selectedWork && !selectedTechId && !assigning && !assignmentModalTechId}
           onSelect={selectWork}
         />
 
         <TechnicianRosterPanel
           techs={visibleTechs}
-            totalCount={(fleet ?? []).length}
-            now={now}
-            selectedId={selectedTech?.id ?? null}
-            highlightId={highlightedTechId}
-            candidateById={candidateById}
+          totalCount={(fleet ?? []).length}
+          now={now}
+          selectedId={selectedTech?.id ?? null}
+          highlightId={highlightedTechId}
+          candidateById={candidateById}
           candidatesLoading={Boolean(selectedRow?.isRequest && !candidates && !candidatesError)}
           candidatesError={selectedRow?.isRequest ? candidatesError : null}
           distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
-          autoScan={!selectedWork && !selectedTechId && !assigning && !confirmingAssignment && !overrideFor}
+          autoScan={!selectedWork && !selectedTechId && !assigning && !assignmentModalTechId}
+          activeOffer={activeOffer}
+          canAssign={Boolean(selectedRow?.isRequest && !activeOffer)}
+          requiredSkillCodes={requiredSkillCodes}
           onSelect={selectTech}
           onFocusJob={focusJobFromTech}
+          onOpenAssign={(tech) => {
+            setSelectedTechId(tech.id);
+            setMapFocus({ kind: "tech", id: tech.id });
+            setOverrideReason("");
+            setAssignError(null);
+            setAssignmentModalTechId(tech.id);
+          }}
         />
         </div>
         <FocusedActionBar
           assignError={assignError}
           assignedMessage={assignedMessage}
-          assigning={assigning}
           activeOffer={activeOffer}
-          candidate={selectedCandidate}
-          candidateFlags={candidateFlags(selectedCandidate)}
-          confirmingAssignment={confirmingAssignment}
-          onAssign={() => {
-            if (selectedCandidate && isCandidateFlagged(selectedCandidate)) {
-              setConfirmingAssignment(false);
-              setOverrideFor(selectedCandidate.id);
-              setOverrideReason("");
-            } else {
-              setConfirmingAssignment(true);
-            }
-          }}
           onCancel={clearFocus}
-          onConfirmAssign={() => void assignSelectedTechnician()}
-          onConfirmOverride={() => void assignSelectedTechnician(overrideReason.trim())}
-          onDismissConfirm={() => setConfirmingAssignment(false)}
           onFocusAssignedTech={() => {
             if (!selectedRow?.fulfillment_technician_id) return;
             setSelectedTechId(selectedRow.fulfillment_technician_id);
             setMapFocus({ kind: "tech", id: selectedRow.fulfillment_technician_id });
           }}
-          overrideFor={overrideFor}
-          overrideReason={overrideReason}
           row={selectedRow}
-          setOverrideReason={setOverrideReason}
           tech={selectedTech}
           now={now}
+        />
+        <AssignmentConfirmModal
+          assigning={assigning}
+          candidate={assignmentModalCandidate}
+          candidateFlags={candidateFlags(assignmentModalCandidate)}
+          distanceUnit={candidates?.distance_unit === "km" ? "km" : "mi"}
+          error={assignError}
+          now={now}
+          onClose={() => {
+            setAssignmentModalTechId(null);
+            setOverrideReason("");
+          }}
+          onConfirm={(reason) => void assignTechnician(assignmentModalTech!.id, reason)}
+          overrideReason={overrideReason}
+          request={selectedRow?.isRequest ? selectedRow : null}
+          setOverrideReason={setOverrideReason}
+          tech={assignmentModalTech}
         />
         <SkillLegend />
         </>
@@ -1120,9 +1130,11 @@ function WorkQueuePanel({
 }
 
 function TechnicianRosterPanel({
-  autoScan, candidateById, candidatesError, candidatesLoading, distanceUnit, highlightId, now, onFocusJob, onSelect, selectedId, techs, totalCount,
+  activeOffer, autoScan, canAssign, candidateById, candidatesError, candidatesLoading, distanceUnit, highlightId, now, onFocusJob, onOpenAssign, onSelect, requiredSkillCodes, selectedId, techs, totalCount,
 }: {
+  activeOffer: boolean;
   autoScan: boolean;
+  canAssign: boolean;
   candidateById: Map<string, Candidate>;
   candidatesError: string | null;
   candidatesLoading: boolean;
@@ -1130,7 +1142,9 @@ function TechnicianRosterPanel({
   highlightId: string | null;
   now: number;
   onFocusJob: (jobId: string) => void;
+  onOpenAssign: (tech: FleetRow) => void;
   onSelect: (tech: FleetRow) => void;
+  requiredSkillCodes: Set<string>;
   selectedId: string | null;
   techs: FleetRow[];
   totalCount: number;
@@ -1195,12 +1209,29 @@ function TechnicianRosterPanel({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0 break-words font-medium leading-tight" title={tech.display_name ?? tech.id}>{tech.display_name ?? tech.id}</span>
+                      {canAssign ? (
+                        <button
+                          aria-label={`Assign ${tech.display_name ?? tech.id}`}
+                          className={cn(
+                            "inline-flex size-7 shrink-0 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:border-primary/45 hover:bg-primary/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            activeOffer ? "cursor-not-allowed opacity-45" : "border-border bg-background/70",
+                          )}
+                          disabled={activeOffer}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenAssign(tech);
+                          }}
+                          title={activeOffer ? "Offer already pending" : `Assign ${tech.display_name ?? tech.id}`}
+                          type="button"
+                        >
+                          <Send className="size-3.5" />
+                        </button>
+                      ) : null}
                     </div>
                     {candidate ? (
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         <span><Route className="mr-1 inline size-3" />{candidateDistance(candidate, distanceUnit)}</span>
                         <span>ETA {candidate.eta_min != null ? `${candidate.eta_min}-${candidate.eta_max}m` : "unknown"}</span>
-                        <Badge variant={candidate.skills_match ? "success" : "outline"}>{candidate.skills_match ? "Skill match" : "Check skill"}</Badge>
                       </div>
                     ) : null}
                     {tech.active_job ? (
@@ -1215,7 +1246,22 @@ function TechnicianRosterPanel({
                     ) : null}
                     {skills.codes.length > 0 ? (
                       <div className="mt-1 flex flex-wrap gap-1">
-                        {skills.codes.map((skill) => <Badge className="px-1 py-0 text-[9px] leading-3.5 normal-case" key={skill.code} title={skill.label} variant="outline">{skill.code}</Badge>)}
+                        {skills.codes.map((skill) => {
+                          const matched = requiredSkillCodes.has(skill.code);
+                          return (
+                            <Badge
+                              className={cn(
+                                "px-1 py-0 text-[9px] leading-3.5 normal-case",
+                                matched && "border-success/45 bg-success/10 text-success",
+                              )}
+                              key={skill.code}
+                              title={matched ? `${skill.label} matches selected request` : skill.label}
+                              variant={matched ? "success" : "outline"}
+                            >
+                              {skill.code}
+                            </Badge>
+                          );
+                        })}
                         {skills.overflow > 0 ? <Badge className="px-1 py-0 text-[9px] leading-3.5" variant="outline">+{skills.overflow}</Badge> : null}
                       </div>
                     ) : null}
@@ -1257,52 +1303,28 @@ function FocusedActionBar({
   activeOffer,
   assignError,
   assignedMessage,
-  assigning,
-  candidate,
-  candidateFlags,
-  confirmingAssignment,
   now,
-  onAssign,
   onCancel,
-  onConfirmAssign,
-  onConfirmOverride,
-  onDismissConfirm,
   onFocusAssignedTech,
-  overrideFor,
-  overrideReason,
   row,
-  setOverrideReason,
   tech,
 }: {
   activeOffer: boolean;
   assignError: string | null;
   assignedMessage: string | null;
-  assigning: boolean;
-  candidate: Candidate | null;
-  candidateFlags: string[];
-  confirmingAssignment: boolean;
   now: number;
-  onAssign: () => void;
   onCancel: () => void;
-  onConfirmAssign: () => void;
-  onConfirmOverride: () => void;
-  onDismissConfirm: () => void;
   onFocusAssignedTech: () => void;
-  overrideFor: string | null;
-  overrideReason: string;
   row: OperationsRow | null;
-  setOverrideReason: (value: string) => void;
   tech: FleetRow | null;
 }) {
   if (!row && !tech) return null;
-  const canAssign = Boolean(row?.isRequest && tech && !activeOffer);
   const rowDisplayId = row ? jobDisplayId(row) : null;
   const timeLabel = row
     ? row.isRequest
       ? `Waiting ${formatMinutes(waitingMinutes(row, now))}`
       : `Ongoing ${formatMinutes(ongoingMinutes(row, now))}`
     : null;
-  const eta = candidate?.eta_min != null ? `ETA ${candidate.eta_min}-${candidate.eta_max}m` : "ETA unknown";
   const exception = row ? activeJobException(row, now) : null;
 
   return (
@@ -1318,7 +1340,7 @@ function FocusedActionBar({
               {activeOffer ? <Badge variant="warn">Offer active</Badge> : null}
             </div>
             <div className="mt-1 truncate text-xs text-muted-foreground">
-              <MapPin className="mr-1 inline size-3" />{row.address ?? "No address"}{tech ? ` · ${tech.display_name ?? tech.id} · ${eta}` : ""}
+              <MapPin className="mr-1 inline size-3" />{row.address ?? "No address"}{tech ? ` · ${tech.display_name ?? tech.id}` : ""}
             </div>
           </div>
         ) : tech ? (
@@ -1344,15 +1366,7 @@ function FocusedActionBar({
           </Button>
         ) : null}
         <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Close</Button>
-        {row?.isRequest ? (
-          <Button disabled={!canAssign || assigning || confirmingAssignment} onClick={onAssign} size="sm">
-            <CheckCircle2 className="size-4" />{assigning ? "Sending…" : activeOffer ? "Offer pending" : confirmingAssignment ? "Ready" : "Assign"}
-          </Button>
-        ) : null}
       </div>
-      {candidateFlags.length > 0 && row?.isRequest && tech ? (
-        <div className="mt-2 text-xs text-warn">Flagged assignment: {candidateFlags.join(", ")}.</div>
-      ) : null}
       {exception && row && !row.isRequest ? (
         <div className={cn(
           "mt-3 rounded-md border p-2 text-xs",
@@ -1363,36 +1377,91 @@ function FocusedActionBar({
           <div className="mt-0.5 text-muted-foreground">{exception.detail}</div>
         </div>
       ) : null}
-      {confirmingAssignment && row?.isRequest && tech ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-primary/35 bg-primary/10 p-2 text-xs">
-          <span className="min-w-0 flex-1 text-muted-foreground">
-            Send offer for <span className="font-semibold text-foreground">Request {rowDisplayId}</span> to{" "}
-            <span className="font-semibold text-foreground">{tech.display_name ?? tech.id}</span>
-            {candidate ? <span> · {eta}</span> : null}?
-          </span>
-          <Button disabled={assigning} onClick={onDismissConfirm} size="sm" type="button" variant="outline">
-            Back
+      {assignError ? <div className="mt-2 text-xs text-destructive">{assignError}</div> : null}
+      {assignedMessage ? <div className="mt-2 text-xs text-success">{assignedMessage}</div> : null}
+    </div>
+  );
+}
+
+function AssignmentConfirmModal({
+  assigning,
+  candidate,
+  candidateFlags,
+  distanceUnit,
+  error,
+  now,
+  onClose,
+  onConfirm,
+  overrideReason,
+  request,
+  setOverrideReason,
+  tech,
+}: {
+  assigning: boolean;
+  candidate: Candidate | null;
+  candidateFlags: string[];
+  distanceUnit: "mi" | "km";
+  error: string | null;
+  now: number;
+  onClose: () => void;
+  onConfirm: (reason?: string) => void;
+  overrideReason: string;
+  request: OperationsRow | null;
+  setOverrideReason: (value: string) => void;
+  tech: FleetRow | null;
+}) {
+  if (!request || !tech) return null;
+  const eta = candidate?.eta_min != null ? `ETA ${candidate.eta_min}-${candidate.eta_max}m` : "ETA unknown";
+  const needsOverride = candidateFlags.length > 0;
+  const canConfirm = !assigning && (!needsOverride || overrideReason.trim().length >= 3);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="assign-modal-title">
+      <div className="w-full max-w-lg rounded-lg border border-primary/35 bg-card p-4 text-card-foreground shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-primary">Confirm assignment</div>
+            <h2 className="mt-1 text-lg font-semibold leading-tight" id="assign-modal-title">
+              Send offer to {tech.display_name ?? tech.id}?
+            </h2>
+          </div>
+          <Button aria-label="Close assignment confirmation" className="h-8 w-8 p-0" onClick={onClose} type="button" variant="outline">
+            <X className="size-4" />
           </Button>
-          <Button disabled={assigning} onClick={onConfirmAssign} size="sm" type="button">
+        </div>
+        <div className="mt-4 rounded-md border border-border bg-background/55 p-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">Request {jobDisplayId(request)}</span>
+            <Badge variant={JOB_STATUS_VARIANT[request.status] ?? "neutral"}>{JOB_STATUS_LABEL[request.status] ?? request.status}</Badge>
+            <span className="text-muted-foreground">Waiting {formatMinutes(waitingMinutes(request, now))}</span>
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            <MapPin className="mr-1 inline size-3" />{request.address ?? "No address"} · {normalizedJobType(request)}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span><Route className="mr-1 inline size-3" />{candidate ? candidateDistance(candidate, distanceUnit) : "distance unknown"}</span>
+            <span>{eta}</span>
+          </div>
+        </div>
+        {needsOverride ? (
+          <div className="mt-3 rounded-md border border-warn/35 bg-warn/10 p-3">
+            <div className="text-xs font-semibold text-warn">Warning: {candidateFlags.join(", ")}</div>
+            <Input
+              className="mt-2"
+              onChange={(event) => setOverrideReason(event.target.value)}
+              placeholder="Reason for overriding dispatch warnings"
+              value={overrideReason}
+            />
+          </div>
+        ) : null}
+        {error ? <div className="mt-3 text-xs text-destructive">{error}</div> : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button disabled={assigning} onClick={onClose} type="button" variant="outline">Back</Button>
+          <Button disabled={!canConfirm} onClick={() => onConfirm(needsOverride ? overrideReason.trim() : undefined)} type="button">
             <CheckCircle2 className="size-4" />{assigning ? "Sending…" : "Send offer"}
           </Button>
         </div>
-      ) : null}
-      {overrideFor && tech?.id === overrideFor ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-warn/35 bg-warn/10 p-2">
-          <Input
-            className="min-w-[260px] flex-1"
-            onChange={(event) => setOverrideReason(event.target.value)}
-            placeholder="Reason for overriding dispatch warnings"
-            value={overrideReason}
-          />
-          <Button disabled={assigning || overrideReason.trim().length < 3} onClick={onConfirmOverride} size="sm">
-            Confirm override
-          </Button>
-        </div>
-      ) : null}
-      {assignError ? <div className="mt-2 text-xs text-destructive">{assignError}</div> : null}
-      {assignedMessage ? <div className="mt-2 text-xs text-success">{assignedMessage}</div> : null}
+      </div>
     </div>
   );
 }

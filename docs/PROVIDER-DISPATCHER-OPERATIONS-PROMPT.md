@@ -42,8 +42,10 @@ Completed in the current pass:
 - Added compact request/job map time chips: risk and exception chips stay visible, normal chips appear on hover/focus/selection
 - Added map viewport controls for **Fit operations** and **Return to selection**
 - Added selection-aware queue and roster scrolling so selected work/technicians are brought into view without resetting the dispatcher during normal refreshes
-- Added a compact inline assignment confirmation step before sending a normal technician offer
+- Added a compact assignment confirmation modal before sending a normal technician offer
 - Added top-three candidate rank badges on technician map markers when a request is selected
+- Moved assignment initiation into the technician roster with a compact assign icon and confirmation modal
+- Replaced the large `Skill match` roster badge with direct green highlighting on the matching skill-code chip
 - Added specific active-job exception explanations and real actions in the focused operation bar
 - Added lightweight type-preserving map clustering for nearby requests and active jobs while keeping individual technician pins visible
 - Added display-only spreading for overlapping technician pins and amber stale-location treatment so stale techs do not read as reliable green coverage
@@ -418,7 +420,7 @@ Do not display internal skill identifiers such as `LOCKSMITH.RESIDENTIAL_LOCKOUT
 - `REKEY`: Rekeying.
 - `ACCESS`: Access control.
 
-Use one neutral visual style for all skill codes. Do not assign colors to skills because colors are reserved for operational status and risk.
+Use one neutral visual style for all skill codes by default. When work is selected and a technician skill code directly matches the selected work's required skill, highlight only that matching chip with a subtle green treatment. Do not use broad colored skill families because colors are reserved for operational status and risk.
 
 Show a one-line skill legend across the full workspace width below the map, queue, and roster:
 
@@ -686,14 +688,14 @@ Run the existing relevant checks for the provider app and shared UI package.
 - Technician cards expose status and location freshness through the avatar/initial tooltip or focus disclosure, while preserving a compact visible card body.
 - Technician cards show an authorized profile image or initials fallback.
 - Technician cards preserve the complete display name at normal dispatcher widths.
-- Technician cards show no more than three neutral skill codes plus `+N`.
+- Technician cards show no more than three skill codes plus `+N`; non-matching skills stay neutral, while selected-work matching skills receive subtle green treatment.
 - A neutral, full-width, one-line skill-code legend appears below the workspace.
 - Availability and location trust remain separate in text, but stale GPS changes an Available technician's visual coverage ring/pin to amber so the map does not overstate reliable coverage.
 - Status/risk colors are clear but not visually overwhelming.
 - Selecting items synchronizes map, queue, and technician context.
 - Selecting any queue or roster item applies a visible selected-marker state and centers intelligently without destroying manual zoom.
 - Selected request/technician and active-job/assigned-technician relationships are shown with truthful connectors when both locations exist.
-- Selecting a request ranks candidates and enables assignment without leaving `/operations`.
+- Selecting a request ranks candidates and enables assignment from the technician card without leaving `/operations`.
 - Selecting an active job highlights its assigned technician, explains operational exceptions, and provides an in-page review or resolution action when required.
 - The technician roster remains visible during request and job actions.
 - Focused-operation exit controls say **Close** or **Clear selection**, not the ambiguous **Cancel**.
