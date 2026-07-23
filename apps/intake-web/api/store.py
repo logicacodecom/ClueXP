@@ -1072,6 +1072,12 @@ class Store:
     async def get_dispatch_job(self, job_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def reap_stale_technicians(self, *, stale_hours: int) -> list[dict]:  # pragma: no cover
+        """Sign off duty every technician still flagged available whose last
+        authenticated heartbeat is older than ``stale_hours``. Returns the
+        technicians that were flipped."""
+        return []
+
     async def list_available_technicians(self) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -1508,6 +1514,8 @@ class InMemoryStore(Store):
         if not user:
             return None
         tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == str(user_id)), None)
+        if tech:
+            tech["last_seen_at"] = datetime.now(timezone.utc).isoformat()
         return {
             "user": {
                 "id": user["id"],
@@ -2063,6 +2071,35 @@ class InMemoryStore(Store):
 
     async def list_available_technicians(self) -> list[dict]:
         return list(getattr(self, "_technicians", []))
+
+    async def reap_stale_technicians(self, *, stale_hours: int) -> list[dict]:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=stale_hours)
+        reaped: list[dict] = []
+        for tech in getattr(self, "_technicians", []):
+            if not tech.get("is_available"):
+                continue
+            last_seen = tech.get("last_seen_at")
+            seen_at = (
+                datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+                if last_seen
+                else None
+            )
+            if seen_at is not None and seen_at >= cutoff:
+                continue
+            tech["is_available"] = False
+            reaped.append({
+                "id": str(tech.get("id")),
+                "display_name": tech.get("display_name"),
+                "last_seen_at": last_seen,
+            })
+            await self.record_governance_event(
+                entity_type="technician",
+                entity_id=tech["id"],
+                action="auto_offline",
+                reason=f"No authenticated heartbeat for over {stale_hours}h",
+                metadata={"last_seen_at": last_seen, "stale_hours": stale_hours},
+            )
+        return reaped
 
     async def create_dispatch_offers(
         self, job_id: UUID, ranked: list[dict], expires_at: datetime
@@ -4609,6 +4646,15 @@ class PostgresStore(Store):
         tech_row = await cur.fetchone()
         tech_affiliations: list[dict] = []
         if tech_row:
+            # Presence heartbeat. This runs on every authenticated request (the
+            # technician app re-fetches the session every ~20s), so only touch
+            # the row once the stored value is already a minute old.
+            await conn.execute(
+                "update technicians set last_seen_at = now()"
+                " where id = %s"
+                "   and (last_seen_at is null or last_seen_at < now() - interval '1 minute')",
+                (user_id,),
+            )
             acur = await conn.execute(
                 "select ot.id, ot.organization_id, o.display_name, ot.status,"
                 " ot.affiliation_type, ot.exclusivity, ot.dispatch_allowed, ot.ended_at"
@@ -4759,6 +4805,46 @@ class PostgresStore(Store):
             "trust_state": row[8],
             "status": row[9],
         }
+
+    async def reap_stale_technicians(self, *, stale_hours: int) -> list[dict]:
+        """Sign off duty every technician still flagged available whose last
+        authenticated heartbeat is older than ``stale_hours``. A NULL heartbeat
+        means the technician has never held a session, so it counts as stale.
+
+        Each flip writes a ``governance_events`` row (actor NULL = system) so an
+        operator can trace why a technician went offline without being told.
+        """
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technicians set is_available = false"
+                " where is_available"
+                "   and (last_seen_at is null"
+                "        or last_seen_at < now() - make_interval(hours => %s))"
+                " returning id, display_name, last_seen_at",
+                (stale_hours,),
+            )
+            reaped = [
+                {
+                    "id": str(row[0]),
+                    "display_name": row[1],
+                    "last_seen_at": row[2].isoformat() if row[2] else None,
+                }
+                for row in await cur.fetchall()
+            ]
+            for tech in reaped:
+                await conn.execute(
+                    "insert into governance_events"
+                    " (entity_type, entity_id, action, reason, actor_id, metadata)"
+                    " values ('technician', %s, 'auto_offline', %s, null, %s::jsonb)",
+                    (
+                        tech["id"],
+                        f"No authenticated heartbeat for over {stale_hours}h",
+                        json.dumps(
+                            {"last_seen_at": tech["last_seen_at"], "stale_hours": stale_hours}
+                        ),
+                    ),
+                )
+        return reaped
 
     async def list_available_technicians(self) -> list[dict]:
         async with await self._connect() as conn:
@@ -7073,10 +7159,24 @@ class PostgresStore(Store):
     async def list_technicians_admin(self, status: str | None = None) -> list[dict]:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
+                # Affiliation comes from the open organization_technicians period,
+                # not primary_organization_id — the latter is only a dispatch
+                # fallback and leaves invited technicians looking independent.
+                " select t.id, t.display_name, t.email, t.phone, t.status, t.vetting_status,"
                 " t.skills, t.provider_type, t.primary_organization_id, t.created_at,"
-                " o.display_name"
-                " from technicians t left join organizations o on o.id = t.primary_organization_id"
+                " o.display_name, aff.organization_name, aff.state"
+                " from technicians t"
+                " left join organizations o on o.id = t.primary_organization_id"
+                " left join lateral ("
+                "   select ao.display_name as organization_name,"
+                "     case when ot.status = 'pending_invite' then 'invited' else 'affiliated' end as state"
+                "   from organization_technicians ot"
+                "   join organizations ao on ao.id = ot.organization_id"
+                "   where ot.technician_id = t.id and ot.ended_at is null"
+                "   order by (ot.status = 'active') desc, (ot.status = 'suspended') desc,"
+                "     ot.starts_at desc"
+                "   limit 1"
+                " ) aff on true"
                 " where %s::text is null or t.status = %s"
                 " order by t.created_at desc",
                 (status, status),
@@ -7090,6 +7190,8 @@ class PostgresStore(Store):
                 "primary_organization_id": str(r[8]) if r[8] else None,
                 "created_at": r[9].isoformat() if r[9] else None,
                 "primary_organization_name": r[10],
+                "organization_name": r[11],
+                "affiliation_state": r[12] or "unaffiliated",
             }
             for r in rows
         ]
