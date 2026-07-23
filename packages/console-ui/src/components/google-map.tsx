@@ -60,7 +60,7 @@ function clusterMapPoints(points: MapPoint[]): MapPoint[] {
   const buckets = new Map<string, MapPoint[]>();
   const singles: MapPoint[] = [];
   for (const point of points) {
-    if (point.selected) {
+    if (point.selected || point.kind === "tech") {
       singles.push(point);
       continue;
     }
@@ -105,6 +105,36 @@ function clusterMapPoints(points: MapPoint[]): MapPoint[] {
   return [...singles, ...clustered];
 }
 
+function spreadCoincidentTechPoints(points: MapPoint[]): MapPoint[] {
+  const buckets = new Map<string, MapPoint[]>();
+  const other: MapPoint[] = [];
+  for (const point of points) {
+    if (point.kind !== "tech" || point.selected) {
+      other.push(point);
+      continue;
+    }
+    const key = `${Math.round(point.lat * 10_000)}:${Math.round(point.lng * 10_000)}`;
+    buckets.set(key, [...(buckets.get(key) ?? []), point]);
+  }
+  const spread: MapPoint[] = [];
+  for (const bucket of buckets.values()) {
+    if (bucket.length < 2) {
+      spread.push(bucket[0]!);
+      continue;
+    }
+    bucket.forEach((point, index) => {
+      const angle = (Math.PI * 2 * index) / bucket.length;
+      const radius = 0.00016 + Math.floor(index / 6) * 0.00008;
+      spread.push({
+        ...point,
+        lat: point.lat + Math.sin(angle) * radius,
+        lng: point.lng + Math.cos(angle) * radius,
+      });
+    });
+  }
+  return [...other, ...spread];
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function iconFor(p: MapPoint, maps: any, richMarkers: boolean) {
   const selected = Boolean(p.selected);
@@ -145,7 +175,7 @@ function calloutHtml(callout: NonNullable<MapPoint["callout"]>): string {
   const meta = callout.meta?.filter(Boolean) ?? [];
   const lines = callout.lines?.filter(Boolean) ?? [];
   return `
-    <div style="min-width:220px;max-width:280px;color:#e5e7eb;background:#111827;font:500 12px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+    <div style="min-width:210px;max-width:260px;color:#e5e7eb;background:#111827;font:500 12px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:10px;border-radius:10px;">
       <div style="font-weight:800;font-size:13px;line-height:1.25;color:#f8fafc;margin-bottom:6px;">${htmlEscape(callout.title)}</div>
       ${meta.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${meta.map((item) => `<span style="border:1px solid #374151;border-radius:999px;padding:2px 6px;color:#cbd5e1;background:#1f2937;">${htmlEscape(item)}</span>`).join("")}</div>` : ""}
       ${lines.length > 0 ? `<div style="display:grid;gap:3px;color:#cbd5e1;line-height:1.35;">${lines.map((line) => `<div>${htmlEscape(line)}</div>`).join("")}</div>` : ""}
@@ -154,6 +184,7 @@ function calloutHtml(callout: NonNullable<MapPoint["callout"]>): string {
 }
 
 function techMarkerBorder(point: MapPoint): string {
+  if (point.stale && point.status !== "inactive") return "#f59e0b";
   if (point.status === "free") return "#22c55e";
   if (point.status === "busy") return "#f59e0b";
   return "#64748b";
@@ -468,6 +499,8 @@ export function GoogleMapView({
   const markersRef = useRef<any[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const polylinesRef = useRef<any[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const infoWindowRef = useRef<any>(null);
   const hasFitBoundsRef = useRef(false);
   const onMarkerClickRef = useRef(onMarkerClick);
   const [status, setStatus] = useState<"idle" | "ready" | "error">("idle");
@@ -475,6 +508,36 @@ export function GoogleMapView({
   useEffect(() => {
     onMarkerClickRef.current = onMarkerClick;
   }, [onMarkerClick]);
+
+  useEffect(() => {
+    if (!richMarkers || typeof document === "undefined") return;
+    const id = "cluexp-operations-map-callout-style";
+    if (document.getElementById(id)) return;
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = `
+      .gm-style .gm-style-iw-c {
+        background: #111827 !important;
+        border: 1px solid rgba(255, 191, 0, 0.38) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45) !important;
+        padding: 0 !important;
+      }
+      .gm-style .gm-style-iw-d {
+        background: #111827 !important;
+        overflow: hidden !important;
+      }
+      .gm-style .gm-style-iw-tc::after {
+        background: #111827 !important;
+        border-bottom: 1px solid rgba(255, 191, 0, 0.38) !important;
+        border-right: 1px solid rgba(255, 191, 0, 0.38) !important;
+      }
+      .gm-style .gm-ui-hover-effect {
+        display: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }, [richMarkers]);
 
   useEffect(() => {
     if (!MAPS_KEY) { setStatus("error"); return; }
@@ -505,19 +568,21 @@ export function GoogleMapView({
 
     markersRef.current.forEach((marker) => marker.setMap(null));
     polylinesRef.current.forEach((line) => line.setMap(null));
+    infoWindowRef.current?.close();
     markersRef.current = [];
     polylinesRef.current = [];
 
     const bounds = new maps.LatLngBounds();
-    const infoWindow = new maps.InfoWindow({
+    const infoWindow = infoWindowRef.current ?? new maps.InfoWindow({
       disableAutoPan: true,
-      maxWidth: 300,
+      maxWidth: 272,
     });
+    infoWindowRef.current = infoWindow;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let selectedMarker: any | null = null;
     let selectedContent: string | null = null;
     let selectedPosition: { lat: number; lng: number } | null = null;
-    const renderPoints = clusterMarkers ? clusterMapPoints(points) : points;
+    const renderPoints = spreadCoincidentTechPoints(clusterMarkers ? clusterMapPoints(points) : points);
     renderPoints.forEach((p) => {
       const pos = { lat: p.lat, lng: p.lng };
       bounds.extend(pos);

@@ -45,7 +45,8 @@ Completed in the current pass:
 - Added a compact inline assignment confirmation step before sending a normal technician offer
 - Added top-three candidate rank badges on technician map markers when a request is selected
 - Added specific active-job exception explanations and real actions in the focused operation bar
-- Added lightweight type-preserving map clustering for nearby technicians, requests, and active jobs
+- Added lightweight type-preserving map clustering for nearby requests and active jobs while keeping individual technician pins visible
+- Added display-only spreading for overlapping technician pins and amber stale-location treatment so stale techs do not read as reliable green coverage
 - Added restrained idle auto-scan for overflowing work and technician lists when no dispatcher action is active
 - Fixed provider manual-request geocoding end to end so newly created provider requests save resolved coordinates when geocoding succeeds while still allowing request creation when geocoding fails
 - Preserved existing `/map` and `/queue` pages
@@ -287,7 +288,7 @@ Cluster markers by type:
 
 - Request clusters should keep the blue diamond language.
 - Active-job clusters should keep the violet square language.
-- Technician clusters should use a people/coverage treatment and may summarize available/busy/offline counts.
+- Technician pins should remain individually visible for the dispatch coverage picture; if multiple technicians share nearly identical coordinates, spread the pins slightly on-screen rather than collapsing them into one generic people cluster.
 - Do not merge people and work into one generic cluster; mixed clusters make the operation picture harder to read.
 
 Map interactions:
@@ -388,11 +389,11 @@ Use a thin status ring around the profile image:
 - Offline or unavailable: gray.
 - Actionable technician problem: red.
 
-Keep status and location available to assistive technology and hover/focus disclosure, but do not repeat them as always-visible text in the roster card body. Treat availability and location trust as separate signals. For example, an Available technician keeps a green ring even if the avatar tooltip says `Available · Location stale · 11h ago`.
+Keep status and location available to assistive technology and hover/focus disclosure, but do not repeat them as always-visible text in the roster card body. Treat availability and location trust as separate signals in copy, but use amber visual treatment when a reported location is stale so dispatchers do not read the technician as reliable green coverage.
 
-The status ring must represent technician status only. A stale or missing location must not replace a green Available ring with an amber ring. Show location trust separately through avatar tooltip/focus text and map coverage warnings; add an icon only where it does not create card clutter:
+The status ring should show availability when the location is trustworthy, and should shift to amber when location is stale. Missing-location technicians must not get a fabricated marker; count them in the coverage warning and explain the issue in the tooltip/focus text:
 
-- Green ring + avatar tooltip `Available · Location stale · 4h ago`.
+- Amber ring + avatar tooltip `Available · Location stale · 4h ago`.
 - Amber ring + avatar tooltip `Busy · Location fresh`.
 - Gray ring + avatar tooltip `Offline · Location stale · 4h ago`.
 
@@ -679,7 +680,7 @@ Run the existing relevant checks for the provider app and shared UI package.
 - Technician map markers use photo/initial portrait pins with status color and separate location-freshness treatment.
 - Request map markers use a distinct blue diamond treatment.
 - Active-job map markers use a distinct violet square treatment.
-- Map clusters preserve type identity instead of combining technicians, requests, and jobs into one generic marker.
+- Map clusters preserve work type identity for requests and active jobs instead of combining them into one generic marker; technician pins stay individually visible for coverage.
 - Current requests show waiting time.
 - Active jobs show ongoing time when reliable data exists.
 - Technician cards expose status and location freshness through the avatar/initial tooltip or focus disclosure, while preserving a compact visible card body.
@@ -687,7 +688,7 @@ Run the existing relevant checks for the provider app and shared UI package.
 - Technician cards preserve the complete display name at normal dispatcher widths.
 - Technician cards show no more than three neutral skill codes plus `+N`.
 - A neutral, full-width, one-line skill-code legend appears below the workspace.
-- Availability and location trust remain separate signals; stale GPS never changes an Available status ring from green to amber.
+- Availability and location trust remain separate in text, but stale GPS changes an Available technician's visual coverage ring/pin to amber so the map does not overstate reliable coverage.
 - Status/risk colors are clear but not visually overwhelming.
 - Selecting items synchronizes map, queue, and technician context.
 - Selecting any queue or roster item applies a visible selected-marker state and centers intelligently without destroying manual zoom.

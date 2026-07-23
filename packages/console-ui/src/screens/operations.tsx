@@ -204,7 +204,7 @@ function activeJobException(row: OperationsRow, now: number): ActiveJobException
     return {
       action: "Open confirmation",
       detail: `Customer confirmation is still pending${ongoing != null ? ` after ${formatMinutes(ongoing)}` : ""}. Confirm by phone in job detail only when the customer has approved receipt.`,
-      label: "Awaiting customer",
+      label: "Confirm wait",
       severity: "warn",
     };
   }
@@ -505,7 +505,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   function candidateFlags(candidate: Candidate | null) {
     if (!candidate) return [];
     return [
-      !candidate.is_online && "offline or stale",
+      !candidate.is_online && "stale location",
       candidate.is_busy && "busy",
       candidate.organization_supports_skill === false && "company capability missing",
       candidate.organization_supports_skill !== false && candidate.technician_supports_skill === false && "technician skill missing",
@@ -1191,7 +1191,7 @@ function TechnicianRosterPanel({
                 tabIndex={0}
               >
                 <div className="flex items-start gap-3">
-                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} status={status} title={avatarTooltip} />
+                  <TechAvatar name={tech.display_name ?? tech.id} photoUrl={photoUrl} stale={fresh.stale} status={status} title={avatarTooltip} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0 break-words font-medium leading-tight" title={tech.display_name ?? tech.id}>{tech.display_name ?? tech.id}</span>
@@ -1236,9 +1236,11 @@ function initialsFor(name: string) {
 }
 
 function TechAvatar({
-  name, photoUrl, status, title,
-}: { name: string; photoUrl: string | null; status: TechnicianStatusLabel; title: string }) {
-  const ringClass = status === "Available"
+  name, photoUrl, stale, status, title,
+}: { name: string; photoUrl: string | null; stale: boolean; status: TechnicianStatusLabel; title: string }) {
+  const ringClass = stale && status !== "Offline"
+    ? "ring-warn"
+    : status === "Available"
     ? "ring-success"
     : status === "Busy"
       ? "ring-warn"
