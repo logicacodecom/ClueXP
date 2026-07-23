@@ -2814,8 +2814,9 @@ async def create_offers(ticket_id: UUID) -> None:
 async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     """Cleanup-only sweep — no re-dispatch. Secret-protected via
     ``Authorization: Bearer ${CRON_SECRET}``. Expires stale offers (returning
-    affected jobs to pending_dispatch) and auto-closes unconfirmed jobs. The
-    same cleanup runs inline on GET /ops/queue; this cron is a safety net."""
+    affected jobs to pending_dispatch), auto-closes unconfirmed jobs, and signs
+    off technicians whose presence heartbeat has gone stale. The offer/job
+    cleanup also runs inline on GET /ops/queue; this cron is a safety net."""
     if not config.CRON_SECRET:
         raise HTTPException(status_code=503, detail="Sweep disabled: CRON_SECRET unset")
     presented = authorization.split(" ", 1)[1].strip() if (
@@ -2825,7 +2826,13 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
         raise HTTPException(status_code=401, detail="Unauthorized")
     expired = await store.expire_stale_offers()
     auto_closed = await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
-    return {"expired_offers": expired, "auto_closed": auto_closed}
+    stale_hours = await runtime_settings.resolve(store, "technician_stale_hours")
+    signed_off = await store.reap_stale_technicians(stale_hours=int(stale_hours))
+    return {
+        "expired_offers": expired,
+        "auto_closed": auto_closed,
+        "signed_off_technicians": len(signed_off),
+    }
 
 
 class OpsAssignPayload(BaseModel):

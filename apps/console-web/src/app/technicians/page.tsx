@@ -7,23 +7,42 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppFrame } from "../frame";
 import { GovernanceActionDialog } from "../governance-action-dialog";
 
+type AffiliationState = "affiliated" | "invited" | "unaffiliated";
+
 interface TechnicianRow {
   id: string;
   display_name: string;
   status: string;
   vetting_status: string;
   provider_type: string;
-  primary_organization_name?: string | null;
+  // Affiliation-derived, not primary_organization_id — see list_technicians_admin.
+  organization_name?: string | null;
+  affiliation_state?: AffiliationState;
   created_at?: string | null;
 }
 
 const STATUSES = ["all", "pending_vetting", "active", "suspended", "rejected", "archived"] as const;
+// A separate axis from lifecycle status — a technician can be active and
+// unaffiliated at the same time, so these cannot share one control.
+const AFFILIATIONS = ["all", "affiliated", "invited", "unaffiliated"] as const;
 
 function statusVariant(status: string) {
   if (status === "active") return "success" as const;
   if (status === "pending_vetting") return "warn" as const;
   if (status === "suspended" || status === "rejected" || status === "archived") return "danger" as const;
   return "neutral" as const;
+}
+
+// "Invited" is deliberately not "affiliated": an open pending_invite is not yet
+// dispatchable, but the technician is no longer independent either.
+function affiliationVariant(state: AffiliationState) {
+  if (state === "affiliated") return "success" as const;
+  if (state === "invited") return "warn" as const;
+  return "neutral" as const;
+}
+
+function filterButtonClass(selected: boolean) {
+  return `min-h-10 rounded-md border px-3 py-1.5 text-xs font-medium capitalize ${selected ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"}`;
 }
 
 function pastTense(action: string) {
@@ -35,6 +54,7 @@ function pastTense(action: string) {
 
 export default function TechniciansPage() {
   const [status, setStatus] = useState<(typeof STATUSES)[number]>("all");
+  const [affiliation, setAffiliation] = useState<(typeof AFFILIATIONS)[number]>("all");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<TechnicianRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -102,18 +122,21 @@ export default function TechniciansPage() {
   const visibleRows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return rows.filter((row) => {
+      const state = row.affiliation_state ?? "unaffiliated";
       const statusMatch = status === "all" || row.status === status || row.vetting_status === status;
+      const affiliationMatch = affiliation === "all" || state === affiliation;
       const queryMatch = !normalized || [
         row.display_name,
         row.provider_type,
-        row.primary_organization_name,
+        row.organization_name,
+        state,
         row.status,
         row.vetting_status,
         row.id
       ].some((value) => String(value || "").toLowerCase().includes(normalized));
-      return statusMatch && queryMatch;
+      return statusMatch && affiliationMatch && queryMatch;
     });
-  }, [query, rows, status]);
+  }, [affiliation, query, rows, status]);
 
   const active = rows.filter((r) => r.status === "active").length;
   const pending = rows.filter((r) => r.status === "pending_vetting" || r.vetting_status === "unverified").length;
@@ -135,10 +158,11 @@ export default function TechniciansPage() {
       </div>
       <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(220px,420px)_1fr]">
         <Input aria-label="Search technicians" placeholder="Search technician, company, status, skill, or ID" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</span>
           {STATUSES.map((option) => (
             <button
-              className={`min-h-10 rounded-md border px-3 py-1.5 text-xs font-medium capitalize ${status === option ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"}`}
+              className={filterButtonClass(status === option)}
               key={option}
               onClick={() => setStatus(option)}
               type="button"
@@ -148,16 +172,30 @@ export default function TechniciansPage() {
           ))}
         </div>
       </div>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Affiliation</span>
+        {AFFILIATIONS.map((option) => (
+          <button
+            className={filterButtonClass(affiliation === option)}
+            key={option}
+            onClick={() => setAffiliation(option)}
+            type="button"
+          >
+            {option}
+          </button>
+        ))}
+      </div>
       {message ? <div className="mb-4 rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
       {!loading && visibleRows.length === 0 ? (
-        <EmptyState icon={UserRound} title="No technicians match" description="Adjust the status filter or search term." />
+        <EmptyState icon={UserRound} title="No technicians match" description="Adjust the status or affiliation filter, or the search term." />
       ) : (
         <DataTable
-          columns={["Technician", "Provider type", "Company", "Status", "Vetting", "Created", "Actions"]}
+          columns={["Technician", "Provider type", "Company", "Affiliation", "Status", "Vetting", "Created", "Actions"]}
           rows={visibleRows.map((row) => [
             <Link className="font-medium text-foreground hover:text-primary" href={`/technicians/${row.id}`} key={`${row.id}-name`}>{row.display_name}</Link>,
             row.provider_type.replaceAll("_", " "),
-            row.primary_organization_name || "Independent",
+            row.organization_name || "Independent",
+            <Badge key={`${row.id}-affiliation`} variant={affiliationVariant(row.affiliation_state ?? "unaffiliated")}>{row.affiliation_state ?? "unaffiliated"}</Badge>,
             <Badge key={`${row.id}-status`} variant={statusVariant(row.status)}>{row.status.replaceAll("_", " ")}</Badge>,
             row.vetting_status.replaceAll("_", " "),
             row.created_at ? new Date(row.created_at).toLocaleDateString() : "-",

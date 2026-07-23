@@ -21,19 +21,23 @@ interface CloseoutItemType {
 
 const LIMIT_KEYS = ["max_users_per_org", "max_technicians_per_org"] as const;
 const DISPATCH_KEYS = ["dispatch_operations_refresh_seconds"] as const;
+// Platform-wide, not provider-overridable — kept out of DISPATCH_KEYS so it is
+// not presented as a per-company default.
+const PRESENCE_KEYS = ["technician_stale_hours"] as const;
 const FINANCIAL_KEYS = [
   "closeout_max_line_items",
   "closeout_default_tax_rate_basis_points",
   "closeout_card_fee_basis_points",
   "closeout_card_fee_fixed_cents"
 ] as const;
-const ALL_SETTING_KEYS = [...LIMIT_KEYS, ...DISPATCH_KEYS, ...FINANCIAL_KEYS] as const;
+const ALL_SETTING_KEYS = [...LIMIT_KEYS, ...DISPATCH_KEYS, ...PRESENCE_KEYS, ...FINANCIAL_KEYS] as const;
 type SettingKey = (typeof ALL_SETTING_KEYS)[number];
 
 const LABELS: Record<SettingKey, string> = {
   max_users_per_org: "Default max users per company",
   max_technicians_per_org: "Default max technicians per company",
   dispatch_operations_refresh_seconds: "Default Operations refresh interval (seconds)",
+  technician_stale_hours: "Sign technicians off duty after (hours without contact)",
   closeout_max_line_items: "Default max closeout line items",
   closeout_default_tax_rate_basis_points: "Default tax rate (basis points)",
   closeout_card_fee_basis_points: "Default card fee percent (basis points)",
@@ -155,6 +159,15 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {DISPATCH_KEYS.map(renderSettingInput)}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Technician presence</CardTitle>
+            <CardDescription>A technician who has not contacted the platform within this window is signed off duty and flagged offline, so dispatch stops offering them work. Each automatic sign-off is recorded on the technician&apos;s audit trail. Applies to every company.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {PRESENCE_KEYS.map(renderSettingInput)}
           </CardContent>
         </Card>
         <Card>

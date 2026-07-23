@@ -162,6 +162,16 @@ SETTINGS: dict[str, SettingSpec] = {
         validate=_int_range(5, 300),
         org_overridable=True,
     ),
+    # --- technician presence reaper (0040) ---
+    "technician_stale_hours": SettingSpec(
+        key="technician_stale_hours",
+        value_type="integer",
+        description="Hours without an authenticated technician heartbeat before "
+        "the technician is signed off duty and flagged offline.",
+        env="TECHNICIAN_STALE_HOURS",
+        fallback=12,
+        validate=_int_range(1, 168),
+    ),
     "intake_show_estimate": SettingSpec(
         key="intake_show_estimate",
         value_type="boolean",

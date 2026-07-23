@@ -1214,6 +1214,88 @@ def test_inmemory_get_ops_technician_returns_none_for_unknown():
     assert result is None
 
 
+# --- stale-presence reaper (0040) ---------------------------------------------
+def _presence_store():
+    """Four available technicians spanning every heartbeat case, plus one that
+    is already offline and stale (must not be re-reported)."""
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+    now = datetime.now(timezone.utc)
+    store = InMemoryStore()
+    ids = {name: str(uuid4()) for name in ("fresh", "stale", "never", "already_off")}
+    store._technicians = [
+        {"id": ids["fresh"], "display_name": "Fresh", "is_available": True,
+         "last_seen_at": (now - timedelta(hours=2)).isoformat()},
+        {"id": ids["stale"], "display_name": "Stale", "is_available": True,
+         "last_seen_at": (now - timedelta(hours=13)).isoformat()},
+        {"id": ids["never"], "display_name": "Never", "is_available": True,
+         "last_seen_at": None},
+        {"id": ids["already_off"], "display_name": "Off", "is_available": False,
+         "last_seen_at": (now - timedelta(hours=99)).isoformat()},
+    ]
+    return store, ids
+
+
+def test_reap_signs_off_stale_and_never_seen_only():
+    store, ids = _presence_store()
+    reaped = asyncio.run(store.reap_stale_technicians(stale_hours=12))
+    assert {t["id"] for t in reaped} == {ids["stale"], ids["never"]}
+    by_id = {t["id"]: t for t in store._technicians}
+    assert by_id[ids["fresh"]]["is_available"] is True
+    assert by_id[ids["stale"]]["is_available"] is False
+    assert by_id[ids["never"]]["is_available"] is False
+
+
+def test_reap_is_idempotent():
+    store, _ = _presence_store()
+    asyncio.run(store.reap_stale_technicians(stale_hours=12))
+    assert asyncio.run(store.reap_stale_technicians(stale_hours=12)) == []
+
+
+def test_reap_threshold_is_the_supplied_setting_value():
+    """The 12h default is a setting, not a constant — a wider window spares the
+    13h-stale technician, a narrower one catches the 2h-fresh technician."""
+    store, ids = _presence_store()
+    assert {t["id"] for t in asyncio.run(store.reap_stale_technicians(stale_hours=24))} == {ids["never"]}
+    store, ids = _presence_store()
+    reaped = asyncio.run(store.reap_stale_technicians(stale_hours=1))
+    assert {t["id"] for t in reaped} == {ids["fresh"], ids["stale"], ids["never"]}
+
+
+def test_reap_records_traceable_audit_event():
+    store, ids = _presence_store()
+    asyncio.run(store.reap_stale_technicians(stale_hours=12))
+    events = asyncio.run(
+        store.list_governance_events("technician", UUID(ids["stale"]))
+    )
+    assert len(events) == 1
+    assert events[0]["action"] == "auto_offline"
+    assert events[0]["actor_id"] is None  # system, not an operator
+    assert events[0]["metadata"]["stale_hours"] == 12
+    assert events[0]["metadata"]["last_seen_at"] is not None
+
+
+def test_session_fetch_heartbeat_keeps_technician_on_duty():
+    """A technician working without touching the manual location button still
+    polls the session every ~20s — that heartbeat must protect them."""
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+    store = InMemoryStore()
+    uid = str(uuid4())
+    store.users[uid] = {
+        "id": uid, "email": "t@example.com", "phone": None, "display_name": "T",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    store._technicians = [{
+        "id": uid, "display_name": "T", "is_available": True, "status": "active",
+        "vetting_status": "verified",
+        "last_seen_at": (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat(),
+    }]
+    asyncio.run(store.get_user_session(uid))
+    assert asyncio.run(store.reap_stale_technicians(stale_hours=12)) == []
+    assert store._technicians[0]["is_available"] is True
+
+
 def test_inmemory_update_technician_profile_updates_user_and_technician():
     store = InMemoryStore()
     tid = str(uuid4())
