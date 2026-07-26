@@ -23,6 +23,7 @@ from api.geocode import geocode, places_autocomplete, reverse_geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api import config
+from api.job_text_parser import MAX_INPUT_LENGTH, PARSER_VERSION, parse_job_text
 from api.service_catalog import active_skill_codes, normalize_skill_code
 from api import settings as runtime_settings
 from api.dispatch import (
@@ -172,6 +173,17 @@ class ManualIntakeRequest(BaseModel):
     situation: str = "locked_out"
     urgency: str = "urgent"
     notes: str | None = None
+
+    @field_validator("notes")
+    @classmethod
+    def _cap_notes(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > _MAX_DESC:
+            raise ValueError(f"Notes exceed {_MAX_DESC} characters")
+        return value
+
+
+class PartnerJobTextParseRequest(BaseModel):
+    text: str
 
 
 class JobReviewRequest(BaseModel):
@@ -2590,6 +2602,40 @@ async def create_provider_request(
     source = payload.source_channel or "manual"
     await log_transition(ticket, f"manual_intake_created:{source}")
     return await envelope(ticket)
+
+
+@app.post("/provider/jobs/parse-text")
+async def parse_provider_job_text(
+    payload: PartnerJobTextParseRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    await latency()
+    require_any_role(session, {"provider_admin", "dispatcher"})
+    org_id = _require_dispatch_org(session)
+    text = payload.text
+    if not text or not text.strip():
+        raise HTTPException(status_code=422, detail="Pasted job text is required.")
+    if len(text) > MAX_INPUT_LENGTH:
+        raise HTTPException(status_code=413, detail=f"Pasted job text must be {MAX_INPUT_LENGTH} characters or fewer.")
+    started = time.perf_counter()
+    try:
+        result = parse_job_text(text)
+    except Exception:
+        logger.exception("Partner job text parser failed")
+        raise HTTPException(status_code=500, detail="Could not parse pasted job text.")
+    logger.info(
+        "partner_job_text_parse",
+        extra={
+            "parser_version": PARSER_VERSION,
+            "detected_source": result.get("detectedSource"),
+            "warning_count": len(result.get("warnings") or []),
+            "conflict_count": len(result.get("conflicts") or []),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "partner_organization_id": org_id,
+            "user_id": session.get("user", {}).get("id"),
+        },
+    )
+    return {"success": True, "result": result}
 
 
 @app.get("/tickets/{ticket_id}", response_model=TicketEnvelope)

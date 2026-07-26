@@ -567,6 +567,7 @@ const safetyOptions = [
 
 const sourceChannelOptions = [
   { value: "Phone intake", label: "Phone" },
+  { value: "Partner pasted text", label: "Partner pasted text" },
   { value: "Walk-in", label: "Walk-in" },
   { value: "Website callback", label: "Website callback" },
   { value: "Referral", label: "Referral" },
@@ -626,6 +627,36 @@ function fullAddress(form: typeof initialProviderRequestForm) {
   ].filter(Boolean).join(", ");
 }
 
+type ParsedField<T> = { value: T; confidence: "high" | "medium" | "low"; source: string; rawMatch?: string };
+type ParseWarning = { field: string; code: string; message: string };
+type ParseConflict = { field: string; code: string; candidates?: string[] };
+type ParsedJobResult = {
+  rawText: string;
+  normalizedText: string;
+  detectedSource?: string;
+  externalJobId?: ParsedField<string>;
+  secondaryReference?: ParsedField<string>;
+  customer: { name?: ParsedField<string>; phone?: ParsedField<string> };
+  location: {
+    addressLine1?: ParsedField<string>;
+    addressLine2?: ParsedField<string>;
+    city?: ParsedField<string>;
+    state?: ParsedField<string>;
+    postalCode?: ParsedField<string>;
+    isComplete: boolean;
+  };
+  service: { category?: ParsedField<string>; type?: ParsedField<string> };
+  vehicle?: { year?: ParsedField<number>; make?: ParsedField<string>; model?: ParsedField<string> };
+  externalUrl?: ParsedField<string>;
+  description?: ParsedField<string>;
+  warnings: ParseWarning[];
+  conflicts: ParseConflict[];
+};
+
+function parsedValue<T>(field?: ParsedField<T>) {
+  return field?.value;
+}
+
 function OptionGroup<T extends string>({
   label,
   options,
@@ -670,7 +701,13 @@ function OptionGroup<T extends string>({
 export function ProviderNewRequest() {
   const org = organizationById(orgId);
   const customerNameRef = useRef<HTMLInputElement | null>(null);
+  const [entryMode, setEntryMode] = useState<"manual" | "paste" | "review">("manual");
   const [form, setForm] = useState(initialProviderRequestForm);
+  const [pastedText, setPastedText] = useState("");
+  const [parsedJob, setParsedJob] = useState<ParsedJobResult | null>(null);
+  const [parseBusy, setParseBusy] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [notesWarning, setNotesWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -682,14 +719,63 @@ export function ProviderNewRequest() {
 
   function update(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
+    setNotesWarning(null);
     if (["street1", "street2", "city", "state", "zip"].includes(field)) {
       setAddressStatus("manual");
       setGeocodeConfidence(null);
     }
   }
 
+  function applyParsedJob(result: ParsedJobResult) {
+    setParsedJob(result);
+    setForm((current) => ({
+      ...current,
+      customer_name: parsedValue(result.customer.name) ?? current.customer_name,
+      customer_phone: parsedValue(result.customer.phone) ?? current.customer_phone,
+      street1: parsedValue(result.location.addressLine1) ?? current.street1,
+      street2: parsedValue(result.location.addressLine2) ?? current.street2,
+      city: parsedValue(result.location.city) ?? current.city,
+      state: parsedValue(result.location.state) ?? current.state,
+      zip: parsedValue(result.location.postalCode) ?? current.zip,
+      source_channel: "Partner pasted text",
+      access_type: parsedValue(result.service.category) ?? current.access_type,
+      situation: parsedValue(result.service.type) ?? current.situation,
+      vehicle_year: result.vehicle?.year?.value ? String(result.vehicle.year.value) : current.vehicle_year,
+      vehicle_make: parsedValue(result.vehicle?.make) ?? current.vehicle_make,
+      vehicle_model: parsedValue(result.vehicle?.model) ?? current.vehicle_model,
+      notes: parsedValue(result.description) ?? current.notes,
+    }));
+    setAddressStatus(result.location.isComplete ? "manual" : "unresolved");
+    setEntryMode("review");
+  }
+
+  async function parsePastedJob() {
+    setParseBusy(true);
+    setParseError(null);
+    setCreatedId(null);
+    try {
+      const response = await fetch("/api/provider/jobs/parse-text", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: pastedText }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `Parse failed: ${response.status}`);
+      applyParsedJob(body.result as ParsedJobResult);
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : "Unable to parse pasted job");
+    } finally {
+      setParseBusy(false);
+    }
+  }
+
   function resetForNextCall() {
     setForm(initialProviderRequestForm);
+    setPastedText("");
+    setParsedJob(null);
+    setParseError(null);
+    setNotesWarning(null);
+    setEntryMode("manual");
     setError(null);
     setCreatedId(null);
     setPlacePredictions([]);
@@ -699,8 +785,20 @@ export function ProviderNewRequest() {
   }
 
   function buildNotes() {
+    const importedDetails = parsedJob ? [
+      "Imported partner details:",
+      parsedJob.externalJobId?.value ? `External Job ID: ${parsedJob.externalJobId.value}` : "",
+      parsedJob.secondaryReference?.value ? `Secondary Reference: ${parsedJob.secondaryReference.value}` : "",
+      parsedJob.externalUrl?.value ? `External Confirmation URL: ${parsedJob.externalUrl.value}` : "",
+      form.access_type === "vehicle" && [form.vehicle_year, form.vehicle_make, form.vehicle_model].filter(Boolean).length
+        ? ""
+        : parsedJob.vehicle ? `Vehicle: ${[parsedJob.vehicle.year?.value, parsedJob.vehicle.make?.value, parsedJob.vehicle.model?.value].filter(Boolean).join(" ")}` : "",
+      parsedJob.detectedSource && parsedJob.detectedSource !== "unknown" ? `Detected source: ${parsedJob.detectedSource}` : "",
+      "Source: Partner pasted text",
+    ].filter(Boolean).join("\n") : "";
     const details = [
       form.notes.trim(),
+      importedDetails,
       `Authority: ${optionLabel(authorityOptions, form.authority_role)}`,
       `Safety flag: ${optionLabel(safetyOptions, form.safety_flag)}`,
       form.urgency === "scheduled"
@@ -714,8 +812,11 @@ export function ProviderNewRequest() {
         : "",
       form.access_type === "other" ? `Other service detail: ${form.other_detail.trim() || "not provided"}` : "",
       addressStatus === "selected" ? `Address verified: ${geocodeConfidence || "confidence unknown"}` : "Address not verified by autocomplete",
+      // Last so the 2,000 char cap trims the bulky verbatim paste, not the operational fields above it.
+      parsedJob?.rawText ? `Original pasted text: ${parsedJob.rawText}` : "",
     ].filter(Boolean);
-    return details.join("\n");
+    const joined = details.join("\n\n");
+    return joined.length > 2000 ? joined.slice(0, 1970).trimEnd() + "\n[Imported notes truncated]" : joined;
   }
 
   async function selectPlace(description: string) {
@@ -766,6 +867,11 @@ export function ProviderNewRequest() {
   }
 
   async function createRequest() {
+    const notes = buildNotes();
+    if (notes.includes("[Imported notes truncated]") && !notesWarning) {
+      setNotesWarning("Imported notes exceed the current 2,000 character note limit. The most operationally useful details will be preserved; create again to confirm.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setCreatedId(null);
@@ -781,7 +887,7 @@ export function ProviderNewRequest() {
           access_type: form.access_type,
           situation: form.situation,
           urgency: form.urgency,
-          notes: buildNotes(),
+          notes,
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -858,13 +964,49 @@ export function ProviderNewRequest() {
   ].filter(Boolean);
   const composedNotes = buildNotes();
 
+  if (entryMode === "paste") {
+    return (
+      <div>
+        <PageHeader
+          kicker="New job"
+          title="Paste Job"
+          description="Paste a job message from Workiz, SMS, email, or another dispatch system."
+          actions={<><Button variant="outline" onClick={() => setEntryMode("manual")}>Enter Manually</Button><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge></>}
+        />
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>Partner job text</CardTitle>
+              <CardDescription>Parsing is deterministic and creates no job until you review and confirm.</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <textarea
+              className="min-h-72 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              maxLength={8000}
+              placeholder="New job # 246303 Name: Joe Walker..."
+              value={pastedText}
+              onChange={(event) => { setPastedText(event.target.value); setParseError(null); }}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={parseBusy || !pastedText.trim()} onClick={parsePastedJob}>{parseBusy ? "Parsing..." : "Parse Job"}</Button>
+              <Button variant="outline" onClick={() => { setPastedText(""); setParsedJob(null); setParseError(null); }}>Clear</Button>
+              <Button variant="ghost" onClick={() => setEntryMode("manual")}>Cancel</Button>
+            </div>
+            {parseError ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{parseError}</div> : null}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader
-        kicker="Call intake"
-        title="New service request"
-        description="Capture the caller, location, service need, safety status, and authorization before sending the job to dispatch."
-        actions={<><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge><Badge variant="outline">Phone workflow</Badge></>}
+        kicker={entryMode === "review" ? "Parsed from Partner Text" : "Call intake"}
+        title={entryMode === "review" ? "Review Extracted Job" : "New service request"}
+        description={entryMode === "review" ? "Confirm mapped fields and imported metadata before creating the job." : "Capture the caller, location, service need, safety status, and authorization before sending the job to dispatch."}
+        actions={<><Button variant="outline" onClick={() => setEntryMode("manual")}>Enter Manually</Button><Button variant="outline" onClick={() => setEntryMode("paste")}>Paste Job</Button><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge><Badge variant="outline">{entryMode === "review" ? "Review first" : "Phone workflow"}</Badge></>}
       />
       <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
         <Card>
@@ -996,6 +1138,12 @@ export function ProviderNewRequest() {
               Dispatcher notes
               <textarea className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" placeholder="Plain-language notes from the call" value={form.notes} onChange={(event) => update("notes", event.target.value)} />
             </label>
+            {entryMode === "review" && parsedJob ? (
+              <label className="space-y-2 text-sm font-medium">
+                Original raw pasted text
+                <textarea className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-muted-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={pastedText || parsedJob.rawText} onChange={(event) => setPastedText(event.target.value)} />
+              </label>
+            ) : null}
             {createdId ? (
               <div className="flex flex-wrap items-center gap-3 rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success">
                 <span>Created request {createdId}</span>
@@ -1004,8 +1152,10 @@ export function ProviderNewRequest() {
               </div>
             ) : null}
             {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+            {notesWarning ? <div className="rounded-md border border-warn/35 bg-warn/10 p-3 text-sm text-warn">{notesWarning}</div> : null}
             <div className="flex flex-wrap gap-2">
-              <Button disabled={busy || !canCreate} onClick={createRequest}>{busy ? "Creating..." : "Create Request"}</Button>
+              <Button disabled={busy || !canCreate} onClick={() => void createRequest()}>{busy ? "Creating..." : "Create Request"}</Button>
+              {entryMode === "review" ? <Button variant="outline" onClick={() => setEntryMode("paste")}>Back to Pasted Text</Button> : null}
               <Button asChild variant="outline"><Link href="/queue">Back to Queue</Link></Button>
             </div>
             {!canCreate ? <p className="text-sm text-muted-foreground">Add {missingItems.join(", ")} before creating the request.</p> : null}
@@ -1032,6 +1182,16 @@ export function ProviderNewRequest() {
                   {form.urgency === "scheduled" ? <div>Scheduled: {form.scheduled_date || "date missing"} {form.scheduled_time || "time missing"}</div> : null}
                 </div>
               </div>
+              {entryMode === "review" && parsedJob ? (
+                <div className="rounded-md border border-warn/35 bg-warn/10 p-3">
+                  <div className="mb-2 font-medium text-warn">Parsing warnings</div>
+                  <div className="space-y-2 text-xs text-warn">
+                    {[...parsedJob.warnings.map((item) => item.message), ...parsedJob.conflicts.map((item) => `${item.field}: ${item.code}`)].length
+                      ? [...parsedJob.warnings.map((item) => item.message), ...parsedJob.conflicts.map((item) => `${item.field}: ${item.code}`)].map((message) => <div key={message}>{message}</div>)
+                      : <div>No parser warnings.</div>}
+                  </div>
+                </div>
+              ) : null}
               <div className="rounded-md border border-border bg-background p-3">
                 <div className="mb-2 font-medium">Notes preview</div>
                 <pre className="whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{composedNotes || "No notes yet."}</pre>
