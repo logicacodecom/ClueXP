@@ -701,7 +701,6 @@ function OptionGroup<T extends string>({
 export function ProviderNewRequest() {
   const org = organizationById(orgId);
   const customerNameRef = useRef<HTMLInputElement | null>(null);
-  const [entryMode, setEntryMode] = useState<"manual" | "paste" | "review">("manual");
   const [form, setForm] = useState(initialProviderRequestForm);
   const [pastedText, setPastedText] = useState("");
   const [parsedJob, setParsedJob] = useState<ParsedJobResult | null>(null);
@@ -745,6 +744,11 @@ export function ProviderNewRequest() {
       source_channel: "Partner pasted text",
       access_type: parsedValue(result.service.category) ?? current.access_type,
       situation: parsedValue(result.service.type) ?? current.situation,
+      // A paste has no dispatcher on a call to ask, so these three fall back to
+      // the system defaults rather than blocking the job. Existing answers win.
+      urgency: current.urgency || "urgent",
+      authority_role: current.authority_role || "owner",
+      safety_flag: current.safety_flag || "none",
       vehicle_year: result.vehicle?.year?.value ? String(result.vehicle.year.value) : current.vehicle_year,
       vehicle_make: parsedValue(result.vehicle?.make) ?? current.vehicle_make,
       vehicle_model: parsedValue(result.vehicle?.model) ?? current.vehicle_model,
@@ -752,7 +756,6 @@ export function ProviderNewRequest() {
     }));
     skipPlacesForParsedAddress.current = true;
     setAddressStatus(result.location.isComplete ? "manual" : "unresolved");
-    setEntryMode("review");
   }
 
   async function parsePastedJob() {
@@ -782,7 +785,6 @@ export function ProviderNewRequest() {
     setParsedJob(null);
     setParseError(null);
     setNotesWarning(null);
-    setEntryMode("manual");
     setError(null);
     setCreatedId(null);
     setPlacePredictions([]);
@@ -974,49 +976,13 @@ export function ProviderNewRequest() {
   ].filter(Boolean);
   const composedNotes = buildNotes();
 
-  if (entryMode === "paste") {
-    return (
-      <div>
-        <PageHeader
-          kicker="New job"
-          title="Paste Job"
-          description="Paste a job message from Workiz, SMS, email, or another dispatch system."
-          actions={<><Button variant="outline" onClick={() => setEntryMode("manual")}>Enter Manually</Button><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge></>}
-        />
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>Partner job text</CardTitle>
-              <CardDescription>Parsing is deterministic and creates no job until you review and confirm.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <textarea
-              className="min-h-72 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-              maxLength={8000}
-              placeholder="New job # 246303 Name: Joe Walker..."
-              value={pastedText}
-              onChange={(event) => { setPastedText(event.target.value); setParseError(null); }}
-            />
-            <div className="flex flex-wrap items-center gap-2">
-              <Button disabled={parseBusy || !pastedText.trim()} onClick={parsePastedJob}>{parseBusy ? "Parsing..." : "Parse Job"}</Button>
-              <Button variant="outline" onClick={() => { setPastedText(""); setParsedJob(null); setParseError(null); }}>Clear</Button>
-              <Button variant="ghost" onClick={() => setEntryMode("manual")}>Cancel</Button>
-            </div>
-            {parseError ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{parseError}</div> : null}
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   return (
     <div>
       <PageHeader
-        kicker={entryMode === "review" ? "Parsed from Partner Text" : "Call intake"}
-        title={entryMode === "review" ? "Review Extracted Job" : "New service request"}
-        description={entryMode === "review" ? "Confirm mapped fields and imported metadata before creating the job." : "Capture the caller, location, service need, safety status, and authorization before sending the job to dispatch."}
-        actions={<><Button variant="outline" onClick={() => setEntryMode("manual")}>Enter Manually</Button><Button variant="outline" onClick={() => setEntryMode("paste")}>Paste Job</Button><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge><Badge variant="outline">{entryMode === "review" ? "Review first" : "Phone workflow"}</Badge></>}
+        kicker={parsedJob ? "Parsed from partner text" : "Call intake"}
+        title={parsedJob ? "Review extracted job" : "New service request"}
+        description={parsedJob ? "Confirm the mapped fields and imported metadata before creating the job." : "Capture the caller, location, service need, safety status, and authorization before sending the job to dispatch. Paste a partner job on the right to fill this in automatically."}
+        actions={<><Badge variant="outline">{org?.display_name ?? "Provider"}</Badge><Badge variant="outline">{parsedJob ? "Partner paste" : "Phone workflow"}</Badge></>}
       />
       <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
         <Card>
@@ -1148,13 +1114,6 @@ export function ProviderNewRequest() {
               Dispatcher notes
               <textarea className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" placeholder="Plain-language notes from the call" value={form.notes} onChange={(event) => update("notes", event.target.value)} />
             </label>
-            {entryMode === "review" && parsedJob ? (
-              <label className="space-y-2 text-sm font-medium">
-                Original raw pasted text
-                <span className="block text-xs font-normal text-muted-foreground">Stored with the job as-is. Use Back to Pasted Text to change it and re-parse.</span>
-                <textarea readOnly className="min-h-24 w-full rounded-md border border-input bg-secondary/30 px-3 py-2 text-sm text-muted-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={parsedJob.rawText} />
-              </label>
-            ) : null}
             {createdId ? (
               <div className="flex flex-wrap items-center gap-3 rounded-md border border-success/35 bg-success/10 p-3 text-sm text-success">
                 <span>Created request {createdId}</span>
@@ -1166,13 +1125,37 @@ export function ProviderNewRequest() {
             {notesWarning ? <div className="rounded-md border border-warn/35 bg-warn/10 p-3 text-sm text-warn">{notesWarning}</div> : null}
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy || !canCreate} onClick={() => void createRequest()}>{busy ? "Creating..." : "Create Request"}</Button>
-              {entryMode === "review" ? <Button variant="outline" onClick={() => setEntryMode("paste")}>Back to Pasted Text</Button> : null}
               <Button asChild variant="outline"><Link href="/queue">Back to Queue</Link></Button>
             </div>
             {!canCreate ? <p className="text-sm text-muted-foreground">Add {missingItems.join(", ")} before creating the request.</p> : null}
           </CardContent>
         </Card>
         <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <div>
+                <CardTitle>Paste partner job</CardTitle>
+                <CardDescription>Workiz, SMS, or email. Parsing fills the form on the left and creates nothing until you confirm.</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <textarea
+                className="min-h-40 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                maxLength={8000}
+                placeholder="New job # 246303 Name: Joe Walker..."
+                value={pastedText}
+                onChange={(event) => { setPastedText(event.target.value); setParseError(null); }}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button disabled={parseBusy || !pastedText.trim()} onClick={() => void parsePastedJob()}>{parseBusy ? "Parsing..." : parsedJob ? "Parse Again" : "Parse Job"}</Button>
+                {pastedText || parsedJob ? <Button variant="outline" onClick={() => { setPastedText(""); setParsedJob(null); setParseError(null); }}>Clear</Button> : null}
+              </div>
+              {parseError ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">{parseError}</div> : null}
+              {parsedJob && pastedText !== parsedJob.rawText ? (
+                <p className="text-xs text-warn">Edited since the last parse. The job stores the text that was parsed, so parse again to apply these changes.</p>
+              ) : null}
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader><CardTitle>Request readiness</CardTitle></CardHeader>
             <CardContent className="space-y-4 text-sm">
@@ -1193,7 +1176,7 @@ export function ProviderNewRequest() {
                   {form.urgency === "scheduled" ? <div>Scheduled: {form.scheduled_date || "date missing"} {form.scheduled_time || "time missing"}</div> : null}
                 </div>
               </div>
-              {entryMode === "review" && parsedJob ? (
+              {parsedJob ? (
                 <div className="rounded-md border border-warn/35 bg-warn/10 p-3">
                   <div className="mb-2 font-medium text-warn">Parsing warnings</div>
                   <div className="space-y-2 text-xs text-warn">
