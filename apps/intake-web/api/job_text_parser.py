@@ -36,8 +36,11 @@ VEHICLE_MAKES = [
 # comma follows, so "123 Main St, W Palm Beach" still reads W as part of the city.
 POST_DIRECTIONAL = r"(?:\s+(?:NE|NW|SE|SW|N|S|E|W)(?=\s*,))?"
 ADDRESS_RE = re.compile(
-    rf"((?:\d+\s+)?(?:N|S|E|W|NE|NW|SE|SW)?\s*[^,\n]{{1,60}}?\s+{STREET_SUFFIX}{POST_DIRECTIONAL})[,]?\s+"
-    rf"([A-Za-z .'-]{{1,40}}?)[,\s]+({STATE_PATTERN})[,]?\s+(\d{{5}})",
+    rf"((?:\d+\s+)?(?:N|S|E|W|NE|NW|SE|SW)?\s*[^,\n]{{1,60}}?\s+{STREET_SUFFIX}{POST_DIRECTIONAL})"
+    # An apartment sits between the street and the city often enough that leaving
+    # it out cost the whole address, not just the unit.
+    rf"(?:[,]?\s+(?:apt|apartment|unit|suite|ste|bldg|building|floor|room|#)[\s.#]*[A-Za-z0-9-]{{1,10}})?"
+    rf"[,]?\s+([A-Za-z .'-]{{1,40}}?)[,\s]+({STATE_PATTERN})[,]?\s+(\d{{5}})",
     re.I,
 )
 CITY_STATE_ZIP_RE = re.compile(rf"\b([A-Za-z .'-]{{1,40}}?)[,\s]+({STATE_PATTERN})\s+(\d{{5}})\b", re.I)
@@ -55,6 +58,19 @@ DESCRIPTION_RE = re.compile(
 LABELED_NAME_RE = re.compile(
     r"(?:name|customer|customer name|client|contact)\s*:\s*([A-Z][A-Za-z' -]{0,60}?)"
     r"(?=\s*(?:\(|\d|phone|mobile|cell|location|address|service|confirm|description|$))",
+    re.I,
+)
+
+MONEY = r"\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?"
+PRICE_RE = re.compile(rf"{MONEY}(?:\s*(?:-|to)\s*\$?\s?\d{{1,3}}(?:,\d{{3}})*(?:\.\d{{2}})?)?", re.I)
+# No bare "#" (that is the reference rules' territory) and no "fl"/"rm" -- they
+# matched "Florida" and any word starting rm. A separator is required so "Ste"
+# cannot claim the "ven" of Steven.
+UNIT_WORDS = r"(?:apt|apartment|unit|suite|ste|bldg|building|floor|room)"
+UNIT_RE = re.compile(rf"\b{UNIT_WORDS}[\s.#]+([A-Za-z0-9][A-Za-z0-9-]{{0,9}})\b", re.I)
+LABEL_NOISE_RE = re.compile(
+    r"\b(?:new job|job id|job|ticket|order|name|customer|client|contact|phone|mobile|cell|"
+    r"location|address|service|confirm|description|details|problem|issue|request)\b\s*:?",
     re.I,
 )
 
@@ -136,6 +152,8 @@ class DeterministicJobTextParser:
         self._classify_service(normalized, result)
         self._extract_vehicle(normalized, result)
         self._extract_description(normalized, result)
+        self._extract_price(normalized, result)
+        self._collect_unmapped(normalized, result)
         result["processingDurationMs"] = round((time.perf_counter() - started) * 1000, 2)
         return result
 
@@ -198,6 +216,9 @@ class DeterministicJobTextParser:
                 result["customer"]["name"] = field(match.group(1), "medium", "inference", match.group(1))
 
     def _extract_address(self, text: str, result: dict[str, Any]) -> None:
+        unit = UNIT_RE.search(text)
+        if unit:
+            result["location"]["addressLine2"] = field(re.sub(r"\s+", " ", unit.group(0)).strip(), "medium", "regex", unit.group(0))
         match = ADDRESS_RE.search(text)
         if not match:
             zip_only = CITY_STATE_ZIP_RE.search(text)
@@ -217,7 +238,11 @@ class DeterministicJobTextParser:
         if street_tail:
             street = street_tail.group(1)
         result["location"].update({
-            "addressLine1": field(street, "medium", "regex", match.group(1)),
+            # rawMatch is the trimmed street, not group(1): the pattern's leading
+            # segment can start far to the left ("b # 245244 Name: ... 4910 43rd
+            # Ave N"), which misreports provenance and swallows neighbouring text
+            # when the leftovers pass subtracts what was matched.
+            "addressLine1": field(street, "medium", "regex", street),
             "city": field(match.group(2).strip(" ,"), "medium", "regex"),
             "state": field(normalize_state(match.group(3)), "high", "dictionary", match.group(3)),
             "postalCode": field(match.group(4), "high", "regex", match.group(4)),
@@ -267,6 +292,42 @@ class DeterministicJobTextParser:
         match = DESCRIPTION_RE.search(text)
         if match and match.group(1).strip():
             result["description"] = field(match.group(1).strip(), "high", "label", match.group(0))
+
+    def _extract_price(self, text: str, result: dict[str, Any]) -> None:
+        match = PRICE_RE.search(text)
+        if match:
+            result["price"] = field(re.sub(r"\s+", "", match.group(0)), "medium", "regex", match.group(0))
+
+    def _collect_unmapped(self, text: str, result: dict[str, Any]) -> None:
+        """Lines that fed no field at all. Surfacing them keeps a partner format we
+        have never seen from quietly losing a gate code or an access instruction --
+        without needing a rule per thing anyone might write."""
+        matched: list[str] = []
+
+        def walk(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            if "value" in node and "confidence" in node:
+                matched.extend(str(node.get("rawMatch") or node["value"]).split("\n"))
+                return
+            for value in node.values():
+                walk(value)
+
+        for key, value in result.items():
+            if key not in {"rawText", "normalizedText"}:
+                walk(value)
+        parts = sorted({part.strip() for part in matched if part.strip()}, key=len, reverse=True)
+        # One literal alternation per line rather than a sub per field, so a paste
+        # of many short lines stays linear.
+        consumed = re.compile("|".join(re.escape(part) for part in parts), re.I) if parts else None
+        leftovers = []
+        for line in text.split("\n"):
+            residue = consumed.sub(" ", line) if consumed else line
+            residue = re.sub(r"[^A-Za-z0-9$]+", " ", LABEL_NOISE_RE.sub(" ", residue)).strip()
+            if len(residue) >= 3:
+                leftovers.append(line.strip())
+        if leftovers:
+            result["unmappedLines"] = leftovers
 
 
 def parse_job_text(text: str) -> dict[str, Any]:
