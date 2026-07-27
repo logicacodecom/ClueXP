@@ -39,6 +39,40 @@ def test_complete_address_is_marked_complete():
     assert result["location"]["isComplete"] is True
 
 
+def test_trailing_directional_and_multiline_description():
+    """Real Workiz shape that parsed to an empty location and a null description:
+    the directional trails the suffix ("Ave N") and the description spans lines."""
+    result = parse(
+        "New job # 245244 Name: Dana Reyes (8338600270 #3535) "
+        "1200 43rd Ave N, St. Petersburg, Florida 33709 House Lockout Confirm: "
+        "https://app.workiz.com/index.php?page=confirm_job&token=93USXA "
+        "Description: $70 flat \n--\ndog locked inside"
+    )
+
+    assert result["location"]["addressLine1"]["value"] == "1200 43rd Ave N"
+    assert result["location"]["city"]["value"] == "St. Petersburg"
+    assert result["location"]["state"]["value"] == "FL"
+    assert result["location"]["postalCode"]["value"] == "33709"
+    assert result["location"]["isComplete"] is True
+    assert result["description"]["value"] == "$70 flat\n--\ndog locked inside"
+    assert result["service"]["category"]["value"] == "home"
+    assert not any(w["field"].startswith("location") for w in result["warnings"])
+
+
+def test_city_directional_is_not_claimed_by_the_street():
+    result = parse("123 Main St, W Palm Beach, FL 33401 House Lockout")
+
+    assert result["location"]["addressLine1"]["value"] == "123 Main St"
+    assert result["location"]["city"]["value"] == "W Palm Beach"
+
+
+def test_missing_address_warns_instead_of_failing_silently():
+    result = parse("Job 4321 Dana Reyes 8338600270 House Lockout")
+
+    assert result["location"] == {"isComplete": False}
+    assert any(w["code"] == "address_not_found" for w in result["warnings"])
+
+
 def test_unsafe_url_is_rejected():
     result = parse("Confirm: javascript:alert(1)")
 

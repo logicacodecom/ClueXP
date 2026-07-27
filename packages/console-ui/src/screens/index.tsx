@@ -1141,7 +1141,8 @@ export function ProviderNewRequest() {
             {entryMode === "review" && parsedJob ? (
               <label className="space-y-2 text-sm font-medium">
                 Original raw pasted text
-                <textarea className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-muted-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={pastedText || parsedJob.rawText} onChange={(event) => setPastedText(event.target.value)} />
+                <span className="block text-xs font-normal text-muted-foreground">Stored with the job as-is. Use Back to Pasted Text to change it and re-parse.</span>
+                <textarea readOnly className="min-h-24 w-full rounded-md border border-input bg-secondary/30 px-3 py-2 text-sm text-muted-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" value={parsedJob.rawText} />
               </label>
             ) : null}
             {createdId ? (

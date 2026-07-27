@@ -32,14 +32,25 @@ VEHICLE_MAKES = [
 # Every quantifier that can consume a space is bounded. Unbounded lazy classes
 # (`[^,\n]+?\s+`) backtrack catastrophically on a long comma-free near-match:
 # one 8KB paste took 32s and blocked the event loop for the whole worker.
+# A directional can trail the suffix ("4910 43rd Ave N"). Only claim it when a
+# comma follows, so "123 Main St, W Palm Beach" still reads W as part of the city.
+POST_DIRECTIONAL = r"(?:\s+(?:NE|NW|SE|SW|N|S|E|W)(?=\s*,))?"
 ADDRESS_RE = re.compile(
-    rf"((?:\d+\s+)?(?:N|S|E|W|NE|NW|SE|SW)?\s*[^,\n]{{1,60}}?\s+{STREET_SUFFIX})[,]?\s+"
+    rf"((?:\d+\s+)?(?:N|S|E|W|NE|NW|SE|SW)?\s*[^,\n]{{1,60}}?\s+{STREET_SUFFIX}{POST_DIRECTIONAL})[,]?\s+"
     rf"([A-Za-z .'-]{{1,40}}?)[,\s]+({STATE_PATTERN})[,]?\s+(\d{{5}})",
     re.I,
 )
-CITY_STATE_ZIP_RE = re.compile(rf"\b([A-Za-z .'-]{{1,40}}?)\s+({STATE_PATTERN})\s+(\d{{5}})\b", re.I)
+CITY_STATE_ZIP_RE = re.compile(rf"\b([A-Za-z .'-]{{1,40}}?)[,\s]+({STATE_PATTERN})\s+(\d{{5}})\b", re.I)
 STREET_TAIL_RE = re.compile(
-    rf"((?:\d+\s+)?(?:(?:N|S|E|W|NE|NW|SE|SW)\s+)?[A-Za-z0-9.'-]+\s+{STREET_SUFFIX})$", re.I
+    rf"((?:\d+\s+)?(?:(?:N|S|E|W|NE|NW|SE|SW)\s+)?[A-Za-z0-9.'-]+\s+{STREET_SUFFIX}(?:\s+(?:NE|NW|SE|SW|N|S|E|W))?)$",
+    re.I,
+)
+# Descriptions run to the end of the paste and may span lines; stop only at the
+# next labelled field so a mid-text Description does not swallow the rest.
+DESCRIPTION_RE = re.compile(
+    r"(?:description|details|problem|issue|request)\s*:\s*(.+?)"
+    r"(?=\n(?:name|customer|client|contact|phone|mobile|cell|location|address|service|confirm|job|ticket|order)\s*:|\Z)",
+    re.I | re.S,
 )
 LABELED_NAME_RE = re.compile(
     r"(?:name|customer|customer name|client|contact)\s*:\s*([A-Z][A-Za-z' -]{0,60}?)"
@@ -194,6 +205,8 @@ class DeterministicJobTextParser:
                     "isComplete": False,
                 })
                 result["warnings"].append(warning("location.addressLine1", "missing_street_details", "Street details are missing. Confirm the complete service address before dispatch."))
+            else:
+                result["warnings"].append(warning("location", "address_not_found", "No service address was recognized. Enter the service address before dispatch."))
             return
         street = re.sub(r"\s+", " ", match.group(1)).strip(" ,")
         street_tail = STREET_TAIL_RE.search(street)
@@ -247,8 +260,8 @@ class DeterministicJobTextParser:
             result["warnings"].append(warning("vehicle.model", "uncertain_vehicle_model", "Vehicle year and make were detected, but the model was not clear."))
 
     def _extract_description(self, text: str, result: dict[str, Any]) -> None:
-        match = re.search(r"(?:description|details|problem|issue|request)\s*:\s*(.+)$", text, re.I)
-        if match:
+        match = DESCRIPTION_RE.search(text)
+        if match and match.group(1).strip():
             result["description"] = field(match.group(1).strip(), "high", "label", match.group(0))
 
 
