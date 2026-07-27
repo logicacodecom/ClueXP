@@ -3603,9 +3603,11 @@ class PostgresStore(Store):
     async def _connect(self):
         import psycopg
 
-        # autocommit + no prepared statements => safe behind the Supabase pooler.
+        # No prepared statements => safe behind the Supabase pooler. Keep
+        # autocommit off so each connection context commits on success and
+        # rolls back on exception.
         return await psycopg.AsyncConnection.connect(
-            self._dsn, autocommit=True, prepare_threshold=None
+            self._dsn, autocommit=False, prepare_threshold=None
         )
 
     async def startup(self) -> None:
@@ -7020,8 +7022,8 @@ class PostgresStore(Store):
         phone = (data.get("phone") or "").strip() or None
         pw_hash = hash_password(data["password"])
         org_name = data["organization_name"]
-        # Connections are autocommit, so without this block a failure partway
-        # through leaves an orphan organization with no admin behind.
+        # Keep the registration writes grouped explicitly; the connection context
+        # also commits on success and rolls back on exception.
         async with await self._connect() as conn, conn.transaction():
             if email:
                 cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))

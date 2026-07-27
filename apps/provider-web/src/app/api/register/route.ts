@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const COOKIE = "cluexp_access_token";
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 
-export async function POST(request: NextRequest) {
+export const POST = withApiErrors(async function POST(request: NextRequest) {
   const response = await fetch(`${apiBase}/api/auth/register/organization`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(await request.json()), cache: "no-store"
   });
-  const body = await response.json().catch(() => ({}));
+  const body = await jsonOrText(response);
   if (!response.ok) return NextResponse.json(body, { status: response.status });
   // Sign the new provider-admin in immediately so onboarding has a session.
   const result = NextResponse.json({ session: body.session });
@@ -18,4 +19,4 @@ export async function POST(request: NextRequest) {
     });
   }
   return result;
-}
+});

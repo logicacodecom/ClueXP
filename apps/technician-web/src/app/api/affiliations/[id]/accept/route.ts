@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const COOKIE = "cluexp_access_token";
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 
-export async function POST(
+export const POST = withApiErrors(async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -22,7 +23,7 @@ export async function POST(
     cache: "no-store"
   });
 
-  const body = await response.json().catch(() => ({}));
+  const body = await jsonOrText(response);
 
   if (!response.ok) {
     return NextResponse.json(body, { status: response.status });
@@ -33,4 +34,4 @@ export async function POST(
     affiliation: body.affiliation,
     message: body.message || "Affiliation accepted"
   });
-}
+});
