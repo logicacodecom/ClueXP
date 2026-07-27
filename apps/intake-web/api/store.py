@@ -7017,9 +7017,12 @@ class PostgresStore(Store):
 
     async def register_organization(self, data: dict) -> dict:
         email = (data.get("admin_email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
         pw_hash = hash_password(data["password"])
         org_name = data["organization_name"]
-        async with await self._connect() as conn:
+        # Connections are autocommit, so without this block a failure partway
+        # through leaves an orphan organization with no admin behind.
+        async with await self._connect() as conn, conn.transaction():
             if email:
                 cur = await conn.execute("select 1 from users where lower(email) = lower(%s)", (email,))
                 if await cur.fetchone():
@@ -7039,17 +7042,19 @@ class PostgresStore(Store):
                 " values (%s, %s, %s, 'pending_review', 'none', %s, %s, %s, %s, %s,"
                 " 'organization_managed', 'company') returning id",
                 (
-                    org_name, data.get("legal_name") or org_name, slug, email,
-                    data.get("phone"),
+                    org_name, data.get("legal_name") or org_name, slug, email, phone,
                     data.get("service_area_center_lat"), data.get("service_area_center_lng"),
                     data.get("service_area_radius_km"),
                 ),
             )
             org_id = (await cur.fetchone())[0]
+            # The phone belongs to the company, and companies may share one, so it
+            # is kept on organizations (not unique) and off users.phone, which is a
+            # globally unique login identifier. The admin signs in with their email.
             cur = await conn.execute(
                 "insert into users (email, phone, password_hash, display_name, status, locale)"
-                " values (%s, %s, %s, %s, 'active', %s) returning id",
-                (email, data.get("phone"), pw_hash, data["admin_display_name"], data.get("locale")),
+                " values (%s, null, %s, %s, 'active', %s) returning id",
+                (email, pw_hash, data["admin_display_name"], data.get("locale")),
             )
             user_id = (await cur.fetchone())[0]
             await conn.execute(

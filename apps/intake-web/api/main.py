@@ -16,7 +16,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from api.geocode import geocode, places_autocomplete, reverse_geocode
@@ -106,6 +108,30 @@ async def strip_vercel_api_prefix(request, call_next):
     if request.scope["path"].startswith("/api/"):
         request.scope["path"] = request.scope["path"][4:]
     return await call_next(request)
+
+
+# Every BFF route in every frontend does `await response.json().catch(() => ({}))`
+# and then renders `body.detail`. So any error body that isn't JSON-with-a-detail
+# reaches the browser as a blank generic message. These two handlers guarantee the
+# shape for the cases FastAPI/Starlette would otherwise answer differently.
+@app.exception_handler(RequestValidationError)
+async def validation_error_detail(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """Default 422 detail is a list of error objects; flatten to one string."""
+    fields = [
+        f"{'.'.join(str(p) for p in err['loc'][1:]) or 'body'}: {err['msg']}"
+        for err in exc.errors()
+    ]
+    return JSONResponse({"detail": "; ".join(fields)}, status_code=422)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_detail(request: Request, exc: Exception) -> JSONResponse:
+    """Default 500 body is the plain text "Internal Server Error"."""
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    # ponytail: the exception text goes to the client — it is what makes a 500
+    # diagnosable from the browser. Swap for an opaque error id + log lookup if a
+    # public endpoint ever raises something sensitive.
+    return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
 
 
 # OTP is deferred this sprint (no frontend gate); best-effort, demo-only.
