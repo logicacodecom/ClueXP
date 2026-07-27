@@ -716,11 +716,16 @@ export function ProviderNewRequest() {
   const [addressStatus, setAddressStatus] = useState<"manual" | "selected" | "unresolved">("manual");
   const [geocodeConfidence, setGeocodeConfidence] = useState<string | null>(null);
   const [activePredictionIndex, setActivePredictionIndex] = useState(-1);
+  // A parsed address arrives filled in, so opening the prediction list over the
+  // form would be answering a question the dispatcher never asked. Cleared the
+  // moment they touch an address field themselves.
+  const skipPlacesForParsedAddress = useRef(false);
 
   function update(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
     setNotesWarning(null);
     if (["street1", "street2", "city", "state", "zip"].includes(field)) {
+      skipPlacesForParsedAddress.current = false;
       setAddressStatus("manual");
       setGeocodeConfidence(null);
     }
@@ -745,6 +750,7 @@ export function ProviderNewRequest() {
       vehicle_model: parsedValue(result.vehicle?.model) ?? current.vehicle_model,
       notes: parsedValue(result.description) ?? current.notes,
     }));
+    skipPlacesForParsedAddress.current = true;
     setAddressStatus(result.location.isComplete ? "manual" : "unresolved");
     setEntryMode("review");
   }
@@ -770,6 +776,7 @@ export function ProviderNewRequest() {
   }
 
   function resetForNextCall() {
+    skipPlacesForParsedAddress.current = false;
     setForm(initialProviderRequestForm);
     setPastedText("");
     setParsedJob(null);
@@ -901,8 +908,7 @@ export function ProviderNewRequest() {
   }
 
   useEffect(() => {
-    const address = form.street1.trim();
-    if (address.length < 2 || addressStatus === "selected") {
+    if (form.street1.trim().length < 2 || addressStatus === "selected" || skipPlacesForParsedAddress.current) {
       setPlacePredictions([]);
       setPlacesLoading(false);
       return;
@@ -911,7 +917,11 @@ export function ProviderNewRequest() {
     const timer = setTimeout(async () => {
       setPlacesLoading(true);
       try {
-        const response = await fetch(`/api/places/autocomplete?q=${encodeURIComponent(address)}`, {
+        // Query the whole address so a pasted job suggests its own city instead
+        // of every matching street in the country. City/state stay out of the
+        // dependencies on purpose: they refine the next lookup rather than
+        // reopening a dropdown anchored to Street 1.
+        const response = await fetch(`/api/places/autocomplete?q=${encodeURIComponent(fullAddress(form))}`, {
           cache: "no-store",
           signal: controller.signal,
         });
