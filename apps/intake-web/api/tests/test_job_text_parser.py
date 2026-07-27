@@ -90,6 +90,52 @@ def test_missing_address_warns_instead_of_failing_silently():
     assert any(w["code"] == "address_not_found" for w in result["warnings"])
 
 
+def test_price_unit_and_leftovers_are_captured():
+    result = parse(
+        "Name: Joe Walker 8338600270\n1234 N 21st St Apt 4B, Tampa, FL 33605\n"
+        "House Lockout\ngate code 5521\ncall before arrival\n$95"
+    )
+
+    assert result["price"]["value"] == "$95"
+    assert result["location"]["addressLine2"]["value"] == "Apt 4B"
+    # The apartment sits between street and city; the address must still parse.
+    assert result["location"]["addressLine1"]["value"] == "1234 N 21st St"
+    assert result["location"]["city"]["value"] == "Tampa"
+    assert result["unmappedLines"] == ["gate code 5521", "call before arrival"]
+
+
+def test_price_range_without_a_description_label():
+    result = parse(
+        "(Kelonshay Watson)\n(4454474307 #238)\n"
+        "13090 Gandy Blvd N, St. Petersburg, Florida 33702\n________\n"
+        " Car Lockout \n2012 Mazda 3 \n$60-$80"
+    )
+
+    assert result["price"]["value"] == "$60-$80"
+    assert "unmappedLines" not in result
+
+
+def test_recognised_lines_are_not_reported_as_leftovers():
+    """Everything in this paste maps to a field, so nothing should be echoed --
+    a leftovers rule that cries wolf just duplicates the paste into the notes."""
+    result = parse(
+        "New job # 245244 Name: Anna Hilligoss (8338600270 #3535) "
+        "4910 43rd Ave N, St. Petersburg, Florida 33709 House Lockout Confirm: "
+        "https://app.workiz.com/index.php?page=confirm_job&token=93USXA "
+        "Description: $70 flat \n--\ndog locked inside"
+    )
+
+    assert "unmappedLines" not in result
+    assert result["location"]["addressLine1"]["rawMatch"] == "4910 43rd Ave N"
+
+
+def test_unit_words_do_not_swallow_ordinary_words():
+    result = parse("Joe Walker 8338600270\n900 Steven Ave, Orlando, Florida 32801\nHouse Lockout")
+
+    assert "addressLine2" not in result["location"]
+    assert result["location"]["state"]["value"] == "FL"
+
+
 def test_unsafe_url_is_rejected():
     result = parse("Confirm: javascript:alert(1)")
 
