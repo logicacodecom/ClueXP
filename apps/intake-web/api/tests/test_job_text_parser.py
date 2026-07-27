@@ -59,6 +59,23 @@ def test_trailing_directional_and_multiline_description():
     assert not any(w["field"].startswith("location") for w in result["warnings"])
 
 
+def test_unlabelled_name_wrapped_in_punctuation():
+    """No "Name:" label, and the closing paren used to defeat the anchored
+    fallback that reads the name preceding the phone number."""
+    result = parse(
+        "(Kelonshay Watson)\n(4454474307 #238)\n"
+        "13090 Gandy Blvd N, St. Petersburg, Florida 33702\n________\n"
+        " Car Lockout \n2012 Mazda 3 \n$60-$80"
+    )
+
+    assert result["customer"]["name"]["value"] == "Kelonshay Watson"
+    assert result["customer"]["phone"]["value"] == "+14454474307"
+    assert result["location"]["addressLine1"]["value"] == "13090 Gandy Blvd N"
+    assert result["location"]["isComplete"] is True
+    assert result["service"]["category"]["value"] == "vehicle"
+    assert result["vehicle"]["model"]["value"] == "3"
+
+
 def test_city_directional_is_not_claimed_by_the_street():
     result = parse("123 Main St, W Palm Beach, FL 33401 House Lockout")
 
