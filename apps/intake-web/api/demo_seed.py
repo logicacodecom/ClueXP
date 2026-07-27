@@ -485,11 +485,15 @@ _JOB_CHILD_TABLES = (
 
 
 async def _safe_execute(conn, sql: str, params: tuple) -> int:
-    """Execute a statement, returning affected rows; tolerate a missing table
-    (autocommit connection → a failed statement is isolated). Returns -1 if the
-    statement could not run (table absent / behind on migrations)."""
+    """Execute a statement, returning affected rows; tolerate a missing table.
+
+    The inner transaction becomes a savepoint when the caller already has an open
+    transaction, keeping a failed optional delete from aborting the whole reset.
+    Returns -1 if the statement could not run (table absent / behind on migrations).
+    """
     try:
-        cur = await conn.execute(sql, params)
+        async with conn.transaction():
+            cur = await conn.execute(sql, params)
         return cur.rowcount if cur.rowcount is not None else 0
     except Exception:
         return -1

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 const ACTIONS = new Set(["approve", "reject", "suspend", "reactivate"]);
 
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string; action: string }> }) {
+export const POST = withApiErrors(async function POST(request: NextRequest, context: { params: Promise<{ id: string; action: string }> }) {
   const token = request.cookies.get("cluexp_access_token")?.value;
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   const { id, action } = await context.params;
@@ -15,5 +16,5 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     body: JSON.stringify(body),
     cache: "no-store"
   });
-  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
-}
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});

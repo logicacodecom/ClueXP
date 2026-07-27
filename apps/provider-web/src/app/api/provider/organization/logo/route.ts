@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 const cookie = "cluexp_access_token";
 
-export async function POST(request: NextRequest) {
+export const POST = withApiErrors(async function POST(request: NextRequest) {
   const token = request.cookies.get(cookie)?.value;
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   // Forward the raw multipart body (boundary intact) so the upstream UploadFile parses it.
@@ -17,5 +18,5 @@ export async function POST(request: NextRequest) {
     body,
     cache: "no-store"
   });
-  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
-}
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});

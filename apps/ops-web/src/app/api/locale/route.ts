@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 const localePath = process.env.CLUEXP_AUTH_LOCALE_PATH || "/api/auth/me/locale";
 
-export async function PATCH(request: NextRequest) {
+export const PATCH = withApiErrors(async function PATCH(request: NextRequest) {
   const token = request.cookies.get("cluexp_access_token")?.value;
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   const response = await fetch(`${apiBase}${localePath}`, {
@@ -12,6 +13,6 @@ export async function PATCH(request: NextRequest) {
     body: JSON.stringify(await request.json()),
     cache: "no-store"
   });
-  const body = await response.json().catch(() => ({}));
+  const body = await jsonOrText(response);
   return NextResponse.json(body, { status: response.status });
-}
+});

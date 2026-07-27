@@ -1,19 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const COOKIE = "cluexp_access_token";
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 
-export async function GET(request: NextRequest) {
+export const GET = withApiErrors(async function GET(request: NextRequest) {
   const token = request.cookies.get(COOKIE)?.value;
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   const response = await fetch(`${apiBase}/api/technician/payments`, {
     headers: { authorization: `Bearer ${token}` },
     cache: "no-store"
   });
-  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
-}
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});
 
-export async function POST(request: NextRequest) {
+export const POST = withApiErrors(async function POST(request: NextRequest) {
   const token = request.cookies.get(COOKIE)?.value;
   if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
   const body = await request.json().catch(() => ({}));
@@ -23,5 +24,5 @@ export async function POST(request: NextRequest) {
     body: JSON.stringify(body),
     cache: "no-store"
   });
-  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
-}
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});

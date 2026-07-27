@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
 
 const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
 
-export async function GET(
+export const GET = withApiErrors(async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ jobId: string }> }
 ) {
@@ -13,10 +14,10 @@ export async function GET(
     headers: { authorization: `Bearer ${token}` },
     cache: "no-store",
   });
-  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
-}
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});
 
-export async function POST(
+export const POST = withApiErrors(async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ jobId: string }> }
 ) {
@@ -30,5 +31,5 @@ export async function POST(
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
-}
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});
