@@ -188,8 +188,12 @@ class DeterministicJobTextParser:
                 return
         phone_raw = result.get("customer", {}).get("phone", {}).get("rawMatch")
         if phone_raw:
-            before = text.split(phone_raw, 1)[0]
-            match = re.search(r"([A-Z][A-Za-z']+\s+[A-Z][A-Za-z']+)\s*$", before.strip())
+            # Trailing punctuation would otherwise defeat the anchor: a name on its
+            # own line reaches here as "(Kelonshay Watson)". Trimmed at the point of
+            # matching rather than stripped from the source, which the address,
+            # reference, price and URL rules all still need intact.
+            before = re.sub(r"[^A-Za-z]+$", "", text.split(phone_raw, 1)[0].strip())
+            match = re.search(r"([A-Z][A-Za-z']+\s+[A-Z][A-Za-z']+)\s*$", before)
             if match:
                 result["customer"]["name"] = field(match.group(1), "medium", "inference", match.group(1))
 
