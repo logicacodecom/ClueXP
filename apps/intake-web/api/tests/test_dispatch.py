@@ -1063,6 +1063,32 @@ def test_provider_assign_happy_path_own_tech():
     assert "offer_id" in resp.json()
 
 
+def test_provider_assign_stamps_dispatching_org_not_technician_primary_org():
+    # A technician affiliated with two companies: company B dispatches, so the offer
+    # belongs to B — not to the technician's denormalized primary org (company A).
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org_a, org_b = str(uuid4()), str(uuid4())
+    uid, jid, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org_b)
+    _seed_provider_job(app_store, org_b, jid)
+    _seed_org_tech(app_store, org_a, tid)  # primary_organization_id = company A
+    asyncio.run(app_store.add_affiliation(UUID(org_a), UUID(tid)))
+    asyncio.run(app_store.add_affiliation(UUID(org_b), UUID(tid)))
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/provider/queue/{jid}/assign", json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    offer = app_store._offers[resp.json()["offer_id"]]
+    assert offer["organization_id"] == org_b
+    assert offer["organization_id"] != org_a
+
+
 def test_provider_assign_rejects_foreign_technician():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -2996,6 +3022,121 @@ def test_existing_tech_invite_is_tenant_scoped():
     assert b_rows and b_rows[0]["status"] == "pending_invite"
 
 
+# --- re-invite must never rewrite an open affiliation period ------------------
+
+def test_reinvite_does_not_demote_active_affiliation():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+    active = asyncio.run(store.add_affiliation(UUID(org), UUID(tid)))
+    again = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+    assert again["status"] == "active" and again["created"] is False
+    assert again["id"] == active["id"]
+    assert len(store._affiliations) == 1
+    # Still dispatch-eligible — the demotion bug knocked the tech out of the roster.
+    assert [t["id"] for t in asyncio.run(store.list_all_technicians_for_ops(org))] == [tid]
+
+
+def test_reinvite_does_not_reset_suspended_affiliation():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    asyncio.run(store.add_affiliation(UUID(org), UUID(tid), dispatch_allowed=False))
+    asyncio.run(store.end_affiliation(UUID(org), UUID(tid), reason="under review", status="suspended"))
+    again = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+    assert again["status"] == "suspended" and again["created"] is False
+    assert again["dispatch_allowed"] is False
+    assert store._affiliations[0]["suspension_reason"] == "under review"
+    assert len(store._affiliations) == 1
+
+
+def test_reinvite_of_pending_invite_is_idempotent():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    first = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+    second = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+    assert first["created"] is True and second["created"] is False
+    assert second["id"] == first["id"] and second["status"] == "pending_invite"
+    assert len(store._affiliations) == 1
+
+
+def test_reinvite_after_ended_or_rejected_starts_new_period():
+    for closing in ("ended", "declined"):
+        store = InMemoryStore()
+        org, tid = str(uuid4()), str(uuid4())
+        first = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+        if closing == "ended":
+            asyncio.run(store.accept_affiliation(UUID(first["id"]), UUID(tid)))
+            asyncio.run(store.end_affiliation(UUID(org), UUID(tid), reason="left"))
+        else:
+            asyncio.run(store.decline_affiliation(UUID(first["id"]), UUID(tid), reason="no thanks"))
+        again = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+        assert again["created"] is True and again["id"] != first["id"], closing
+        assert again["status"] == "pending_invite"
+        assert len(store._affiliations) == 2, f"{closing}: history must be preserved"
+
+
+def test_postgres_add_affiliation_never_updates_the_open_period():
+    # The Postgres path can't be exercised here (the suite is InMemory-only), so pin
+    # the one property that made the demotion possible: the open-period conflict must
+    # be DO NOTHING, never DO UPDATE.
+    import inspect
+    from api.store import PostgresStore
+
+    sql = inspect.getsource(PostgresStore.add_affiliation)
+    body = sql.split('"""', 2)[-1]  # ignore the docstring's prose
+    assert "do nothing" in body
+    assert "do update" not in body
+
+
+def test_http_invite_existing_technician_reports_open_period_instead_of_demoting():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, uid, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    email = f"reinvite_{tid[:8]}@x.com"
+    app_store.users[uid] = {
+        "id": uid, "email": f"admin_{uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Admin", "password_hash": "",
+        "roles": ["provider_admin"], "active_organization_id": org, "organization_name": "Acme",
+    }
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tid, "status": "active", "vetting_status": "verified",
+        "display_name": "Dual Tech", "email": email, "skills": [],
+    })
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["provider_admin"]})
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    first = client.post("/provider/technicians/invite", json={"email": email}, headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["affiliation"]["status"] == "pending_invite"
+    assert first.json()["already_invited"] is False
+    aid = first.json()["affiliation"]["id"]
+
+    # Re-inviting a pending invite is a no-op, not a second row.
+    dup = client.post("/provider/technicians/invite", json={"email": email}, headers=headers)
+    assert dup.status_code == 200, dup.text
+    assert dup.json()["already_invited"] is True
+    assert dup.json()["affiliation"]["id"] == aid
+
+    # Once active, a re-invite is refused instead of demoting them to pending_invite.
+    asyncio.run(app_store.accept_affiliation(UUID(aid), UUID(tid)))
+    active = client.post("/provider/technicians/invite", json={"email": email}, headers=headers)
+    assert active.status_code == 409, active.text
+    assert "already affiliated" in active.json()["detail"]
+    row = next(a for a in app_store._affiliations if a["id"] == aid)
+    assert row["status"] == "active"
+
+    # A suspended affiliation is refused too (re-inviting used to clear the suspension).
+    asyncio.run(app_store.end_affiliation(UUID(org), UUID(tid), reason="review", status="suspended"))
+    suspended = client.post("/provider/technicians/invite", json={"email": email}, headers=headers)
+    assert suspended.status_code == 409, suspended.text
+    assert "suspended" in suspended.json()["detail"]
+    assert next(a for a in app_store._affiliations if a["id"] == aid)["status"] == "suspended"
+
+
 # --- Slice E: customer-safe assigned-technician identity ----------------------
 
 def _status_for(store, jid, tid, *, job_status="en_route", tech=None):
@@ -3089,6 +3230,108 @@ def test_list_technician_affiliations_self_scoped():
     assert rows[0]["status"] == "pending_invite" and rows[0]["organization_id"] == org
 
 
+def test_leave_ends_active_affiliation_and_is_self_scoped():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    store._technicians = [{"id": tid, "status": "active", "vetting_status": "verified", "display_name": "T"}]
+    aff = asyncio.run(store.add_affiliation(UUID(org), UUID(tid)))
+    # Another technician cannot end this affiliation.
+    assert asyncio.run(store.leave_affiliation(UUID(aff["id"]), uuid4())) is None
+    assert store._affiliations[0]["status"] == "active"
+
+    result = asyncio.run(store.leave_affiliation(UUID(aff["id"]), UUID(tid)))
+    assert result["status"] == "ended" and result["ended_at"] is not None
+    assert result["ended_reason"] == "technician_left"
+    assert asyncio.run(store.list_all_technicians_for_ops(org)) == []
+    # The period is closed, so the company can invite them again later.
+    again = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+    assert again["created"] is True and again["id"] != aff["id"]
+
+
+def test_leave_ends_suspended_affiliation():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    aff = asyncio.run(store.add_affiliation(UUID(org), UUID(tid)))
+    asyncio.run(store.end_affiliation(UUID(org), UUID(tid), reason="review", status="suspended"))
+    result = asyncio.run(store.leave_affiliation(UUID(aff["id"]), UUID(tid)))
+    assert result["status"] == "ended" and result["ended_at"] is not None
+
+
+def test_leave_rejects_pending_invite_and_closed_periods():
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    invite = asyncio.run(store.add_affiliation(UUID(org), UUID(tid), status="pending_invite"))
+    raised = ""
+    try:
+        asyncio.run(store.leave_affiliation(UUID(invite["id"]), UUID(tid)))
+    except ValueError as exc:
+        raised = str(exc)
+    assert raised == "pending_invite", "a pending invite is declined, not left"
+    assert store._affiliations[0]["status"] == "pending_invite"
+
+    asyncio.run(store.accept_affiliation(UUID(invite["id"]), UUID(tid)))
+    asyncio.run(store.leave_affiliation(UUID(invite["id"]), UUID(tid)))
+    raised = ""
+    try:
+        asyncio.run(store.leave_affiliation(UUID(invite["id"]), UUID(tid)))
+    except ValueError as exc:
+        raised = str(exc)
+    assert raised == "not_open", "an already-ended period cannot be left twice"
+
+
+def test_http_leave_affiliation_self_scoped():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, uid = str(uuid4()), str(uuid4())
+    app_store.users[uid] = {
+        "id": uid, "email": f"leaver_{uid[:8]}@cluexp.test", "phone": None,
+        "display_name": "Leaver", "password_hash": "",
+        "roles": ["technician"], "active_organization_id": None, "organization_name": None,
+    }
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": uid, "status": "active", "vetting_status": "verified", "display_name": "Leaver",
+    })
+    _orig = app_store.get_user_session
+
+    async def _patched(user_id):
+        s = await _orig(user_id)
+        if s and user_id == uid:
+            s["technician"] = {"id": uid, "approved": True, "status": "active",
+                               "vetting_status": "verified"}
+        return s
+
+    app_store.get_user_session = _patched
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["technician"]})
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        aff = asyncio.run(app_store.add_affiliation(UUID(org), UUID(uid)))
+        # Someone else's affiliation → 404, never a cross-technician mutation.
+        other = asyncio.run(app_store.add_affiliation(UUID(org), uuid4()))
+        foreign = client.post(f"/technicians/me/affiliations/{other['id']}/leave", headers=headers)
+        assert foreign.status_code == 404, foreign.text
+
+        ok = client.post(f"/technicians/me/affiliations/{aff['id']}/leave", headers=headers)
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["affiliation"]["status"] == "ended"
+
+        # Leaving twice is a 409, not a second close.
+        again = client.post(f"/technicians/me/affiliations/{aff['id']}/leave", headers=headers)
+        assert again.status_code == 409, again.text
+
+        # A pending invite is declined, not left.
+        invite = asyncio.run(app_store.add_affiliation(
+            UUID(org), UUID(uid), status="pending_invite"))
+        pending = client.post(f"/technicians/me/affiliations/{invite['id']}/leave", headers=headers)
+        assert pending.status_code == 409, pending.text
+        assert "decline" in pending.json()["detail"].lower()
+    finally:
+        app_store.get_user_session = _orig
+
+
 def test_set_technician_photo_auto_approves_and_is_customer_exposed():
     # Self-service photos are auto-approved for now (real Ops/admin review is
     # deferred); the Slice E exposure gate itself is unchanged and still keys
@@ -3180,8 +3423,13 @@ def test_provider_suspend_makes_ineligible_and_can_reactivate():
     res = asyncio.run(store.end_affiliation(UUID(org), UUID(tid), status="suspended", reason="paused"))
     assert res["status"] == "suspended"
     assert asyncio.run(store.list_all_technicians_for_ops(org)) == []  # suspended → ineligible
-    asyncio.run(store.add_affiliation(UUID(org), UUID(tid)))  # reactivate the open period
+    # Reactivation is its own operation — re-inviting must never double as an unsuspend.
+    back = asyncio.run(store.reactivate_affiliation(UUID(org), UUID(tid)))
+    assert back["status"] == "active"
     assert [t["id"] for t in asyncio.run(store.list_all_technicians_for_ops(org))] == [tid]
+    assert len(store._affiliations) == 1  # same period, no re-consent
+    # Nothing to reactivate once it is active again.
+    assert asyncio.run(store.reactivate_affiliation(UUID(org), UUID(tid))) is None
 
 
 def test_provider_end_affiliation_is_tenant_scoped():

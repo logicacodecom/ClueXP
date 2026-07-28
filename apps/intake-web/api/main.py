@@ -2025,12 +2025,32 @@ async def invite_provider_technician(
                 organization_id, UUID(existing["id"]), status="pending_invite",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This technician holds an exclusive affiliation with another company."
+                    if str(exc) == "exclusive_conflict"
+                    else "That technician's affiliation just changed — try the invite again."
+                ),
+            )
+        # add_affiliation never rewrites an open period, so a re-invite reports the
+        # real state instead of silently demoting an active technician to a pending
+        # invite (or resetting a suspension). Re-inviting a pending invite is a no-op.
+        if result.get("status") == "active":
+            raise HTTPException(
+                status_code=409, detail="This technician is already affiliated with your company.",
+            )
+        if result.get("status") == "suspended":
+            raise HTTPException(
+                status_code=409,
+                detail="This technician's affiliation is suspended. Reactivate it instead of re-inviting.",
+            )
         return {
             "mode": "existing_technician",
             "technician_id": existing["id"],
             "display_name": existing.get("display_name"),
             "affiliation": result,
+            "already_invited": result.get("created") is False,
         }
     invite = await store.create_technician_invite(
         organization_id, email=email, invited_by=str(session.get("user", {}).get("id")),
@@ -2101,6 +2121,27 @@ async def provider_suspend_affiliation(
     result = await store.end_affiliation(organization_id, technician_id, reason=reason[:280], status="suspended")
     if result is None:
         raise HTTPException(status_code=404, detail="No active affiliation with this technician")
+    return result
+
+
+@app.post("/provider/technicians/{technician_id}/affiliation/reactivate")
+async def provider_reactivate_affiliation(
+    technician_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Lift a suspension this company placed: the open period goes back to active.
+    Tenant-scoped, and the only way back from `suspend` — re-inviting a suspended
+    technician is refused rather than silently resetting their affiliation."""
+    organization_id = _provider_organization_id(session)
+    try:
+        result = await store.reactivate_affiliation(organization_id, technician_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=409,
+            detail="This technician now holds an exclusive affiliation with another company.",
+        )
+    if result is None:
+        raise HTTPException(status_code=404, detail="No suspended affiliation with this technician")
     return result
 
 
@@ -2334,6 +2375,31 @@ async def decline_my_affiliation(
     if result is None:
         raise HTTPException(status_code=404, detail="Invite not found")
     return {"affiliation": result, "message": "Affiliation declined"}
+
+
+@app.post("/technicians/me/affiliations/{affiliation_id}/leave")
+async def leave_my_affiliation(
+    affiliation_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Leave a company. Closes the technician's OWN active or suspended affiliation
+    period (`status='ended'`, reason `technician_left`) so history is preserved and a
+    later rejoin starts a new period. Self-scoped: another technician's affiliation is
+    a 404. A pending invite is declined, not left."""
+    tid = _me_technician_id(session)
+    try:
+        result = await store.leave_affiliation(affiliation_id, tid)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This is a pending invite — decline it instead of leaving."
+                if str(exc) == "pending_invite"
+                else "This affiliation is already ended."
+            ),
+        )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Affiliation not found")
+    return {"affiliation": result, "message": "You have left this company"}
 
 
 @app.post("/technicians/me/photo")
@@ -3040,9 +3106,16 @@ def _closeout_collection_items(closeout: dict[str, Any] | None) -> list[dict[str
 async def _send_targeted_offer(
     *, job: dict[str, Any], job_id: UUID, technician_id: UUID, tech: dict[str, Any],
     override_reason: str | None, session: dict[str, Any], audit_prefix: str,
+    dispatch_org_id: str | None,
 ) -> dict[str, Any]:
     """Advisory-flag check + single-offer creation + audit. Raises HTTPException on
-    override-required (422) or job/offer conflict (409). Shared by ops + provider."""
+    override-required (422) or job/offer conflict (409).
+
+    `dispatch_org_id` is the company doing the dispatching and is what the offer is
+    stamped with — never the technician's denormalized `primary_organization_id`, which
+    for a technician affiliated with two companies books company B's offer to company A.
+    Provider dispatch passes its own org; a platform-managed path (ClueXP Direct, not
+    shipped — Ops has no assign mutation) would pass None for an unowned offer."""
     now_dt = datetime.now(tz=timezone.utc)
     threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
     loc_updated = tech.get("location_updated_at")
@@ -3078,8 +3151,7 @@ async def _send_targeted_offer(
             detail=f"Override required: technician {', '.join(override_flags)}. "
                    f"Supply override_reason to proceed.",
         )
-    org_id_str = tech.get("primary_organization_id")
-    org_id = UUID(org_id_str) if org_id_str else None
+    org_id = UUID(dispatch_org_id) if dispatch_org_id else None
     # TTL resolved at offer-creation time: global_settings → env → 300 (safe under
     # DB failure). Stamped onto this offer only; existing offers are never changed.
     ttl_seconds = await runtime_settings.resolve_offer_ttl_seconds(store)
@@ -3887,6 +3959,7 @@ async def provider_assign(
     return await _send_targeted_offer(
         job=job, job_id=job_id, technician_id=payload.technician_id, tech=tech,
         override_reason=payload.override_reason, session=session, audit_prefix="provider",
+        dispatch_org_id=org_id,
     )
 
 
