@@ -24,6 +24,7 @@ import {
   CircleDot,
   Lock,
   MapPin,
+  MoreHorizontal,
   RadioTower,
   SlidersHorizontal,
   UserCheck
@@ -67,6 +68,17 @@ import {
   UrgencyTag,
   UserRound
 } from "../components";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle
+} from "../ui";
 import { cn } from "../lib/cn";
 
 const orgId = "org-metro";
@@ -266,6 +278,87 @@ function jobDetailSummary(detail?: Record<string, unknown>): string | null {
   return [vehicle, propertyHint, notes].filter(Boolean).join(" · ") || null;
 }
 
+/** Row-level "Cancel request" for the provider dispatch queue. Wires to the
+ * existing tenant-scoped POST /provider/jobs/{id}/cancel — the same endpoint
+ * /recovery uses — which cancels any pre-completion state (pending_dispatch
+ * through in_progress), revokes tech access, and supersedes active offers.
+ * Reason is required (customer called to cancel, duplicate, cannot service). */
+function QueueCancelAction({ jobId, address, onDone }: { jobId: string; address?: string | null; onDone: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const needsReason = reason.trim().length < 3;
+
+  async function submit() {
+    if (needsReason || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Cancel failed (${res.status})`);
+      setOpen(false);
+      setReason("");
+      await onDone();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Cancel failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button aria-label="More actions" onClick={(e) => e.stopPropagation()} size="icon" variant="ghost">
+            <MoreHorizontal className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setOpen(true)}>
+            Cancel request…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Sheet onOpenChange={(next) => !busy && setOpen(next)} open={open}>
+        <SheetContent className="max-w-lg" onClick={(e) => e.stopPropagation()}>
+          <SheetHeader>
+            <SheetTitle>Cancel this request?</SheetTitle>
+            <SheetDescription>
+              Cancels {address || "the request"}, supersedes any active offer, and removes it from the queue. Give a clear reason for the audit trail.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="space-y-4 p-6">
+            <label className="block text-sm font-medium">
+              Reason required
+              <textarea
+                className="mt-2 min-h-28 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                maxLength={280}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="e.g. Customer called to cancel; duplicate request; unable to service."
+                value={reason}
+              />
+            </label>
+            {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div> : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button disabled={busy} onClick={() => setOpen(false)} variant="outline">Keep request</Button>
+              <Button disabled={busy || needsReason} onClick={() => void submit()} variant="destructive">
+                {busy ? "Cancelling…" : "Cancel request"}
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
+  );
+}
+
 export function LiveQueue({ mode }: { mode: ConsoleMode }) {
   const router = useRouter();
   const [queue, setQueue] = useState<OpsJob[] | null>(null);
@@ -388,20 +481,20 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
       ) : queue && queue.length === 0 ? (
         <EmptyState icon={CheckCircle2} title="Queue empty" description="No jobs are waiting for dispatch." />
       ) : (
-        <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
-          <Card>
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+          <Card className="min-w-0">
             <CardContent className="p-0">
-              <div className="overflow-auto">
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 z-10 bg-card text-left text-xs font-semibold uppercase text-muted-foreground">
                   <tr>
-                    <th className="px-4 py-3">Address</th>
-                    <th className="px-4 py-3">Type</th>
-                    <th className="px-4 py-3">Situation</th>
-                    <th className="px-4 py-3">Urgency</th>
-                    <th className="px-4 py-3">Age</th>
-                    <th className="px-4 py-3">Attempts</th>
-                    <th className="px-4 py-3">Offer</th>
+                    <th className="w-full px-4 py-3">Address</th>
+                    <th className="whitespace-nowrap px-4 py-3">Type</th>
+                    <th className="whitespace-nowrap px-4 py-3">Situation</th>
+                    <th className="whitespace-nowrap px-4 py-3">Urgency</th>
+                    <th className="whitespace-nowrap px-4 py-3">Age</th>
+                    <th className="whitespace-nowrap px-4 py-3">Attempts</th>
+                    <th className="whitespace-nowrap px-4 py-3">Offer</th>
                     <th className="px-4 py-3" />
                   </tr>
                 </thead>
@@ -421,12 +514,12 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                         {detail ? <div className="mt-1 max-w-[34rem] truncate text-xs font-normal text-muted-foreground">{detail}</div> : null}
                         {job.photo_count ? <div className="mt-1 text-xs text-muted-foreground">{job.photo_count} intake photo{job.photo_count === 1 ? "" : "s"}</div> : null}
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{job.access_type ?? "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{job.situation ?? "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{job.access_type ?? "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{job.situation ?? "—"}</td>
                       <td className="px-4 py-3">
                         <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
                       </td>
-                      <td className="px-4 py-3 tabular-nums text-muted-foreground">
+                      <td className="whitespace-nowrap px-4 py-3 tabular-nums text-muted-foreground">
                         <div>{ageLabel(job.created_at)}</div>
                         {label ? <Badge className="mt-1" variant={risk === "ack_breached" ? "warn" : "danger"}>{label}</Badge> : null}
                       </td>
@@ -436,10 +529,13 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                           ? <Badge variant="warn">Offer sent · <SlaCountdown deadline={job.offer_expires_at ?? undefined} /></Badge>
                           : <Badge variant="outline">Awaiting</Badge>}
                       </td>
-                      <td className="px-4 py-3">
-                        <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); router.push(`/queue/${job.id}`); }}>
-                          {mode === "org" ? "Assign" : "View"}
-                        </Button>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); router.push(`/queue/${job.id}`); }}>
+                            {mode === "org" ? "Assign" : "View"}
+                          </Button>
+                          {mode === "org" ? <QueueCancelAction address={job.address} jobId={job.id} onDone={fetchQueue} /> : null}
+                        </div>
                       </td>
                     </tr>
                     );
