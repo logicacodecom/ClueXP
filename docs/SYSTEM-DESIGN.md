@@ -1006,9 +1006,10 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 | `GET/PATCH` | `/provider/workspace` | session (provider_admin) | Org profile |
 | `GET` | `/provider/technicians` | session (provider_admin) | List this company's affiliated technicians (tenant-scoped, read-only profile data) |
 | `GET` | `/provider/technicians/{id}` | session (provider_admin) | **Read-only** detail of one affiliated technician: base profile, affiliation, **team memberships**, **company + global review summaries**, and **compliance documents**. Foreign/unaffiliated → 404. No edit actions (the technician owns the global profile) |
-| `POST` | `/provider/technicians/invite` | session (provider_admin) | Create a company affiliation invite; new people receive a technician signup token, existing technicians receive a pending affiliation |
+| `POST` | `/provider/technicians/invite` | session (provider_admin) | Create a company affiliation invite; new people receive a technician signup token, existing technicians receive a pending affiliation. An **open period is never rewritten**: re-inviting a pending invite is idempotent, an already-active or suspended technician is `409` |
 | `POST` | `/provider/technicians` | session (provider_admin) | Retired (`410`): providers cannot create or own global technician profiles |
 | `POST` | `/provider/technicians/{id}/affiliation/{end,suspend}` | session (provider_admin) | End/suspend this org's affiliation (tenant-scoped; history preserved). `end` on a `pending_invite` row is the **revoke-before-acceptance** path |
+| `POST` | `/provider/technicians/{id}/affiliation/reactivate` | session (provider_admin) | Lift a suspension this org placed (same period, no re-consent). `404` when nothing is suspended; the only way back from `suspend` |
 | `GET/PATCH` | `/provider/teams` | session (provider_admin) | List / create / update teams |
 | `DELETE` | `/provider/teams/{id}` | session (provider_admin) | Safe-delete a team — `409` while it has sub-teams; otherwise drops memberships + team (affiliations untouched). Tenant-scoped |
 | `POST` | `/provider/teams/{id}/technicians` | session (provider_admin) | Add an actively-affiliated technician to a team (`422` if not affiliated; `404` foreign team). Idempotent |
@@ -1020,6 +1021,7 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 |--------|------|------|---------|
 | `GET` | `/technicians/me/affiliations`, `/technicians/me/organizations` | session (technician) | The tech's affiliation rows / active orgs |
 | `POST` | `/technicians/me/affiliations/{id}/{accept,decline}` | session (technician) | Accept/decline a `pending_invite` (exclusivity enforced at accept) |
+| `POST` | `/technicians/me/affiliations/{id}/leave` | session (technician) | Leave a company: closes the tech's own `active`/`suspended` period (`ended`, reason `technician_left`). Self-scoped (`404` for another tech's row); a `pending_invite` is declined, not left (`409`) |
 | `POST` | `/technicians/me/photo` | session (technician) | Upload global profile headshot (→ `pending` review) |
 | `GET` | `/technician/jobs/history` | session (technician) | The tech's finished-job history |
 
@@ -1268,8 +1270,18 @@ endpoints: §4 and §13.
   affiliation is `active` immediately — there is no further provider approval step. Before
   acceptance the provider may **revoke** the pending invite (`POST …/affiliation/end` closes the
   still-open `pending_invite` period). After activation the provider may **suspend** (period stays
-  open, dispatch-ineligible) or **unaffiliate** (`end` sets `ended_at`; history preserved, rejoin
-  allowed). All of these touch only the caller's own affiliation period — never global status.
+  open, dispatch-ineligible), **reactivate** (back to `active`, same period), or **unaffiliate**
+  (`end` sets `ended_at`; history preserved, rejoin allowed). All of these touch only the caller's
+  own affiliation period — never global status.
+- **One open period per (org, tech), written once.** Attaching never rewrites an open period
+  (`uq_org_tech_open_period` + `ON CONFLICT DO NOTHING`): re-inviting is idempotent for a pending
+  invite and `409` for an active or suspended one, so an invite can't demote a working technician
+  to `pending_invite` or clear a suspension. A new period starts only from a closed
+  (`ended`/`rejected`) one.
+- **The technician can leave on their own** (`POST /technicians/me/affiliations/{id}/leave`):
+  closes their own `active`/`suspended` period with reason `technician_left`. Consent is symmetric
+  — the company is not the only party that can end the relationship. Technician-initiated
+  *requests to join* a company are a separate, unbuilt slice: today only the company initiates.
 - **Teams** are virtual structure over already-affiliated technicians: `POST/DELETE
   /provider/teams/{id}/technicians` add/remove members (membership ≠ affiliation; removing from a
   team never changes the affiliation), and `DELETE /provider/teams/{id}` safe-deletes (refused while

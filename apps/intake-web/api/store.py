@@ -959,6 +959,9 @@ class Store:
         status: str = "active", affiliation_type: str = "unknown",
         exclusivity: str = "unknown", dispatch_allowed: bool = True,
     ) -> dict:  # pragma: no cover
+        """Start an affiliation period. An existing OPEN period is returned unchanged
+        with `created=False` (never rewritten); a new one is returned with
+        `created=True`. Raises ValueError('exclusive_conflict')."""
         raise NotImplementedError
 
     async def backfill_affiliations_from_primary_org(self) -> int:  # pragma: no cover
@@ -1005,6 +1008,20 @@ class Store:
     async def decline_affiliation(
         self, affiliation_id: UUID, technician_id: UUID, *, reason: str | None = None
     ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def leave_affiliation(
+        self, affiliation_id: UUID, technician_id: UUID, *, reason: str = "technician_left",
+    ) -> dict | None:  # pragma: no cover
+        """Technician-initiated exit from their own active/suspended affiliation.
+        Raises ValueError('pending_invite') or ValueError('not_open')."""
+        raise NotImplementedError
+
+    async def reactivate_affiliation(
+        self, organization_id: UUID, technician_id: UUID,
+    ) -> dict | None:  # pragma: no cover
+        """Lift a suspension on the org's open period. Raises
+        ValueError('exclusive_conflict')."""
         raise NotImplementedError
 
     async def set_technician_photo(self, technician_id: UUID, url: str) -> dict | None:  # pragma: no cover
@@ -2239,31 +2256,34 @@ class InMemoryStore(Store):
         status: str = "active", affiliation_type: str = "unknown",
         exclusivity: str = "unknown", dispatch_allowed: bool = True,
     ) -> dict:
-        """Create/upsert a provider affiliation, enforcing the same guard as the DB
+        """Start a provider affiliation period, enforcing the same guard as the DB
         partial unique index: at most one active EXCLUSIVE affiliation per technician
-        (across orgs). Raises ValueError('exclusive_conflict') on violation."""
+        (across orgs). Raises ValueError('exclusive_conflict') on violation.
+
+        An existing OPEN period is NEVER rewritten — it is returned unchanged with
+        ``created=False``, so a re-invite cannot demote an active technician to
+        pending_invite, reset a suspension, or duplicate a pending invite. Ended and
+        rejected periods carry ``ended_at``, so those start a NEW period row."""
         affs = self._affiliations = getattr(self, "_affiliations", [])
         oid, tid = str(organization_id), str(technician_id)
+        open_period = next((a for a in affs if str(a.get("organization_id")) == oid
+                            and str(a.get("technician_id")) == tid and a.get("ended_at") is None), None)
+        if open_period is not None:
+            return {**open_period, "created": False}
         if status == "active" and exclusivity == "exclusive":
             for a in affs:
                 if (str(a.get("technician_id")) == tid and a.get("status") == "active"
                         and a.get("exclusivity") == "exclusive" and a.get("ended_at") is None
                         and str(a.get("organization_id")) != oid):
                     raise ValueError("exclusive_conflict")
-        # Upsert the OPEN period for (org, tech); if none is open (e.g. the prior
-        # period was ended), start a NEW period row so history is preserved.
-        row = next((a for a in affs if str(a.get("organization_id")) == oid
-                    and str(a.get("technician_id")) == tid and a.get("ended_at") is None), None)
-        new = row is None
-        row = row or {"id": str(uuid4()), "organization_id": oid, "technician_id": tid}
-        row.update({
+        row = {
+            "id": str(uuid4()), "organization_id": oid, "technician_id": tid,
             "status": status, "affiliation_type": affiliation_type,
             "exclusivity": exclusivity, "dispatch_allowed": dispatch_allowed,
             "ended_at": None, "ended_reason": None,
-        })
-        if new:
-            affs.append(row)
-        return dict(row)
+        }
+        affs.append(row)
+        return {**row, "created": True}
 
     async def end_affiliation(
         self, organization_id: UUID, technician_id: UUID, *,
@@ -2284,6 +2304,26 @@ class InMemoryStore(Store):
             row["ended_reason"] = reason
         else:
             row["suspension_reason"] = reason
+        return dict(row)
+
+    async def reactivate_affiliation(self, organization_id: UUID, technician_id: UUID) -> dict | None:
+        """Lift a suspension: the org's open period goes back to active. No new period
+        and no re-consent — the technician already accepted this affiliation; only the
+        company paused it. Returns None when there is no suspended open period."""
+        affs = getattr(self, "_affiliations", [])
+        oid, tid = str(organization_id), str(technician_id)
+        row = next((a for a in affs if str(a.get("organization_id")) == oid
+                    and str(a.get("technician_id")) == tid and a.get("ended_at") is None), None)
+        if row is None or row.get("status") != "suspended":
+            return None
+        if row.get("exclusivity") == "exclusive" and any(
+            str(a.get("technician_id")) == tid and a.get("status") == "active"
+            and a.get("ended_at") is None and str(a.get("organization_id")) != oid
+            for a in affs
+        ):
+            raise ValueError("exclusive_conflict")
+        row["status"] = "active"
+        row["suspension_reason"] = None
         return dict(row)
 
     # --- technician self-service (Slice D backend) ---
@@ -2361,6 +2401,24 @@ class InMemoryStore(Store):
             raise ValueError("not_pending")
         aff["status"] = "rejected"
         aff["ended_at"] = datetime.now(timezone.utc).isoformat()  # close the period → re-invite allowed
+        aff["ended_reason"] = reason
+        return dict(aff)
+
+    async def leave_affiliation(
+        self, affiliation_id: UUID, technician_id: UUID, *, reason: str = "technician_left",
+    ) -> dict | None:
+        """The technician leaves a company on their own: closes their OWN open period
+        (status='ended' + ended_at) so history is kept and a rejoin is possible. Only an
+        active or suspended period can be left — a pending invite is declined, not left."""
+        aff = self._find_self_affiliation(affiliation_id, technician_id)
+        if aff is None:
+            return None
+        if aff.get("status") == "pending_invite":
+            raise ValueError("pending_invite")
+        if aff.get("ended_at") is not None or aff.get("status") not in ("active", "suspended"):
+            raise ValueError("not_open")
+        aff["status"] = "ended"
+        aff["ended_at"] = datetime.now(timezone.utc).isoformat()
         aff["ended_reason"] = reason
         return dict(aff)
 
@@ -5600,33 +5658,59 @@ class PostgresStore(Store):
         status: str = "active", affiliation_type: str = "unknown",
         exclusivity: str = "unknown", dispatch_allowed: bool = True,
     ) -> dict:
-        """Create (or upsert) a provider affiliation row. The DB partial unique index
+        """Start a provider affiliation period. The DB partial unique index
         `uq_org_tech_active_exclusive` enforces at most one active EXCLUSIVE affiliation
-        per technician; a violation surfaces as ValueError('exclusive_conflict')."""
+        per technician; a violation surfaces as ValueError('exclusive_conflict').
+
+        `uq_org_tech_open_period` allows one OPEN period per (org, tech), and the
+        conflict is DO NOTHING on purpose: an existing open period is returned
+        unchanged with ``created=False`` rather than rewritten, so a re-invite cannot
+        demote an active technician to pending_invite, reset a suspension, or duplicate
+        a pending invite. Ended/rejected periods carry `ended_at`, so a rejoin inserts
+        a NEW row (history preserved)."""
         try:
             async with await self._connect() as conn:
-                await conn.execute(
+                cur = await conn.execute(
                     "insert into organization_technicians"
                     " (organization_id, technician_id, role, status, affiliation_type,"
                     "  exclusivity, dispatch_allowed, starts_at, activated_at)"
                     " values (%s, %s, 'affiliate_technician', %s, %s, %s, %s, now(),"
                     "  case when %s = 'active' then now() else null end)"
                     " on conflict (organization_id, technician_id) where ended_at is null"
-                    " do update set"
-                    "  status = excluded.status, affiliation_type = excluded.affiliation_type,"
-                    "  exclusivity = excluded.exclusivity, dispatch_allowed = excluded.dispatch_allowed,"
-                    "  ended_reason = null, updated_at = now()",
+                    " do nothing"
+                    " returning id",
                     (str(organization_id), str(technician_id), status, affiliation_type,
                      exclusivity, dispatch_allowed, status),
                 )
+                row = await cur.fetchone()
+                if row is None:  # an open period already exists — return it untouched
+                    cur = await conn.execute(
+                        "select id, status, affiliation_type, exclusivity, dispatch_allowed"
+                        " from organization_technicians"
+                        " where organization_id = %s and technician_id = %s and ended_at is null",
+                        (str(organization_id), str(technician_id)),
+                    )
+                    existing = await cur.fetchone()
         except Exception as exc:  # unique-violation on the active-exclusive guard
             if "uq_org_tech_active_exclusive" in str(exc):
                 raise ValueError("exclusive_conflict") from exc
             raise
+        if row is None:
+            if existing is None:  # the period closed between the insert and this read
+                raise ValueError("affiliation_conflict")
+            return {
+                "id": str(existing[0]),
+                "organization_id": str(organization_id), "technician_id": str(technician_id),
+                "status": existing[1], "affiliation_type": existing[2],
+                "exclusivity": existing[3], "dispatch_allowed": existing[4],
+                "created": False,
+            }
         return {
+            "id": str(row[0]),
             "organization_id": str(organization_id), "technician_id": str(technician_id),
             "status": status, "affiliation_type": affiliation_type,
             "exclusivity": exclusivity, "dispatch_allowed": dispatch_allowed,
+            "created": True,
         }
 
     async def backfill_affiliations_from_primary_org(self) -> int:
@@ -5669,6 +5753,30 @@ class PostgresStore(Store):
         if row is None:
             return None
         return {"id": str(row[0]), "status": row[1], "ended_at": row[2].isoformat() if row[2] else None}
+
+    async def reactivate_affiliation(self, organization_id: UUID, technician_id: UUID) -> dict | None:
+        """Lift a suspension on this org's open period (back to active). No new period
+        and no re-consent — the technician already accepted; only the company paused it.
+        The active-exclusive index still applies → ValueError('exclusive_conflict')."""
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "update organization_technicians set status = 'active',"
+                    "  suspension_reason = null, activated_at = coalesce(activated_at, now()),"
+                    "  updated_at = now()"
+                    " where organization_id = %s and technician_id = %s"
+                    "   and ended_at is null and status = 'suspended'"
+                    " returning id, status",
+                    (str(organization_id), str(technician_id)),
+                )
+                row = await cur.fetchone()
+        except Exception as exc:
+            if "uq_org_tech_active_exclusive" in str(exc):
+                raise ValueError("exclusive_conflict") from exc
+            raise
+        if row is None:
+            return None
+        return {"id": str(row[0]), "status": row[1]}
 
     # --- technician self-service (Slice D backend) ---
     async def list_technician_affiliations(self, technician_id: UUID) -> list[dict]:
@@ -5764,6 +5872,39 @@ class PostgresStore(Store):
             return None
         return {"id": str(row[0]), "organization_id": str(row[1]), "status": row[2],
                 "ended_at": row[3].isoformat() if row[3] else None}
+
+    async def leave_affiliation(
+        self, affiliation_id: UUID, technician_id: UUID, *, reason: str = "technician_left",
+    ) -> dict | None:
+        """Close the technician's OWN open affiliation period (self-service leave).
+        Self-scoped by `technician_id`, so another technician's row is never touched
+        (returns None → 404). Pending invites are declined, not left."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select status, ended_at from organization_technicians"
+                " where id = %s and technician_id = %s",
+                (str(affiliation_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            status, ended_at = row
+            if status == "pending_invite":
+                raise ValueError("pending_invite")
+            if ended_at is not None or status not in ("active", "suspended"):
+                raise ValueError("not_open")
+            cur = await conn.execute(
+                "update organization_technicians set status = 'ended', ended_at = now(),"
+                "  ended_reason = %s, updated_at = now()"
+                " where id = %s and technician_id = %s and ended_at is null"
+                " returning id, organization_id, status, ended_at",
+                (reason, str(affiliation_id), str(technician_id)),
+            )
+            updated = await cur.fetchone()
+        if updated is None:  # closed by the provider between the read and the update
+            raise ValueError("not_open")
+        return {"id": str(updated[0]), "organization_id": str(updated[1]), "status": updated[2],
+                "ended_at": updated[3].isoformat() if updated[3] else None}
 
     async def set_technician_photo(self, technician_id: UUID, url: str) -> dict | None:
         async with await self._connect() as conn:
@@ -8680,7 +8821,9 @@ class PostgresStore(Store):
                         "  affiliation_type, exclusivity, dispatch_allowed, starts_at)"
                         " values (%s, %s, 'affiliate_technician', 'pending_invite', %s, %s, %s, now())"
                         " on conflict (organization_id, technician_id) where ended_at is null"
-                        " do update set status = 'pending_invite', updated_at = now()",
+                        # Never rewrite an open period (see add_affiliation) — this
+                        # retired path must not demote an active technician either.
+                        " do nothing",
                         (str(organization_id), existing_tid,
                          data.get("affiliation_type") or "unknown",
                          data.get("exclusivity") or "unknown",
