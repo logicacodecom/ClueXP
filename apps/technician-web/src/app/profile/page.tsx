@@ -4,7 +4,7 @@ import { AppFrame, Screen } from "@/components/mobile";
 import { AvailabilityToggle, SignOutButton } from "@/components/client-widgets";
 import { ProfileEditor } from "@/components/profile-editor";
 import { PhotoUploadWrapper } from "@/components/photo-upload-wrapper";
-import { BellRing, ChevronRight, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { BellRing, Building2, ChevronRight, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 
 function FieldSection({ title, children }: { title: string; children: ReactNode }) {
@@ -16,26 +16,29 @@ function FieldSection({ title, children }: { title: string; children: ReactNode 
   );
 }
 
-async function getSession(): Promise<Record<string, unknown> | null> {
+async function getJson(path: string): Promise<Record<string, unknown> | null> {
   try {
     const headerList = await headers();
     const host = headerList.get("host");
     const protocol = headerList.get("x-forwarded-proto") ?? "http";
     if (!host) return null;
-    const response = await fetch(`${protocol}://${host}/api/session`, {
+    const response = await fetch(`${protocol}://${host}${path}`, {
       cache: "no-store",
       headers: { cookie: headerList.get("cookie") ?? "" }
     });
     if (!response.ok) return null;
-    const data = await response.json();
-    return (data.session as Record<string, unknown>) ?? null;
+    return (await response.json()) as Record<string, unknown>;
   } catch {
     return null;
   }
 }
 
 export default async function ProfilePage() {
-  const session = await getSession();
+  const session = ((await getJson("/api/session"))?.session as Record<string, unknown>) ?? null;
+  // Company invites only live on /team, which nothing else links to — the badge is
+  // how a technician finds out one is waiting.
+  const affiliations = ((await getJson("/api/affiliations"))?.affiliations ?? []) as { status?: string }[];
+  const pendingInvites = affiliations.filter((row) => row.status === "pending_invite").length;
   const tech = session?.technician as Record<string, unknown> | null | undefined;
   const user = session?.user as Record<string, unknown> | null | undefined;
   const roles = (session?.roles as string[]) ?? [];
@@ -124,6 +127,20 @@ export default async function ProfilePage() {
         </FieldSection>
 
         <FieldSection title="More">
+          <Link className="touch-target mb-2 flex w-full items-center justify-between border border-border bg-card p-3" href="/team">
+            <span className="flex items-center gap-3">
+              <Building2 className="size-5 text-muted" />
+              <span className="font-semibold">Companies</span>
+            </span>
+            <span className="flex items-center gap-2 text-sm text-muted">
+              {pendingInvites > 0 ? (
+                <span className="border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-bold text-primary">
+                  {pendingInvites} invite{pendingInvites > 1 ? "s" : ""}
+                </span>
+              ) : "Affiliations and invites"}
+              <ChevronRight className="size-4" />
+            </span>
+          </Link>
           <Link className="touch-target flex w-full items-center justify-between border border-border bg-card p-3" href="/settings">
             <span className="flex items-center gap-3">
               <SlidersHorizontal className="size-5 text-muted" />
