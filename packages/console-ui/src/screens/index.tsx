@@ -72,13 +72,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuTrigger,
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle
+  DropdownMenuTrigger
 } from "../ui";
+import { JobCancelSheet } from "./job-cancel-sheet";
 import { cn } from "../lib/cn";
 
 const orgId = "org-metro";
@@ -285,33 +281,6 @@ function jobDetailSummary(detail?: Record<string, unknown>): string | null {
  * Reason is required (customer called to cancel, duplicate, cannot service). */
 function QueueCancelAction({ jobId, address, onDone }: { jobId: string; address?: string | null; onDone: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsReason = reason.trim().length < 3;
-
-  async function submit() {
-    if (needsReason || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/cancel`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason: reason.trim() }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.detail || `Cancel failed (${res.status})`);
-      setOpen(false);
-      setReason("");
-      await onDone();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Cancel failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <>
       <DropdownMenu>
@@ -326,35 +295,7 @@ function QueueCancelAction({ jobId, address, onDone }: { jobId: string; address?
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <Sheet onOpenChange={(next) => !busy && setOpen(next)} open={open}>
-        <SheetContent className="max-w-lg" onClick={(e) => e.stopPropagation()}>
-          <SheetHeader>
-            <SheetTitle>Cancel this request?</SheetTitle>
-            <SheetDescription>
-              Cancels {address || "the request"}, supersedes any active offer, and removes it from the queue. Give a clear reason for the audit trail.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="space-y-4 p-6">
-            <label className="block text-sm font-medium">
-              Reason required
-              <textarea
-                className="mt-2 min-h-28 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-                maxLength={280}
-                onChange={(event) => setReason(event.target.value)}
-                placeholder="e.g. Customer called to cancel; duplicate request; unable to service."
-                value={reason}
-              />
-            </label>
-            {error ? <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div> : null}
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button disabled={busy} onClick={() => setOpen(false)} variant="outline">Keep request</Button>
-              <Button disabled={busy || needsReason} onClick={() => void submit()} variant="destructive">
-                {busy ? "Cancelling…" : "Cancel request"}
-              </Button>
-            </div>
-          </div>
-        </SheetContent>
-      </Sheet>
+      <JobCancelSheet address={address} jobId={jobId} onDone={onDone} onOpenChange={setOpen} open={open} />
     </>
   );
 }
@@ -483,67 +424,53 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
       ) : (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
           <Card className="min-w-0">
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 z-10 bg-card text-left text-xs font-semibold uppercase text-muted-foreground">
-                  <tr>
-                    <th className="w-full px-4 py-3">Address</th>
-                    <th className="whitespace-nowrap px-4 py-3">Type</th>
-                    <th className="whitespace-nowrap px-4 py-3">Situation</th>
-                    <th className="whitespace-nowrap px-4 py-3">Urgency</th>
-                    <th className="whitespace-nowrap px-4 py-3">Age</th>
-                    <th className="whitespace-nowrap px-4 py-3">Attempts</th>
-                    <th className="whitespace-nowrap px-4 py-3">Offer</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {(queue ?? []).map((job) => {
-                    const risk = risks.get(job.id) ?? "normal";
-                    const label = riskLabel(risk);
-                    const detail = jobDetailSummary(job.detail);
-                    return (
-                    <tr
-                      key={job.id}
-                      className={`border-t transition-colors hover:bg-secondary/40 cursor-pointer ${risk === "normal" ? "border-border" : "border-destructive/35 bg-destructive/5"}`}
-                      onClick={() => router.push(`/queue/${job.id}`)}
-                    >
-                      <td className="px-4 py-3 font-medium">
-                        <div>{job.address ?? "—"}</div>
-                        {detail ? <div className="mt-1 max-w-[34rem] truncate text-xs font-normal text-muted-foreground">{detail}</div> : null}
-                        {job.photo_count ? <div className="mt-1 text-xs text-muted-foreground">{job.photo_count} intake photo{job.photo_count === 1 ? "" : "s"}</div> : null}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{job.access_type ?? "—"}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{job.situation ?? "—"}</td>
-                      <td className="px-4 py-3">
-                        <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 tabular-nums text-muted-foreground">
-                        <div>{ageLabel(job.created_at)}</div>
-                        {label ? <Badge className="mt-1" variant={risk === "ack_breached" ? "warn" : "danger"}>{label}</Badge> : null}
-                      </td>
-                      <td className="px-4 py-3 tabular-nums text-muted-foreground">{job.dispatch_attempts}</td>
-                      <td className="px-4 py-3">
+            <CardContent className="space-y-2 p-3">
+              {(queue ?? []).map((job) => {
+                const risk = risks.get(job.id) ?? "normal";
+                const label = riskLabel(risk);
+                const detail = jobDetailSummary(job.detail);
+                const open = () => router.push(`/queue/${job.id}`);
+                return (
+                  <div
+                    className={cn(
+                      "cursor-pointer rounded-md border p-3 transition-colors hover:border-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      risk === "normal" ? "border-border" : "border-destructive/35 bg-destructive/5",
+                    )}
+                    key={job.id}
+                    onClick={open}
+                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } }}
+                    role="button"
+                    tabIndex={0}
+                    title={job.address ?? "No address"}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{job.address ?? "—"}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                          <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
+                          <span className="tabular-nums">Waiting {ageLabel(job.created_at)}</span>
+                          {job.access_type ? <span>{job.access_type}</span> : null}
+                          {job.situation ? <span>{job.situation}</span> : null}
+                          {job.dispatch_attempts ? <span className="tabular-nums">{job.dispatch_attempts} attempt{job.dispatch_attempts === 1 ? "" : "s"}</span> : null}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        {label ? <Badge variant={risk === "ack_breached" ? "warn" : "danger"}>{label}</Badge> : null}
                         {job.offer_active
                           ? <Badge variant="warn">Offer sent · <SlaCountdown deadline={job.offer_expires_at ?? undefined} /></Badge>
                           : <Badge variant="outline">Awaiting</Badge>}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); router.push(`/queue/${job.id}`); }}>
-                            {mode === "org" ? "Assign" : "View"}
-                          </Button>
-                          {mode === "org" ? <QueueCancelAction address={job.address} jobId={job.id} onDone={fetchQueue} /> : null}
-                        </div>
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              </div>
-              <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-muted-foreground">
+                      </div>
+                    </div>
+                    {detail ? <div className="mt-2 truncate text-xs text-muted-foreground">{detail}</div> : null}
+                    {job.photo_count ? <div className="mt-1 text-xs text-muted-foreground">{job.photo_count} intake photo{job.photo_count === 1 ? "" : "s"}</div> : null}
+                    <div className="mt-2 flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
+                      <Button onClick={open} size="sm" variant="outline">{mode === "org" ? "Assign" : "View"}</Button>
+                      {mode === "org" ? <QueueCancelAction address={job.address} jobId={job.id} onDone={fetchQueue} /> : null}
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="flex items-center justify-between px-1 pt-1 text-xs text-muted-foreground">
                 <span>{queue?.length ?? 0} jobs waiting</span>
                 <span>Refreshes every 30s</span>
               </div>

@@ -3,6 +3,8 @@
 import type { ConsoleMode } from "@cluexp/api-client";
 import {
   AlertTriangle,
+  Ban,
+  Check,
   ChevronDown,
   ChevronUp,
   CheckCircle2,
@@ -10,7 +12,6 @@ import {
   MapPin,
   RefreshCw,
   Route,
-  Send,
   UserRound,
   X,
 } from "lucide-react";
@@ -31,7 +32,12 @@ import {
   LoadingSkeleton,
   PageHeader,
 } from "../components";
+import { JobCancelSheet } from "./job-cancel-sheet";
 import { cn } from "../lib/cn";
+
+/** Statuses a dispatcher can still cancel from Copilot: pending dispatch through
+ * an in-progress visit. Mirrors the backend's provider cancel ladder. */
+const CANCELLABLE_STATUSES = new Set(["pending_dispatch", "assigned", "en_route", "arrived", "in_progress"]);
 import {
   DEFAULT_SKILL_LEGEND,
   formatMinutes,
@@ -315,6 +321,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [assignError, setAssignError] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
   const [assignmentModalTechId, setAssignmentModalTechId] = useState<string | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -830,6 +837,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           assignedMessage={assignedMessage}
           activeOffer={activeOffer}
           onCancel={clearFocus}
+          onCancelJob={mode === "org" && selectedRow ? () => setCancelOpen(true) : undefined}
           onFocusAssignedTech={() => {
             if (!selectedRow?.fulfillment_technician_id) return;
             setSelectedTechId(selectedRow.fulfillment_technician_id);
@@ -839,6 +847,16 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           tech={selectedTech}
           now={now}
         />
+        {mode === "org" && selectedRow ? (
+          <JobCancelSheet
+            address={selectedRow.address}
+            isRequest={selectedRow.isRequest}
+            jobId={selectedRow.id}
+            onDone={() => { clearFocus(); void fetchAll(); }}
+            onOpenChange={setCancelOpen}
+            open={cancelOpen}
+          />
+        ) : null}
         <AssignmentConfirmModal
           assigning={assigning}
           candidate={assignmentModalCandidate}
@@ -1224,7 +1242,7 @@ function TechnicianRosterPanel({
                           title={activeOffer ? "Offer already pending" : `Assign ${tech.display_name ?? tech.id}`}
                           type="button"
                         >
-                          <Send className="size-3.5" />
+                          <Check className="size-3.5" />
                         </button>
                       ) : null}
                     </div>
@@ -1305,6 +1323,7 @@ function FocusedActionBar({
   assignedMessage,
   now,
   onCancel,
+  onCancelJob,
   onFocusAssignedTech,
   row,
   tech,
@@ -1314,6 +1333,7 @@ function FocusedActionBar({
   assignedMessage: string | null;
   now: number;
   onCancel: () => void;
+  onCancelJob?: () => void;
   onFocusAssignedTech: () => void;
   row: OperationsRow | null;
   tech: FleetRow | null;
@@ -1364,6 +1384,9 @@ function FocusedActionBar({
           >
             {exception.action}
           </Button>
+        ) : null}
+        {onCancelJob && row && CANCELLABLE_STATUSES.has(row.status) ? (
+          <Button onClick={onCancelJob} size="sm" variant="destructive"><Ban className="size-4" />Cancel {row.isRequest ? "request" : "job"}</Button>
         ) : null}
         <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Close</Button>
       </div>
