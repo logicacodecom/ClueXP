@@ -321,7 +321,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
   const [assignError, setAssignError] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
   const [assignmentModalTechId, setAssignmentModalTechId] = useState<string | null>(null);
-  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<OperationsRow | null>(null);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -805,6 +805,7 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           highlightJobId={highlightedWorkId}
           autoScan={!selectedWork && !selectedTechId && !assigning && !assignmentModalTechId}
           onSelect={selectWork}
+          onCancel={mode === "org" ? (row) => setCancelTarget(row) : undefined}
         />
 
         <TechnicianRosterPanel
@@ -837,7 +838,6 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           assignedMessage={assignedMessage}
           activeOffer={activeOffer}
           onCancel={clearFocus}
-          onCancelJob={mode === "org" && selectedRow ? () => setCancelOpen(true) : undefined}
           onFocusAssignedTech={() => {
             if (!selectedRow?.fulfillment_technician_id) return;
             setSelectedTechId(selectedRow.fulfillment_technician_id);
@@ -847,14 +847,14 @@ export function DispatcherOperations({ mode }: { mode: ConsoleMode }) {
           tech={selectedTech}
           now={now}
         />
-        {mode === "org" && selectedRow ? (
+        {cancelTarget ? (
           <JobCancelSheet
-            address={selectedRow.address}
-            isRequest={selectedRow.isRequest}
-            jobId={selectedRow.id}
-            onDone={() => { clearFocus(); void fetchAll(); }}
-            onOpenChange={setCancelOpen}
-            open={cancelOpen}
+            address={cancelTarget.address}
+            isRequest={cancelTarget.isRequest}
+            jobId={cancelTarget.id}
+            onDone={() => { void fetchAll(); }}
+            onOpenChange={(next) => { if (!next) setCancelTarget(null); }}
+            open
           />
         ) : null}
         <AssignmentConfirmModal
@@ -1049,12 +1049,13 @@ function ControlledListScroller({
 }
 
 function WorkQueuePanel({
-  ackSlaMinutes, autoScan, highlightJobId, now, onSelect, rows, selectedId, stalledMinutes, totalCount,
+  ackSlaMinutes, autoScan, highlightJobId, now, onCancel, onSelect, rows, selectedId, stalledMinutes, totalCount,
 }: {
   ackSlaMinutes: number;
   autoScan: boolean;
   highlightJobId: string | null;
   now: number;
+  onCancel?: (row: OperationsRow) => void;
   onSelect: (row: OperationsRow) => void;
   rows: OperationsRow[];
   selectedId: string | null;
@@ -1126,8 +1127,21 @@ function WorkQueuePanel({
                       <span>{normalizedJobType(row)}</span>
                     </div>
                   </div>
-                  {riskLabel ? <Badge variant={RISK_VARIANT[risk]}>{riskLabel}</Badge> : null}
-                  {exception ? <Badge variant={exception.severity === "critical" ? "danger" : "warn"}>{exception.label}</Badge> : null}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {riskLabel ? <Badge variant={RISK_VARIANT[risk]}>{riskLabel}</Badge> : null}
+                    {exception ? <Badge variant={exception.severity === "critical" ? "danger" : "warn"}>{exception.label}</Badge> : null}
+                    {onCancel && CANCELLABLE_STATUSES.has(row.status) ? (
+                      <button
+                        aria-label={`Cancel ${row.isRequest ? "request" : "job"} ${displayId}`}
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-background/70 text-muted-foreground transition-colors hover:border-destructive/45 hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={(event) => { event.stopPropagation(); onCancel(row); }}
+                        title={`Cancel ${row.isRequest ? "request" : "job"}`}
+                        type="button"
+                      >
+                        <Ban className="size-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {row.technician_display_name
@@ -1323,7 +1337,6 @@ function FocusedActionBar({
   assignedMessage,
   now,
   onCancel,
-  onCancelJob,
   onFocusAssignedTech,
   row,
   tech,
@@ -1333,7 +1346,6 @@ function FocusedActionBar({
   assignedMessage: string | null;
   now: number;
   onCancel: () => void;
-  onCancelJob?: () => void;
   onFocusAssignedTech: () => void;
   row: OperationsRow | null;
   tech: FleetRow | null;
@@ -1384,9 +1396,6 @@ function FocusedActionBar({
           >
             {exception.action}
           </Button>
-        ) : null}
-        {onCancelJob && row && CANCELLABLE_STATUSES.has(row.status) ? (
-          <Button onClick={onCancelJob} size="sm" variant="destructive"><Ban className="size-4" />Cancel {row.isRequest ? "request" : "job"}</Button>
         ) : null}
         <Button onClick={onCancel} size="sm" variant="outline"><X className="size-4" />Close</Button>
       </div>
