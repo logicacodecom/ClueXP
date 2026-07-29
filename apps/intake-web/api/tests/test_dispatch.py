@@ -1089,6 +1089,74 @@ def test_provider_assign_stamps_dispatching_org_not_technician_primary_org():
     assert offer["organization_id"] != org_a
 
 
+def test_candidates_hide_another_companys_job_but_keep_the_busy_flag():
+    # A shared technician on company A's job: company B must see that he is busy
+    # (dispatch signal) but never A's customer address (tenant boundary).
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org_a, org_b = str(uuid4()), str(uuid4())
+    uid, job_a, job_b, tid = str(uuid4()), str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org_b)
+    _seed_provider_job(app_store, org_b, job_b)
+    _seed_org_tech(app_store, org_a, tid)
+    asyncio.run(app_store.add_affiliation(UUID(org_a), UUID(tid)))
+    asyncio.run(app_store.add_affiliation(UUID(org_b), UUID(tid)))
+    # Company A's job, in progress, with an address.
+    app_store._job_org[job_a] = org_a
+    app_store._job_status[job_a] = STATUS_IN_PROGRESS
+    app_store._job_tech[job_a] = tid
+    app_store._job_address = getattr(app_store, "_job_address", {})
+    app_store._job_address[job_a] = "12 Private Street, Manhattan"
+
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.get(f"/provider/queue/{job_b}/candidates", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+    row = next(c for c in resp.json()["candidates"] if c["id"] == tid)
+    assert row["is_busy"] is True, "busy must stay visible across companies"
+    assert row["active_job"] is None, "another company's job detail must not leak"
+    assert "Private Street" not in resp.text
+
+
+def test_candidates_show_own_job_detail():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid, job_open, job_active, tid = str(uuid4()), str(uuid4()), str(uuid4()), str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, job_open)
+    _seed_org_tech(app_store, org, tid)
+    app_store._job_org[job_active] = org
+    app_store._job_status[job_active] = STATUS_IN_PROGRESS
+    app_store._job_tech[job_active] = tid
+    app_store._job_address = getattr(app_store, "_job_address", {})
+    app_store._job_address[job_active] = "9 Own Street"
+
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.get(f"/provider/queue/{job_open}/candidates", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+    row = next(c for c in resp.json()["candidates"] if c["id"] == tid)
+    assert row["is_busy"] is True
+    assert row["active_job"] is not None and row["active_job"]["address"] == "9 Own Street"
+
+
+def test_provider_fleet_masks_foreign_active_job():
+    # get_fleet_state is Postgres-only (InMemory returns []), so pin the masking in
+    # the SQL/enrichment shape: the job's owning org is selected and gates the payload.
+    import inspect
+    from api.store import PostgresStore
+
+    source = inspect.getsource(PostgresStore.get_fleet_state)
+    assert "j.customer_owner_org_id, j.fulfillment_org_id" in source
+    assert "if has_job and own_job else None" in source
+    assert 'marker_status = "busy"' in source  # busy stays global
+
+
 def test_provider_assign_rejects_foreign_technician():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -3135,6 +3203,108 @@ def test_http_invite_existing_technician_reports_open_period_instead_of_demoting
     assert suspended.status_code == 409, suspended.text
     assert "suspended" in suspended.json()["detail"]
     assert next(a for a in app_store._affiliations if a["id"] == aid)["status"] == "suspended"
+
+
+# --- the technician sees WHO is dispatching, and holds one job at a time ------
+
+def test_offers_name_the_dispatching_company():
+    from datetime import datetime, timezone
+    store = InMemoryStore()
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    store._organizations = {
+        org_a: {"id": org_a, "display_name": "Metro Key Partners"},
+        org_b: {"id": org_b, "display_name": "InstaKey Pro"},
+    }
+    job_a, job_b = str(uuid4()), str(uuid4())
+    for jid, org in ((job_a, org_a), (job_b, org_b)):
+        store._job_status = getattr(store, "_job_status", {})
+        store._job_status[jid] = STATUS_PENDING_DISPATCH
+        asyncio.run(store.ops_create_single_offer(
+            UUID(jid), UUID(tid), UUID(org), datetime.now(timezone.utc)))
+    offers = asyncio.run(store.list_technician_offers(UUID(tid)))
+    assert {o["organization_name"] for o in offers} == {"Metro Key Partners", "InstaKey Pro"}
+    assert all(o["organization_id"] for o in offers)
+
+
+def test_postgres_offers_join_the_dispatching_company():
+    # Postgres path is not exercised by this suite — pin that the query names the org.
+    import inspect
+    from api.store import PostgresStore
+
+    sql = inspect.getsource(PostgresStore.list_technician_offers)
+    assert "left join organizations org on org.id = o.organization_id" in sql
+    assert '"organization_name"' in sql
+
+
+def test_accept_is_blocked_while_the_technician_is_on_another_companys_job():
+    from datetime import datetime, timezone
+    store = InMemoryStore()
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    job_a, job_b = str(uuid4()), str(uuid4())
+    store._job_status = {job_a: STATUS_PENDING_DISPATCH, job_b: STATUS_PENDING_DISPATCH}
+    store._job_org = {job_a: org_a, job_b: org_b}
+    offer_a = asyncio.run(store.ops_create_single_offer(
+        UUID(job_a), UUID(tid), UUID(org_a), datetime.now(timezone.utc)))
+    offer_b = asyncio.run(store.ops_create_single_offer(
+        UUID(job_b), UUID(tid), UUID(org_b), datetime.now(timezone.utc)))
+
+    first = asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"])))
+    assert first["accepted"] is True
+    # The job is booked to the DISPATCHING company, not the technician's primary org.
+    assert store._job_fulfillment_org[job_a] == org_a
+
+    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"])))
+    assert second["accepted"] is False
+    assert second["reason"] == "technician_busy"
+    assert store._job_tech.get(job_b) is None, "the second job must stay unassigned"
+    # The blocked offer stays open — finishing job A and accepting is legitimate.
+    assert store._offers[offer_b["id"]]["status"] == "offered"
+
+
+def test_accept_allowed_again_once_the_other_job_is_finished():
+    from datetime import datetime, timezone
+    store = InMemoryStore()
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    job_a, job_b = str(uuid4()), str(uuid4())
+    store._job_status = {job_a: STATUS_PENDING_DISPATCH, job_b: STATUS_PENDING_DISPATCH}
+    offer_a = asyncio.run(store.ops_create_single_offer(
+        UUID(job_a), UUID(tid), UUID(org_a), datetime.now(timezone.utc)))
+    offer_b = asyncio.run(store.ops_create_single_offer(
+        UUID(job_b), UUID(tid), UUID(org_b), datetime.now(timezone.utc)))
+    asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"])))
+    store._job_status[job_a] = STATUS_COMPLETED_PENDING  # done — not an active job
+    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"])))
+    assert second["accepted"] is True
+
+
+def test_http_accept_while_busy_returns_409_with_a_usable_message():
+    from datetime import datetime, timezone
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
+    job_a, job_b = str(uuid4()), str(uuid4())
+    app_store._job_status = {job_a: STATUS_PENDING_DISPATCH, job_b: STATUS_PENDING_DISPATCH}
+    app_store._job_tech = {}
+    offer_a = asyncio.run(app_store.ops_create_single_offer(
+        UUID(job_a), UUID(tid), UUID(org_a), datetime.now(timezone.utc)))
+    offer_b = asyncio.run(app_store.ops_create_single_offer(
+        UUID(job_b), UUID(tid), UUID(org_b), datetime.now(timezone.utc)))
+    client = TestClient(app)
+    assert client.post(f"/offers/{offer_a['id']}/accept").status_code == 200
+    blocked = client.post(f"/offers/{offer_b['id']}/accept")
+    assert blocked.status_code == 409, blocked.text
+    assert "active job" in blocked.json()["detail"]
+
+
+def test_postgres_accept_locks_on_any_active_job():
+    # Same guard on the Postgres path, inside the single atomic UPDATE.
+    import inspect
+    from api.store import PostgresStore
+
+    sql = inspect.getsource(PostgresStore.accept_dispatch_offer)
+    assert "not exists (" in sql and "busy.fulfillment_technician_id = %s" in sql
+    assert "technician_busy" in sql
 
 
 # --- Slice E: customer-safe assigned-technician identity ----------------------

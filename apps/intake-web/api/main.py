@@ -2984,9 +2984,27 @@ class DeclineOfferPayload(BaseModel):
 
 # --- shared dispatch core (used by both platform /ops/* and company /provider/*) ---
 
-async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _job_belongs_to_org(job: dict[str, Any], org_id: str | None) -> bool:
+    """Tenant test for a job, matching the dispatch queue's own scoping
+    (`customer_owner_org_id` or `fulfillment_org_id`). `org_id=None` is the ops
+    viewer — platform oversight sees every job."""
+    if org_id is None:
+        return True
+    return str(org_id) in {
+        str(job.get("customer_owner_org_id") or ""), str(job.get("fulfillment_org_id") or ""),
+    }
+
+
+async def _enriched_candidates(
+    job: dict[str, Any], techs: list[dict[str, Any]], viewer_org_id: str | None,
+) -> list[dict[str, Any]]:
     """Annotate a technician pool with advisory signals for a job and sort
-    nearest-first (unknown distance last), rating as tie-breaker."""
+    nearest-first (unknown distance last), rating as tie-breaker.
+
+    `is_busy` is global — a technician shared with another company is busy no matter
+    whose job it is — but the `active_job` detail is masked unless the job belongs to
+    `viewer_org_id`, so a dispatcher never reads another company's customer address
+    off their own candidate list."""
     now_dt = datetime.now(tz=timezone.utc)
     threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
     access_type = job.get("access_type")
@@ -3012,6 +3030,7 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
             loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
         is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
         active_job = await store.get_technician_active_job(tech["id"])
+        own_active_job = active_job if _job_belongs_to_org(active_job or {}, viewer_org_id) else None
         skills = tech.get("skills") or []
         technician_supports_skill = (skill_needed in skills or access_type in skills) if skill_needed else True
         enriched.append({
@@ -3031,13 +3050,13 @@ async def _enriched_candidates(job: dict[str, Any], techs: list[dict[str, Any]])
             "is_busy": active_job is not None,
             "rating": tech.get("rating"),
             "active_job": {
-                "id": active_job["id"],
-                "operational_id": active_job.get("operational_id"),
-                "status": active_job.get("status"),
-                "address": active_job.get("address"),
-                "lat": active_job.get("lat"),
-                "lng": active_job.get("lng"),
-            } if active_job else None,
+                "id": own_active_job["id"],
+                "operational_id": own_active_job.get("operational_id"),
+                "status": own_active_job.get("status"),
+                "address": own_active_job.get("address"),
+                "lat": own_active_job.get("lat"),
+                "lng": own_active_job.get("lng"),
+            } if own_active_job else None,
             "current_lat": tech.get("current_lat"),
             "current_lng": tech.get("current_lng"),
             "service_area_center_lat": tech.get("service_area_center_lat"),
@@ -3204,7 +3223,8 @@ async def ops_get_candidates(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in dispatch queue")
     techs = await store.list_all_technicians_for_ops()
-    return {"job": job, "candidates": await _enriched_candidates(job, techs)}
+    # Platform oversight: no tenant to scope to, so active-job detail is not masked.
+    return {"job": job, "candidates": await _enriched_candidates(job, techs, None)}
 
 
 # NOTE: ClueXP is a SaaS platform and does NOT dispatch. There is intentionally no
@@ -3926,7 +3946,7 @@ async def provider_get_candidates(
     techs = await store.list_all_technicians_for_ops(org_id=org_id)
     return {
         "job": job,
-        "candidates": await _enriched_candidates(job, techs),
+        "candidates": await _enriched_candidates(job, techs, org_id),
         "distance_unit": await runtime_settings.resolve_org(store, org_id, "dispatch_distance_unit"),
     }
 
@@ -3977,13 +3997,22 @@ async def accept_offer(offer_id: UUID) -> dict[str, Any]:
     """First-accept-wins: atomically claim the job for the offer's technician,
     set ``fulfillment_technician_id``/``fulfillment_org_id``, flip
     ``trust_state=matched``, and supersede the sibling offers. Enforced in the
-    backend (not UI timing); a losing or stale accept gets 409."""
+    backend (not UI timing); a losing or stale accept gets 409.
+
+    The same statement enforces the GLOBAL active-job lock — a technician on a job
+    for company A cannot accept company B's offer (409, offer left open)."""
     await latency()
     result = await store.accept_dispatch_offer(offer_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Offer not found")
     if not result.get("accepted"):
-        raise HTTPException(status_code=409, detail=result.get("reason", "not_accepted"))
+        reason = result.get("reason", "not_accepted")
+        if reason == "technician_busy":
+            raise HTTPException(
+                status_code=409,
+                detail="You already have an active job. Finish it before accepting another.",
+            )
+        raise HTTPException(status_code=409, detail=reason)
     return result
 
 

@@ -198,6 +198,17 @@ STATUS_DISPUTED = "disputed"
 STATUS_CANCELLED = "cancelled"
 STATUS_NO_SHOW = "no_show"
 
+# A technician is "on a job" in exactly these statuses. One definition for the
+# busy signal, the fleet marker, and the accept-time lock — if they drift, a
+# dispatcher sees "free" for someone the lock refuses to assign (or worse).
+# `completed_pending_customer` is deliberately absent: the technician is done.
+ACTIVE_JOB_STATUSES = (
+    STATUS_ASSIGNED,
+    STATUS_EN_ROUTE,
+    STATUS_ARRIVED,
+    STATUS_IN_PROGRESS,
+)
+
 # Forward progression ladder (dispatch -> on-site -> completion-pending).
 _FULFILLMENT_ORDER = [
     STATUS_PENDING_DISPATCH,
