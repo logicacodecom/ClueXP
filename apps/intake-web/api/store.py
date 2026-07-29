@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 
 from api.auth import hash_password, verify_password
 from api.dispatch import (
+    ACTIVE_JOB_STATUSES,
     CARD_PAYMENT_METHODS,
     STATUS_ARRIVED,
     STATUS_ASSIGNED,
@@ -2155,6 +2156,15 @@ class InMemoryStore(Store):
         if self._job_status.get(jid) != STATUS_PENDING_DISPATCH:
             rec["status"] = "superseded"
             return {"accepted": False, "reason": "job_not_pending", "job_id": jid}
+        # Global active-job lock: one job at a time per technician, across every
+        # company. The offer stays OPEN — finishing the other job and accepting
+        # before expiry is legitimate.
+        if any(
+            tech_id == rec["technician_id"] and other_jid != jid
+            and self._job_status.get(other_jid) in ACTIVE_JOB_STATUSES
+            for other_jid, tech_id in self._job_tech.items()
+        ):
+            return {"accepted": False, "reason": "technician_busy", "job_id": jid}
         rec["status"] = "accepted"
         for other in offers.values():
             if (
@@ -2165,6 +2175,10 @@ class InMemoryStore(Store):
                 other["status"] = "superseded"
         self._job_status[jid] = STATUS_ASSIGNED
         self._job_tech[jid] = rec["technician_id"]
+        # The job is fulfilled by the DISPATCHING company (the offer's org), which is
+        # what tenant-scoped views key off.
+        self._job_fulfillment_org = getattr(self, "_job_fulfillment_org", {})
+        self._job_fulfillment_org[jid] = rec.get("organization_id")
         return {
             "accepted": True,
             "job_id": jid,
@@ -2563,7 +2577,7 @@ class InMemoryStore(Store):
         }
 
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
-        _ACTIVE = {"assigned", "en_route", "arrived", "in_progress"}
+        _ACTIVE = set(ACTIVE_JOB_STATUSES)
         tid = str(technician_id)
         job_techs = getattr(self, "_job_tech", {})
         statuses = getattr(self, "_job_status", {})
@@ -2590,6 +2604,8 @@ class InMemoryStore(Store):
                     "lng": job_lng,
                     "detail": getattr(self, "_job_detail", {}).get(jid, {}),
                     "photo_paths": list(getattr(self, "_job_photo_paths", {}).get(jid, [])),
+                    "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
+                    "fulfillment_org_id": getattr(self, "_job_fulfillment_org", {}).get(jid),
                     "technician_current_lat": tech_lat,
                     "technician_current_lng": tech_lng,
                     "technician_location_updated_at": loc_updated,
@@ -3549,7 +3565,30 @@ class InMemoryStore(Store):
         return None
 
     async def list_technician_offers(self, technician_id: UUID) -> list[dict]:
-        return []
+        """Pending offers for one technician, masked to a coarse area but naming the
+        dispatching company (mirrors the Postgres query)."""
+        names = self._org_names()
+        job_loc = getattr(self, "_job_loc", {})
+        out = []
+        for rec in getattr(self, "_offers", {}).values():
+            if str(rec.get("technician_id")) != str(technician_id) or rec.get("status") != "offered":
+                continue
+            loc = job_loc.get(rec["job_id"])
+            org_id = rec.get("organization_id")
+            out.append({
+                "id": rec["id"],
+                "job_id": rec["job_id"],
+                "status": rec["status"],
+                "rank": rec.get("rank", 0),
+                "offered_at": rec.get("offered_at"),
+                "expires_at": rec.get("expires_at"),
+                "access_type": getattr(self, "_job_access_type", {}).get(rec["job_id"]),
+                "area_lat": round(loc[0], 2) if loc and loc[0] is not None else None,
+                "area_lng": round(loc[1], 2) if loc and loc[1] is not None else None,
+                "organization_id": org_id,
+                "organization_name": names.get(str(org_id)) if org_id else None,
+            })
+        return out
 
     async def get_global_setting(self, key: str) -> dict | None:
         row = self._global_settings.get(key)
@@ -4998,6 +5037,9 @@ class PostgresStore(Store):
             # status='pending_dispatch' so that a cancellation or concurrent accept
             # that changed the job status before this UPDATE causes this path to fail
             # cleanly — no technician or trust_state is set on a cancelled job.
+            # The NOT EXISTS is the GLOBAL active-job lock: one job at a time per
+            # technician across every company, enforced in the same statement so two
+            # companies cannot both win a race against a dual-affiliated technician.
             cur = await conn.execute(
                 "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
                 " trust_state = 'matched',"
@@ -5007,16 +5049,32 @@ class PostgresStore(Store):
                 " where id = %s"
                 "   and status = %s"
                 "   and fulfillment_technician_id is null"
+                "   and not exists ("
+                "     select 1 from jobs busy"
+                "     where busy.fulfillment_technician_id = %s"
+                "       and busy.status = any(%s)"
+                "       and busy.id <> %s)"
                 " returning id",
                 (
                     str(tech_id), str(org_id) if org_id else None,
                     STATUS_ASSIGNED,
                     str(job_id),
                     STATUS_PENDING_DISPATCH,
+                    str(tech_id), list(ACTIVE_JOB_STATUSES), str(job_id),
                 ),
             )
             won = await cur.fetchone()
             if not won:
+                # Distinguish the two guards: a still-claimable job means the
+                # technician is on someone else's job. Leave that offer OPEN —
+                # finishing the other job and accepting before expiry is legitimate.
+                cur = await conn.execute(
+                    "select status, fulfillment_technician_id from jobs where id = %s",
+                    (str(job_id),),
+                )
+                jrow = await cur.fetchone()
+                if jrow and jrow[0] == STATUS_PENDING_DISPATCH and jrow[1] is None:
+                    return {"accepted": False, "reason": "technician_busy", "job_id": str(job_id)}
                 # Revoke the offer without touching trust_state or assignment.
                 await conn.execute(
                     "update dispatch_offers set status = 'superseded', responded_at = now()"
@@ -5339,7 +5397,7 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select j.id, j.operational_id, j.status, j.access_type, j.situation, j.address, j.lat, j.lng,"
                 " j.detail, t.current_lat, t.current_lng, t.location_updated_at,"
-                " m.photo_paths"
+                " m.photo_paths, j.customer_owner_org_id, j.fulfillment_org_id"
                 " from jobs j"
                 " join technicians t on t.id = j.fulfillment_technician_id"
                 " left join lateral ("
@@ -5350,7 +5408,7 @@ class PostgresStore(Store):
                 " where j.fulfillment_technician_id = %s"
                 " and j.status = any(%s)"
                 " order by j.updated_at desc limit 1",
-                (str(technician_id), ["assigned", "en_route", "arrived", "in_progress"]),
+                (str(technician_id), list(ACTIVE_JOB_STATUSES)),
             )
             row = await cur.fetchone()
         if not row:
@@ -5377,6 +5435,10 @@ class PostgresStore(Store):
                 threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
             ),
             "photo_paths": list(row[12] or []),
+            # Owning org travels with the job so cross-tenant views can mask the
+            # detail (a dual-affiliated technician's job belongs to ONE company).
+            "customer_owner_org_id": str(row[13]) if row[13] else None,
+            "fulfillment_org_id": str(row[14]) if row[14] else None,
             "distance_km": round(dist_km, 2) if dist_km is not None else None,
             "distance_mi": round(dist_km * 0.621371, 2) if dist_km is not None else None,
             "eta_min": eta_min,
@@ -5511,8 +5573,13 @@ class PostgresStore(Store):
           free     — active, available, no active job   (green)
           busy     — has an active job                   (amber)
           inactive — not active / unavailable            (gray, last known)
+
+        `busy` is deliberately GLOBAL (a shared technician is busy no matter whose
+        job it is), but the `active_job` detail is tenant-scoped: in company mode a
+        job belonging to another company is reported as busy with `active_job: None`,
+        so one company's customer address never reaches another's fleet view.
         """
-        active = ["assigned", "en_route", "arrived", "in_progress"]
+        active = list(ACTIVE_JOB_STATUSES)
         if org_id is None:
             where = " where t.status = 'active' and t.vetting_status = 'verified'"
             params: tuple = (active,)
@@ -5539,7 +5606,8 @@ class PostgresStore(Store):
                 " t.status, t.phone, t.profile_photo_url, t.profile_photo_status,"
                 " j.id as job_id, j.operational_id as job_operational_id,"
                 " j.status as job_status, j.address as job_address,"
-                " j.lat as job_lat, j.lng as job_lng, j.access_type, j.situation"
+                " j.lat as job_lat, j.lng as job_lng, j.access_type, j.situation,"
+                " j.customer_owner_org_id, j.fulfillment_org_id"
                 " from technicians t"
                 " left join jobs j"
                 "   on j.fulfillment_technician_id = t.id"
@@ -5552,6 +5620,11 @@ class PostgresStore(Store):
         out: list[dict] = []
         for r in rows:
             has_job = r[11] is not None
+            # Company mode only exposes the job detail when the job is this org's;
+            # ops mode (org_id None) is platform oversight and sees everything.
+            own_job = org_id is None or str(org_id) in {
+                str(r[19]) if r[19] else None, str(r[20]) if r[20] else None,
+            }
             tech_active = r[7] == "active"
             if has_job:
                 marker_status = "busy"
@@ -5581,7 +5654,7 @@ class PostgresStore(Store):
                     "lng": r[16],
                     "access_type": r[17],
                     "situation": r[18],
-                } if has_job else None,
+                } if has_job and own_job else None,
             })
         return out
 
@@ -9013,8 +9086,9 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select o.id, o.job_id, o.status, o.rank, o.offered_at, o.expires_at,"
-                " j.access_type, j.lat, j.lng"
+                " j.access_type, j.lat, j.lng, o.organization_id, org.display_name"
                 " from dispatch_offers o join jobs j on j.id = o.job_id"
+                " left join organizations org on org.id = o.organization_id"
                 " where o.technician_id = %s and o.status = 'offered'"
                 " and (o.expires_at is null or o.expires_at > now())"
                 " order by o.offered_at desc",
@@ -9022,6 +9096,8 @@ class PostgresStore(Store):
             )
             rows = await cur.fetchall()
         # Masked: coarse area only (~1km) — no exact address / customer before acceptance.
+        # The DISPATCHING company is named, though: a technician affiliated with more
+        # than one company must know whose job they are accepting.
         return [
             {
                 "id": str(r[0]),
@@ -9033,6 +9109,8 @@ class PostgresStore(Store):
                 "access_type": r[6],
                 "area_lat": round(r[7], 2) if r[7] is not None else None,
                 "area_lng": round(r[8], 2) if r[8] is not None else None,
+                "organization_id": str(r[9]) if r[9] else None,
+                "organization_name": r[10],
             }
             for r in rows
         ]

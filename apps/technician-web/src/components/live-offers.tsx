@@ -23,6 +23,7 @@ interface LiveOffer {
   service_type?: string;
   situation?: string;
   urgency?: "low" | "medium" | "high" | "critical";
+  organization_name?: string | null;
 }
 
 function normalizeOffers(body: unknown): LiveOffer[] {
@@ -59,7 +60,7 @@ function notifyNewOffers(next: LiveOffer[], knownIds: RefObject<Set<string> | nu
     );
     if (fresh.length > 0 && typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
       const first = fresh[0];
-      new Notification("New ClueXP offer", {
+      new Notification(first.organization_name ? `New offer from ${first.organization_name}` : "New ClueXP offer", {
         body: `${first.service_type || "Service request"} · ${first.area || "Nearby service area"}`,
         tag: "cluexp-offer"
       });
@@ -198,8 +199,10 @@ export function LiveOffersFeed() {
       const response = await fetch(`/api/offers/${encodeURIComponent(id)}/accept`, { method: "POST" });
       const body = await response.json().catch(() => ({}));
       if (response.status === 409) {
-        setOffers((current) => current.map((item) => item === offer ? { ...item, status: "superseded" } : item));
-        setError(t("offerTaken"));
+        // Could be "taken by someone else" or "you already have an active job" —
+        // reload instead of guessing: a lost offer disappears, a blocked one stays.
+        setError((body as { detail?: string }).detail || t("offerTaken"));
+        void load(true);
         return;
       }
       if (!response.ok) throw new Error(body.detail || `Unable to accept (${response.status})`);
@@ -246,7 +249,8 @@ export function LiveOffersFeed() {
         <article className="pt-5" key={offer.id || offer.offer_id}>
           <Countdown expiresAt={offer.expires_at} offeredAt={offer.offered_at} />
           <div className="mt-7 border-y border-border py-4">
-            <p className="field-kicker">Incoming offer</p>
+            {/* A technician on more than one roster must see whose job this is. */}
+            <p className="field-kicker">{offer.organization_name ? `Offer from ${offer.organization_name}` : "Incoming offer"}</p>
             <h2 className="mt-2 font-condensed text-3xl font-bold uppercase leading-none">{offer.service_type || offer.situation || "Service request"}</h2>
             <p className="mt-3 flex items-center gap-2 text-[15px] text-muted"><MapPin className="size-4 text-primary" />{offer.area || "Nearby service area"}</p>
             <p className="mt-1 text-sm text-[#6e6759]">Exact address and customer details unlock after acceptance.</p>
