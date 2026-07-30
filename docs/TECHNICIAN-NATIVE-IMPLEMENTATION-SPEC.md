@@ -12,6 +12,28 @@ product. Business logic and types live in `@cluexp/app-core` / `@cluexp/api-clie
 app owns UI, navigation, device I/O, and offline. Any behavior divergence from the PWA is a bug
 (contract-parity tests, §9).
 
+## 0. Design source of truth — reproduce, don't redesign
+
+The native app **reproduces the already-accepted technician-web mobile UI/UX**. It does **not**
+introduce a new visual design, layout system, or interaction model. The RN implementation is new
+only because web components cannot run natively — the *design* is carried over unchanged.
+
+Accepted design sources (the blueprint the native UI must match):
+- The polished technician-web mobile experience — `TechnicianShell`, `JobOfferCard`,
+  `ActiveJobCard`, `JobStatusTimeline`, bottom nav, action sheet (`apps/technician-web`).
+- `docs/DESIGN-SYSTEM.md` and `docs/TECHNICIAN-APP-REDESIGN.md`.
+
+Match the look, hierarchy, usability, terminology, and flow of those references. Native-only
+adjustments are limited to what the platform *requires* (safe-area/notch, native nav gestures,
+OS permission dialogs, haptics) — these adapt the accepted design to the device, they do not
+change it.
+
+> **Rule:** do **not** develop a new UI idea, redesign, or usability change on your own. If any
+> screen, layout, or interaction genuinely needs to differ from the accepted design (a real
+> platform constraint, a gap the references don't cover), **stop and ask for approval first** —
+> propose the change, wait for sign-off, then build. Reproduction is the default; deviation needs
+> explicit permission.
+
 ---
 
 ## 1. Screens
