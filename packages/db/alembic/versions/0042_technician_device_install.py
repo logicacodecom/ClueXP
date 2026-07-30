@@ -10,15 +10,17 @@ Safe for existing rows: installation_id is nullable, and the uniqueness index is
 PARTIAL (only rows that have an installation_id and are not revoked), so the
 legacy token-keyed rows written by 0041 are untouched.
 
-Revision ID: 0042_technician_device_installation
+Revision ID: 0042_technician_device_install
 Revises: 0041_technician_devices
 Create Date: 2026-07-30
+
+(Revision id kept <= 32 chars to fit alembic_version.version_num.)
 """
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0042_technician_device_installation"
+revision = "0042_technician_device_install"
 down_revision = "0041_technician_devices"
 branch_labels = None
 depends_on = None

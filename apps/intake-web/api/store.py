@@ -1800,14 +1800,17 @@ class InMemoryStore(Store):
         # Prefer device installation identity: rotation swaps the token on the
         # SAME device row instead of creating a second active device.
         if installation_id:
-            existing = next(
-                (d for d in devices
-                 if d.get("revoked_at") is None
-                 and str(d.get("technician_id")) == tid
-                 and d.get("environment") == environment
-                 and d.get("installation_id") == installation_id),
-                None,
-            )
+            def _active_this_install(d: dict) -> bool:
+                return (d.get("revoked_at") is None
+                        and str(d.get("technician_id")) == tid
+                        and d.get("environment") == environment
+                        and d.get("installation_id") == installation_id)
+            # Mirror the Postgres global-unique push_token resolution: the presented
+            # token now belongs to THIS installation, so drop it from every other row
+            # (keeping the active row of this same installation if it already holds it).
+            devices[:] = [d for d in devices
+                          if d.get("push_token") != push_token or _active_this_install(d)]
+            existing = next((d for d in devices if _active_this_install(d)), None)
         if existing is None:  # legacy / no installation id: key by token
             existing = next((d for d in devices if d.get("push_token") == push_token), None)
         if existing is not None:
@@ -8538,6 +8541,18 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             row = None
             if installation_id:
+                # The presented token now belongs to THIS installation. push_token is
+                # globally unique, so free it from any OTHER device row first —
+                # otherwise the in-place rotation below could violate that constraint
+                # and 500. Keep the active row of this same installation if it already
+                # holds the token (idempotent re-register). Same transaction => atomic.
+                await conn.execute(
+                    "delete from technician_devices"
+                    " where push_token = %s"
+                    "   and not (technician_id = %s and environment = %s"
+                    "            and installation_id = %s and revoked_at is null)",
+                    (push_token, str(technician_id), environment, installation_id),
+                )
                 # Rotate in place: replace the token on the existing active device.
                 cur = await conn.execute(
                     "update technician_devices set"
