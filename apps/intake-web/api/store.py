@@ -993,6 +993,20 @@ class Store:
     async def find_technician_by_email(self, email: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def register_technician_device(
+        self, technician_id: UUID, *, platform: str, push_token: str,
+        environment: str = "production", app_version: str | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_devices(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def revoke_technician_device(
+        self, technician_id: UUID, device_id: UUID
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1765,6 +1779,53 @@ class InMemoryStore(Store):
         for tech in getattr(self, "_technicians", []):
             if str(tech.get("email") or "").strip().lower() == target and target:
                 return {"id": str(tech.get("id")), "display_name": tech.get("display_name")}
+        return None
+
+    @staticmethod
+    def _public_device(row: dict) -> dict:
+        # Never echo the raw push_token back to a client.
+        return {k: row.get(k) for k in
+                ("id", "platform", "environment", "app_version", "created_at", "last_seen_at")}
+
+    async def register_technician_device(
+        self, technician_id: UUID, *, platform: str, push_token: str,
+        environment: str = "production", app_version: str | None = None,
+    ) -> dict:
+        devices = self._devices = getattr(self, "_devices", [])
+        now = datetime.now(timezone.utc).isoformat()
+        existing = next((d for d in devices if d.get("push_token") == push_token), None)
+        if existing is not None:  # rotate/refresh: token already known
+            existing.update({
+                "technician_id": str(technician_id), "platform": platform,
+                "environment": environment, "app_version": app_version,
+                "last_seen_at": now, "revoked_at": None,
+            })
+            return self._public_device(existing)
+        row = {
+            "id": str(uuid4()), "technician_id": str(technician_id),
+            "platform": platform, "push_token": push_token,
+            "environment": environment, "app_version": app_version,
+            "created_at": now, "last_seen_at": now, "revoked_at": None,
+        }
+        devices.append(row)
+        return self._public_device(row)
+
+    async def list_technician_devices(self, technician_id: UUID) -> list[dict]:
+        tid = str(technician_id)
+        return [
+            self._public_device(d) for d in getattr(self, "_devices", [])
+            if str(d.get("technician_id")) == tid and d.get("revoked_at") is None
+        ]
+
+    async def revoke_technician_device(
+        self, technician_id: UUID, device_id: UUID
+    ) -> dict | None:
+        tid, did = str(technician_id), str(device_id)
+        for d in getattr(self, "_devices", []):
+            if (str(d.get("id")) == did and str(d.get("technician_id")) == tid
+                    and d.get("revoked_at") is None):
+                d["revoked_at"] = datetime.now(timezone.utc).isoformat()
+                return {"id": did, "revoked": True}
         return None
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
@@ -8442,6 +8503,68 @@ class PostgresStore(Store):
         if not row:
             return None
         return {"id": str(row[0]), "display_name": row[1]}
+
+    async def register_technician_device(
+        self, technician_id: UUID, *, platform: str, push_token: str,
+        environment: str = "production", app_version: str | None = None,
+    ) -> dict:
+        """Upsert a device push token. Re-registering the same token refreshes
+        last_seen_at, reassigns it to the presenting technician, and clears any
+        prior revoke — so token rotation and re-login are idempotent."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_devices"
+                " (technician_id, platform, push_token, environment, app_version)"
+                " values (%s, %s, %s, %s, %s)"
+                " on conflict (push_token) do update set"
+                "   technician_id = excluded.technician_id,"
+                "   platform = excluded.platform,"
+                "   environment = excluded.environment,"
+                "   app_version = excluded.app_version,"
+                "   last_seen_at = now(),"
+                "   revoked_at = null"
+                " returning id, platform, environment, app_version, created_at, last_seen_at",
+                (str(technician_id), platform, push_token, environment, app_version),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]), "platform": row[1], "environment": row[2],
+            "app_version": row[3],
+            "created_at": row[4].isoformat() if row[4] else None,
+            "last_seen_at": row[5].isoformat() if row[5] else None,
+        }
+
+    async def list_technician_devices(self, technician_id: UUID) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, platform, environment, app_version, created_at, last_seen_at"
+                " from technician_devices"
+                " where technician_id = %s and revoked_at is null"
+                " order by last_seen_at desc",
+                (str(technician_id),),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "platform": r[1], "environment": r[2], "app_version": r[3],
+                "created_at": r[4].isoformat() if r[4] else None,
+                "last_seen_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ]
+
+    async def revoke_technician_device(
+        self, technician_id: UUID, device_id: UUID
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technician_devices set revoked_at = now()"
+                " where id = %s and technician_id = %s and revoked_at is null"
+                " returning id",
+                (str(device_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        return {"id": str(row[0]), "revoked": True} if row else None
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         """Guarantee the company has a branded intake slug, generating a unique one

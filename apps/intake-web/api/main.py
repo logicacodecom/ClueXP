@@ -756,6 +756,13 @@ class TechnicianAvailabilityRequest(BaseModel):
     is_available: bool
 
 
+class DeviceRegisterRequest(BaseModel):
+    platform: str
+    push_token: str
+    environment: str = "production"
+    app_version: str | None = None
+
+
 class TechnicianProfileUpdateRequest(BaseModel):
     display_name: str | None = None
     phone: str | None = None
@@ -2315,6 +2322,46 @@ async def update_my_availability(
     )
     if result is None:
         raise HTTPException(status_code=409, detail="Technician is not eligible for dispatch")
+    return result
+
+
+# --- technician self-service: native push-device registry ---
+@app.post("/technicians/me/devices")
+async def register_my_device(
+    payload: DeviceRegisterRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Register (or refresh) this technician's device push token. Idempotent on
+    the token: re-registering rotates it to this technician and refreshes it."""
+    tid = _me_technician_id(session)
+    platform = payload.platform.strip().lower()
+    if platform not in {"ios", "android"}:
+        raise HTTPException(status_code=422, detail="platform must be 'ios' or 'android'")
+    environment = payload.environment.strip().lower()
+    if environment not in {"development", "production"}:
+        raise HTTPException(status_code=422, detail="environment must be 'development' or 'production'")
+    if not payload.push_token.strip():
+        raise HTTPException(status_code=422, detail="push_token is required")
+    return await store.register_technician_device(
+        tid, platform=platform, push_token=payload.push_token.strip(),
+        environment=environment, app_version=payload.app_version,
+    )
+
+
+@app.get("/technicians/me/devices")
+async def list_my_devices(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    tid = _me_technician_id(session)
+    return {"devices": await store.list_technician_devices(tid)}
+
+
+@app.delete("/technicians/me/devices/{device_id}")
+async def revoke_my_device(
+    device_id: UUID, session: dict[str, Any] = Depends(require_session)
+) -> dict[str, Any]:
+    tid = _me_technician_id(session)
+    result = await store.revoke_technician_device(tid, device_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Device not found")
     return result
 
 
