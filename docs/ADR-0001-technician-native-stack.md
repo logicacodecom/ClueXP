@@ -69,10 +69,14 @@ every native cost, so it is rejected regardless of the stack decision above.
   scaffolded release pipeline).
 - **OTA updates** for JS-layer fixes, subject to the forced-update / minimum-version policy in
   §19 — native-contract or security breaks still require a store build, OTA is not a bypass.
-- Mature first-party modules cover the §12.3 checklist: `expo-notifications` (APNs/FCM),
-  `expo-location` + `expo-task-manager` (background GPS), `expo-secure-store` (token/credential
-  storage), a **SQLCipher-enabled `expo-sqlite` build** (encrypted offline DB — see below),
-  `expo-image-picker`/camera (evidence), `expo-haptics`, deep links.
+- Mature first-party modules cover **much of** the §12.3 checklist: `expo-notifications`
+  (APNs/FCM), `expo-location` + `expo-task-manager` (background GPS), `expo-secure-store`
+  (token/credential storage), a **SQLCipher-enabled `expo-sqlite` build** (encrypted offline
+  DB — see below), `expo-image-picker`/camera (evidence), `expo-haptics`, deep links.
+  **Not covered by that core set** and still owed (via ecosystem modules or open decisions,
+  not this list): native maps/navigation handoff (§20.5), crash reporting, app-update /
+  minimum-version enforcement, runtime permission-change monitoring, and device-integrity
+  signals. These do not change the stack choice but must not be assumed solved by the modules above.
 
 **Encrypted storage — use the built-in path first.** `expo-sqlite` supports SQLCipher
 encryption at rest through its own configuration; adopt that native build first rather
@@ -126,7 +130,14 @@ tracked in `TECHNICIAN-APP-REDESIGN.md` §13 and must precede the native feature
 
 ## 7. Acceptance blockers (owner + due date + evidence required)
 
-Mirrors `TECHNICIAN-APP-REDESIGN.md` §20; this ADR closes #1 and needs the rest ratified.
+Covers the **native-runtime subset of `TECHNICIAN-APP-REDESIGN.md` §20** (items 2–5 and 9)
+that gates the stack decision, **plus app-store ownership** (from §12.3, not in §20). This
+ADR closes §20 #1 (the stack itself). The remaining §20 items — **6** messaging/attachment
+retention, **7** mediated-voice provider/recording policy, **8** evidence classification, **10**
+scheduled next-job capacity model, **11** high-contrast outdoor theme, **12** post-pilot product
+target baselines — are **not stack blockers**; they gate their own feature workstreams and stay
+tracked in §20. Do not read this table as a complete §20 sign-off.
+
 **This ADR cannot move from Proposed to Accepted until every row below has a named
 accountable owner, a calendar due date, and the concrete evidence recorded** — an empty
 cell is an open blocker, not a formality. Owners are individuals, not teams.
@@ -148,9 +159,16 @@ not a dev/debug build or simulator, on both iOS and Android, and produce **obser
 recorded measurements** (timestamps, delivery/ack counts, GPS fix logs) — not a "seemed to
 work" note. It passes only when every item below is demonstrated:
 
-**Application states**
-- Cold start, warm foreground, backgrounded, OS-terminated (swiped away), and post-device-reboot
-  all restore the correct active-job state and re-establish push/location.
+**Application states** — separate *state restoration on next launch* from *continuous
+background behavior after kill/reboot*; do not require the impossible:
+- Cold start, warm foreground, and backgrounded restore the correct active-job state and keep
+  push/location running.
+- After **OS-termination (swiped away)** or **device reboot**, background location legitimately
+  **stops** (Android will not auto-restart a terminated app for location/geofence; iOS suspends
+  on termination). The requirement is that the **next app launch** restores the correct active-job
+  state and re-registers push + location — *not* that background location continues while the app
+  stays killed. Measure and document the actual resumption behavior (including any OS
+  significant-location / geofence re-launch signal, where available) rather than assuming it.
 
 **Push delivery + acknowledgement escalation**
 - A user-visible high-priority push arrives and the technician can explicitly acknowledge it;
