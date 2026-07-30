@@ -117,6 +117,20 @@ def test_report_issue_without_key_still_works():
     assert resp.status_code == 200
 
 
+def test_client_mutation_id_length_and_format_validation():
+    client = TestClient(app)
+    tid, headers = _register_tech()
+    jid = _assign_job(tid)
+    for bad in ["short", "x" * 129, "has space", "bad/slash", "emoji\U0001f600aaa"]:
+        resp = client.post(f"/jobs/{jid}/report-issue", headers=headers,
+                           json={"kind": "cannot_complete", "client_mutation_id": bad})
+        assert resp.status_code == 422, f"{bad!r} should be rejected: {resp.status_code}"
+    # a well-formed key (>=8, [A-Za-z0-9_-]) is accepted
+    good = client.post(f"/jobs/{jid}/report-issue", headers=headers,
+                       json={"kind": "cannot_complete", "client_mutation_id": "mut_" + uuid4().hex})
+    assert good.status_code == 200, good.text
+
+
 def test_report_issue_requires_technician_auth():
     client = TestClient(app)
     tid, _ = _register_tech()
