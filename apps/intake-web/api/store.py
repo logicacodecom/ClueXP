@@ -1008,6 +1008,17 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def begin_or_get_technician_mutation(
+        self, technician_id: UUID, client_mutation_id: str, request_hash: str,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def complete_technician_mutation(
+        self, technician_id: UUID, client_mutation_id: str, *,
+        status_code: int, response: dict,
+    ) -> None:  # pragma: no cover
+        raise NotImplementedError
+
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1848,6 +1859,30 @@ class InMemoryStore(Store):
                 d["revoked_at"] = datetime.now(timezone.utc).isoformat()
                 return {"id": did, "revoked": True}
         return None
+
+    async def begin_or_get_technician_mutation(
+        self, technician_id: UUID, client_mutation_id: str, request_hash: str,
+    ) -> dict:
+        muts = self._mutations = getattr(self, "_mutations", {})
+        key = (str(technician_id), client_mutation_id)
+        rec = muts.get(key)
+        if rec is None:  # first time: reserve the key, caller does the work
+            muts[key] = {"request_hash": request_hash, "status_code": None, "response": None}
+            return {"state": "new"}
+        if rec["request_hash"] != request_hash:  # same key, different request
+            return {"state": "conflict"}
+        if rec["status_code"] is None:  # reserved but not finished (in flight)
+            return {"state": "pending"}
+        return {"state": "done", "status_code": rec["status_code"], "response": rec["response"]}
+
+    async def complete_technician_mutation(
+        self, technician_id: UUID, client_mutation_id: str, *,
+        status_code: int, response: dict,
+    ) -> None:
+        rec = getattr(self, "_mutations", {}).get((str(technician_id), client_mutation_id))
+        if rec is not None:
+            rec["status_code"] = status_code
+            rec["response"] = response
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         return {"slug": f"org-{str(organization_id)[:8]}"}
@@ -8622,6 +8657,56 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return {"id": str(row[0]), "revoked": True} if row else None
+
+    async def begin_or_get_technician_mutation(
+        self, technician_id: UUID, client_mutation_id: str, request_hash: str,
+    ) -> dict:
+        """Reserve an idempotency key or report the prior outcome. A fresh key is
+        reserved (state=new) and the caller performs the work; a re-seen key
+        replays the stored result (state=done), rejects a different request
+        (state=conflict), or reports in-flight work (state=pending). The insert's
+        ON CONFLICT DO NOTHING makes the reserve atomic under concurrent retries."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_mutations"
+                " (technician_id, client_mutation_id, request_hash)"
+                " values (%s, %s, %s)"
+                " on conflict (technician_id, client_mutation_id) do nothing"
+                " returning id",
+                (str(technician_id), client_mutation_id, request_hash),
+            )
+            inserted = await cur.fetchone()
+            if inserted is not None:
+                return {"state": "new"}
+            cur = await conn.execute(
+                "select request_hash, status_code, response_json from technician_mutations"
+                " where technician_id = %s and client_mutation_id = %s",
+                (str(technician_id), client_mutation_id),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return {"state": "new"}
+        stored_hash, status_code, response_json = row
+        if stored_hash != request_hash:
+            return {"state": "conflict"}
+        if status_code is None:
+            return {"state": "pending"}
+        return {
+            "state": "done", "status_code": status_code,
+            "response": json.loads(response_json) if response_json else None,
+        }
+
+    async def complete_technician_mutation(
+        self, technician_id: UUID, client_mutation_id: str, *,
+        status_code: int, response: dict,
+    ) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "update technician_mutations set"
+                "  status_code = %s, response_json = %s, completed_at = now()"
+                " where technician_id = %s and client_mutation_id = %s",
+                (status_code, json.dumps(response), str(technician_id), client_mutation_id),
+            )
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         """Guarantee the company has a branded intake slug, generating a unique one

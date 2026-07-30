@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import math
 import os
@@ -810,6 +811,10 @@ class ArrivalVerifyRequest(BaseModel):
 class IssueReportRequest(BaseModel):
     kind: str
     reason: str | None = None
+    # Optional client-generated idempotency key for offline/native replay. When
+    # sent, an exact retry replays the same result; the same key with a different
+    # request is a structured 409 conflict.
+    client_mutation_id: str | None = None
 
 
 class ArrivalOverrideRequest(BaseModel):
@@ -4729,6 +4734,29 @@ async def verify_arrival(
 _ISSUE_KINDS = {"cannot_complete", "customer_unavailable", "unsafe"}
 
 
+def _mutation_request_hash(*parts: Any) -> str:
+    """Stable hash of a mutation's identity + payload so an idempotency-key retry
+    with a materially different request is detectable as a conflict."""
+    canonical = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_CLIENT_MUTATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def _validated_client_mutation_id(raw: str | None) -> str | None:
+    """Normalize/validate a client idempotency key. Absent -> None (the key is
+    optional). Present -> 8-128 chars of [A-Za-z0-9_-] (covers UUID/ULID/nanoid),
+    else 422 — so a client can't store oversized or junk keys."""
+    cmid = (raw or "").strip()
+    if not cmid:
+        return None
+    if not _CLIENT_MUTATION_ID_RE.fullmatch(cmid):
+        raise HTTPException(status_code=422, detail=(
+            "client_mutation_id must be 8-128 characters of letters, digits, '-', or '_'"))
+    return cmid
+
+
 @app.post("/jobs/{job_id}/report-issue")
 async def report_issue(
     job_id: UUID,
@@ -4751,8 +4779,28 @@ async def report_issue(
     if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
         raise HTTPException(status_code=403, detail="Not your job")
     reason = (payload.reason or "").strip()[:280]
+    cmid = _validated_client_mutation_id(payload.client_mutation_id)
+    if cmid:
+        req_hash = _mutation_request_hash("report-issue", str(job_id), kind, reason)
+        rec = await store.begin_or_get_technician_mutation(UUID(tech["id"]), cmid, req_hash)
+        if rec["state"] == "done":  # exact retry -> replay the recorded result
+            return rec["response"]
+        if rec["state"] == "conflict":  # same key, materially different request
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_key_reuse",
+                "message": "This client_mutation_id was already used with a different request.",
+            })
+        if rec["state"] == "pending":  # reserved but not finished (concurrent retry)
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_in_progress",
+                "message": "A mutation with this client_mutation_id is still being processed.",
+            })
     await store.log_event_raw(job_id, f"tech_issue:{kind}:by={tech['id']}:{reason}")
-    return {"reported": True, "kind": kind}
+    result = {"reported": True, "kind": kind}
+    if cmid:
+        await store.complete_technician_mutation(
+            UUID(tech["id"]), cmid, status_code=200, response=result)
+    return result
 
 
 @app.post("/jobs/{job_id}/collection")
