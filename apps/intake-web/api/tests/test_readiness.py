@@ -14,6 +14,7 @@ from uuid import uuid4
 from starlette.testclient import TestClient
 
 from api.auth import create_access_token
+from api.dispatch import ACTIVE_JOB_STATUSES
 from api.main import app, store as app_store
 
 
@@ -47,13 +48,51 @@ def test_not_ready_when_location_stale():
     assert body["push"]["push_ready"] is False
 
 
-def test_ready_when_approved_available_fresh_and_idle():
+def _register_device(client, headers):
+    return client.post("/technicians/me/devices", headers=headers, json={
+        "platform": "ios", "push_token": f"apns-{uuid4()}",
+    })
+
+
+def test_ready_when_approved_available_fresh_idle_and_has_device():
     client = TestClient(app)
     _, headers = _register_tech(approved=True, fresh_location=True)
+    _register_device(client, headers)  # all dimensions must pass, including push
     body = client.get("/technicians/me/readiness", headers=headers).json()
     assert body["can_receive_offers"] is True
     assert body["blocking_reasons"] == []
     assert body["active_job"]["busy"] is False
+    assert body["push"]["push_ready"] is True
+
+
+def test_no_device_blocks_with_push_not_ready():
+    """Approved + available + fresh + idle, but no registered push device: not
+    offer-ready, and 'push_not_ready' is the only blocker."""
+    client = TestClient(app)
+    _, headers = _register_tech(approved=True, fresh_location=True)
+    body = client.get("/technicians/me/readiness", headers=headers).json()
+    assert body["can_receive_offers"] is False
+    assert body["blocking_reasons"] == ["push_not_ready"]
+    assert body["push"]["push_ready"] is False
+
+
+def test_busy_active_job_blocks():
+    client = TestClient(app)
+    tid, headers = _register_tech(approved=True, fresh_location=True)
+    _register_device(client, headers)  # isolate 'busy' as the only blocker
+    jid = str(uuid4())
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_tech[jid] = tid
+    app_store._job_status[jid] = ACTIVE_JOB_STATUSES[0]
+    try:
+        body = client.get("/technicians/me/readiness", headers=headers).json()
+        assert body["active_job"]["busy"] is True
+        assert body["blocking_reasons"] == ["busy"]
+        assert body["can_receive_offers"] is False
+    finally:
+        app_store._job_tech.pop(jid, None)
+        app_store._job_status.pop(jid, None)
 
 
 def test_not_approved_blocks():

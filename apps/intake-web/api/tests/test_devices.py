@@ -67,6 +67,43 @@ def test_rotation_is_idempotent():
     assert len(devices) == 1
 
 
+def test_installation_rotation_replaces_token():
+    """APNs/FCM rotation: same installation registers a NEW token. The device row
+    is updated in place — one active device, not two."""
+    client = TestClient(app)
+    _, headers = _register_tech()
+    a = client.post("/technicians/me/devices", headers=headers, json={
+        "platform": "ios", "push_token": "apns-A",
+        "installation_id": "install-1", "app_version": "1.0.0",
+    }).json()
+    b = client.post("/technicians/me/devices", headers=headers, json={
+        "platform": "ios", "push_token": "apns-B",
+        "installation_id": "install-1", "app_version": "1.1.0",
+    }).json()
+    assert b["id"] == a["id"]  # same device row, token swapped
+    assert b["app_version"] == "1.1.0"  # refreshed
+    devices = client.get("/technicians/me/devices", headers=headers).json()["devices"]
+    assert len(devices) == 1  # NOT two active devices
+    assert devices[0]["id"] == a["id"]
+
+
+def test_installation_id_is_scoped_per_technician():
+    """The same installation_id string under two technicians is two distinct
+    devices — the identity is (technician, environment, installation)."""
+    client = TestClient(app)
+    _, headers_a = _register_tech()
+    _, headers_b = _register_tech()
+    dev_a = client.post("/technicians/me/devices", headers=headers_a, json={
+        "platform": "ios", "push_token": "apns-shared-a", "installation_id": "shared",
+    }).json()
+    dev_b = client.post("/technicians/me/devices", headers=headers_b, json={
+        "platform": "android", "push_token": "fcm-shared-b", "installation_id": "shared",
+    }).json()
+    assert dev_a["id"] != dev_b["id"]
+    assert len(client.get("/technicians/me/devices", headers=headers_a).json()["devices"]) == 1
+    assert len(client.get("/technicians/me/devices", headers=headers_b).json()["devices"]) == 1
+
+
 def test_revoke_and_not_found():
     client = TestClient(app)
     _, headers = _register_tech()

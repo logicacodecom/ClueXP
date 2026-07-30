@@ -761,6 +761,9 @@ class DeviceRegisterRequest(BaseModel):
     push_token: str
     environment: str = "production"
     app_version: str | None = None
+    # Stable per-install device id. When present, token rotation replaces the
+    # token on this device instead of registering a second active device.
+    installation_id: str | None = None
 
 
 class TechnicianProfileUpdateRequest(BaseModel):
@@ -2342,9 +2345,11 @@ async def register_my_device(
         raise HTTPException(status_code=422, detail="environment must be 'development' or 'production'")
     if not payload.push_token.strip():
         raise HTTPException(status_code=422, detail="push_token is required")
+    installation_id = (payload.installation_id or "").strip() or None
     return await store.register_technician_device(
         tid, platform=platform, push_token=payload.push_token.strip(),
         environment=environment, app_version=payload.app_version,
+        installation_id=installation_id,
     )
 
 
@@ -2393,6 +2398,10 @@ async def my_readiness(session: dict[str, Any] = Depends(require_session)) -> di
         blocking.append("location_stale")
     if active_job is not None:
         blocking.append("busy")
+    if not devices:
+        # No registered push device: the tech can't be reliably reached with an
+        # offer, so they are not offer-ready even if everything else passes.
+        blocking.append("push_not_ready")
 
     return {
         "can_receive_offers": not blocking,

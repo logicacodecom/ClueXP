@@ -996,6 +996,7 @@ class Store:
     async def register_technician_device(
         self, technician_id: UUID, *, platform: str, push_token: str,
         environment: str = "production", app_version: str | None = None,
+        installation_id: str | None = None,
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
@@ -1790,21 +1791,38 @@ class InMemoryStore(Store):
     async def register_technician_device(
         self, technician_id: UUID, *, platform: str, push_token: str,
         environment: str = "production", app_version: str | None = None,
+        installation_id: str | None = None,
     ) -> dict:
         devices = self._devices = getattr(self, "_devices", [])
         now = datetime.now(timezone.utc).isoformat()
-        existing = next((d for d in devices if d.get("push_token") == push_token), None)
-        if existing is not None:  # rotate/refresh: token already known
+        tid = str(technician_id)
+        existing = None
+        # Prefer device installation identity: rotation swaps the token on the
+        # SAME device row instead of creating a second active device.
+        if installation_id:
+            existing = next(
+                (d for d in devices
+                 if d.get("revoked_at") is None
+                 and str(d.get("technician_id")) == tid
+                 and d.get("environment") == environment
+                 and d.get("installation_id") == installation_id),
+                None,
+            )
+        if existing is None:  # legacy / no installation id: key by token
+            existing = next((d for d in devices if d.get("push_token") == push_token), None)
+        if existing is not None:
             existing.update({
-                "technician_id": str(technician_id), "platform": platform,
+                "technician_id": tid, "platform": platform, "push_token": push_token,
                 "environment": environment, "app_version": app_version,
+                "installation_id": installation_id or existing.get("installation_id"),
                 "last_seen_at": now, "revoked_at": None,
             })
             return self._public_device(existing)
         row = {
-            "id": str(uuid4()), "technician_id": str(technician_id),
+            "id": str(uuid4()), "technician_id": tid,
             "platform": platform, "push_token": push_token,
             "environment": environment, "app_version": app_version,
+            "installation_id": installation_id,
             "created_at": now, "last_seen_at": now, "revoked_at": None,
         }
         devices.append(row)
@@ -8507,26 +8525,50 @@ class PostgresStore(Store):
     async def register_technician_device(
         self, technician_id: UUID, *, platform: str, push_token: str,
         environment: str = "production", app_version: str | None = None,
+        installation_id: str | None = None,
     ) -> dict:
-        """Upsert a device push token. Re-registering the same token refreshes
-        last_seen_at, reassigns it to the presenting technician, and clears any
-        prior revoke — so token rotation and re-login are idempotent."""
+        """Upsert a device push token.
+
+        With an ``installation_id`` the device identity is (technician, environment,
+        installation), so APNs/FCM token rotation swaps the token on the SAME row —
+        the old token is replaced, never left as a second active device. Without one
+        we fall back to keying by the token itself (legacy 0041 behavior). Either way
+        re-registering refreshes last_seen_at and clears any prior revoke."""
+        cols = "id, platform, environment, app_version, created_at, last_seen_at"
         async with await self._connect() as conn:
-            cur = await conn.execute(
-                "insert into technician_devices"
-                " (technician_id, platform, push_token, environment, app_version)"
-                " values (%s, %s, %s, %s, %s)"
-                " on conflict (push_token) do update set"
-                "   technician_id = excluded.technician_id,"
-                "   platform = excluded.platform,"
-                "   environment = excluded.environment,"
-                "   app_version = excluded.app_version,"
-                "   last_seen_at = now(),"
-                "   revoked_at = null"
-                " returning id, platform, environment, app_version, created_at, last_seen_at",
-                (str(technician_id), platform, push_token, environment, app_version),
-            )
-            row = await cur.fetchone()
+            row = None
+            if installation_id:
+                # Rotate in place: replace the token on the existing active device.
+                cur = await conn.execute(
+                    "update technician_devices set"
+                    "   push_token = %s, platform = %s, app_version = %s,"
+                    "   last_seen_at = now(), revoked_at = null"
+                    " where technician_id = %s and environment = %s"
+                    "   and installation_id = %s and revoked_at is null"
+                    f" returning {cols}",
+                    (push_token, platform, app_version,
+                     str(technician_id), environment, installation_id),
+                )
+                row = await cur.fetchone()
+            if row is None:
+                # New device (or legacy token-keyed path). Conflict on the token
+                # means the same token re-registered — reassign and refresh it.
+                cur = await conn.execute(
+                    "insert into technician_devices"
+                    " (technician_id, platform, push_token, environment, app_version, installation_id)"
+                    " values (%s, %s, %s, %s, %s, %s)"
+                    " on conflict (push_token) do update set"
+                    "   technician_id = excluded.technician_id,"
+                    "   platform = excluded.platform,"
+                    "   environment = excluded.environment,"
+                    "   app_version = excluded.app_version,"
+                    "   installation_id = coalesce(excluded.installation_id, technician_devices.installation_id),"
+                    "   last_seen_at = now(),"
+                    "   revoked_at = null"
+                    f" returning {cols}",
+                    (str(technician_id), platform, push_token, environment, app_version, installation_id),
+                )
+                row = await cur.fetchone()
         return {
             "id": str(row[0]), "platform": row[1], "environment": row[2],
             "app_version": row[3],
