@@ -108,12 +108,21 @@ default cannot perform. Do not build a bespoke encrypted store on speculation.
 **Delivery semantics the notification contract must model — four distinct events, not one.**
 "Delivered" is not a single fact. The backend and client must track, and must not conflate:
 
-1. **Provider receipt** — APNs/FCM accepted the message for delivery attempt.
-2. **Device receipt** — the OS actually received it on a specific device.
-3. **User display** — it surfaced to the technician (banner/sound/lock screen).
-4. **Explicit acknowledgement** — the technician acted on it in-app.
+1. **Provider receipt** — APNs/FCM accepted the message for delivery attempt. *(First-class,
+   always observable.)*
+2. **Device receipt** — the OS actually received it on a specific device. *(Recorded only
+   where the platform/provider exposes it — FCM surfaces some Android delivery data; iOS
+   needs extra APNs/FCM instrumentation and is not uniformly available. Otherwise
+   unknown/inferred.)*
+3. **User display** — it surfaced to the technician (banner/sound/lock screen). *(Not reliably
+   provable that the user saw it; treat as inferred, never as proof of receipt.)*
+4. **Explicit acknowledgement** — the technician acted on it in-app. *(First-class, the only
+   authoritative signal.)*
 
-Only (4) counts as acknowledged delivery for SLA/escalation. **Silent (data-only) push
+Provider receipt (1) and explicit acknowledgement (4) are the two first-class events;
+device receipt (2) and display (3) are recorded where the platform exposes them and
+otherwise **modeled as unknown/inferred — never counted as acknowledgement**. Only (4)
+counts as acknowledged delivery for SLA/escalation. **Silent (data-only) push
 must not be treated as a guaranteed wake mechanism** — the OS may throttle, delay,
 coalesce, or drop it (iOS background budget; Android Doze/OEM battery managers). Critical
 alerts therefore require a user-visible push plus an in-app acknowledgement and a
@@ -172,7 +181,9 @@ background behavior after kill/reboot*; do not require the impossible:
 
 **Push delivery + acknowledgement escalation**
 - A user-visible high-priority push arrives and the technician can explicitly acknowledge it;
-  the four delivery events in §6 are distinguishable in logs.
+  provider receipt and explicit acknowledgement (§6 events 1 and 4) are recorded, and device
+  receipt/display are captured where the platform exposes them and otherwise logged as
+  unknown/inferred — never as acknowledgement.
 - When no acknowledgement arrives within the SLA, the dispatcher-side escalation path fires.
 - Silent/data-only push is measured for drop/delay rate and is **not** relied on as the wake path.
 
