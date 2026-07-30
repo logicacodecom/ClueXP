@@ -2365,6 +2365,61 @@ async def revoke_my_device(
     return result
 
 
+@app.get("/technicians/me/readiness")
+async def my_readiness(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    """One composed 'can I take work right now' snapshot for the native app:
+    account/approval, location freshness, active-job (busy) and push-device state.
+    Every field is server-derived truth; `connection` is deliberately absent —
+    only the device knows its own connectivity, so we never guess it here."""
+    tid = _me_technician_id(session)
+    tech = session.get("technician") or {}
+    now_dt = datetime.now(tz=timezone.utc)
+    threshold = timedelta(minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES)
+    loc_updated = tech.get("location_updated_at")
+    if loc_updated and not isinstance(loc_updated, datetime):
+        loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
+    location_fresh = bool(loc_updated and (now_dt - loc_updated) < threshold)
+    active_job = await store.get_technician_active_job(tid)
+    devices = await store.list_technician_devices(tid)
+    approved = bool(tech.get("approved"))
+    available = bool(tech.get("is_available"))
+
+    blocking: list[str] = []
+    if not approved:
+        blocking.append("not_approved")
+    if not available:
+        blocking.append("unavailable")
+    if not location_fresh:
+        blocking.append("location_stale")
+    if active_job is not None:
+        blocking.append("busy")
+
+    return {
+        "can_receive_offers": not blocking,
+        "blocking_reasons": blocking,
+        "account": {
+            "status": tech.get("status"),
+            "vetting_status": tech.get("vetting_status"),
+            "approved": approved,
+            "available": available,
+        },
+        "location": {
+            "fresh": location_fresh,
+            "updated_at": loc_updated.isoformat() if loc_updated else None,
+            "threshold_minutes": config.LOCATION_ONLINE_THRESHOLD_MINUTES,
+        },
+        "active_job": {
+            "busy": active_job is not None,
+            "id": active_job.get("id") if active_job else None,
+            "status": active_job.get("status") if active_job else None,
+        },
+        "push": {
+            "registered_devices": len(devices),
+            "push_ready": bool(devices),
+        },
+    }
+
+
 # --- technician self-service: affiliations + profile photo (Slice D backend) ---
 def _me_technician_id(session: dict[str, Any]) -> UUID:
     require_any_role(session, {"technician"})
