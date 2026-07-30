@@ -815,6 +815,10 @@ class IssueReportRequest(BaseModel):
     # sent, an exact retry replays the same result; the same key with a different
     # request is a structured 409 conflict.
     client_mutation_id: str | None = None
+    # Optional optimistic-concurrency guard: the active-job snapshot version the
+    # client acted on. If it no longer matches, the command is rejected with a
+    # structured 409 version_conflict before any work or idempotency reservation.
+    expected_version: str | None = None
 
 
 class ArrivalOverrideRequest(BaseModel):
@@ -2431,6 +2435,48 @@ async def my_readiness(session: dict[str, Any] = Depends(require_session)) -> di
             "registered_devices": len(devices),
             "push_ready": bool(devices),
         },
+    }
+
+
+@app.get("/technicians/me/active-job/snapshot")
+async def my_active_job_snapshot(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Versioned snapshot of the signed-in technician's current active job for the
+    native client. Read-only and self-scoped (only ever this technician's own
+    job). `version` is an ETag over (job id + status) — see `_job_version`; the
+    client echoes it back as `expected_version` on lifecycle-scoped commands.
+    When idle, returns {active_job: null}, mirroring get_technician_active_job.
+    Only context the assigned technician already receives is exposed (no org ids
+    or other tenant-internal fields)."""
+    tid = _me_technician_id(session)
+    job = await store.get_technician_active_job(tid)
+    if job is None:
+        return {"active_job": None, "version": None, "allowed_actions": []}
+    status = job.get("status")
+    return {
+        "active_job": {
+            "id": job["id"],
+            "operational_id": job.get("operational_id"),
+            "status": status,
+            "access_type": job.get("access_type"),
+            "situation": job.get("situation"),
+            "address": job.get("address"),
+            "lat": job.get("lat"),
+            "lng": job.get("lng"),
+            "detail": job.get("detail"),
+            "distance_km": job.get("distance_km"),
+            "distance_mi": job.get("distance_mi"),
+            "eta_min": job.get("eta_min"),
+            "eta_max": job.get("eta_max"),
+            "eta_is_estimate": job.get("eta_is_estimate"),
+            "location_requirements": {
+                "location_is_fresh": job.get("technician_location_is_fresh"),
+                "location_updated_at": job.get("technician_location_updated_at"),
+            },
+        },
+        "version": _job_version(job["id"], status),
+        "allowed_actions": _allowed_active_job_actions(status),
     }
 
 
@@ -4741,6 +4787,31 @@ def _mutation_request_hash(*parts: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _job_version(job_id: Any, status: str | None) -> str:
+    """Deterministic ETag for a job's lifecycle state, derived from (job id +
+    status). It changes on every status transition — enough for the native
+    client's optimistic-concurrency guard on lifecycle-scoped commands. It does
+    NOT change on non-status edits (e.g. a note or photo); a finer-grained stored
+    job version / updated_at is still owed and would replace this derivation."""
+    return hashlib.sha256(f"{job_id}|{status or ''}".encode("utf-8")).hexdigest()[:16]
+
+
+# Forward lifecycle targets a technician may advance an active job to, in order.
+_FORWARD_TARGETS = (STATUS_EN_ROUTE, STATUS_ARRIVED, STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING)
+
+
+def _allowed_active_job_actions(status: str | None) -> list[str]:
+    """Actions the assigned technician can take from this status. Uses the real
+    transition guard (can_technician_transition), so at most one forward
+    transition is offered; issue reporting is always available on an active job."""
+    actions: list[str] = []
+    nxt = next((t for t in _FORWARD_TARGETS if can_technician_transition(status or "", t)), None)
+    if nxt:
+        actions.append(f"advance_to:{nxt}")
+    actions.append("report_issue")
+    return actions
+
+
 _CLIENT_MUTATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
@@ -4779,6 +4850,16 @@ async def report_issue(
     if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
         raise HTTPException(status_code=403, detail="Not your job")
     reason = (payload.reason or "").strip()[:280]
+    # Optimistic-concurrency precondition, checked BEFORE idempotency so a stale
+    # client view never reserves a key or does work. (expected_version is a
+    # precondition, not part of the mutation identity, so it stays out of the
+    # idempotency hash — PR #60 replay/conflict semantics are unchanged.)
+    current_version = _job_version(job_id, lifecycle.get("status"))
+    if payload.expected_version is not None and payload.expected_version != current_version:
+        raise HTTPException(status_code=409, detail={
+            "code": "version_conflict",
+            "current_version": current_version,
+        })
     cmid = _validated_client_mutation_id(payload.client_mutation_id)
     if cmid:
         req_hash = _mutation_request_hash("report-issue", str(job_id), kind, reason)

@@ -565,14 +565,22 @@ background capabilities.
 - Support incremental/event sync or a documented polling fallback without making the client invent
   state.
 
-**Implemented (2026-07-30, partial):** a client `client_mutation_id` idempotency contract for
-offline replay is live on `POST /jobs/{id}/report-issue` — an exact retry replays the stored
-result, and the same key with a materially different request returns a structured
-`409 {code: "idempotency_key_reuse"}`. Backed by the `technician_mutations` store (migration
-`0043`), scoped per technician. **Still owed:** the versioned active-job snapshot / ETag and an
-`expected_version` field on state-changing commands, and extending the idempotency key to more
-technician mutation surfaces (this slice deliberately avoided offer acceptance / the P0 capacity
-lock).
+**Implemented (2026-07-30, partial):**
+- A client `client_mutation_id` idempotency contract for offline replay is live on
+  `POST /jobs/{id}/report-issue` — an exact retry replays the stored result, and the same key with
+  a materially different request returns `409 {code: "idempotency_key_reuse"}`. Backed by the
+  `technician_mutations` store (migration `0043`), scoped per technician.
+- A versioned active-job snapshot is live at `GET /technicians/me/active-job/snapshot` (read-only,
+  self-scoped): job id/status, `allowed_actions` (from the real transition guard), tenant-safe
+  context, and a `version` ETag. The client echoes `version` back as `expected_version` on
+  `report-issue`; a stale value returns `409 {code: "version_conflict", current_version}` before
+  any work or idempotency reservation.
+
+**Still owed:** `version` is derived from `(job id + status)` only, so it changes on status
+transitions but not on non-status edits — a stored job version / `updated_at` would make it
+finer-grained; `expected_version` on the true lifecycle-transition commands (en_route → complete);
+and extending both contracts to more surfaces. This slice deliberately avoided offer acceptance /
+the P0 capacity lock and arrival/PIN.
 
 ### 13.4 Messaging
 
