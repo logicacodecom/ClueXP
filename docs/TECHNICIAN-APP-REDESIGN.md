@@ -565,6 +565,15 @@ background capabilities.
 - Support incremental/event sync or a documented polling fallback without making the client invent
   state.
 
+**Implemented (2026-07-30, partial):** a client `client_mutation_id` idempotency contract for
+offline replay is live on `POST /jobs/{id}/report-issue` — an exact retry replays the stored
+result, and the same key with a materially different request returns a structured
+`409 {code: "idempotency_key_reuse"}`. Backed by the `technician_mutations` store (migration
+`0043`), scoped per technician. **Still owed:** the versioned active-job snapshot / ETag and an
+`expected_version` field on state-changing commands, and extending the idempotency key to more
+technician mutation surfaces (this slice deliberately avoided offer acceptance / the P0 capacity
+lock).
+
 ### 13.4 Messaging
 
 - Job/thread/message/participant/delivery/read/attachment schema.
