@@ -799,6 +799,10 @@ class PlatformAdminCreateRequest(BaseModel):
 
 class JobStatusUpdateRequest(BaseModel):
     status: str
+    # Optional optimistic-concurrency guard: the active-job snapshot version the
+    # client acted on. If it no longer matches, the transition is rejected with a
+    # structured 409 version_conflict before any mutation or side effect.
+    expected_version: str | None = None
 
 
 class ArrivalVerifyRequest(BaseModel):
@@ -4628,6 +4632,18 @@ async def technician_update_status(
         raise HTTPException(status_code=404, detail="Job not found")
     if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
         raise HTTPException(status_code=403, detail="Not your job")
+    # Optimistic-concurrency precondition against the client's last-read snapshot
+    # version — checked before transition-legality and before any mutation, same
+    # ordering as the report-issue guard. Distinct from the expected_current
+    # status-equality check below, which protects against a race between this
+    # request's own fetch and its own write.
+    current_version = _job_version(
+        ticket_id, lifecycle.get("status"), lifecycle.get("lifecycle_version"))
+    if payload.expected_version is not None and payload.expected_version != current_version:
+        raise HTTPException(status_code=409, detail={
+            "code": "version_conflict",
+            "current_version": current_version,
+        })
     if not can_technician_transition(lifecycle["status"], payload.status):
         raise HTTPException(status_code=409, detail="Illegal status transition")
     updated = await store.set_job_status(

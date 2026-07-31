@@ -576,11 +576,17 @@ background capabilities.
   `0044`). The client echoes `version` back as `expected_version` on `report-issue`; a stale value
   returns `409 {code: "version_conflict", current_version}` before any work or idempotency
   reservation.
+- `expected_version` also guards the real technician lifecycle-transition command,
+  `PATCH /tickets/{id}/status` (en_route / arrived / in_progress / completed_pending_customer):
+  omitted preserves existing PWA behavior; a stale value returns the same structured
+  `409 {code: "version_conflict", current_version}` before the transition-legality check and
+  before `set_job_status` mutates anything, so a stale client never bumps `lifecycle_version` or
+  triggers a transition side effect.
 
 **Still owed:** bumping `lifecycle_version` on every future lifecycle-relevant non-status write as
-those writes are promoted into the native command surface; `expected_version` on the true
-lifecycle-transition commands (en_route → complete); and extending both contracts to more surfaces.
-This slice deliberately avoided offer acceptance / the P0 capacity lock and arrival/PIN.
+those writes are promoted into the native command surface; extending both contracts to more
+surfaces (arrival/PIN, closeout). This slice deliberately avoided offer acceptance and the P0
+capacity lock.
 
 ### 13.4 Messaging
 
