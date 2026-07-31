@@ -577,11 +577,11 @@ background capabilities.
   returns `409 {code: "version_conflict", current_version}` before any work or idempotency
   reservation.
 - `expected_version` also guards the real technician lifecycle-transition command,
-  `PATCH /tickets/{id}/status` (en_route / arrived / in_progress / completed_pending_customer):
-  omitted preserves existing PWA behavior; a stale value returns the same structured
-  `409 {code: "version_conflict", current_version}` before the transition-legality check and
-  before `set_job_status` mutates anything, so a stale client never bumps `lifecycle_version` or
-  triggers a transition side effect.
+  `PATCH /tickets/{id}/status` (en_route / in_progress / completed_pending_customer; `arrived`
+  remains on the arrival/PIN path): omitted preserves existing PWA behavior; a stale value returns
+  the same structured `409 {code: "version_conflict", current_version}` before the transition-
+  legality check and before `set_job_status` mutates anything, so a stale client never bumps
+  `lifecycle_version` or triggers a transition side effect.
 
 **Still owed:** bumping `lifecycle_version` on every future lifecycle-relevant non-status write as
 those writes are promoted into the native command surface; extending both contracts to more
