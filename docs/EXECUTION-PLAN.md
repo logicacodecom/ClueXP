@@ -699,10 +699,14 @@ finished-job history (`/activity`); global profile + photo upload/review + affil
 Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T3, T5–T7 done.)
 
 **Remaining:**
-- [ ] **P0 global active-job capacity lock:** enforce one active job per global technician across
-  all affiliations at the DB acceptance boundary; remove active-job conflicts from the immediate
-  offer override path; atomically supersede the technician's other pending offers; return `409` on
-  concurrent losing accepts; cover same-company and cross-company races.
+- [x] **P0 global active-job capacity lock** (2026-07-30): one active job per global technician
+  enforced atomically at the DB acceptance boundary (`NOT EXISTS` guard in the same `UPDATE` as the
+  first-accept-wins claim); `409 technician_busy` on a concurrent losing accept; immediate-offer
+  creation no longer accepts an override for a busy technician (was overrideable, now a hard `409`);
+  same-company and cross-company races covered by test. Detail and one deliberately-deferred item
+  (proactively superseding a technician's *other* pending offers across companies — an already-
+  shipped, tested product decision to leave them open instead) in
+  `TECHNICIAN-APP-REDESIGN.md` §13.1.
 - [ ] Active-job alert policy: no ordinary offer alerts while `assigned`/`en_route`/`arrived`/
   `in_progress`/`completed_pending_customer`; only current-job communication, cancellation,
   recovery/reassignment, confirmation failure, and safety may interrupt.
