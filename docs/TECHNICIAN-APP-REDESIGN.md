@@ -582,10 +582,15 @@ background capabilities.
   the same structured `409 {code: "version_conflict", current_version}` before the transition-
   legality check and before `set_job_status` mutates anything, so a stale client never bumps
   `lifecycle_version` or triggers a transition side effect.
+- Collection reporting (`POST /jobs/{id}/collection`) now participates in both native command
+  contracts: optional `expected_version` rejects stale closeout/payment writes before any mutation
+  or idempotency reservation, and optional `client_mutation_id` makes exact offline retries replay
+  the stored closeout/payment result while returning `409 {code: "idempotency_key_reuse"}` for the
+  same key with a different normalized closeout payload.
 
 **Still owed:** bumping `lifecycle_version` on every future lifecycle-relevant non-status write as
 those writes are promoted into the native command surface; extending both contracts to more
-surfaces (arrival/PIN, closeout). This slice deliberately avoided offer acceptance and the P0
+surfaces (arrival/PIN, completion closeout beyond collection). This slice deliberately avoided offer acceptance and the P0
 capacity lock.
 
 ### 13.4 Messaging

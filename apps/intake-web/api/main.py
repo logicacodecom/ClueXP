@@ -865,6 +865,14 @@ class PaymentReportRequest(BaseModel):
     line_items: list[dict[str, Any]] | None = None
     tip_amount: float = 0
     no_tax_reason: str | None = None
+    # Optional client-generated idempotency key for offline/native replay. When
+    # sent, an exact retry replays the same result; the same key with a different
+    # normalized closeout request is a structured 409 conflict.
+    client_mutation_id: str | None = None
+    # Optional optimistic-concurrency guard: the active-job snapshot version the
+    # client acted on. If it no longer matches, the command is rejected before
+    # closeout/payment writes or idempotency reservation.
+    expected_version: str | None = None
     # MVP is USD-only: advisory totals are summed/displayed as a single dollar figure.
     # The field is fixed server-side; a client-supplied value is ignored.
 
@@ -4923,16 +4931,62 @@ async def report_collection(
             status_code=409,
             detail="Collection can only be reported while the job is in progress or completed.",
         )
+    current_version = _job_version(
+        job_id, lifecycle.get("status"), lifecycle.get("lifecycle_version"))
+    if payload.expected_version is not None and payload.expected_version != current_version:
+        raise HTTPException(status_code=409, detail={
+            "code": "version_conflict",
+            "current_version": current_version,
+        })
     closeout, method = await _build_closeout_report(job_id=job_id, payload=payload, lifecycle=lifecycle)
+    payment_amount = round(float(closeout["total_cents"]) / 100, 2)
+    cmid = _validated_client_mutation_id(payload.client_mutation_id)
+    if cmid:
+        req_hash = _mutation_request_hash(
+            "report-collection",
+            str(job_id),
+            {
+                "currency": closeout["currency"],
+                "method": method,
+                "line_items": closeout["line_items"],
+                "subtotal_cents": closeout["subtotal_cents"],
+                "taxable_subtotal_cents": closeout["taxable_subtotal_cents"],
+                "tax_rate_basis_points": closeout["tax_rate_basis_points"],
+                "tax_cents": closeout["tax_cents"],
+                "tip_cents": closeout["tip_cents"],
+                "card_fee_basis_points": closeout["card_fee_basis_points"],
+                "card_fee_fixed_cents": closeout["card_fee_fixed_cents"],
+                "card_fee_cents": closeout["card_fee_cents"],
+                "total_cents": closeout["total_cents"],
+                "no_tax_reason": closeout["no_tax_reason"],
+            },
+        )
+        rec = await store.begin_or_get_technician_mutation(UUID(tech["id"]), cmid, req_hash)
+        if rec["state"] == "done":
+            return rec["response"]
+        if rec["state"] == "conflict":
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_key_reuse",
+                "message": "This client_mutation_id was already used with a different request.",
+            })
+        if rec["state"] == "pending":
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_in_progress",
+                "message": "A mutation with this client_mutation_id is still being processed.",
+            })
     saved_closeout = await store.record_job_closeout(closeout)
     report = await store.record_payment_report(
         job_id=job_id,
         reported_by="technician",
-        amount=round(float(saved_closeout["total_cents"]) / 100, 2),
+        amount=payment_amount,
         method=method,
         currency="USD",
     )
-    return {"status": "recorded", "payment": report, "closeout": saved_closeout}
+    result = {"status": "recorded", "payment": report, "closeout": saved_closeout}
+    if cmid:
+        await store.complete_technician_mutation(
+            UUID(tech["id"]), cmid, status_code=200, response=result)
+    return result
 
 
 @app.get("/technician/jobs/history")
