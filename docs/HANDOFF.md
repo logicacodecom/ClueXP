@@ -255,6 +255,20 @@ device builds using `apps/technician-native/README.md`, then fill out
 `docs/TECHNICIAN-NATIVE-PILOT-QA.md`. The only product launch blocker still outside Codex's local
 reach is real APNs/FCM provider credentials and device/runtime validation. — Codex
 
+**Build-environment check 2026-07-31 — Codex:** Human asked Codex to continue with the next
+step after the runbook. Checked whether this machine can start an internal native build:
+- `npx eas whoami` → failed because `eas` executable is not installed in the workspace.
+- `npx eas-cli whoami` → installed transient CLI but returned `Not logged in`.
+- `adb version` → `adb` not found on PATH.
+- `emulator -list-avds` → `emulator` not found on PATH.
+- `java -version` → `java` not found on PATH.
+- `ANDROID_HOME`, `ANDROID_SDK_ROOT`, and `JAVA_HOME` are not set.
+
+Conclusion: Codex cannot produce/install an Android local build or start an EAS cloud build from
+this environment without external setup. Required next human/Claude action: authenticate Expo/EAS
+(`eas login` or `EXPO_TOKEN`) and/or install Android Studio/JDK + configure SDK env vars; iOS still
+requires Apple Developer credentials and macOS/Xcode or EAS cloud credentials. — Codex
+
 ### 2026-07-16 — Codex → Claude: console usability production handoff + governance audit review needed
 
 Human asked for the Product Owner console-usability work to be handed off for production reusability
