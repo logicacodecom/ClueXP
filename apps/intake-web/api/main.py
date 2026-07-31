@@ -29,6 +29,7 @@ from api import config
 from api.job_text_parser import MAX_INPUT_LENGTH, PARSER_VERSION, parse_job_text
 from api.service_catalog import active_skill_codes, normalize_skill_code
 from api import settings as runtime_settings
+from api import push as push_service
 from api.dispatch import (
     CARD_PAYMENT_METHODS,
     STATUS_ARRIVED,
@@ -183,12 +184,25 @@ class PhotoCompleteRequest(BaseModel):
 class LoginRequest(BaseModel):
     identifier: str
     password: str
+    # Native clients (no BFF cookie) opt in to also receive a long-lived, rotating
+    # refresh token so they don't need to re-login when the access token expires.
+    # Web/BFF logins omit this and are unaffected.
+    want_refresh_token: bool = False
 
 
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     session: dict[str, Any]
+    refresh_token: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class RevokeRefreshRequest(BaseModel):
+    refresh_token: str
 
 
 class ManualIntakeRequest(BaseModel):
@@ -810,6 +824,8 @@ class ArrivalVerifyRequest(BaseModel):
     method: str = "pin"
     reason: str | None = None
     dispatcher_name: str | None = None
+    client_mutation_id: str | None = None
+    expected_version: str | None = None
 
 
 class IssueReportRequest(BaseModel):
@@ -1061,7 +1077,44 @@ async def login(payload: LoginRequest, request: Request) -> AuthResponse:
             "org": session.get("active_organization_id"),
         }
     )
-    return AuthResponse(access_token=token, session=session)
+    refresh_token = (
+        await store.issue_refresh_token(session["user"]["id"])
+        if payload.want_refresh_token else None
+    )
+    return AuthResponse(access_token=token, session=session, refresh_token=refresh_token)
+
+
+@app.post("/auth/refresh", response_model=AuthResponse)
+async def refresh(payload: RefreshRequest) -> AuthResponse:
+    """Native session refresh: exchange a refresh token for a new access token
+    AND a new refresh token (single-use rotation). The old refresh token is
+    consumed by this call and cannot be used again; presenting an already-used
+    one revokes the whole chain for that user (theft signal) and 401s."""
+    await latency()
+    result = await store.rotate_refresh_token(payload.refresh_token)
+    if result["state"] in ("invalid", "reused", "expired"):
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    session = await store.get_user_session(result["user_id"])
+    if session is None:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    token = create_access_token(
+        {
+            "sub": session["user"]["id"],
+            "roles": session.get("roles", []),
+            "org": session.get("active_organization_id"),
+        }
+    )
+    return AuthResponse(access_token=token, session=session, refresh_token=result["token"])
+
+
+@app.post("/auth/logout")
+async def logout(payload: RevokeRefreshRequest) -> dict[str, Any]:
+    """Native sign-out: revoke this refresh token so a stolen/lost device can't
+    silently keep the session alive. The still-live access token simply expires
+    on its own (~24h) — it is not separately revocable by design (stateless JWT)."""
+    await latency()
+    revoked = await store.revoke_refresh_token(payload.refresh_token)
+    return {"revoked": revoked}
 
 
 @app.get("/auth/me")
@@ -2492,6 +2545,35 @@ async def my_active_job_snapshot(
     }
 
 
+@app.get("/technicians/me/notifications")
+async def my_notifications(
+    unacknowledged_only: bool = False,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Self-scoped notification history for the native client. `provider_status`
+    is honest about delivery: this deployment has no configured push provider,
+    so every row is currently 'skipped_no_provider' — see api/push.py."""
+    tid = _me_technician_id(session)
+    return {
+        "notifications": await store.list_technician_notifications(
+            tid, unacknowledged_only=unacknowledged_only)
+    }
+
+
+@app.post("/technicians/me/notifications/{notification_id}/ack")
+async def acknowledge_notification(
+    notification_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Explicit acknowledgement — the one first-class client signal in the
+    ADR-0001 SS6 delivery model besides provider receipt. Idempotent: acking an
+    already-acked notification just returns it unchanged."""
+    tid = _me_technician_id(session)
+    result = await store.acknowledge_technician_notification(tid, notification_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return result
+
+
 # --- technician self-service: affiliations + profile photo (Slice D backend) ---
 def _me_technician_id(session: dict[str, Any]) -> UUID:
     require_any_role(session, {"technician"})
@@ -3376,6 +3458,17 @@ async def _send_targeted_offer(
     if override_reason:
         audit += f":override={override_reason[:100]}"
     await store.log_event_raw(job_id, audit)
+    # Best-effort: a new offer is exactly ADR-0001 §6's "critical alert" class.
+    # Never let a push failure block a real offer — notify_technician already
+    # swallows per-device send errors; this guards the store call itself too.
+    try:
+        await push_service.notify_technician(
+            store, technician_id, alert_class="offer",
+            envelope={"title": "New job offer", "body": "A new job offer is available."},
+            job_id=job_id, offer_id=UUID(offer["id"]) if offer.get("id") else None,
+        )
+    except Exception:
+        pass
     return {
         "offer_id": offer.get("id"),
         "technician_id": str(technician_id),
@@ -4177,16 +4270,25 @@ async def provider_fleet(
 
 
 @app.post("/offers/{offer_id}/accept")
-async def accept_offer(offer_id: UUID) -> dict[str, Any]:
+async def accept_offer(
+    offer_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
     """First-accept-wins: atomically claim the job for the offer's technician,
     set ``fulfillment_technician_id``/``fulfillment_org_id``, flip
     ``trust_state=matched``, and supersede the sibling offers. Enforced in the
     backend (not UI timing); a losing or stale accept gets 409.
 
     The same statement enforces the GLOBAL active-job lock — a technician on a job
-    for company A cannot accept company B's offer (409, offer left open)."""
+    for company A cannot accept company B's offer (409, offer left open).
+
+    Self-scoped: only the signed-in technician the offer was made to may accept
+    it — someone else's offer_id (even if guessed) 404s exactly like an unknown
+    one, never revealing that it exists for a different technician."""
     await latency()
-    result = await store.accept_dispatch_offer(offer_id)
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=403, detail="Technician session required")
+    result = await store.accept_dispatch_offer(offer_id, UUID(tech["id"]))
     if result is None:
         raise HTTPException(status_code=404, detail="Offer not found")
     if not result.get("accepted"):
@@ -4757,32 +4859,89 @@ async def verify_arrival(
         raise HTTPException(status_code=404, detail="Job not found")
     if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
         raise HTTPException(status_code=403, detail="Not your job")
-    if lifecycle["status"] != STATUS_EN_ROUTE:
-        raise HTTPException(status_code=409, detail="Job is not en route")
+
     method = (payload.method or "pin").strip()
+    cmid = _validated_client_mutation_id(payload.client_mutation_id)
+
+    async def _fail(status_code: int, detail: Any) -> None:
+        if cmid:
+            await store.complete_technician_mutation(
+                UUID(tech["id"]), cmid, status_code=status_code, response=detail)
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    if cmid:
+        # One reservation point covers BOTH the state preconditions below and the
+        # method-specific outcome, so an exact retry — including one made AFTER
+        # the job already transitioned out of en_route as a result of the first
+        # call — replays the recorded outcome instead of re-evaluating state that
+        # has since legitimately moved on (arrival is a state TRANSITION: success
+        # changes lifecycle_version/status, so a naive "check state, then check
+        # idempotency" ordering would make the retry of a success look like a
+        # fresh, now-invalid request). expected_version IS included in the hash
+        # here — unlike report-issue/collection/lifecycle-transition, where it's
+        # a precondition checked before any reservation exists. Here the
+        # reservation exists first, so a retry with a materially different
+        # expected_version must be treated as a new logical attempt against
+        # different observed state (idempotency_key_reuse, prompting a new key),
+        # not a silent replay of a now-stale conflict.
+        req_hash = _mutation_request_hash(
+            "arrival-verify", str(job_id), method, payload.pin,
+            payload.reason, payload.dispatcher_name, payload.expected_version,
+        )
+        rec = await store.begin_or_get_technician_mutation(UUID(tech["id"]), cmid, req_hash)
+        if rec["state"] == "done":
+            if rec["status_code"] != 200:
+                raise HTTPException(status_code=rec["status_code"], detail=rec["response"])
+            return rec["response"]
+        if rec["state"] == "conflict":
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_key_reuse",
+                "message": "This client_mutation_id was already used with a different request.",
+            })
+        if rec["state"] == "pending":
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_in_progress",
+                "message": "A mutation with this client_mutation_id is still being processed.",
+            })
+        # state == "new": a reservation now exists. Every exit below must
+        # complete it (via _fail, or directly on success) so it never gets
+        # stuck "pending" — including the everyday wrong-PIN/stale-state cases.
+
+    if lifecycle["status"] != STATUS_EN_ROUTE:
+        await _fail(409, "Job is not en route")
+    current_version = _job_version(
+        job_id, lifecycle.get("status"), lifecycle.get("lifecycle_version"))
+    if payload.expected_version is not None and payload.expected_version != current_version:
+        await _fail(409, {"code": "version_conflict", "current_version": current_version})
+
     if method == "dispatcher_verified":
         ticket = await require_ticket(job_id)
         ticket_channel = getattr(ticket.channel, "value", str(ticket.channel))
         if ticket_channel != "voice":
-            raise HTTPException(status_code=409, detail="Dispatcher verification is only available for call-center intake jobs.")
+            await _fail(409, "Dispatcher verification is only available for call-center intake jobs.")
         reason = (payload.reason or "").strip()
         dispatcher_name = (payload.dispatcher_name or "").strip()
         if len(dispatcher_name) < 2:
-            raise HTTPException(status_code=422, detail="Dispatcher name or initials are required.")
+            await _fail(422, "Dispatcher name or initials are required.")
         if len(reason) < 3:
-            raise HTTPException(status_code=422, detail="A verification note is required.")
+            await _fail(422, "A verification note is required.")
         updated = await store.set_job_status(
             job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
         )
         if updated is None:
-            raise HTTPException(status_code=409, detail="Status changed concurrently")
+            await _fail(409, "Status changed concurrently")
         await store.log_event_raw(
             job_id,
             f"arrival:dispatcher_verified_by_tech:tech={tech['id']}:dispatcher={dispatcher_name[:80]}:reason={reason[:140]}",
         )
-        return {"status": updated["status"], "verification_method": method}
+        result = {"status": updated["status"], "verification_method": method}
+        if cmid:
+            await store.complete_technician_mutation(
+                UUID(tech["id"]), cmid, status_code=200, response=result)
+        return result
+
     if method != "pin":
-        raise HTTPException(status_code=422, detail="Unsupported arrival verification method.")
+        await _fail(422, "Unsupported arrival verification method.")
     pin = (payload.pin or "").strip()
     result = await store.verify_arrival_pin(job_id, UUID(tech["id"]), _arrival_pin_hash(job_id, pin))
     if not result.get("ok"):
@@ -4801,14 +4960,18 @@ async def verify_arrival(
             "technician_mismatch": "This PIN is not bound to you.",
             "incorrect": f"Incorrect PIN. {result.get('remaining', 0)} attempt(s) left.",
         }.get(reason, "Verification failed.")
-        raise HTTPException(status_code=code, detail=detail)
+        await _fail(code, detail)
     updated = await store.set_job_status(
         job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
     )
     if updated is None:
-        raise HTTPException(status_code=409, detail="Status changed concurrently")
+        await _fail(409, "Status changed concurrently")
     await store.log_event_raw(job_id, f"arrival:pin_verified:tech={tech['id']}")
-    return {"status": updated["status"]}
+    success = {"status": updated["status"]}
+    if cmid:
+        await store.complete_technician_mutation(
+            UUID(tech["id"]), cmid, status_code=200, response=success)
+    return success
 
 
 _ISSUE_KINDS = {"cannot_complete", "customer_unavailable", "unsafe"}

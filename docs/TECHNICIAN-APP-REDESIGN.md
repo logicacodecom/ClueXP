@@ -545,14 +545,13 @@ background capabilities.
 - Expose a tenant-safe busy projection; only the owning company sees its job context.
 
 **Implemented (2026-07-30):**
-- The DB-enforced invariant is **not a separate capacity record** — it's derived, which is why
-  "release capacity on every terminal path" needs no separate code: `accept_dispatch_offer` claims
-  the job in one atomic statement guarded by
+- The DB-enforced invariant is **not a separate capacity record** — it's derived: `accept_dispatch_offer`
+  claims the job in one atomic statement guarded by
   `NOT EXISTS (SELECT 1 FROM jobs busy WHERE busy.fulfillment_technician_id = tech
-  AND busy.status = ANY(ACTIVE_JOB_STATUSES) AND busy.id <> job)` — race-safe under concurrent
-  accepts across companies for a dual-affiliated technician (`PostgresStore.accept_dispatch_offer`,
-  mirrored in `InMemoryStore`). Capacity is simply "no other job in an active status," so it can't
-  leak or double-release.
+  AND busy.status = ANY(ACTIVE_JOB_STATUSES) AND busy.id <> job)`. Capacity is simply "no other job
+  in an active status," so it can't leak or double-release on any terminal/recovery path.
+  ~~race-safe under concurrent accepts across companies~~ — **this specific claim was wrong; see the
+  2026-07-31 correction below.**
 - The overrideable immediate-offer path is fixed: `is_busy` in `_send_targeted_offer` is now a hard
   `409`, not an override-with-reason flag — a dispatcher can no longer create a doomed offer against
   a technician who is already provably busy (elsewhere, any company). Offline/stale-location and
@@ -578,6 +577,45 @@ superseding sibling offers on every acceptance would silently reverse that flexi
 those two tests' documented intent. Left as-is; revisit only as an explicit product decision, not a
 backend-only fix.
 
+**Correction (2026-07-31) — the 2026-07-30 "race-safe" claim was wrong, plus two more real gaps
+found by a follow-up review, all now fixed:**
+
+1. **Write-skew race in the capacity lock (launch-blocking).** The single atomic `UPDATE` only
+   protects the ONE row it writes (the job being accepted). Two concurrent accepts for **different**
+   jobs by the **same** technician touch different primary rows — under Postgres READ COMMITTED,
+   neither transaction's snapshot sees the other's still-uncommitted write, so both can pass the
+   `NOT EXISTS` busy-check and both commit, double-booking the technician. This is exactly the
+   classic write-skew anomaly. **Fixed** with a transaction-scoped advisory lock keyed to the
+   technician (`pg_advisory_xact_lock(namespace, hashtext(technician_id))`), acquired right after
+   the offer's technician is known and released automatically at commit/rollback — so a second
+   concurrent accept for the same technician blocks until the first resolves, and its busy-check
+   then correctly observes the result. A true concurrent-transaction integration test would prove
+   this against live Postgres, but no Postgres instance is available in this test environment (the
+   suite is InMemory-only); `test_postgres_accept_serializes_capacity_decisions_per_technician`
+   asserts the fix is present and correctly ordered, matching this codebase's established pattern
+   for verifying Postgres-only SQL without a live DB.
+2. **`POST /offers/{id}/accept` had no authentication at all.** Anyone — no bearer token, no
+   session — could accept any offer by ID. **Fixed:** requires a technician session and is
+   self-scoped to the offer's own technician; someone else's offer 404s exactly like an unknown
+   `offer_id`, never revealing that it exists for a different technician (matching the pattern
+   already used by `decline_dispatch_offer`, which was self-scoped correctly).
+3. **`completed_pending_customer` was excluded from `ACTIVE_JOB_STATUSES`**, contradicting this
+   very section's "Customer review pending" spec above it: *"The global capacity lock remains until
+   the contractually defined terminal/release event."* A confirmation-pending job is not that event.
+   **Fixed:** it's now included — a technician stays capacity-locked (busy, blocks new offer
+   acceptance) until an authoritative terminal outcome (`completed_confirmed`,
+   `completed_auto_closed`, `disputed` resolving, `cancelled`, or `no_show`). A duplicate hardcoded
+   copy of the old (incomplete) status list in `list_affiliated_technicians_directory`'s `on_job`
+   projection was also found and replaced with the shared constant — exactly the "if they drift, a
+   dispatcher sees 'free' for someone the lock refuses to assign" scenario `ACTIVE_JOB_STATUSES`'s
+   own comment warns about.
+
+The refresh-token rotation (§13.6) had the same class of bug — a plain SELECT-then-UPDATE with no
+lock between the read and the write, letting two concurrent refreshes of the same token both mint a
+valid replacement — fixed the same way conceptually (an atomic conditional `UPDATE ... WHERE
+revoked_at IS NULL ... RETURNING`, not a separate advisory lock, since a single-row compare-and-swap
+is sufficient there).
+
 ### 13.2 Readiness and device registration
 
 - Define canonical availability/readiness response with account, compliance, active-job, location,
@@ -585,6 +623,27 @@ backend-only fix.
 - Register/revoke/rotate device push tokens per user/device/environment.
 - Track notification preferences and mandatory alert classes.
 - Record last app acknowledgement, location freshness/accuracy, and background limitation honestly.
+
+**Implemented (2026-07-31), partial — push-send scaffolding up to the credentials wall:**
+`technician_notifications` (migration `0046`) records the ADR-0001 §6 four-event delivery model as
+far as this backend honestly can without a configured provider: `provider_status` is always
+`skipped_no_provider` today (see `api/push.py`'s `NullPushSender` — a real APNs/FCM provider is a
+still-open ADR-0001 §7 decision, not something this backend can pick for you), and
+`acknowledged_at` is the one real, working signal — `GET /technicians/me/notifications`
+(self-scoped, `unacknowledged_only` filter) and `POST /technicians/me/notifications/{id}/ack`
+(idempotent). `push_service.notify_technician` fans out to every device a technician has
+registered (or records one un-targeted row if they have none, so the attempt stays visible) and is
+wired into the first real "critical alert" trigger, offer creation
+(`POST /provider/queue/{id}/assign`) — best-effort, never blocks the real offer. `PushSender` is a
+`Protocol`, so a real provider plugs in later (env-driven via `PUSH_PROVIDER`) without touching any
+caller.
+
+**Deliberately not built:** device receipt / user display tracking (no provider exists to report
+them — faking these would be dishonest, not scaffolding); per-technician notification
+*preferences* (opt out of optional classes) — ADR-0001 §6 already treats critical classes
+(`offer`, `safety`) as mandatory/non-optional, so there is currently nothing for a preference
+system to toggle; wiring more trigger points beyond offer creation (active-job status changes,
+safety flags) as those flows are built out.
 
 ### 13.3 Active-job snapshot and commands
 
@@ -618,11 +677,27 @@ backend-only fix.
   or idempotency reservation, and optional `client_mutation_id` makes exact offline retries replay
   the stored closeout/payment result while returning `409 {code: "idempotency_key_reuse"}` for the
   same key with a different normalized closeout payload.
+- Arrival verification (`POST /jobs/{id}/arrival/verify`, both the `pin` and `dispatcher_verified`
+  methods) also participates in both contracts, with one deliberate difference from the other three
+  endpoints: because this endpoint **transitions job status on success**, `expected_version` is
+  checked *through* the idempotency reservation (one reservation point covers both the state
+  preconditions and the outcome), and — unlike report-issue/collection/lifecycle-transition —
+  `expected_version` **is included in the idempotency request hash**. Reasoning: those three
+  endpoints check the version *before* any reservation exists, so a stale-version rejection never
+  touches the idempotency system and a retry with a corrected version is simply a fresh first call.
+  Arrival verification can't do that: state-dependent preconditions evaluated fresh on a retry would
+  reject the retry of an already-succeeded call (the job already left `en_route`). Folding the
+  precondition into the same reservation, keyed by (job, method, pin/dispatcher fields,
+  `expected_version`), makes an exact retry (identical version) replay the recorded outcome —
+  success or a structured failure, including an ordinary wrong-PIN rejection, which no longer burns
+  a second rate-limited attempt — while the same key with a *corrected* `expected_version` correctly
+  reports `409 idempotency_key_reuse` (a new logical attempt) rather than silently replaying the old
+  conflict. See `verify_arrival`'s `_fail` helper in `api/main.py`.
 
 **Still owed:** bumping `lifecycle_version` on every future lifecycle-relevant non-status write as
-those writes are promoted into the native command surface; extending both contracts to more
-surfaces (arrival/PIN, completion closeout beyond collection). This slice deliberately avoided offer acceptance and the P0
-capacity lock.
+those writes are promoted into the native command surface; extending both contracts to remaining
+surfaces (completion closeout beyond collection, messaging once it exists). This slice deliberately
+avoided offer acceptance and the P0 capacity lock.
 
 ### 13.4 Messaging
 
@@ -644,6 +719,33 @@ capacity lock.
 - Apply platform-appropriate protection to sensitive local data, minimize retention, and wipe it on
   sign-out/revocation. Native storage must be encrypted; PWA protection is best-effort within the web
   threat model and must not be represented as a native-equivalent guarantee.
+
+### 13.6 Native session / refresh tokens
+
+**Implemented (2026-07-31):** the native client has no BFF cookie, so it needs a session that
+survives past the ~24h access token without forcing a daily re-login. `POST /auth/login` accepts
+`want_refresh_token: true` (opt-in — web/BFF logins are unaffected and never receive one) and
+returns a long-lived, opaque `refresh_token` alongside the existing access token.
+`POST /auth/refresh {refresh_token}` exchanges it for a **new** access token and a **new** refresh
+token — single-use rotation; the presented token is consumed. Presenting an already-rotated-away
+token is treated as a possible theft signal and **revokes the entire active chain for that user**,
+not just that one token. `POST /auth/logout {refresh_token}` revokes on sign-out — the native client
+should call it and then wipe its secure store, per §13.5's wipe-on-revocation requirement. Backed by
+`auth_refresh_tokens` (migration `0045`), storing only a hash of the token, never the raw value.
+
+**Still owed:** device/session listing ("sign out this device" from a list of active sessions) and
+an admin-triggered force-revoke-all-sessions path are not built — `/auth/logout` only revokes the
+one token the caller presents.
+
+**Correction (2026-07-31):** "single-use rotation" above was not actually enforced under
+concurrency. The original implementation SELECTed the token row, then later UPDATEd it — no lock
+between the read and the write, so two concurrent `/auth/refresh` calls presenting the SAME
+still-valid token could both read `revoked_at IS NULL` and both mint a valid replacement. **Fixed**
+with an atomic conditional claim: `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE
+token_hash = %s AND revoked_at IS NULL RETURNING ...` — Postgres row-level locking plus the
+WHERE-clause re-check on UPDATE (EvalPlanQual under READ COMMITTED) guarantee only the first
+concurrent caller ever transitions `revoked_at` from `NULL`, so only one caller can ever mint a
+replacement from a given token.
 
 ## 14. Security, privacy, and compliance
 

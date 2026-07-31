@@ -75,3 +75,15 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
     if int(payload.get("exp", 0)) < int(time.time()):
         return None
     return payload
+
+
+def generate_refresh_token() -> str:
+    """A new opaque, high-entropy refresh token. Only its hash is ever stored."""
+    return secrets.token_urlsafe(48)
+
+
+def hash_refresh_token(token: str) -> str:
+    """Deterministic lookup hash for a refresh token. Not a password (no salt/KDF
+    needed) — it's a high-entropy random value already; a plain fast hash is
+    sufficient to avoid ever storing the raw token, matching standard practice."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

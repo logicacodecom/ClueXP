@@ -20,7 +20,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from api.auth import hash_password, verify_password
+from api.auth import (
+    generate_refresh_token,
+    hash_password,
+    hash_refresh_token,
+    verify_password,
+)
 from api.dispatch import (
     ACTIVE_JOB_STATUSES,
     CARD_PAYMENT_METHODS,
@@ -757,6 +762,15 @@ class Store:
     ) -> None:  # pragma: no cover
         return None
 
+    async def issue_refresh_token(self, user_id: UUID) -> str:  # pragma: no cover
+        raise NotImplementedError
+
+    async def rotate_refresh_token(self, raw_token: str) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def revoke_refresh_token(self, raw_token: str) -> bool:  # pragma: no cover
+        raise NotImplementedError
+
     async def get_user_session(self, user_id: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1019,6 +1033,23 @@ class Store:
     ) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def create_technician_notification(
+        self, technician_id: UUID, *, device_id: UUID | None, alert_class: str,
+        payload: dict, job_id: UUID | None = None, offer_id: UUID | None = None,
+        thread_id: UUID | None = None, provider_status: str = "queued",
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_notifications(
+        self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def acknowledge_technician_notification(
+        self, technician_id: UUID, notification_id: UUID,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1130,7 +1161,7 @@ class Store:
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
-    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:  # pragma: no cover
+    async def accept_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def bump_dispatch_attempt(self, job_id: UUID) -> int:  # pragma: no cover
@@ -1553,6 +1584,56 @@ class InMemoryStore(Store):
             return await self.get_user_session(user["id"])
         return None
 
+    async def issue_refresh_token(self, user_id: UUID) -> str:
+        tokens = self._refresh_tokens = getattr(self, "_refresh_tokens", [])
+        raw = generate_refresh_token()
+        now = datetime.now(timezone.utc)
+        tokens.append({
+            "id": str(uuid4()), "user_id": str(user_id), "token_hash": hash_refresh_token(raw),
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=config.REFRESH_TOKEN_TTL_SECONDS)).isoformat(),
+            "revoked_at": None, "replaced_by": None,
+        })
+        return raw
+
+    async def rotate_refresh_token(self, raw_token: str) -> dict:
+        tokens = self._refresh_tokens = getattr(self, "_refresh_tokens", [])
+        digest = hash_refresh_token(raw_token)
+        rec = next((t for t in tokens if t["token_hash"] == digest), None)
+        if rec is None:
+            return {"state": "invalid"}
+        if rec["revoked_at"] is not None:
+            # Reuse of an already-rotated-away token: possible theft. Revoke the
+            # whole active chain for this user as a defensive measure.
+            now = datetime.now(timezone.utc).isoformat()
+            for t in tokens:
+                if t["user_id"] == rec["user_id"] and t["revoked_at"] is None:
+                    t["revoked_at"] = now
+            return {"state": "reused", "user_id": rec["user_id"]}
+        if datetime.fromisoformat(rec["expires_at"]) < datetime.now(timezone.utc):
+            return {"state": "expired"}
+        new_raw = generate_refresh_token()
+        now = datetime.now(timezone.utc)
+        new_rec = {
+            "id": str(uuid4()), "user_id": rec["user_id"], "token_hash": hash_refresh_token(new_raw),
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=config.REFRESH_TOKEN_TTL_SECONDS)).isoformat(),
+            "revoked_at": None, "replaced_by": None,
+        }
+        tokens.append(new_rec)
+        rec["revoked_at"] = now.isoformat()
+        rec["replaced_by"] = new_rec["id"]
+        return {"state": "ok", "user_id": rec["user_id"], "token": new_raw}
+
+    async def revoke_refresh_token(self, raw_token: str) -> bool:
+        tokens = getattr(self, "_refresh_tokens", [])
+        digest = hash_refresh_token(raw_token)
+        rec = next((t for t in tokens if t["token_hash"] == digest and t["revoked_at"] is None), None)
+        if rec is None:
+            return False
+        rec["revoked_at"] = datetime.now(timezone.utc).isoformat()
+        return True
+
     async def get_user_session(self, user_id: str) -> dict | None:
         user = self.users.get(user_id)
         if not user:
@@ -1883,6 +1964,57 @@ class InMemoryStore(Store):
         if rec is not None:
             rec["status_code"] = status_code
             rec["response"] = response
+
+    @staticmethod
+    def _public_notification(row: dict) -> dict:
+        return {k: row.get(k) for k in (
+            "id", "device_id", "alert_class", "job_id", "offer_id", "thread_id",
+            "payload", "provider_status", "created_at", "provider_sent_at", "acknowledged_at",
+        )}
+
+    async def create_technician_notification(
+        self, technician_id: UUID, *, device_id: UUID | None, alert_class: str,
+        payload: dict, job_id: UUID | None = None, offer_id: UUID | None = None,
+        thread_id: UUID | None = None, provider_status: str = "queued",
+    ) -> dict:
+        notifications = self._notifications = getattr(self, "_notifications", [])
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": str(uuid4()), "technician_id": str(technician_id),
+            "device_id": str(device_id) if device_id else None,
+            "alert_class": alert_class, "job_id": str(job_id) if job_id else None,
+            "offer_id": str(offer_id) if offer_id else None,
+            "thread_id": str(thread_id) if thread_id else None,
+            "payload": payload, "provider_status": provider_status,
+            "created_at": now,
+            "provider_sent_at": now if provider_status == "sent" else None,
+            "acknowledged_at": None,
+        }
+        notifications.append(row)
+        return self._public_notification(row)
+
+    async def list_technician_notifications(
+        self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
+    ) -> list[dict]:
+        tid = str(technician_id)
+        rows = [
+            n for n in getattr(self, "_notifications", [])
+            if str(n.get("technician_id")) == tid
+            and (not unacknowledged_only or n.get("acknowledged_at") is None)
+        ]
+        rows.sort(key=lambda n: n["created_at"], reverse=True)
+        return [self._public_notification(n) for n in rows[:limit]]
+
+    async def acknowledge_technician_notification(
+        self, technician_id: UUID, notification_id: UUID,
+    ) -> dict | None:
+        tid, nid = str(technician_id), str(notification_id)
+        for n in getattr(self, "_notifications", []):
+            if str(n.get("id")) == nid and str(n.get("technician_id")) == tid:
+                if n.get("acknowledged_at") is None:
+                    n["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
+                return self._public_notification(n)
+        return None
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         return {"slug": f"org-{str(organization_id)[:8]}"}
@@ -2257,10 +2389,14 @@ class InMemoryStore(Store):
             created.append(rec)
         return created
 
-    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:
+    async def accept_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> dict | None:
         offers = getattr(self, "_offers", {})
         rec = offers.get(str(offer_id))
-        if rec is None:
+        # Self-scoped: an offer can only be accepted by the technician it was
+        # made to. Folded into the same not-found response as a truly unknown
+        # offer_id so the caller can't distinguish "doesn't exist" from
+        # "exists but isn't yours" by offer-ID probing.
+        if rec is None or rec.get("technician_id") != str(technician_id):
             return None
         if rec["status"] != "offered":
             return {"accepted": False, "reason": rec["status"], "job_id": rec["job_id"]}
@@ -3816,6 +3952,13 @@ class InMemoryStore(Store):
         self._organization_settings.pop((str(organization_id), key), None)
 
 
+# Namespace for pg_advisory_xact_lock(namespace, hashtext(key)) two-int4-arg
+# calls. Keeps different lock "domains" from ever colliding on the same
+# (namespace, hash) pair even if their hashed keys happened to collide.
+# Only one domain uses advisory locks today (technician capacity).
+_ADVISORY_LOCK_NAMESPACE_TECHNICIAN_CAPACITY = 872341
+
+
 class PostgresStore(Store):
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -4829,6 +4972,92 @@ class PostgresStore(Store):
                 "delete from login_attempts where created_at < now() - interval '7 days'"
             )
 
+    async def issue_refresh_token(self, user_id: UUID) -> str:
+        raw = generate_refresh_token()
+        async with await self._connect() as conn:
+            await conn.execute(
+                "insert into auth_refresh_tokens (user_id, token_hash, expires_at)"
+                " values (%s, %s, now() + (%s * interval '1 second'))",
+                (str(user_id), hash_refresh_token(raw), config.REFRESH_TOKEN_TTL_SECONDS),
+            )
+        return raw
+
+    async def rotate_refresh_token(self, raw_token: str) -> dict:
+        """Single-use rotation with reuse detection. Presenting a token that was
+        already rotated away revokes the whole active chain for that user — a
+        replayed old token is a plausible theft signal.
+
+        The claim below is an atomic conditional UPDATE (compare-and-swap via
+        `WHERE revoked_at IS NULL ... RETURNING`), not a plain SELECT followed
+        by a later UPDATE. A plain SELECT-then-UPDATE has no lock between the
+        read and the write, so two concurrent callers presenting the SAME
+        still-valid token can both read revoked_at IS NULL and both mint a
+        valid replacement — breaking single-use rotation. With the atomic
+        UPDATE, Postgres's row-level locking + WHERE-clause re-check
+        (EvalPlanQual under READ COMMITTED) guarantee only the first caller to
+        reach it ever transitions revoked_at from NULL; the second's identical
+        UPDATE matches zero rows once the first commits (or vice versa)."""
+        digest = hash_refresh_token(raw_token)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update auth_refresh_tokens set revoked_at = now()"
+                " where token_hash = %s and revoked_at is null"
+                " returning id, user_id, expires_at",
+                (digest,),
+            )
+            claimed = await cur.fetchone()
+            if claimed is None:
+                # Either this token never existed, or it was already revoked --
+                # by a legitimate prior rotation, an explicit revoke, or a
+                # concurrent racer that won the claim above. Either way it
+                # cannot be used again; look up the owner (if any) to revoke
+                # their whole chain as a defensive measure against replay/theft.
+                cur = await conn.execute(
+                    "select user_id from auth_refresh_tokens where token_hash = %s",
+                    (digest,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return {"state": "invalid"}
+                user_id = row[0]
+                await conn.execute(
+                    "update auth_refresh_tokens set revoked_at = now()"
+                    " where user_id = %s and revoked_at is null",
+                    (str(user_id),),
+                )
+                return {"state": "reused", "user_id": str(user_id)}
+            token_id, user_id, expires_at = claimed
+            if expires_at is not None and expires_at.replace(tzinfo=expires_at.tzinfo) < datetime.now(timezone.utc):
+                # Already claimed (revoked) above -- an expired token is never
+                # usable again regardless, and must not mint a replacement.
+                return {"state": "expired"}
+            new_raw = generate_refresh_token()
+            cur = await conn.execute(
+                "insert into auth_refresh_tokens (user_id, token_hash, expires_at)"
+                " values (%s, %s, now() + (%s * interval '1 second')) returning id",
+                (str(user_id), hash_refresh_token(new_raw), config.REFRESH_TOKEN_TTL_SECONDS),
+            )
+            new_id = (await cur.fetchone())[0]
+            # Bookkeeping only -- the row's revoked_at transition (the actual
+            # single-use guarantee) is already exclusively ours from the claim
+            # above, so this plain UPDATE has no race to protect against.
+            await conn.execute(
+                "update auth_refresh_tokens set replaced_by = %s where id = %s",
+                (new_id, token_id),
+            )
+        return {"state": "ok", "user_id": str(user_id), "token": new_raw}
+
+    async def revoke_refresh_token(self, raw_token: str) -> bool:
+        digest = hash_refresh_token(raw_token)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update auth_refresh_tokens set revoked_at = now()"
+                " where token_hash = %s and revoked_at is null returning id",
+                (digest,),
+            )
+            row = await cur.fetchone()
+        return row is not None
+
     async def get_user_session(self, user_id: str) -> dict | None:
         async with await self._connect() as conn:
             return await self._session_for_user(conn, user_id)
@@ -5143,12 +5372,16 @@ class PostgresStore(Store):
                 )
         return offers
 
-    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:
+    async def accept_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
+            # Self-scoped: an offer can only be accepted by the technician it was
+            # made to. Folded into the same not-found response as a truly unknown
+            # offer_id so the caller can't distinguish "doesn't exist" from
+            # "exists but isn't yours" by offer-ID probing.
             cur = await conn.execute(
                 "select job_id, technician_id, organization_id, status"
-                " from dispatch_offers where id = %s",
-                (str(offer_id),),
+                " from dispatch_offers where id = %s and technician_id = %s",
+                (str(offer_id), str(technician_id)),
             )
             offer = await cur.fetchone()
             if not offer:
@@ -5156,13 +5389,32 @@ class PostgresStore(Store):
             job_id, tech_id, org_id, status = offer[0], offer[1], offer[2], offer[3]
             if status != "offered":
                 return {"accepted": False, "reason": status, "job_id": str(job_id)}
+            # Serialize every capacity DECISION for this technician. The busy
+            # check below is a NOT EXISTS subquery reading OTHER job rows; plain
+            # single-row UPDATE locking only protects the row being written
+            # (this job), not that cross-row invariant. Two concurrent accepts
+            # for DIFFERENT jobs by the same technician target different primary
+            # rows, so neither transaction's snapshot (READ COMMITTED) sees the
+            # other's still-uncommitted write -- both can pass NOT EXISTS and
+            # both commit, double-booking the technician (classic write skew).
+            # A transaction-scoped advisory lock keyed to the technician forces
+            # the second concurrent accept to block until the first commits, so
+            # its busy-check correctly observes the first's result. Released
+            # automatically at COMMIT/ROLLBACK; only accepts for the SAME
+            # technician ever contend with each other.
+            await conn.execute(
+                "select pg_advisory_xact_lock(%s, hashtext(%s))",
+                (_ADVISORY_LOCK_NAMESPACE_TECHNICIAN_CAPACITY, str(tech_id)),
+            )
             # Atomic first-accept-wins: only one accept can win. Guard on
             # status='pending_dispatch' so that a cancellation or concurrent accept
             # that changed the job status before this UPDATE causes this path to fail
             # cleanly — no technician or trust_state is set on a cancelled job.
             # The NOT EXISTS is the GLOBAL active-job lock: one job at a time per
             # technician across every company, enforced in the same statement so two
-            # companies cannot both win a race against a dual-affiliated technician.
+            # companies cannot both win a race against a dual-affiliated technician
+            # (now additionally guarded by the advisory lock above against the
+            # cross-row write-skew race).
             cur = await conn.execute(
                 "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
                 " trust_state = 'matched',"
@@ -8399,7 +8651,9 @@ class PostgresStore(Store):
         rating, affiliation date, skills, and a compliance summary so the portal
         never needs mock data. Document compliance counts ONLY the technician's
         own credentials (provider companies do not own technician documents)."""
-        active_job = ("assigned", "en_route", "arrived", "in_progress")
+        # Shared definition (see dispatch.ACTIVE_JOB_STATUSES's own comment on
+        # why this must never be a second, independently-maintained copy).
+        active_job = ACTIVE_JOB_STATUSES
         completed = ("completed_confirmed", "completed_auto_closed")
         async with await self._connect() as conn:
             cur = await conn.execute(
@@ -8721,6 +8975,76 @@ class PostgresStore(Store):
                 " where technician_id = %s and client_mutation_id = %s",
                 (status_code, json.dumps(response), str(technician_id), client_mutation_id),
             )
+
+    _NOTIFICATION_COLS = (
+        "id, device_id, alert_class, job_id, offer_id, thread_id, payload,"
+        " provider_status, created_at, provider_sent_at, acknowledged_at"
+    )
+
+    @classmethod
+    def _notification_row(cls, row: tuple) -> dict:
+        return {
+            "id": str(row[0]), "device_id": str(row[1]) if row[1] else None,
+            "alert_class": row[2], "job_id": str(row[3]) if row[3] else None,
+            "offer_id": str(row[4]) if row[4] else None,
+            "thread_id": str(row[5]) if row[5] else None,
+            "payload": row[6], "provider_status": row[7],
+            "created_at": row[8].isoformat() if row[8] else None,
+            "provider_sent_at": row[9].isoformat() if row[9] else None,
+            "acknowledged_at": row[10].isoformat() if row[10] else None,
+        }
+
+    async def create_technician_notification(
+        self, technician_id: UUID, *, device_id: UUID | None, alert_class: str,
+        payload: dict, job_id: UUID | None = None, offer_id: UUID | None = None,
+        thread_id: UUID | None = None, provider_status: str = "queued",
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_notifications"
+                " (technician_id, device_id, alert_class, job_id, offer_id, thread_id,"
+                "  payload, provider_status, provider_sent_at)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s,"
+                "  case when %s = 'sent' then now() else null end)"
+                f" returning {self._NOTIFICATION_COLS}",
+                (
+                    str(technician_id), str(device_id) if device_id else None, alert_class,
+                    str(job_id) if job_id else None, str(offer_id) if offer_id else None,
+                    str(thread_id) if thread_id else None, Jsonb(payload), provider_status,
+                    provider_status,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._notification_row(row)
+
+    async def list_technician_notifications(
+        self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
+    ) -> list[dict]:
+        clause = " and acknowledged_at is null" if unacknowledged_only else ""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._NOTIFICATION_COLS} from technician_notifications"
+                f" where technician_id = %s{clause}"
+                " order by created_at desc limit %s",
+                (str(technician_id), limit),
+            )
+            rows = await cur.fetchall()
+        return [self._notification_row(r) for r in rows]
+
+    async def acknowledge_technician_notification(
+        self, technician_id: UUID, notification_id: UUID,
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technician_notifications set acknowledged_at = coalesce(acknowledged_at, now())"
+                " where id = %s and technician_id = %s"
+                f" returning {self._NOTIFICATION_COLS}",
+                (str(notification_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        return self._notification_row(row) if row else None
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         """Guarantee the company has a branded intake slug, generating a unique one
