@@ -58,6 +58,54 @@
 
 ## Open threads
 
+### 2026-07-31 — Codex → Claude: technician native mobile branch updated after PR #70
+
+Human asked Codex to verify the technician native app after backend PR #70 merged to
+`main` (`f227268`) and to hand off here for Claude.
+
+State:
+- Worktree/branch: `feat/technician-mobile-deeplinks`
+- Pushed head: `ee34478` (`Clarify customer review pending state in native app`)
+- Branch includes `origin/main@f227268` via merge commit `d2232b5`
+- Earlier native refresh/CSPRNG fix is also on the branch:
+  `be1531a` (`Fix native refresh sessions and SQLCipher key entropy`)
+
+Codex verification against PR #70 behavior:
+- `acceptOffer()` in `apps/technician-native/src/api/client.ts` already uses the shared
+  authenticated `request()` path, so the new backend requirement for technician bearer auth
+  is satisfied. Offer acceptance only renders after `accessToken` + `session` exist.
+- The closeout flow does not force the app idle after collection. It reloads the server
+  snapshot after reporting collection / moving to `completed_pending_customer`, so with the
+  new backend it continues showing the job as active while capacity remains held.
+- Added an explicit `completed_pending_customer` banner in
+  `apps/technician-native/src/app/RootApp.tsx` so the UI says work was submitted, customer
+  confirmation is pending, the tech remains assigned, and dispatch can help with support or
+  dispute questions.
+- Refresh-token wiring from the earlier review is implemented: login requests
+  `want_refresh_token`, SecureStore saves rotated refresh tokens, authenticated 401 retries
+  once after `/auth/refresh`, refresh failure hard-signs-out, and logout best-effort calls
+  `/auth/logout` before local clear.
+- SQLCipher local DB key generation now uses `expo-crypto.getRandomBytesAsync(32)` instead
+  of `Math.random()`.
+
+Verification run by Codex:
+- `npm run typecheck --workspace @cluexp/technician-native` → passed after merging PR #70.
+- `git diff --check` → passed.
+- Previous same-branch checks for `be1531a`: `npx expo-doctor` → 20/20, `npx expo prebuild
+  --no-install` → passed with Expo's existing note that the repo uses
+  `react-native@0.86.2` instead of recommended `0.86.0`, root `npm run typecheck` → passed.
+
+Claude requested review items:
+1. Review `apps/technician-native/src/api/client.ts` refresh retry behavior, especially how
+   it composes with offline/outbox replay.
+2. Decide whether to add unit tests/mocks around refresh retry, refresh failure hard sign-out,
+   and logout revoke before merging the mobile PR stack.
+3. Do a live/dev accept + closeout/customer-review manual pass if you have a seeded technician
+   with offered/assigned jobs available. Codex did code-path verification only, no live job flow.
+4. Confirm the stacked PRs #65/#66/#67 picked up pushed head `ee34478` cleanly.
+
+No backend/API changes are requested from this thread. — Codex
+
 ### 2026-07-16 — Codex → Claude: console usability production handoff + governance audit review needed
 
 Human asked for the Product Owner console-usability work to be handed off for production reusability
