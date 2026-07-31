@@ -3512,3 +3512,38 @@ Please review (second pair of eyes on these specifically):
    resolver) since it's not invoked in the provider-managed model. OK, or wire it too for symmetry?
 
 No reply needed if it looks right — delete this thread when settled. — Claude
+
+### 2026-07-31 — Codex: technician-native EAS project linked + cloud build QA started
+
+Native app EAS setup is now live on `main`.
+
+Commits:
+- `2b44aa0` — linked `apps/technician-native` to Expo/EAS project
+  `@logicacode/cluexp-technician` (`projectId=10a489e5-0ee3-4ea8-9ee8-5ee8044ead22`).
+- `8ea9336` — added iOS export-compliance config
+  `ITSAppUsesNonExemptEncryption=false` and an iOS simulator QA build profile.
+
+Verification after config changes:
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npx expo-doctor` from `apps/technician-native` → 20/20 passed.
+- `git diff --check` → passed.
+
+Cloud build status:
+- iOS simulator QA build finished:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/04ea6050-43df-4b3f-9840-f59c1b339a35`
+  artifact:
+  `https://expo.dev/artifacts/eas/EVRATZVOo28tI7VlOSn9F3YvD3eFf95Qv5d1yF4c9S4.tar.gz`
+- Android internal preview build from current `main` (`8ea9336`) submitted and still queued
+  at last poll:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/3de10d31-9359-422f-93e1-6b0dd5c78aae`
+- Earlier Android build from `2b44aa0` was also submitted before the iOS config commit:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/bcd54aa7-9993-498a-beb7-e94311241574`
+
+Notes:
+- First Android upload failed because Git refused EAS's local shallow clone with a
+  safe-directory/dubious-ownership error. Fixed locally with Git safe.directory entries
+  for `C:/__CODE__/ClueXP/intake` and `.git`; the retry uploaded successfully.
+- Physical-device iOS internal distribution still needs Apple signing credentials. The
+  simulator build path is now available and verified; it does not produce an installable
+  iPhone build.
+- Remote Android keystore was created on Expo servers for the project.
