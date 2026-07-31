@@ -618,11 +618,27 @@ backend-only fix.
   or idempotency reservation, and optional `client_mutation_id` makes exact offline retries replay
   the stored closeout/payment result while returning `409 {code: "idempotency_key_reuse"}` for the
   same key with a different normalized closeout payload.
+- Arrival verification (`POST /jobs/{id}/arrival/verify`, both the `pin` and `dispatcher_verified`
+  methods) also participates in both contracts, with one deliberate difference from the other three
+  endpoints: because this endpoint **transitions job status on success**, `expected_version` is
+  checked *through* the idempotency reservation (one reservation point covers both the state
+  preconditions and the outcome), and — unlike report-issue/collection/lifecycle-transition —
+  `expected_version` **is included in the idempotency request hash**. Reasoning: those three
+  endpoints check the version *before* any reservation exists, so a stale-version rejection never
+  touches the idempotency system and a retry with a corrected version is simply a fresh first call.
+  Arrival verification can't do that: state-dependent preconditions evaluated fresh on a retry would
+  reject the retry of an already-succeeded call (the job already left `en_route`). Folding the
+  precondition into the same reservation, keyed by (job, method, pin/dispatcher fields,
+  `expected_version`), makes an exact retry (identical version) replay the recorded outcome —
+  success or a structured failure, including an ordinary wrong-PIN rejection, which no longer burns
+  a second rate-limited attempt — while the same key with a *corrected* `expected_version` correctly
+  reports `409 idempotency_key_reuse` (a new logical attempt) rather than silently replaying the old
+  conflict. See `verify_arrival`'s `_fail` helper in `api/main.py`.
 
 **Still owed:** bumping `lifecycle_version` on every future lifecycle-relevant non-status write as
-those writes are promoted into the native command surface; extending both contracts to more
-surfaces (arrival/PIN, completion closeout beyond collection). This slice deliberately avoided offer acceptance and the P0
-capacity lock.
+those writes are promoted into the native command surface; extending both contracts to remaining
+surfaces (completion closeout beyond collection, messaging once it exists). This slice deliberately
+avoided offer acceptance and the P0 capacity lock.
 
 ### 13.4 Messaging
 

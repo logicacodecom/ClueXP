@@ -670,6 +670,237 @@ def test_http_arrival_pin_issue_and_verify_flow():
         app_store.get_user_session = _orig_session
 
 
+def test_arrival_verify_matching_expected_version_succeeds():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    token = "track-" + uuid4().hex
+    _seed_en_route_job(app_store, tech_uid, jid, token=token)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    headers = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+    try:
+        pin = client.post(f"/t/{token}/arrival-pin").json()["pin"]
+        version = client.get("/technicians/me/active-job/snapshot", headers=headers).json()["version"]
+        resp = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": pin, "expected_version": version},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == STATUS_ARRIVED
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_arrival_verify_stale_expected_version_conflicts_and_burns_no_attempt():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    token = "track-" + uuid4().hex
+    _seed_en_route_job(app_store, tech_uid, jid, token=token)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    headers = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+    try:
+        pin = client.post(f"/t/{token}/arrival-pin").json()["pin"]
+        stale = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": pin, "expected_version": "stale-version-000"},
+            headers=headers,
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "version_conflict"
+        assert app_store._job_status[jid] == STATUS_EN_ROUTE
+        # the version check happens before the PIN is ever touched -- the SAME
+        # (still-unused) correct PIN still works right after
+        retry = client.post(
+            f"/jobs/{jid}/arrival/verify", json={"pin": pin}, headers=headers,
+        )
+        assert retry.status_code == 200, retry.text
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_arrival_verify_pin_exact_retry_replays_without_reverifying():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    token = "track-" + uuid4().hex
+    _seed_en_route_job(app_store, tech_uid, jid, token=token)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    headers = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+    try:
+        pin = client.post(f"/t/{token}/arrival-pin").json()["pin"]
+        key = "mut_" + uuid4().hex
+        first = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": pin, "client_mutation_id": key},
+            headers=headers,
+        )
+        assert first.status_code == 200, first.text
+        events_after_first = sum(1 for e in app_store.events if "arrival:pin_verified" in e)
+
+        # exact retry: verify_arrival_pin would normally say "already_used" --
+        # the idempotent replay must short-circuit before ever calling it again
+        retry = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": pin, "client_mutation_id": key},
+            headers=headers,
+        )
+        assert retry.status_code == 200
+        assert retry.json() == first.json()
+        events_after_retry = sum(1 for e in app_store.events if "arrival:pin_verified" in e)
+        assert events_after_retry == events_after_first
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_arrival_verify_wrong_pin_replay_and_conflict():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    token = "track-" + uuid4().hex
+    _seed_en_route_job(app_store, tech_uid, jid, token=token)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    headers = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+    try:
+        real_pin = client.post(f"/t/{token}/arrival-pin").json()["pin"]
+        wrong = "000000" if real_pin != "000000" else "111111"
+        other_wrong = "222222" if real_pin != "222222" else "333333"
+        key = "mut_" + uuid4().hex
+
+        first = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": wrong, "client_mutation_id": key},
+            headers=headers,
+        )
+        assert first.status_code in (422, 429)
+
+        # same key, same wrong pin -> replays the identical cached failure
+        replay = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": wrong, "client_mutation_id": key},
+            headers=headers,
+        )
+        assert replay.status_code == first.status_code
+        assert replay.json() == first.json()
+
+        # same key, a DIFFERENT wrong pin -> genuinely new request, not a replay
+        conflict = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": other_wrong, "client_mutation_id": key},
+            headers=headers,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_key_reuse"
+        assert app_store._job_status[jid] == STATUS_EN_ROUTE
+    finally:
+        app_store.get_user_session = _orig_session
+
+
+def test_arrival_verify_same_key_updated_expected_version_is_key_reuse_not_replay():
+    """expected_version is part of the idempotency hash for THIS endpoint (unlike
+    report-issue/collection): reusing a key with a corrected version after a
+    version_conflict must not silently replay the stale conflict."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    tech_uid = str(uuid4())
+    jid = str(uuid4())
+    token = "track-" + uuid4().hex
+    _seed_en_route_job(app_store, tech_uid, jid, token=token)
+    _orig_session = app_store.get_user_session
+
+    async def _patched_session(user_id):
+        s = await _orig_session(user_id)
+        if s and user_id == tech_uid:
+            s["technician"] = {"id": tech_uid, "approved": True}
+        return s
+
+    app_store.get_user_session = _patched_session
+    access = create_access_token({"sub": tech_uid, "id": tech_uid, "roles": ["technician"]})
+    headers = {"Authorization": f"Bearer {access}"}
+    client = TestClient(app)
+    try:
+        pin = client.post(f"/t/{token}/arrival-pin").json()["pin"]
+        real_version = client.get(
+            "/technicians/me/active-job/snapshot", headers=headers
+        ).json()["version"]
+        key = "mut_" + uuid4().hex
+
+        first = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": pin, "client_mutation_id": key, "expected_version": "stale-000"},
+            headers=headers,
+        )
+        assert first.status_code == 409
+        assert first.json()["detail"]["code"] == "version_conflict"
+
+        retry = client.post(
+            f"/jobs/{jid}/arrival/verify",
+            json={"pin": pin, "client_mutation_id": key, "expected_version": real_version},
+            headers=headers,
+        )
+        assert retry.status_code == 409
+        assert retry.json()["detail"]["code"] == "idempotency_key_reuse"
+        # the job never advanced through either call
+        assert app_store._job_status[jid] == STATUS_EN_ROUTE
+    finally:
+        app_store.get_user_session = _orig_session
+
+
 def test_http_technician_cannot_set_arrived_directly():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

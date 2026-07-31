@@ -823,6 +823,8 @@ class ArrivalVerifyRequest(BaseModel):
     method: str = "pin"
     reason: str | None = None
     dispatcher_name: str | None = None
+    client_mutation_id: str | None = None
+    expected_version: str | None = None
 
 
 class IssueReportRequest(BaseModel):
@@ -4807,32 +4809,89 @@ async def verify_arrival(
         raise HTTPException(status_code=404, detail="Job not found")
     if lifecycle.get("fulfillment_technician_id") != tech.get("id"):
         raise HTTPException(status_code=403, detail="Not your job")
-    if lifecycle["status"] != STATUS_EN_ROUTE:
-        raise HTTPException(status_code=409, detail="Job is not en route")
+
     method = (payload.method or "pin").strip()
+    cmid = _validated_client_mutation_id(payload.client_mutation_id)
+
+    async def _fail(status_code: int, detail: Any) -> None:
+        if cmid:
+            await store.complete_technician_mutation(
+                UUID(tech["id"]), cmid, status_code=status_code, response=detail)
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    if cmid:
+        # One reservation point covers BOTH the state preconditions below and the
+        # method-specific outcome, so an exact retry — including one made AFTER
+        # the job already transitioned out of en_route as a result of the first
+        # call — replays the recorded outcome instead of re-evaluating state that
+        # has since legitimately moved on (arrival is a state TRANSITION: success
+        # changes lifecycle_version/status, so a naive "check state, then check
+        # idempotency" ordering would make the retry of a success look like a
+        # fresh, now-invalid request). expected_version IS included in the hash
+        # here — unlike report-issue/collection/lifecycle-transition, where it's
+        # a precondition checked before any reservation exists. Here the
+        # reservation exists first, so a retry with a materially different
+        # expected_version must be treated as a new logical attempt against
+        # different observed state (idempotency_key_reuse, prompting a new key),
+        # not a silent replay of a now-stale conflict.
+        req_hash = _mutation_request_hash(
+            "arrival-verify", str(job_id), method, payload.pin,
+            payload.reason, payload.dispatcher_name, payload.expected_version,
+        )
+        rec = await store.begin_or_get_technician_mutation(UUID(tech["id"]), cmid, req_hash)
+        if rec["state"] == "done":
+            if rec["status_code"] != 200:
+                raise HTTPException(status_code=rec["status_code"], detail=rec["response"])
+            return rec["response"]
+        if rec["state"] == "conflict":
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_key_reuse",
+                "message": "This client_mutation_id was already used with a different request.",
+            })
+        if rec["state"] == "pending":
+            raise HTTPException(status_code=409, detail={
+                "code": "idempotency_in_progress",
+                "message": "A mutation with this client_mutation_id is still being processed.",
+            })
+        # state == "new": a reservation now exists. Every exit below must
+        # complete it (via _fail, or directly on success) so it never gets
+        # stuck "pending" — including the everyday wrong-PIN/stale-state cases.
+
+    if lifecycle["status"] != STATUS_EN_ROUTE:
+        await _fail(409, "Job is not en route")
+    current_version = _job_version(
+        job_id, lifecycle.get("status"), lifecycle.get("lifecycle_version"))
+    if payload.expected_version is not None and payload.expected_version != current_version:
+        await _fail(409, {"code": "version_conflict", "current_version": current_version})
+
     if method == "dispatcher_verified":
         ticket = await require_ticket(job_id)
         ticket_channel = getattr(ticket.channel, "value", str(ticket.channel))
         if ticket_channel != "voice":
-            raise HTTPException(status_code=409, detail="Dispatcher verification is only available for call-center intake jobs.")
+            await _fail(409, "Dispatcher verification is only available for call-center intake jobs.")
         reason = (payload.reason or "").strip()
         dispatcher_name = (payload.dispatcher_name or "").strip()
         if len(dispatcher_name) < 2:
-            raise HTTPException(status_code=422, detail="Dispatcher name or initials are required.")
+            await _fail(422, "Dispatcher name or initials are required.")
         if len(reason) < 3:
-            raise HTTPException(status_code=422, detail="A verification note is required.")
+            await _fail(422, "A verification note is required.")
         updated = await store.set_job_status(
             job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
         )
         if updated is None:
-            raise HTTPException(status_code=409, detail="Status changed concurrently")
+            await _fail(409, "Status changed concurrently")
         await store.log_event_raw(
             job_id,
             f"arrival:dispatcher_verified_by_tech:tech={tech['id']}:dispatcher={dispatcher_name[:80]}:reason={reason[:140]}",
         )
-        return {"status": updated["status"], "verification_method": method}
+        result = {"status": updated["status"], "verification_method": method}
+        if cmid:
+            await store.complete_technician_mutation(
+                UUID(tech["id"]), cmid, status_code=200, response=result)
+        return result
+
     if method != "pin":
-        raise HTTPException(status_code=422, detail="Unsupported arrival verification method.")
+        await _fail(422, "Unsupported arrival verification method.")
     pin = (payload.pin or "").strip()
     result = await store.verify_arrival_pin(job_id, UUID(tech["id"]), _arrival_pin_hash(job_id, pin))
     if not result.get("ok"):
@@ -4851,14 +4910,18 @@ async def verify_arrival(
             "technician_mismatch": "This PIN is not bound to you.",
             "incorrect": f"Incorrect PIN. {result.get('remaining', 0)} attempt(s) left.",
         }.get(reason, "Verification failed.")
-        raise HTTPException(status_code=code, detail=detail)
+        await _fail(code, detail)
     updated = await store.set_job_status(
         job_id, STATUS_ARRIVED, expected_current=STATUS_EN_ROUTE
     )
     if updated is None:
-        raise HTTPException(status_code=409, detail="Status changed concurrently")
+        await _fail(409, "Status changed concurrently")
     await store.log_event_raw(job_id, f"arrival:pin_verified:tech={tech['id']}")
-    return {"status": updated["status"]}
+    success = {"status": updated["status"]}
+    if cmid:
+        await store.complete_technician_mutation(
+            UUID(tech["id"]), cmid, status_code=200, response=success)
+    return success
 
 
 _ISSUE_KINDS = {"cannot_complete", "customer_unavailable", "unsafe"}
