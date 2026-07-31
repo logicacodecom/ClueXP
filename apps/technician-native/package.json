@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "tsx": "^4.23.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -28,6 +29,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "prebuild": "expo prebuild",
+    "test:api": "node --import tsx --test test/api-client.test.mjs",
     "typecheck": "tsc --noEmit",
     "web": "expo start --web"
   },

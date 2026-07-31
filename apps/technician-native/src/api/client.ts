@@ -60,6 +60,7 @@ function problemFrom(status: number, body: unknown): ApiProblem {
 export class CluexpApi {
   private token: string | null;
   private refreshToken: string | null;
+  private refreshInFlight: Promise<LoginResponse> | null = null;
   private sessionHandlers: SessionHandlers | null = null;
 
   constructor(token: string | null) {
@@ -84,6 +85,23 @@ export class CluexpApi {
     this.sessionHandlers = handlers;
   }
 
+  private ensureRefreshed() {
+    if (!this.refreshInFlight) {
+      if (!this.refreshToken) {
+        return Promise.reject(new ApiError({
+          status: 401,
+          code: "missing_refresh_token",
+          message: "Refresh token is not available."
+        }));
+      }
+      const token = this.refreshToken;
+      this.refreshInFlight = this.refresh(token).finally(() => {
+        this.refreshInFlight = null;
+      });
+    }
+    return this.refreshInFlight;
+  }
+
   private async fetchJson(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     headers.set("accept", "application/json");
@@ -102,7 +120,7 @@ export class CluexpApi {
     if (shouldRefresh && this.refreshToken) {
       let refreshed: LoginResponse;
       try {
-        refreshed = await this.refresh(this.refreshToken);
+        refreshed = await this.ensureRefreshed();
       } catch (cause) {
         this.setSessionTokens(null, null);
         await this.sessionHandlers?.onRefreshFailed();

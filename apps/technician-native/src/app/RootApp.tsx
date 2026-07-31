@@ -23,6 +23,7 @@ import { FieldButton } from "../components/FieldButton";
 import { StatusCell } from "../components/StatusCell";
 import { registerPushDevice, requestAndSendLocation } from "../features/nativeCapabilities";
 import { replayQueuedMutations } from "../features/outboxReplay";
+import { logoutStoredSession } from "../features/sessionLifecycle";
 import { clearStoredSession, loadStoredSession, saveStoredSession } from "../storage/sessionStore";
 import { enqueueMutation, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
@@ -155,7 +156,7 @@ export function RootApp() {
     return () => {
       mounted = false;
     };
-  }, [hardSignOut]);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -199,16 +200,20 @@ export function RootApp() {
   }, []);
 
   const onLogout = useCallback(async () => {
-    const stored = await loadStoredSession();
-    if (stored?.refreshToken) {
-      try {
-        await api.logout(stored.refreshToken);
-      } catch {
-        // Local logout must win even when the network is unavailable.
+    await logoutStoredSession({
+      api,
+      loadStoredSession,
+      clearStoredSession,
+      wipeOutbox,
+      afterLocalClear: () => {
+        api.setSessionTokens(null, null);
+        setAccessToken(null);
+        setSession(null);
+        setQueueCount(0);
+        setTab("work");
       }
-    }
-    await hardSignOut();
-  }, [hardSignOut]);
+    });
+  }, []);
 
   const refreshQueue = useCallback(async () => {
     setQueueCount(await queuedMutationCount());

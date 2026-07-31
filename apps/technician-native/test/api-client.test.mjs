@@ -1,0 +1,138 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ApiError, CluexpApi } from "../src/api/client.ts";
+import { logoutStoredSession } from "../src/features/sessionLifecycle.ts";
+
+function jsonResponse(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function session() {
+  return {
+    user: { id: "user-1", email: "tech@example.com" },
+    roles: ["technician"],
+    technician: { id: "tech-1", approved: true }
+  };
+}
+
+test("concurrent authenticated 401s share one refresh and retry with rotated tokens", async () => {
+  const calls = [];
+  const api = new CluexpApi(null);
+  api.setSessionTokens("expired-access", "refresh-one");
+  api.configureSessionHandlers({
+    onRefresh: async () => undefined,
+    onRefreshFailed: async () => assert.fail("refresh should not hard sign out")
+  });
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    const authorization = init?.headers instanceof Headers ? init.headers.get("authorization") : null;
+    calls.push({ path, authorization, body: init?.body ? JSON.parse(String(init.body)) : null });
+
+    if (path === "/auth/refresh") {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return jsonResponse(200, {
+        access_token: "fresh-access",
+        refresh_token: "refresh-two",
+        token_type: "bearer",
+        session: session()
+      });
+    }
+
+    if (authorization === "Bearer expired-access") {
+      return jsonResponse(401, { detail: "expired" });
+    }
+    return jsonResponse(200, { ok: true, path, authorization });
+  };
+
+  const results = await Promise.all([
+    api.readiness(),
+    api.activeJobSnapshot(),
+    api.offers("tech-1")
+  ]);
+
+  assert.equal(calls.filter((call) => call.path === "/auth/refresh").length, 1);
+  assert.deepEqual(calls.find((call) => call.path === "/auth/refresh")?.body, { refresh_token: "refresh-one" });
+  assert.equal(calls.filter((call) => call.authorization === "Bearer fresh-access").length, 3);
+  assert.deepEqual(results.map((result) => result.authorization), [
+    "Bearer fresh-access",
+    "Bearer fresh-access",
+    "Bearer fresh-access"
+  ]);
+});
+
+test("refresh 401 does not recursively refresh and clears session once through handler", async () => {
+  const calls = [];
+  let failed = 0;
+  const api = new CluexpApi(null);
+  api.setSessionTokens("expired-access", "bad-refresh");
+  api.configureSessionHandlers({
+    onRefresh: async () => assert.fail("refresh should fail"),
+    onRefreshFailed: async () => {
+      failed += 1;
+    }
+  });
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (path === "/auth/refresh") {
+      return jsonResponse(401, { detail: { code: "invalid_refresh_token" } });
+    }
+    return jsonResponse(401, { detail: "expired" });
+  };
+
+  await assert.rejects(api.me(), ApiError);
+
+  assert.equal(calls.filter((call) => call.path === "/auth/refresh").length, 1);
+  assert.equal(failed, 1);
+});
+
+test("logout posts the supplied refresh token without auth retry", async () => {
+  const calls = [];
+  const api = new CluexpApi(null);
+  api.setSessionTokens("access", "stored-refresh");
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+    return jsonResponse(200, { revoked: true });
+  };
+
+  const result = await api.logout("stored-refresh");
+
+  assert.deepEqual(result, { revoked: true });
+  assert.deepEqual(calls, [{ path: "/auth/logout", body: { refresh_token: "stored-refresh" } }]);
+});
+
+test("stored logout clears local state even when server revoke fails", async () => {
+  const events = [];
+
+  await logoutStoredSession({
+    api: {
+      logout: async (refreshToken) => {
+        events.push(`logout:${refreshToken}`);
+        throw new Error("offline");
+      }
+    },
+    loadStoredSession: async () => ({
+      accessToken: "access",
+      refreshToken: "refresh-to-revoke",
+      session: session()
+    }),
+    clearStoredSession: async () => {
+      events.push("clear");
+    },
+    wipeOutbox: async () => {
+      events.push("wipe");
+    },
+    afterLocalClear: () => {
+      events.push("state");
+    }
+  });
+
+  assert.deepEqual(events, ["logout:refresh-to-revoke", "clear", "wipe", "state"]);
+});
