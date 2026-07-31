@@ -21,6 +21,7 @@ import { ApiError, CluexpApi } from "../api/client";
 import { FieldButton } from "../components/FieldButton";
 import { StatusCell } from "../components/StatusCell";
 import { registerPushDevice, requestAndSendLocation } from "../features/nativeCapabilities";
+import { replayQueuedMutations } from "../features/outboxReplay";
 import { clearStoredSession, loadStoredSession, saveStoredSession } from "../storage/sessionStore";
 import { enqueueMutation, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
@@ -77,6 +78,7 @@ export function RootApp() {
         const stored = await loadStoredSession();
         if (stored) {
           api.setToken(stored.accessToken);
+          await replayQueuedMutations(api);
           const fresh = await api.me().catch(() => stored.session);
           if (mounted) {
             setAccessToken(stored.accessToken);
@@ -234,6 +236,8 @@ function WorkScreen({ session, onQueueChanged }: { session: AuthSession; onQueue
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
     try {
+      await replayQueuedMutations(api);
+      await onQueueChanged();
       const [ready, active, offerFeed] = await Promise.all([
         api.readiness(),
         api.activeJobSnapshot(),
@@ -248,7 +252,7 @@ function WorkScreen({ session, onQueueChanged }: { session: AuthSession; onQueue
     } finally {
       setRefreshing(false);
     }
-  }, [technicianId]);
+  }, [onQueueChanged, technicianId]);
 
   useEffect(() => {
     void load();

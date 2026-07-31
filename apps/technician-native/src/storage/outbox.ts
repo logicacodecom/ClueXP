@@ -92,6 +92,49 @@ export async function queuedMutationCount() {
   return row?.count ?? 0;
 }
 
+export async function queuedMutations(limit = 25): Promise<QueuedMutation[]> {
+  const conn = await db();
+  const rows = await conn.getAllAsync<{
+    client_mutation_id: string;
+    job_id: string;
+    kind: QueuedMutation["kind"];
+    expected_version: string | null;
+    payload_json: string;
+    created_at: string;
+  }>(
+    "SELECT client_mutation_id, job_id, kind, expected_version, payload_json, created_at " +
+      "FROM mutation_outbox WHERE state = 'queued' ORDER BY created_at ASC LIMIT ?",
+    limit
+  );
+  return rows.map((row) => ({
+    clientMutationId: row.client_mutation_id,
+    jobId: row.job_id,
+    kind: row.kind,
+    expectedVersion: row.expected_version,
+    payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    createdAt: row.created_at
+  }));
+}
+
+export async function markMutationDone(clientMutationId: string) {
+  const conn = await db();
+  await conn.runAsync(
+    "UPDATE mutation_outbox SET state = 'done', updated_at = ?, last_error = NULL WHERE client_mutation_id = ?",
+    new Date().toISOString(),
+    clientMutationId
+  );
+}
+
+export async function markMutationFailed(clientMutationId: string, detail: string) {
+  const conn = await db();
+  await conn.runAsync(
+    "UPDATE mutation_outbox SET state = 'failed', updated_at = ?, last_error = ? WHERE client_mutation_id = ?",
+    new Date().toISOString(),
+    detail,
+    clientMutationId
+  );
+}
+
 export async function wipeOutbox() {
   const conn = await db();
   await conn.runAsync("DELETE FROM mutation_outbox");
