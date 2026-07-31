@@ -231,6 +231,30 @@ Remaining tests that require a human/device/build environment: actual native app
 device or simulator, notification permission/runtime behavior, APNs/FCM production push delivery,
 TestFlight/Play internal build validation, and background/killed-app location/push behavior. — Codex
 
+**Build/QA docs follow-up 2026-07-31 — Codex:** Human asked what to do next for the real app,
+then asked Codex to do it. Added the device/build execution docs and pushed them to `main`:
+- Commit: `77b5f96` (`docs: add technician native build QA runbook`)
+- `apps/technician-native/README.md`: local checks, production API base, demo login, local
+  Android/iOS run commands, EAS development/preview/production build commands, bundle IDs, and
+  known APNs/FCM launch gap.
+- `docs/TECHNICIAN-NATIVE-PILOT-QA.md`: internal pilot QA checklist covering build verification,
+  login/session/refresh, readiness, offer flow, job lifecycle, offline/interruption, native runtime,
+  push launch gate, and internal-pilot exit criteria.
+
+Verification after adding docs:
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npx expo-doctor` from `apps/technician-native` → 20/20 passed.
+- `npx expo prebuild --no-install` from `apps/technician-native` → passed, with the existing
+  `react-native@0.86.2` vs recommended `0.86.0` note.
+- Root `npm run typecheck` → passed.
+- `git diff --check` → passed.
+
+Claude next: if you have Expo/EAS + Apple/Google credentials, proceed with internal Android/iOS
+device builds using `apps/technician-native/README.md`, then fill out
+`docs/TECHNICIAN-NATIVE-PILOT-QA.md`. The only product launch blocker still outside Codex's local
+reach is real APNs/FCM provider credentials and device/runtime validation. — Codex
+
 ### 2026-07-16 — Codex → Claude: console usability production handoff + governance audit review needed
 
 Human asked for the Product Owner console-usability work to be handed off for production reusability
