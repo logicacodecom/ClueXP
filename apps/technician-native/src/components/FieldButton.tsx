@@ -7,10 +7,12 @@ type Props = {
   onPress: () => void;
   disabled?: boolean;
   loading?: boolean;
-  tone?: "primary" | "secondary" | "ghost" | "danger";
+  tone?: "primary" | "secondary" | "danger";
   icon?: ReactNode;
 };
 
+// Mirrors technician-web's PrimaryButton (mobile.tsx): rounded-2xl, min-h-[52px],
+// font-black text-[15px]. "ghost" was dropped — web only has primary/secondary/danger.
 export function FieldButton({ label, onPress, disabled = false, loading = false, tone = "primary", icon }: Props) {
   return (
     <Pressable
@@ -22,14 +24,17 @@ export function FieldButton({ label, onPress, disabled = false, loading = false,
         styles.base,
         tone === "primary" ? styles.primary : null,
         tone === "secondary" ? styles.secondary : null,
-        tone === "ghost" ? styles.ghost : null,
         tone === "danger" ? styles.danger : null,
         pressed ? styles.pressed : null,
         disabled || loading ? styles.disabled : null
       ]}
     >
-      {loading ? <ActivityIndicator color={tone === "primary" ? colors.primaryText : colors.foreground} /> : <View style={styles.icon}>{icon}</View>}
-      <Text style={[styles.label, tone === "primary" ? styles.primaryLabel : null]}>{label}</Text>
+      {loading ? (
+        <ActivityIndicator color={tone === "primary" ? colors.primaryText : colors.foreground} />
+      ) : icon ? (
+        <View style={styles.icon}>{icon}</View>
+      ) : null}
+      <Text style={[styles.label, tone === "primary" ? styles.primaryLabel : null, tone === "danger" ? styles.dangerLabel : null]}>{label}</Text>
     </Pressable>
   );
 }
@@ -37,32 +42,30 @@ export function FieldButton({ label, onPress, disabled = false, loading = false,
 const styles = StyleSheet.create({
   base: {
     alignItems: "center",
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     borderWidth: 1,
     flexDirection: "row",
     gap: 8,
     justifyContent: "center",
-    minHeight: 58,
-    paddingHorizontal: 16
+    minHeight: 52,
+    paddingHorizontal: 16,
+    width: "100%"
   },
   primary: {
     backgroundColor: colors.primary,
     borderColor: colors.primary
   },
   secondary: {
-    backgroundColor: "#142144",
-    borderColor: "#274981"
-  },
-  ghost: {
-    backgroundColor: colors.card,
+    backgroundColor: colors.cardStrong,
     borderColor: colors.border
   },
   danger: {
-    backgroundColor: "#1A1213",
-    borderColor: "#4A2325"
+    backgroundColor: colors.danger,
+    borderColor: colors.danger
   },
   pressed: {
-    opacity: 0.82
+    opacity: 0.9,
+    transform: [{ scale: 0.99 }]
   },
   disabled: {
     opacity: 0.55
@@ -72,11 +75,13 @@ const styles = StyleSheet.create({
   },
   label: {
     color: colors.foreground,
-    fontSize: 18,
-    fontWeight: "800",
-    textTransform: "uppercase"
+    fontSize: 15,
+    fontWeight: "900"
   },
   primaryLabel: {
     color: colors.primaryText
+  },
+  dangerLabel: {
+    color: "#250606"
   }
 });

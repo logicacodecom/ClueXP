@@ -1,60 +1,48 @@
-import { StyleSheet, Text, View } from "react-native";
-import { colors, radius } from "../theme";
+import { Ionicons } from "@expo/vector-icons";
+import { Pressable, StyleSheet, Text } from "react-native";
+import { colors } from "../theme";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
 
-export function StatusCell({ label, value, tone }: { label: string; value: string; tone: Tone }) {
-  const dotStyle =
-    tone === "good" ? styles.dotGood :
-    tone === "bad" ? styles.dotBad :
-    tone === "warn" ? styles.dotWarn :
-    styles.dotNeutral;
+// A tap-to-expand cell in the readiness grid — mirrors technician-web's
+// WorkReadiness cell buttons (icon + label only; the detail lives in the
+// panel that opens below when active).
+export function StatusCell({ icon, label, tone, active = false, onPress }: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  tone: Tone;
+  active?: boolean;
+  onPress: () => void;
+}) {
+  const color = tone === "good" ? colors.success : tone === "bad" ? colors.danger : tone === "warn" ? colors.primary : colors.mutedFaint;
   return (
-    <View style={styles.cell}>
-      <View style={[styles.dot, dotStyle]} />
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded: active }}
+      onPress={onPress}
+      style={[styles.cell, active ? styles.cellActive : null]}
+    >
+      <Ionicons name={icon} color={color} size={18} />
       <Text style={styles.label}>{label}</Text>
-      <Text numberOfLines={1} style={styles.value}>{value}</Text>
-    </View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   cell: {
     alignItems: "center",
-    backgroundColor: colors.card,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    borderWidth: 1,
     flex: 1,
-    minHeight: 72,
-    padding: 8
+    gap: 6,
+    justifyContent: "center",
+    minHeight: 58,
+    paddingVertical: 8
   },
-  dot: {
-    borderRadius: 4,
-    height: 8,
-    marginBottom: 6,
-    width: 8
-  },
-  dotGood: {
-    backgroundColor: colors.success
-  },
-  dotBad: {
-    backgroundColor: colors.danger
-  },
-  dotWarn: {
-    backgroundColor: colors.primary
-  },
-  dotNeutral: {
-    backgroundColor: colors.mutedFaint
+  cellActive: {
+    backgroundColor: colors.cardStrong
   },
   label: {
-    color: colors.foreground,
-    fontSize: 13,
-    fontWeight: "700"
-  },
-  value: {
     color: colors.muted,
     fontSize: 11,
-    marginTop: 3
+    fontWeight: "600"
   }
 });

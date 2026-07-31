@@ -1,10 +1,8 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
-  FlatList,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -19,26 +17,42 @@ import {
   View
 } from "react-native";
 import { ApiError, CluexpApi } from "../api/client";
+import { BottomNav, type TabKey } from "../components/BottomNav";
+import { Countdown } from "../components/Countdown";
 import { FieldButton } from "../components/FieldButton";
-import { StatusCell } from "../components/StatusCell";
+import { Logo } from "../components/Logo";
+import { MiniStat } from "../components/MiniStat";
+import { Pill } from "../components/Pill";
+import { ReadinessBar } from "../components/ReadinessBar";
 import { registerPushDevice, requestAndSendLocation } from "../features/nativeCapabilities";
 import { replayQueuedMutations } from "../features/outboxReplay";
 import { logoutStoredSession } from "../features/sessionLifecycle";
 import { clearStoredSession, loadStoredSession, saveStoredSession } from "../storage/sessionStore";
 import { enqueueMutation, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
-import type { ActiveJob, ActiveJobSnapshot, AuthSession, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
+import type { ActiveJob, ActiveJobSnapshot, AuthSession, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
 
-type TabKey = "work" | "activity" | "earnings" | "account";
-type CommandSheet = "arrival" | "issue" | "collection" | null;
+type CommandSheet = "arrival" | "safety" | "more" | "collection" | "messages" | "call" | null;
 type WorkHint = { kind: "work" | "job" | "offer"; id?: string; source: "link" | "notification" } | null;
 
 const api = new CluexpApi(null);
-const tabs: Array<{ key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
-  { key: "work", label: "Work", icon: "briefcase-outline" },
-  { key: "activity", label: "Activity", icon: "time-outline" },
-  { key: "earnings", label: "Earnings", icon: "wallet-outline" },
-  { key: "account", label: "Account", icon: "person-circle-outline" }
+
+const DECLINE_REASONS = ["Too far", "On another job", "Outside my skills", "Schedule conflict"];
+
+const MORE_ISSUE_KINDS: Array<[string, string]> = [
+  ["customer_unavailable", "Customer unavailable"],
+  ["wrong_address", "Wrong address"],
+  ["cannot_access", "Cannot access the work area"],
+  ["job_differs", "Job differs from the request"],
+  ["cannot_complete", "Cannot complete the work"]
+];
+
+const activeStages: Array<{ status: JobStatus; label: string; heading: string }> = [
+  { status: "assigned", label: "Depart", heading: "Ready to depart" },
+  { status: "en_route", label: "En route", heading: "Driving to customer" },
+  { status: "arrived", label: "On site", heading: "At the location" },
+  { status: "in_progress", label: "Service", heading: "Service underway" },
+  { status: "completed_pending_customer", label: "Review", heading: "Waiting for customer" }
 ];
 
 function clientMutationId(prefix: string) {
@@ -58,6 +72,27 @@ function serviceLabel(job: ActiveJob) {
 
 function offerId(offer: TechnicianOffer) {
   return offer.id || offer.offer_id || "";
+}
+
+function initialsFor(name: string) {
+  return name.split(/\s+/).map((part) => part[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "T";
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function recordValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stageDetail(status: JobStatus) {
+  if (status === "assigned") return "Review the destination, then share your location and begin the route.";
+  if (status === "en_route") return "Use your maps app for directions. Confirm arrival with the customer's six-digit PIN.";
+  if (status === "arrived") return "Review the request and authorization before beginning work.";
+  if (status === "in_progress") return "Capture the work performed, then record an honest collection.";
+  return "The receipt was submitted. You remain busy until the customer or dispatcher resolves it.";
 }
 
 function parseWorkHint(url: string, source: "link" | "notification"): WorkHint {
@@ -223,9 +258,11 @@ export function RootApp() {
     return (
       <SafeAreaView style={sharedStyles.screen}>
         <StatusBar style="light" />
-        <View style={styles.center}>
-          <Text style={styles.wordmark}>CLUEXP</Text>
-          <Text style={styles.monoMuted}>restoring secure session</Text>
+        <View style={sharedStyles.phoneFrame}>
+          <View style={styles.center}>
+            <Logo height={40} />
+            <Text style={styles.bootCaption}>Restoring secure session</Text>
+          </View>
         </View>
       </SafeAreaView>
     );
@@ -238,13 +275,27 @@ export function RootApp() {
   return (
     <SafeAreaView style={sharedStyles.screen}>
       <StatusBar style="light" />
-      <View style={styles.root}>
-        <Header session={session} queueCount={queueCount} />
-        {tab === "work" ? <WorkScreen session={session} hint={workHint} onHintConsumed={() => setWorkHint(null)} onQueueChanged={refreshQueue} /> : null}
-        {tab === "activity" ? <StaticTab title="Activity" text="Finished-job history is part of the next native slice. This first build keeps active work and command truth front and center." /> : null}
-        {tab === "earnings" ? <StaticTab title="Earnings" text="Collections are recorded in the active job flow. Settlement history comes next, and this screen will keep recorded totals separate from payout." /> : null}
-        {tab === "account" ? <AccountScreen session={session} onLogout={onLogout} /> : null}
-        <BottomTabs selected={tab} onSelect={setTab} />
+      <View style={sharedStyles.phoneFrame}>
+        <View style={styles.root}>
+          <Header onAvatarPress={() => setTab("account")} queueCount={queueCount} session={session} />
+          {tab === "work" ? <WorkScreen hint={workHint} onHintConsumed={() => setWorkHint(null)} onQueueChanged={refreshQueue} session={session} /> : null}
+          {tab === "activity" ? (
+            <ComingSoonTab
+              icon="time-outline"
+              text="Finished jobs, collected money, and customer reviews will land here — matching the ClueXP web experience. This first native build keeps active work and command truth front and center."
+              title="Activity is coming to native"
+            />
+          ) : null}
+          {tab === "earnings" ? (
+            <ComingSoonTab
+              icon="wallet-outline"
+              text="Settlement periods and payout estimates will land here. Collections you record during a job are already saved server-side."
+              title="Earnings is coming to native"
+            />
+          ) : null}
+          {tab === "account" ? <AccountScreen onLogout={onLogout} session={session} /> : null}
+          <BottomNav onSelect={setTab} selected={tab} />
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -272,53 +323,58 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
   return (
     <SafeAreaView style={sharedStyles.screen}>
       <StatusBar style="light" />
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.loginWrap}>
-        <View>
-          <Text style={styles.wordmark}>CLUEXP</Text>
-          <Text style={styles.loginTitle}>Technician field command</Text>
-          <Text style={styles.loginCopy}>Secure access for verified technicians. Native sessions use bearer tokens now and are ready for refresh-token rotation.</Text>
-        </View>
-        <View style={styles.loginPanel}>
-          <Text style={sharedStyles.kicker}>Sign in</Text>
-          <TextInput
-            autoCapitalize="none"
-            autoComplete="email"
-            keyboardType="email-address"
-            onChangeText={setIdentifier}
-            placeholder="Email or phone"
-            placeholderTextColor={colors.mutedFaint}
-            style={styles.input}
-            value={identifier}
-          />
-          <TextInput
-            autoCapitalize="none"
-            onChangeText={setPassword}
-            placeholder="Password"
-            placeholderTextColor={colors.mutedFaint}
-            secureTextEntry
-            style={styles.input}
-            value={password}
-          />
-          {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
-          <FieldButton label="Sign in" loading={busy} disabled={!identifier.trim() || !password} onPress={submit} />
-        </View>
-      </KeyboardAvoidingView>
+      <View style={sharedStyles.phoneFrame}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.loginWrap}>
+          <Logo height={24} />
+          <View style={styles.loginForm}>
+            <View style={styles.loginBadge}>
+              <Ionicons color={colors.primaryText} name="shield-checkmark" size={24} />
+            </View>
+            <Text style={styles.loginTitle}>Sign in</Text>
+            <Text style={styles.loginCopy}>Secure access for verified ClueXP technicians.</Text>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Email or phone</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoComplete="email"
+                keyboardType="email-address"
+                onChangeText={setIdentifier}
+                placeholder="jordan@cluexp.example"
+                placeholderTextColor={colors.mutedFaint}
+                style={styles.input}
+                value={identifier}
+              />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Password</Text>
+              <TextInput
+                autoCapitalize="none"
+                onChangeText={setPassword}
+                placeholder="••••••"
+                placeholderTextColor={colors.mutedFaint}
+                secureTextEntry
+                style={styles.input}
+                value={password}
+              />
+            </View>
+            {error ? <AlertBanner text={error} tone="bad" /> : null}
+            <FieldButton disabled={!identifier.trim() || !password} label="Sign in" loading={busy} onPress={submit} />
+          </View>
+        </KeyboardAvoidingView>
+      </View>
     </SafeAreaView>
   );
 }
 
-function Header({ session, queueCount }: { session: AuthSession; queueCount: number }) {
+function Header({ session, queueCount, onAvatarPress }: { session: AuthSession; queueCount: number; onAvatarPress: () => void }) {
   const name = session.user?.display_name || session.user?.email || "Technician";
   return (
     <View style={styles.header}>
-      <View>
-        <Text style={styles.wordmarkSmall}>CLUEXP</Text>
-        <Text numberOfLines={1} style={styles.headerName}>{name}</Text>
-      </View>
-      <View style={styles.syncPill}>
-        <View style={[styles.tinyDot, queueCount > 0 ? styles.dotWarn : styles.dotGood]} />
-        <Text style={styles.syncText}>{queueCount > 0 ? `${queueCount} queued` : "server mode"}</Text>
-      </View>
+      <Logo height={20} />
+      <Pressable accessibilityLabel="Open account" accessibilityRole="button" onPress={onAvatarPress} style={styles.avatar}>
+        <Text style={styles.avatarText}>{initialsFor(name)}</Text>
+        {queueCount > 0 ? <View style={styles.avatarBadge} /> : null}
+      </Pressable>
     </View>
   );
 }
@@ -370,11 +426,11 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
     void load(true).finally(onHintConsumed);
   }, [hint, load, onHintConsumed]);
 
-  async function goOnline() {
+  async function setAvailability(next: boolean) {
     setBusy(true);
     setError(null);
     try {
-      await api.setAvailability(true);
+      await api.setAvailability(next);
       await load(true);
     } catch (cause) {
       setError(errorMessage(cause));
@@ -427,13 +483,13 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
     }
   }
 
-  async function declineOffer(offer: TechnicianOffer) {
+  async function declineOffer(offer: TechnicianOffer, reason?: string) {
     const id = offerId(offer);
     if (!id) return;
     setBusy(true);
     setError(null);
     try {
-      await api.declineOffer(id, "Declined from native app");
+      await api.declineOffer(id, reason || "Declined from native app");
       await load(true);
     } catch (cause) {
       setError(errorMessage(cause));
@@ -481,68 +537,55 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
     <View style={styles.content}>
       <ScrollView
         contentContainerStyle={styles.scrollBody}
-        refreshControl={<RefreshControl refreshing={refreshing} tintColor={colors.primary} onRefresh={() => void load()} />}
+        refreshControl={<RefreshControl onRefresh={() => void load()} refreshing={refreshing} tintColor={colors.primary} />}
       >
         {hint ? <AlertBanner text={`Opened ${hint.kind}${hint.id ? ` ${hint.id.slice(0, 8)}` : ""} from ${hint.source}. Refreshing server state.`} tone="warn" /> : null}
         {error ? <AlertBanner text={error} tone="bad" /> : null}
-        <ReadinessCard readiness={readiness} onAvailability={goOnline} onLocation={repairLocation} onPush={repairPush} busy={busy} />
         {job ? (
-          <ActiveJobCard job={job} version={snapshot?.version ?? null} allowedActions={snapshot?.allowed_actions ?? []} busy={busy} onAdvance={advanceJob} onSheet={setSheet} />
-        ) : activeOffer ? (
-          <OfferCard offer={activeOffer} moreCount={Math.max(0, offers.length - 1)} busy={busy} onAccept={() => void acceptOffer(activeOffer)} onDecline={() => void declineOffer(activeOffer)} />
+          <ActiveJobCard allowedActions={snapshot?.allowed_actions ?? []} busy={busy} job={job} onAdvance={advanceJob} onSheet={setSheet} version={snapshot?.version ?? null} />
         ) : (
-          <WaitingCard ready={Boolean(readiness?.can_receive_offers)} />
+          <>
+            <ReadinessBar busy={busy} onLocation={repairLocation} onPush={repairPush} onSetAvailable={setAvailability} readiness={readiness} />
+            {readiness?.can_receive_offers ? (
+              activeOffer ? (
+                <OfferCard
+                  busy={busy}
+                  moreCount={Math.max(0, offers.length - 1)}
+                  offer={activeOffer}
+                  onAccept={() => void acceptOffer(activeOffer)}
+                  onDecline={(reason) => void declineOffer(activeOffer, reason)}
+                />
+              ) : (
+                <ReadyState />
+              )
+            ) : null}
+          </>
         )}
       </ScrollView>
       <CommandModal
         job={job}
-        snapshotVersion={snapshot?.version ?? null}
-        sheet={sheet}
         onClose={() => setSheet(null)}
-        onComplete={async () => {
-          setSheet(null);
+        onSubmitted={async (keepOpen) => {
           await load(true);
           await onQueueChanged();
+          if (!keepOpen) setSheet(null);
         }}
+        sheet={sheet}
+        snapshotVersion={snapshot?.version ?? null}
       />
     </View>
   );
 }
 
-function ReadinessCard({ readiness, busy, onAvailability, onLocation, onPush }: {
-  readiness: ReadinessSnapshot | null;
-  busy: boolean;
-  onAvailability: () => void;
-  onLocation: () => void;
-  onPush: () => void;
-}) {
-  const accountReady = Boolean(readiness?.account.approved && readiness.account.available);
-  const locationReady = Boolean(readiness?.location.fresh);
-  const pushReady = Boolean(readiness?.push.push_ready);
-  const activeClear = readiness ? !readiness.active_job.busy : false;
-  const blockers = readiness?.blocking_reasons ?? [];
-  const primary =
-    blockers.includes("unavailable") ? { label: "Go online", action: onAvailability } :
-    blockers.includes("location_stale") ? { label: "Fix location", action: onLocation } :
-    blockers.includes("push_not_ready") ? { label: "Enable alerts", action: onPush } :
-    null;
-
+function ReadyState() {
   return (
-    <View style={styles.panel}>
-      <View style={styles.rowBetween}>
-        <Text style={sharedStyles.kicker}>Readiness</Text>
-        <Text style={[styles.truthText, readiness?.can_receive_offers ? styles.goodText : styles.warnText]}>
-          {readiness?.can_receive_offers ? "ready for offers" : "not receiving offers"}
-        </Text>
+    <View style={styles.readyWrap}>
+      <View style={styles.readyCircle}>
+        <Ionicons color={colors.success} name="checkmark" size={30} />
       </View>
-      <View style={styles.readinessGrid}>
-        <StatusCell label="Available" value={accountReady ? "online" : "blocked"} tone={accountReady ? "good" : "bad"} />
-        <StatusCell label="Location" value={locationReady ? "fresh" : "repair"} tone={locationReady ? "good" : "bad"} />
-        <StatusCell label="Alerts" value={pushReady ? "enabled" : "needed"} tone={pushReady ? "good" : "warn"} />
-        <StatusCell label="Capacity" value={activeClear ? "clear" : "busy"} tone={activeClear ? "good" : "warn"} />
-      </View>
-      {blockers.length > 0 ? <Text style={styles.blockerText}>{blockers.join(" / ")}</Text> : null}
-      {primary ? <FieldButton label={primary.label} loading={busy} onPress={primary.action} /> : null}
+      <Text style={styles.readyTitle}>Ready for offers</Text>
+      <Text style={styles.readyCaption}>server feed connected</Text>
+      <Text style={styles.readyBody}>You are online. New offers will appear here. You can leave this screen open while working nearby.</Text>
     </View>
   );
 }
@@ -552,30 +595,52 @@ function OfferCard({ offer, moreCount, busy, onAccept, onDecline }: {
   moreCount: number;
   busy: boolean;
   onAccept: () => void;
-  onDecline: () => void;
+  onDecline: (reason?: string) => void;
 }) {
-  const expires = new Date(offer.expires_at).getTime();
-  const seconds = Math.max(0, Math.floor((expires - Date.now()) / 1000));
+  const [showReasons, setShowReasons] = useState(false);
   return (
     <View style={styles.offerWrap}>
       {moreCount > 0 ? <Text style={styles.queueChip}>{moreCount} more offer{moreCount === 1 ? "" : "s"} waiting</Text> : null}
-      <Text style={styles.countdown}>{seconds}s</Text>
-      <Text style={styles.monoMuted}>offer expires / server timer</Text>
+      <Countdown expiresAt={offer.expires_at} offeredAt={offer.offered_at} />
       <View style={styles.divider} />
       <Text style={sharedStyles.kicker}>{offer.organization_name ? `Offer from ${offer.organization_name}` : "Incoming offer"}</Text>
       <Text style={styles.offerTitle}>{offer.service_type || offer.situation || "Service request"}</Text>
-      <Text style={styles.offerMeta}>{offer.area || "Nearby service area"}</Text>
+      <View style={styles.offerMetaRow}>
+        <Ionicons color={colors.primary} name="location-outline" size={15} />
+        <Text style={styles.offerMeta}>{offer.area || "Nearby service area"}</Text>
+      </View>
       <Text style={styles.faintText}>Exact address and customer details unlock after acceptance.</Text>
       <View style={styles.metricGrid}>
-        <Metric label="Travel" value={offer.distance_mi != null ? `about ${offer.distance_mi} mi` : offer.dist_km != null ? `about ${offer.dist_km.toFixed(1)} km` : "not provided"} />
-        <Metric label="Coarse drive" value={offer.eta_min != null ? `about ${offer.eta_min} min` : "not provided"} />
+        <Metric label="Travel" value={offer.distance_mi != null ? `≈ ${offer.distance_mi} mi` : offer.dist_km != null ? `≈ ${offer.dist_km.toFixed(1)} km` : "Not provided"} />
+        <Metric label="Coarse drive" value={offer.eta_min != null ? `≈ ${offer.eta_min} min` : "Not provided"} />
       </View>
       <View style={styles.amountRow}>
         <Text style={styles.faintText}>Your amount</Text>
         <Text style={styles.amountText}>{offer.estimated_earnings || "Pending"}</Text>
       </View>
-      <FieldButton label="Accept" loading={busy} icon={<Ionicons name="checkmark" color={colors.primaryText} size={20} />} onPress={onAccept} />
-      <FieldButton label="Decline" loading={busy} tone="ghost" icon={<Ionicons name="close" color={colors.foreground} size={20} />} onPress={onDecline} />
+      <FieldButton icon={<Ionicons color={colors.primaryText} name="checkmark" size={20} />} label="Accept" loading={busy} onPress={onAccept} />
+      <FieldButton
+        icon={<Ionicons color={colors.foreground} name="close" size={20} />}
+        label="Decline"
+        loading={busy}
+        onPress={() => setShowReasons((value) => !value)}
+        tone="secondary"
+      />
+      {showReasons ? (
+        <View style={styles.reasonPanel}>
+          <Text style={styles.reasonKicker}>Why are you declining?</Text>
+          <View style={styles.reasonRow}>
+            {DECLINE_REASONS.map((reason) => (
+              <Pressable disabled={busy} key={reason} onPress={() => onDecline(reason)} style={styles.reasonChip}>
+                <Text style={styles.reasonChipText}>{reason}</Text>
+              </Pressable>
+            ))}
+            <Pressable disabled={busy} onPress={() => onDecline()} style={styles.reasonChip}>
+              <Text style={[styles.reasonChipText, styles.reasonChipMuted]}>Skip</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -592,6 +657,9 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
     const action = allowedActions.find((item) => item.startsWith("advance_to:"));
     return action ? action.replace("advance_to:", "") : null;
   }, [allowedActions]);
+  const stageIndex = Math.max(0, activeStages.findIndex((item) => item.status === job.status));
+  const stage = activeStages[stageIndex] ?? activeStages[activeStages.length - 1];
+  const pendingCustomer = job.status === "completed_pending_customer";
   const actionLabel =
     job.status === "assigned" ? "Start route" :
     job.status === "en_route" ? "Confirm arrival" :
@@ -602,98 +670,155 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
     ? `https://www.google.com/maps/dir/?api=1&destination=${job.lat},${job.lng}`
     : job.address ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(job.address)}` : null;
 
+  const detail = recordValue(job.detail);
+  const automotive = recordValue(detail.automotive);
+  const customerName = stringValue(detail.customer_name) || stringValue(detail.customerName);
+  const customerPhone = stringValue(detail.customer_phone) || stringValue(detail.customerPhone);
+  const vehicle = [stringValue(automotive.year), stringValue(automotive.color), stringValue(automotive.make), stringValue(automotive.model)].filter(Boolean).join(" ") || null;
+  const notes = stringValue(detail.additional_details) || stringValue(detail.notes) || stringValue(detail.description);
+  const hasDetails = Boolean(customerName || customerPhone || vehicle || notes);
+
   return (
     <View style={styles.activeWrap}>
       <View style={styles.mapFallback}>
+        <View style={styles.mapBadge}>
+          <Ionicons color={colors.success} name="locate" size={13} />
+          <Text style={styles.mapBadgeText}>GPS live</Text>
+        </View>
         <View style={styles.mapGrid}>
-          <MaterialCommunityIcons name="map-marker-radius-outline" color={colors.primary} size={34} />
+          <MaterialCommunityIcons color={colors.primary} name="map-marker-radius-outline" size={34} />
           <Text style={styles.mapText}>{job.address || "Service address unavailable"}</Text>
         </View>
         <Text style={styles.mapTruth}>GPS is honest. No simulated movement is shown.</Text>
       </View>
-      <StageHeader status={job.status} />
-      {job.status === "completed_pending_customer" ? (
-        <AlertBanner
-          text="Work submitted. Awaiting customer confirmation. You remain assigned here, and dispatch can help with support or dispute questions."
-          tone="warn"
-        />
-      ) : null}
-      <Text style={styles.jobTitle}>{serviceLabel(job)}</Text>
-      <Text style={styles.jobAddress}>{job.address || "Address will appear when authorized by the server."}</Text>
-      <View style={styles.metricGrid}>
-        <Metric label="Distance" value={job.distance_mi != null ? `${job.distance_mi} mi` : "server pending"} />
-        <Metric label="ETA" value={job.eta_min != null ? `${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min` : "server pending"} />
+
+      <View>
+        <View style={styles.stageHeaderRow}>
+          <Text style={sharedStyles.kicker}>Stage {stageIndex + 1} of 5</Text>
+          <View style={styles.stageBars}>
+            {activeStages.map((item, index) => (
+              <View key={item.status} style={[styles.stageBar, index <= stageIndex ? styles.stageBarOn : null]} />
+            ))}
+          </View>
+        </View>
+        <Text style={styles.stageHeading}>{stage.heading}</Text>
+        <Text style={styles.stageDetail}>{stageDetail(job.status)}</Text>
       </View>
+
+      {pendingCustomer ? (
+        <View style={styles.pendingCard}>
+          <View style={styles.pendingCircle}>
+            <Text style={styles.pendingEllipsis}>…</Text>
+          </View>
+          <Text style={styles.pendingKicker}>Job {job.id.slice(0, 8)}</Text>
+          <Text style={styles.pendingText}>The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</Text>
+          <View style={styles.pendingStatusRow}>
+            <Text style={styles.pendingStatusLabel}>Your status</Text>
+            <Text style={styles.pendingStatusValue}>Busy · no new offers</Text>
+          </View>
+        </View>
+      ) : (
+        <>
+          <View style={styles.addressCard}>
+            <View style={styles.addressIcon}>
+              <Ionicons color={colors.primary} name="location-outline" size={18} />
+            </View>
+            <View style={styles.addressBody}>
+              <Text style={styles.addressLabel}>Authorized service address</Text>
+              <Text style={styles.addressValue}>{job.address || "Address will appear when authorized by the server."}</Text>
+              <Text style={styles.addressSub}>{serviceLabel(job)}{job.access_type ? ` · ${job.access_type}` : ""}</Text>
+            </View>
+          </View>
+          {job.eta_min != null || job.distance_mi != null ? (
+            <View style={styles.chipRow}>
+              {job.eta_min != null ? <MetaChip label="ETA" value={`${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min`} /> : null}
+              {job.distance_mi != null ? <MetaChip label="Distance" value={`${job.distance_mi} mi`} /> : null}
+            </View>
+          ) : null}
+          {hasDetails ? (
+            <View style={styles.detailsCard}>
+              <Text style={sharedStyles.kicker}>Customer & job details</Text>
+              {customerName ? <DetailRow label="Customer" value={customerName} /> : null}
+              {customerPhone ? <DetailRow label="Phone" onPress={() => void Linking.openURL(`tel:${customerPhone.replace(/[^\d+]/g, "")}`)} value={customerPhone} /> : null}
+              {vehicle ? <DetailRow label="Vehicle" value={vehicle} /> : null}
+              {notes ? <DetailRow label="Job notes" value={notes} /> : null}
+            </View>
+          ) : null}
+          {mapsUrl ? <FieldButton icon={<Ionicons color={colors.foreground} name="navigate" size={19} />} label="Open in maps" onPress={() => void Linking.openURL(mapsUrl)} tone="secondary" /> : null}
+        </>
+      )}
+
       {version ? <Text style={styles.truthText}>server-verified version {version}</Text> : null}
-      {mapsUrl ? <FieldButton label="Open in maps" tone="secondary" icon={<Ionicons name="navigate" color={colors.foreground} size={19} />} onPress={() => void Linking.openURL(mapsUrl)} /> : null}
-      <FieldButton label={actionLabel} disabled={!next || job.status === "completed_pending_customer"} loading={busy} onPress={() => next ? onAdvance(next) : undefined} />
+      {!pendingCustomer ? <FieldButton disabled={!next} label={actionLabel} loading={busy} onPress={() => (next ? onAdvance(next) : undefined)} /> : null}
+
       <View style={styles.rail}>
-        <RailAction label="Message" icon="chatbubble-outline" onPress={() => Alert.alert("Not enabled", "Job-scoped messaging is not enabled on this backend yet.")} />
-        <RailAction label="Call" icon="call-outline" onPress={() => Alert.alert("Not enabled", "Masked calling is not enabled on this backend yet.")} />
-        <RailAction label="Safety" danger icon="shield-outline" onPress={() => onSheet("issue")} />
-        <RailAction label="More" icon="ellipsis-horizontal" onPress={() => onSheet("issue")} />
+        <RailAction icon="chatbubble-outline" label="Message" onPress={() => onSheet("messages")} />
+        <RailAction icon="call-outline" label="Call" onPress={() => onSheet("call")} />
+        <RailAction danger icon="shield-outline" label="Safety" onPress={() => onSheet("safety")} />
+        <RailAction icon="ellipsis-horizontal" label="More" onPress={() => onSheet("more")} />
       </View>
     </View>
   );
 }
 
-function CommandModal({ job, snapshotVersion, sheet, onClose, onComplete }: {
+function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
   job: ActiveJob | null;
   snapshotVersion: string | null;
   sheet: CommandSheet;
   onClose: () => void;
-  onComplete: () => Promise<void>;
+  onSubmitted: (keepOpen: boolean) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [pin, setPin] = useState("");
-  const [issueKind, setIssueKind] = useState("cannot_complete");
+  const [issueKind, setIssueKind] = useState<string | null>(null);
   const [issueReason, setIssueReason] = useState("");
+  const [issueDone, setIssueDone] = useState(false);
   const [method, setMethod] = useState("cash");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const pinInputRef = useRef<TextInput>(null);
 
-  async function run(kind: "arrival" | "issue" | "collection") {
+  useEffect(() => {
+    setIssueDone(false);
+    setIssueKind(null);
+    setIssueReason("");
+    setError(null);
+  }, [sheet]);
+
+  async function run(kind: "arrival" | "issue" | "collection", overrideIssueKind?: string) {
     if (!job) return;
     setBusy(true);
     setError(null);
     const mutationId = clientMutationId(kind);
+    const resolvedIssueKind = overrideIssueKind ?? issueKind ?? "cannot_complete";
+    const payload = { pin, kind: resolvedIssueKind, reason: issueReason.trim(), amount: Number.parseFloat(amount || "0"), method };
     try {
       if (kind === "arrival") {
         await api.verifyArrival(job.id, { pin, expected_version: snapshotVersion, client_mutation_id: mutationId });
       } else if (kind === "issue") {
-        await api.reportIssue(job.id, { kind: issueKind, reason: issueReason.trim(), expected_version: snapshotVersion, client_mutation_id: mutationId });
+        await api.reportIssue(job.id, { kind: resolvedIssueKind, reason: issueReason.trim(), expected_version: snapshotVersion, client_mutation_id: mutationId });
       } else {
-        await api.reportCollection(job.id, {
-          amount: Number.parseFloat(amount || "0"),
-          method,
-          expected_version: snapshotVersion,
-          client_mutation_id: mutationId
-        });
+        await api.reportCollection(job.id, { amount: payload.amount, method, expected_version: snapshotVersion, client_mutation_id: mutationId });
         await api.updateJobStatus(job.id, "completed_pending_customer", snapshotVersion);
       }
-      await onComplete();
-      setPin("");
-      setIssueReason("");
-      setAmount("");
+      if (kind === "issue") {
+        setIssueDone(true);
+        await onSubmitted(true);
+      } else {
+        await onSubmitted(false);
+        setPin("");
+        setIssueReason("");
+        setAmount("");
+      }
     } catch (cause) {
-      if (cause instanceof ApiError && cause.problem.status === 0) {
-        await queueLocalMutation(job.id, outboxKind(kind), snapshotVersion, mutationId, {
-          pin,
-          kind: issueKind,
-          reason: issueReason.trim(),
-          amount: Number.parseFloat(amount || "0"),
-          method
-        });
-        await onComplete();
-      } else if (cause instanceof TypeError) {
-        await queueLocalMutation(job.id, outboxKind(kind), snapshotVersion, mutationId, {
-          pin,
-          kind: issueKind,
-          reason: issueReason.trim(),
-          amount: Number.parseFloat(amount || "0"),
-          method
-        });
-        await onComplete();
+      if ((cause instanceof ApiError && cause.problem.status === 0) || cause instanceof TypeError) {
+        await queueLocalMutation(job.id, outboxKind(kind), snapshotVersion, mutationId, payload);
+        if (kind === "issue") {
+          setIssueDone(true);
+          await onSubmitted(true);
+        } else {
+          await onSubmitted(false);
+        }
       } else {
         setError(errorMessage(cause));
       }
@@ -703,79 +828,133 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onComplete }: {
   }
 
   return (
-    <Modal animationType="slide" transparent={false} visible={sheet !== null} onRequestClose={onClose}>
+    <Modal animationType="slide" onRequestClose={onClose} transparent={false} visible={sheet !== null}>
       <SafeAreaView style={sharedStyles.screen}>
-        <ScrollView contentContainerStyle={styles.modalBody}>
-          <Pressable accessibilityLabel="Close" accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
-            <Ionicons name="close" color={colors.foreground} size={22} />
-          </Pressable>
-          {sheet === "arrival" ? (
-            <View>
-              <Text style={sharedStyles.kicker}>Stage 2 of 5</Text>
-              <Text style={sharedStyles.title}>Verify arrival</Text>
-              <Text style={sharedStyles.body}>Ask the customer for the six-digit PIN from their ClueXP tracking page.</Text>
-              <TextInput
-                inputMode="numeric"
-                keyboardType="number-pad"
-                maxLength={6}
-                onChangeText={(value) => setPin(value.replace(/\D/g, "").slice(0, 6))}
-                placeholder="000000"
-                placeholderTextColor={colors.mutedFaint}
-                style={styles.pinInput}
-                value={pin}
-              />
-              <FieldButton label="Confirm arrival" loading={busy} disabled={pin.length !== 6} onPress={() => void run("arrival")} />
-            </View>
-          ) : null}
-          {sheet === "issue" ? (
-            <View>
-              <Text style={sharedStyles.kicker}>More / Safety</Text>
-              <Text style={sharedStyles.title}>Report problem</Text>
-              <Text style={sharedStyles.body}>Dispatch decides what happens next. Unsafe reports are recorded against this job.</Text>
-              {["cannot_complete", "customer_unavailable", "unsafe"].map((kind) => (
-                <Pressable key={kind} onPress={() => setIssueKind(kind)} style={[styles.choice, issueKind === kind ? styles.choiceActive : null]}>
-                  <Text style={styles.choiceText}>{kind.replaceAll("_", " ")}</Text>
+        <View style={sharedStyles.phoneFrame}>
+          <ScrollView contentContainerStyle={styles.modalBody}>
+            <Pressable accessibilityLabel="Close" accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
+              <Ionicons color={colors.foreground} name="close" size={22} />
+            </Pressable>
+
+            {sheet === "arrival" ? (
+              <View>
+                <Text style={sharedStyles.kicker}>Stage 2 of 5</Text>
+                <Text style={sharedStyles.title}>Verify arrival</Text>
+                <Text style={sharedStyles.body}>Ask the customer for the six-digit PIN from their ClueXP tracking page.</Text>
+                <Pressable onPress={() => pinInputRef.current?.focus()} style={styles.pinBoxRow}>
+                  {Array.from({ length: 6 }, (_, index) => (
+                    <View key={index} style={[styles.pinBox, index === pin.length ? styles.pinBoxActive : null]}>
+                      <Text style={styles.pinBoxText}>{pin[index] || ""}</Text>
+                    </View>
+                  ))}
                 </Pressable>
-              ))}
-              <TextInput
-                multiline
-                onChangeText={setIssueReason}
-                placeholder="Useful detail for dispatch"
-                placeholderTextColor={colors.mutedFaint}
-                style={[styles.input, styles.textArea]}
-                value={issueReason}
-              />
-              <FieldButton label="Submit to dispatch" loading={busy} onPress={() => void run("issue")} />
-            </View>
-          ) : null}
-          {sheet === "collection" ? (
-            <View>
-              <Text style={sharedStyles.kicker}>Closeout record</Text>
-              <Text style={sharedStyles.title}>Record collection</Text>
-              <Text style={sharedStyles.body}>This is the record, not a payment. ClueXP does not process payout here.</Text>
-              <TextInput
-                inputMode="decimal"
-                keyboardType="decimal-pad"
-                onChangeText={(value) => setAmount(value.replace(/[^0-9.]/g, ""))}
-                placeholder="Amount"
-                placeholderTextColor={colors.mutedFaint}
-                style={styles.input}
-                value={amount}
-              />
-              <View style={styles.methodRow}>
-                {["cash", "credit_card", "check", "zelle"].map((item) => (
-                  <Pressable key={item} onPress={() => setMethod(item)} style={[styles.methodChip, method === item ? styles.choiceActive : null]}>
-                    <Text style={styles.choiceText}>{item.replaceAll("_", " ")}</Text>
-                  </Pressable>
-                ))}
+                <TextInput
+                  inputMode="numeric"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  onChangeText={(value) => setPin(value.replace(/\D/g, "").slice(0, 6))}
+                  ref={pinInputRef}
+                  style={styles.hiddenInput}
+                  value={pin}
+                />
+                <Text style={styles.pinHint}>The button enables after six digits.</Text>
+                {error ? <AlertBanner text={error} tone="bad" /> : null}
+                <FieldButton disabled={pin.length !== 6} label="Confirm arrival" loading={busy} onPress={() => void run("arrival")} />
               </View>
-              <FieldButton label="Submit for customer confirmation" loading={busy} disabled={!amount} onPress={() => void run("collection")} />
-            </View>
-          ) : null}
-          {error ? <AlertBanner text={error} tone="bad" /> : null}
-        </ScrollView>
+            ) : null}
+
+            {sheet === "safety" ? (
+              <View>
+                <Text style={styles.dangerTitle}>Safety</Text>
+                <Text style={sharedStyles.body}>For unsafe conditions at or near this job. An alert is recorded against this job and sent to dispatch.</Text>
+                <FieldButton
+                  disabled={issueDone}
+                  icon={<Ionicons color="#250606" name="warning-outline" size={20} />}
+                  label={busy ? "Sending alert…" : issueDone ? "Alert sent" : "I feel unsafe — alert dispatch"}
+                  loading={busy}
+                  onPress={() => void run("issue", "unsafe")}
+                  tone="danger"
+                />
+                <Pressable onPress={() => void Linking.openURL("tel:911")} style={styles.call911}>
+                  <Text style={styles.call911Text}>Call 911</Text>
+                </Pressable>
+                <View style={styles.dangerNote}>
+                  <Text style={styles.dangerNoteText}>If there is immediate danger, call 911 first. Reporting here is not a replacement for emergency services.</Text>
+                </View>
+              </View>
+            ) : null}
+
+            {sheet === "more" ? (
+              <View>
+                <Text style={sharedStyles.kicker}>More → Report problem</Text>
+                <Text style={sharedStyles.title}>Report a problem</Text>
+                <Text style={sharedStyles.body}>Non-emergency blockers for job {job ? job.id.slice(0, 8) : ""}. Dispatch decides what happens next.</Text>
+                <View style={styles.issueList}>
+                  {MORE_ISSUE_KINDS.map(([value, label]) => (
+                    <Pressable key={value} onPress={() => setIssueKind(value)} style={[styles.issueRow, issueKind === value ? styles.issueRowActive : null]}>
+                      <Text style={styles.issueRowText}>{label}</Text>
+                      {issueKind === value ? <View style={styles.issueDot} /> : null}
+                    </Pressable>
+                  ))}
+                </View>
+                <TextInput
+                  multiline
+                  onChangeText={setIssueReason}
+                  placeholder="What is blocking you?"
+                  placeholderTextColor={colors.mutedFaint}
+                  style={[styles.input, styles.textArea]}
+                  value={issueReason}
+                />
+                <Text style={styles.noteBox}>Submitting records the issue and notifies dispatch. It does not automatically reassign or cancel this job.</Text>
+                {error ? <AlertBanner text={error} tone="bad" /> : null}
+                <FieldButton disabled={!issueKind || issueDone} label={busy ? "Submitting…" : issueDone ? "Problem submitted" : "Submit to dispatch"} loading={busy} onPress={() => void run("issue")} />
+              </View>
+            ) : null}
+
+            {sheet === "messages" ? <UnavailableSheet text="Job-scoped messaging is not enabled on this pilot environment yet. No delivery status will be fabricated." title="Job messages" /> : null}
+            {sheet === "call" ? <UnavailableSheet text="Private call routing is not enabled on this pilot environment yet. Contact dispatch through your approved operational channel." title="Call" /> : null}
+
+            {sheet === "collection" ? (
+              <View>
+                <Text style={sharedStyles.kicker}>Closeout record</Text>
+                <Text style={sharedStyles.title}>Record collection</Text>
+                <Text style={sharedStyles.body}>This is the record, not a payment. ClueXP does not process payout here.</Text>
+                <TextInput
+                  inputMode="decimal"
+                  keyboardType="decimal-pad"
+                  onChangeText={(value) => setAmount(value.replace(/[^0-9.]/g, ""))}
+                  placeholder="Amount"
+                  placeholderTextColor={colors.mutedFaint}
+                  style={styles.input}
+                  value={amount}
+                />
+                <View style={styles.methodRow}>
+                  {["cash", "credit_card", "check", "zelle"].map((item) => (
+                    <Pressable key={item} onPress={() => setMethod(item)} style={[styles.methodChip, method === item ? styles.choiceActive : null]}>
+                      <Text style={styles.choiceText}>{item.replaceAll("_", " ")}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                {error ? <AlertBanner text={error} tone="bad" /> : null}
+                <FieldButton disabled={!amount} label="Submit for customer confirmation" loading={busy} onPress={() => void run("collection")} />
+              </View>
+            ) : null}
+          </ScrollView>
+        </View>
       </SafeAreaView>
     </Modal>
+  );
+}
+
+function UnavailableSheet({ title, text }: { title: string; text: string }) {
+  return (
+    <View>
+      <Text style={sharedStyles.title}>{title}</Text>
+      <View style={styles.noticeBox}>
+        <Text style={styles.noticeTitle}>Not enabled in this pilot</Text>
+        <Text style={styles.noticeText}>{text}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -790,22 +969,6 @@ async function queueLocalMutation(jobId: string, kind: QueuedMutation["kind"], e
   });
 }
 
-function StageHeader({ status }: { status: string }) {
-  const labels = ["assigned", "en_route", "arrived", "in_progress", "completed_pending_customer"];
-  const index = Math.max(0, labels.indexOf(status));
-  return (
-    <View style={styles.stageWrap}>
-      <Text style={sharedStyles.kicker}>Stage {Math.min(index + 1, 5)} of 5</Text>
-      <View style={styles.stageBars}>
-        {labels.map((label, itemIndex) => (
-          <View key={label} style={[styles.stageBar, itemIndex <= index ? styles.stageBarOn : null]} />
-        ))}
-      </View>
-      <Text style={styles.stageTitle}>{status.replaceAll("_", " ")}</Text>
-    </View>
-  );
-}
-
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.metric}>
@@ -815,72 +978,98 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function RailAction({ label, icon, danger = false, onPress }: { label: string; icon: keyof typeof Ionicons.glyphMap; danger?: boolean; onPress: () => void }) {
+function MetaChip({ label, value }: { label: string; value: string }) {
   return (
-    <Pressable onPress={onPress} style={[styles.railAction, danger ? styles.railDanger : null]}>
-      <Ionicons name={icon} color={danger ? colors.danger : colors.foreground} size={18} />
-      <Text style={[styles.railText, danger ? styles.dangerText : null]}>{label}</Text>
-    </Pressable>
+    <View style={styles.metaChip}>
+      <Text style={styles.metaChipLabel}>{label}</Text>
+      <Text style={styles.metaChipValue}>{value}</Text>
+    </View>
   );
 }
 
-function WaitingCard({ ready }: { ready: boolean }) {
+function DetailRow({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
   return (
-    <View style={styles.waiting}>
-      <Ionicons name={ready ? "checkmark-circle-outline" : "alert-circle-outline"} color={ready ? colors.success : colors.primary} size={64} />
-      <Text style={styles.waitTitle}>{ready ? "Ready for offers" : "Repair readiness"}</Text>
-      <Text style={sharedStyles.body}>{ready ? "You can lock your phone. Offer delivery still falls back to polling until APNs and FCM credentials are provisioned." : "Fix the named readiness blocker above. The app will never show ready while the server disagrees."}</Text>
+    <View style={styles.detailRow}>
+      <Text style={styles.detailRowLabel}>{label}</Text>
+      {onPress ? (
+        <Pressable onPress={onPress}>
+          <Text style={[styles.detailRowValue, styles.detailRowLink]}>{value}</Text>
+        </Pressable>
+      ) : (
+        <Text style={styles.detailRowValue}>{value}</Text>
+      )}
     </View>
+  );
+}
+
+function RailAction({ label, icon, danger = false, onPress }: { label: string; icon: keyof typeof Ionicons.glyphMap; danger?: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={[styles.railAction, danger ? styles.railDanger : null]}>
+      <Ionicons color={danger ? colors.danger : colors.foreground} name={icon} size={18} />
+      <Text style={[styles.railText, danger ? styles.dangerText : null]}>{label}</Text>
+    </Pressable>
   );
 }
 
 function AlertBanner({ text, tone }: { text: string; tone: "bad" | "warn" }) {
   return (
     <View style={[styles.alert, tone === "bad" ? styles.alertBad : styles.alertWarn]}>
-      <Ionicons name="alert-circle-outline" color={tone === "bad" ? colors.danger : colors.primary} size={20} />
+      <Ionicons color={tone === "bad" ? colors.danger : colors.primary} name="alert-circle-outline" size={20} />
       <Text style={styles.alertText}>{text}</Text>
     </View>
   );
 }
 
-function BottomTabs({ selected, onSelect }: { selected: TabKey; onSelect: (tab: TabKey) => void }) {
-  return (
-    <View style={styles.bottomTabs}>
-      {tabs.map((item) => (
-        <Pressable accessibilityRole="tab" accessibilityState={{ selected: selected === item.key }} key={item.key} onPress={() => onSelect(item.key)} style={styles.tabButton}>
-          <Ionicons name={item.icon} color={selected === item.key ? colors.primary : colors.muted} size={22} />
-          <Text style={[styles.tabText, selected === item.key ? styles.tabTextActive : null]}>{item.label}</Text>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
-function StaticTab({ title, text }: { title: string; text: string }) {
+function ComingSoonTab({ icon, title, text }: { icon: keyof typeof Ionicons.glyphMap; title: string; text: string }) {
   return (
     <ScrollView contentContainerStyle={styles.scrollBody}>
-      <View style={styles.panel}>
-        <Text style={sharedStyles.kicker}>{title}</Text>
-        <Text style={sharedStyles.title}>{title}</Text>
-        <Text style={sharedStyles.body}>{text}</Text>
+      <View style={styles.emptyState}>
+        <View style={styles.emptyIconWrap}>
+          <Ionicons color={colors.primary} name={icon} size={26} />
+        </View>
+        <Text style={styles.emptyTitle}>{title}</Text>
+        <Text style={styles.emptyText}>{text}</Text>
       </View>
     </ScrollView>
   );
 }
 
 function AccountScreen({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
+  const name = session.user?.display_name || "Technician";
+  const vetting = session.technician?.vetting_status ?? "verified";
+  const verified = vetting === "verified";
   return (
     <ScrollView contentContainerStyle={styles.scrollBody}>
-      <View style={styles.panel}>
-        <Text style={sharedStyles.kicker}>Account</Text>
-        <Text style={styles.jobTitle}>{session.user?.display_name || "Technician"}</Text>
-        <Text style={sharedStyles.body}>{session.user?.email || session.user?.phone || "No contact on session"}</Text>
-        <View style={styles.divider} />
-        <Metric label="Technician ID" value={session.technician?.id || "not available"} />
-        <Metric label="Approval" value={session.technician?.approved ? "approved" : "pending"} />
-        <Metric label="Native storage" value="SecureStore + SQLCipher outbox" />
-        <FieldButton label="Sign out" tone="danger" onPress={() => void onLogout()} />
+      <View style={styles.accountHeader}>
+        <View style={styles.accountHeaderBody}>
+          <Text style={styles.accountName}>{name}</Text>
+          <Text style={styles.accountSub}>{session.organization_name || "No provider affiliation"}</Text>
+          <Text style={styles.accountId}>ID {(session.technician?.id || "—").slice(0, 8).toUpperCase()}</Text>
+          <Pill icon={<Ionicons color={verified ? colors.success : colors.primary} name={verified ? "shield-checkmark-outline" : "time-outline"} size={13} />} tone={verified ? "success" : "default"}>
+            {verified ? "Identity verified" : String(vetting).replaceAll("_", " ")}
+          </Pill>
+        </View>
+        <View style={styles.accountAvatar}>
+          <Text style={styles.accountAvatarText}>{initialsFor(name)}</Text>
+        </View>
       </View>
+
+      <Text style={styles.sectionKicker}>Trust profile</Text>
+      <View style={styles.trustGrid}>
+        <MiniStat label="Role" value={session.roles?.[0] ?? "technician"} />
+        <MiniStat label="Status" value={String(session.technician?.status ?? "active")} />
+      </View>
+      <View style={styles.trustGrid}>
+        <MiniStat label="Vetting" value={String(vetting)} />
+        <MiniStat label="Company" value={session.organization_name || "None"} />
+      </View>
+
+      <View style={styles.panel}>
+        <Text style={sharedStyles.kicker}>Native storage</Text>
+        <Text style={sharedStyles.body}>Sessions and offline actions are secured with SecureStore and a SQLCipher-encrypted outbox.</Text>
+      </View>
+
+      <FieldButton icon={<Ionicons color="#250606" name="log-out-outline" size={18} />} label="Sign out" onPress={() => void onLogout()} tone="danger" />
     </ScrollView>
   );
 }
@@ -892,80 +1081,68 @@ const styles = StyleSheet.create({
   center: {
     alignItems: "center",
     flex: 1,
+    gap: 14,
     justifyContent: "center"
+  },
+  bootCaption: {
+    color: colors.mutedFaint,
+    fontFamily: "monospace",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase"
   },
   loginWrap: {
     flex: 1,
     justifyContent: "space-between",
     padding: 22
   },
-  wordmark: {
-    color: colors.primary,
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: 3
+  loginForm: {
+    paddingBottom: 12
   },
-  wordmarkSmall: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: "900",
-    letterSpacing: 2
+  loginBadge: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+    height: 48,
+    justifyContent: "center",
+    marginBottom: 20,
+    width: 48
   },
   loginTitle: {
     color: colors.foreground,
-    fontSize: 42,
-    fontWeight: "900",
-    lineHeight: 45,
-    marginTop: 28,
-    textTransform: "uppercase"
+    fontSize: 30,
+    fontWeight: "900"
   },
   loginCopy: {
     color: colors.muted,
-    fontSize: 16,
-    lineHeight: 23,
-    marginTop: 12
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8
   },
-  loginPanel: {
-    backgroundColor: colors.card,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    gap: 12,
-    padding: 16
+  field: {
+    marginTop: 20
+  },
+  fieldLabel: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "700"
   },
   input: {
-    backgroundColor: colors.cardRaised,
-    borderColor: colors.borderStrong,
+    backgroundColor: colors.cardStrong,
+    borderColor: colors.border,
     borderRadius: radius.sm,
     borderWidth: 1,
     color: colors.foreground,
-    fontSize: 17,
-    minHeight: 54,
-    paddingHorizontal: 14
+    fontSize: 16,
+    marginTop: 8,
+    minHeight: 48,
+    paddingHorizontal: 16
   },
   textArea: {
-    minHeight: 110,
+    minHeight: 96,
     paddingTop: 12,
     textAlignVertical: "top"
-  },
-  pinInput: {
-    backgroundColor: colors.cardRaised,
-    borderColor: colors.primary,
-    borderRadius: radius.sm,
-    borderWidth: 2,
-    color: colors.foreground,
-    fontSize: 36,
-    fontWeight: "800",
-    letterSpacing: 9,
-    marginVertical: 24,
-    minHeight: 70,
-    paddingHorizontal: 18,
-    textAlign: "center"
-  },
-  errorText: {
-    color: colors.dangerSoft,
-    fontSize: 14,
-    lineHeight: 20
   },
   header: {
     alignItems: "center",
@@ -973,89 +1150,89 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
     paddingVertical: 12
   },
-  headerName: {
-    color: colors.foreground,
-    fontSize: 15,
-    fontWeight: "700",
-    marginTop: 3,
-    maxWidth: 230
-  },
-  syncPill: {
+  avatar: {
     alignItems: "center",
+    backgroundColor: colors.card,
     borderColor: colors.border,
-    borderRadius: 999,
+    borderRadius: 22,
     borderWidth: 1,
-    flexDirection: "row",
-    gap: 7,
-    paddingHorizontal: 10,
-    paddingVertical: 7
+    height: 44,
+    justifyContent: "center",
+    width: 44
   },
-  tinyDot: {
-    borderRadius: 4,
-    height: 8,
-    width: 8
+  avatarText: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "800"
   },
-  dotGood: {
-    backgroundColor: colors.success
-  },
-  dotWarn: {
-    backgroundColor: colors.primary
-  },
-  syncText: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: "700"
+  avatarBadge: {
+    backgroundColor: colors.primary,
+    borderColor: colors.background,
+    borderRadius: 6,
+    borderWidth: 2,
+    height: 12,
+    position: "absolute",
+    right: -2,
+    top: -2,
+    width: 12
   },
   content: {
     flex: 1
   },
   scrollBody: {
-    gap: 14,
+    gap: 16,
     padding: 16,
     paddingBottom: 98
   },
   panel: {
     ...sharedStyles.panel,
-    gap: 14,
-    padding: 14
+    gap: 10,
+    marginTop: 20,
+    padding: 16
   },
-  rowBetween: {
+  readyWrap: {
     alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between"
+    borderColor: colors.border,
+    borderTopWidth: 1,
+    gap: 6,
+    paddingTop: 30,
+    paddingVertical: 10
   },
-  truthText: {
+  readyCircle: {
+    alignItems: "center",
+    borderColor: colors.success,
+    borderRadius: 999,
+    borderWidth: 2,
+    height: 64,
+    justifyContent: "center",
+    width: 64
+  },
+  readyTitle: {
+    color: colors.foreground,
+    fontSize: 26,
+    fontWeight: "900",
+    marginTop: 10,
+    textTransform: "uppercase"
+  },
+  readyCaption: {
     color: colors.successSoft,
     fontFamily: "monospace",
     fontSize: 11,
-    fontWeight: "700",
     textTransform: "uppercase"
   },
-  goodText: {
-    color: colors.success
-  },
-  warnText: {
-    color: colors.primary
-  },
-  blockerText: {
-    backgroundColor: colors.cautionBg,
-    borderColor: colors.cautionBorder,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    color: colors.primary,
-    fontSize: 13,
-    padding: 10
-  },
-  readinessGrid: {
-    flexDirection: "row",
-    gap: 7
+  readyBody: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+    maxWidth: 280,
+    textAlign: "center"
   },
   offerWrap: {
-    gap: 13,
-    paddingTop: 8
+    gap: 13
   },
   queueChip: {
     alignSelf: "center",
@@ -1067,21 +1244,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8
   },
-  countdown: {
-    color: colors.primary,
-    fontSize: 80,
-    fontWeight: "900",
-    lineHeight: 86,
-    textAlign: "center"
-  },
-  monoMuted: {
-    color: colors.mutedFaint,
-    fontFamily: "monospace",
-    fontSize: 11,
-    fontWeight: "700",
-    textAlign: "center",
-    textTransform: "uppercase"
-  },
   divider: {
     backgroundColor: colors.border,
     height: 1,
@@ -1089,13 +1251,18 @@ const styles = StyleSheet.create({
   },
   offerTitle: {
     color: colors.foreground,
-    fontSize: 30,
-    fontWeight: "800",
+    fontSize: 28,
+    fontWeight: "900",
     textTransform: "uppercase"
+  },
+  offerMetaRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6
   },
   offerMeta: {
     color: colors.foreground,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700"
   },
   faintText: {
@@ -1137,20 +1304,75 @@ const styles = StyleSheet.create({
   },
   amountText: {
     color: colors.foreground,
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "900"
   },
+  reasonPanel: {
+    backgroundColor: colors.cardStrong,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    padding: 12
+  },
+  reasonKicker: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  reasonRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 8
+  },
+  reasonChip: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    minHeight: 40,
+    justifyContent: "center",
+    paddingHorizontal: 12
+  },
+  reasonChipText: {
+    color: colors.foreground,
+    fontSize: 13,
+    fontWeight: "700"
+  },
+  reasonChipMuted: {
+    color: colors.muted
+  },
   activeWrap: {
-    gap: 14
+    gap: 16
   },
   mapFallback: {
     backgroundColor: "#131417",
     borderColor: colors.border,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    minHeight: 230,
+    minHeight: 220,
     overflow: "hidden",
     padding: 16
+  },
+  mapBadge: {
+    alignItems: "center",
+    backgroundColor: "rgba(14, 14, 14, 0.92)",
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 6,
+    left: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    position: "absolute",
+    top: 12
+  },
+  mapBadgeText: {
+    color: colors.foreground,
+    fontSize: 11,
+    fontWeight: "800"
   },
   mapGrid: {
     alignItems: "center",
@@ -1159,7 +1381,7 @@ const styles = StyleSheet.create({
   },
   mapText: {
     color: colors.foreground,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "800",
     marginTop: 10,
     textAlign: "center"
@@ -1167,42 +1389,193 @@ const styles = StyleSheet.create({
   mapTruth: {
     color: colors.mutedFaint,
     fontFamily: "monospace",
-    fontSize: 11,
+    fontSize: 10,
     textAlign: "center",
     textTransform: "uppercase"
   },
-  stageWrap: {
-    gap: 7
+  stageHeaderRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between"
   },
   stageBars: {
+    flex: 1,
     flexDirection: "row",
-    gap: 6
+    gap: 6,
+    justifyContent: "flex-end",
+    maxWidth: 160
   },
   stageBar: {
     backgroundColor: colors.border,
-    borderRadius: 4,
+    borderRadius: 3,
     flex: 1,
-    height: 5
+    height: 4
   },
   stageBarOn: {
     backgroundColor: colors.primary
   },
-  stageTitle: {
+  stageHeading: {
     color: colors.foreground,
-    fontSize: 34,
+    fontSize: 32,
     fontWeight: "900",
+    marginTop: 6,
     textTransform: "uppercase"
   },
-  jobTitle: {
-    color: colors.foreground,
-    fontSize: 26,
-    fontWeight: "900",
-    textTransform: "uppercase"
-  },
-  jobAddress: {
+  stageDetail: {
     color: colors.muted,
-    fontSize: 16,
-    lineHeight: 22
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: 8
+  },
+  addressCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 12,
+    padding: 14
+  },
+  addressIcon: {
+    alignItems: "center",
+    backgroundColor: colors.cardStrong,
+    borderRadius: radius.sm,
+    height: 36,
+    justifyContent: "center",
+    width: 36
+  },
+  addressBody: {
+    flex: 1
+  },
+  addressLabel: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  addressValue: {
+    color: colors.foreground,
+    fontSize: 17,
+    fontWeight: "700",
+    marginTop: 4
+  },
+  addressSub: {
+    color: colors.mutedFaint,
+    fontSize: 13,
+    marginTop: 6,
+    textTransform: "capitalize"
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  metaChip: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  metaChipLabel: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  metaChipValue: {
+    color: colors.foreground,
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  detailsCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: 10,
+    padding: 14
+  },
+  detailRow: {
+    gap: 3
+  },
+  detailRowLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase"
+  },
+  detailRowValue: {
+    color: colors.foreground,
+    fontSize: 14,
+    lineHeight: 19
+  },
+  detailRowLink: {
+    color: colors.primary,
+    fontWeight: "700"
+  },
+  truthText: {
+    color: colors.successSoft,
+    fontFamily: "monospace",
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+    textTransform: "uppercase"
+  },
+  pendingCard: {
+    alignItems: "center",
+    paddingVertical: 24
+  },
+  pendingCircle: {
+    alignItems: "center",
+    borderColor: colors.primary,
+    borderRadius: 999,
+    borderStyle: "dashed",
+    borderWidth: 2,
+    height: 60,
+    justifyContent: "center",
+    width: 60
+  },
+  pendingEllipsis: {
+    color: colors.primary,
+    fontSize: 22,
+    fontWeight: "900"
+  },
+  pendingKicker: {
+    ...sharedStyles.kicker,
+    marginTop: 16
+  },
+  pendingText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 10,
+    maxWidth: 300,
+    textAlign: "center"
+  },
+  pendingStatusRow: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 20,
+    padding: 14,
+    width: "100%"
+  },
+  pendingStatusLabel: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  pendingStatusValue: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: "800"
   },
   rail: {
     flexDirection: "row",
@@ -1210,14 +1583,14 @@ const styles = StyleSheet.create({
   },
   railAction: {
     alignItems: "center",
-    backgroundColor: colors.card,
+    backgroundColor: colors.cardRail,
     borderColor: colors.border,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     borderWidth: 1,
     flex: 1,
     gap: 5,
-    minHeight: 58,
-    justifyContent: "center"
+    justifyContent: "center",
+    minHeight: 58
   },
   railDanger: {
     borderColor: "#4A2325"
@@ -1230,21 +1603,6 @@ const styles = StyleSheet.create({
   },
   dangerText: {
     color: colors.danger
-  },
-  waiting: {
-    alignItems: "center",
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    gap: 10,
-    padding: 26
-  },
-  waitTitle: {
-    color: colors.foreground,
-    fontSize: 31,
-    fontWeight: "900",
-    textAlign: "center",
-    textTransform: "uppercase"
   },
   alert: {
     alignItems: "center",
@@ -1268,33 +1626,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20
   },
-  bottomTabs: {
-    backgroundColor: colors.background,
-    borderTopColor: colors.border,
-    borderTopWidth: 1,
-    bottom: 0,
-    flexDirection: "row",
-    left: 0,
-    paddingBottom: Platform.OS === "ios" ? 16 : 8,
-    paddingTop: 8,
-    position: "absolute",
-    right: 0
-  },
-  tabButton: {
-    alignItems: "center",
-    flex: 1,
-    gap: 4,
-    minHeight: 54,
-    justifyContent: "center"
-  },
-  tabText: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: "800"
-  },
-  tabTextActive: {
-    color: colors.primary
-  },
   modalBody: {
     gap: 18,
     padding: 18,
@@ -1310,25 +1641,134 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 44
   },
-  choice: {
+  pinBoxRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 28
+  },
+  pinBox: {
+    alignItems: "center",
     backgroundColor: colors.card,
     borderColor: colors.border,
     borderRadius: radius.sm,
     borderWidth: 1,
-    marginTop: 10,
-    minHeight: 54,
-    justifyContent: "center",
-    paddingHorizontal: 14
+    flex: 1,
+    height: 58,
+    justifyContent: "center"
   },
-  choiceActive: {
-    backgroundColor: "#2A240D",
-    borderColor: colors.primary
+  pinBoxActive: {
+    borderColor: colors.primary,
+    borderWidth: 2
   },
-  choiceText: {
+  pinBoxText: {
     color: colors.foreground,
-    fontSize: 15,
+    fontSize: 26,
+    fontWeight: "900"
+  },
+  hiddenInput: {
+    height: 1,
+    opacity: 0,
+    position: "absolute",
+    width: 1
+  },
+  pinHint: {
+    color: colors.muted,
+    fontSize: 13,
+    marginTop: 10,
+    textAlign: "center"
+  },
+  dangerTitle: {
+    color: colors.danger,
+    fontSize: 34,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  call911: {
+    alignItems: "center",
+    borderColor: colors.danger,
+    borderRadius: radius.md,
+    borderWidth: 2,
+    justifyContent: "center",
+    marginTop: 14,
+    minHeight: 56
+  },
+  call911Text: {
+    color: colors.danger,
+    fontSize: 18,
     fontWeight: "800",
     textTransform: "uppercase"
+  },
+  dangerNote: {
+    backgroundColor: "#1A1213",
+    borderColor: "#4A2325",
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    marginTop: 18,
+    padding: 14
+  },
+  dangerNoteText: {
+    color: colors.dangerSoft,
+    fontSize: 13,
+    lineHeight: 19
+  },
+  issueList: {
+    gap: 8,
+    marginTop: 18
+  },
+  issueRow: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 52,
+    paddingHorizontal: 14
+  },
+  issueRowActive: {
+    backgroundColor: "rgba(255, 191, 0, 0.08)",
+    borderColor: colors.primary
+  },
+  issueRowText: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  issueDot: {
+    backgroundColor: colors.primary,
+    borderRadius: 5,
+    height: 10,
+    width: 10
+  },
+  noteBox: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    padding: 12
+  },
+  noticeBox: {
+    backgroundColor: "rgba(255, 191, 0, 0.08)",
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    marginTop: 16,
+    padding: 14
+  },
+  noticeTitle: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  noticeText: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 8
   },
   methodRow: {
     flexDirection: "row",
@@ -1341,8 +1781,96 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radius.sm,
     borderWidth: 1,
-    minHeight: 46,
     justifyContent: "center",
+    minHeight: 46,
     paddingHorizontal: 12
+  },
+  choiceActive: {
+    backgroundColor: "rgba(255, 191, 0, 0.08)",
+    borderColor: colors.primary
+  },
+  choiceText: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "700",
+    textTransform: "capitalize"
+  },
+  emptyState: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    marginTop: 20,
+    padding: 26
+  },
+  emptyIconWrap: {
+    alignItems: "center",
+    backgroundColor: colors.cardStrong,
+    borderRadius: radius.md,
+    height: 52,
+    justifyContent: "center",
+    width: 52
+  },
+  emptyTitle: {
+    color: colors.foreground,
+    fontSize: 19,
+    fontWeight: "900",
+    marginTop: 14,
+    textAlign: "center"
+  },
+  emptyText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 8,
+    textAlign: "center"
+  },
+  accountHeader: {
+    flexDirection: "row",
+    gap: 14,
+    justifyContent: "space-between"
+  },
+  accountHeaderBody: {
+    flex: 1,
+    gap: 8
+  },
+  accountName: {
+    color: colors.foreground,
+    fontSize: 26,
+    fontWeight: "900"
+  },
+  accountSub: {
+    color: colors.muted,
+    fontSize: 14
+  },
+  accountId: {
+    color: colors.mutedFaint,
+    fontFamily: "monospace",
+    fontSize: 11
+  },
+  accountAvatar: {
+    alignItems: "center",
+    backgroundColor: colors.cardStrong,
+    borderRadius: radius.md,
+    height: 56,
+    justifyContent: "center",
+    width: 56
+  },
+  accountAvatarText: {
+    color: colors.foreground,
+    fontSize: 19,
+    fontWeight: "900"
+  },
+  sectionKicker: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    marginTop: 6,
+    textTransform: "uppercase"
+  },
+  trustGrid: {
+    flexDirection: "row",
+    gap: 10
   }
 });
