@@ -3536,7 +3536,8 @@ Cloud build status:
 - Android internal preview build from current `main` (`8ea9336`) submitted and still queued
   at last poll:
   `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/3de10d31-9359-422f-93e1-6b0dd5c78aae`
-- Earlier Android build from `2b44aa0` was also submitted before the iOS config commit:
+- Earlier Android build from `2b44aa0` was submitted before the iOS config commit,
+  then canceled so only the current `8ea9336` Android build remains queued:
   `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/bcd54aa7-9993-498a-beb7-e94311241574`
 
 Notes:
