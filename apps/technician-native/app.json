@@ -11,6 +11,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.cluexp.technician",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSLocationWhenInUseUsageDescription": "ClueXP uses your location while you are working a job so dispatch and the customer can see honest service progress.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "ClueXP can continue location updates during active work when the OS allows it. Tracking stops if the app is killed.",
         "NSUserNotificationsUsageDescription": "ClueXP sends urgent job offers and current-job updates that require your attention."
