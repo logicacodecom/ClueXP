@@ -10,6 +10,8 @@ Run from apps/intake-web:  pytest api/tests/test_active_job_snapshot.py
 """
 from __future__ import annotations
 
+import asyncio
+from uuid import UUID
 from uuid import uuid4
 
 from starlette.testclient import TestClient
@@ -40,8 +42,10 @@ def _assign_job(tid: str, status: str | None = None) -> str:
     jid = str(uuid4())
     app_store._job_status = getattr(app_store, "_job_status", {})
     app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_lifecycle_version = getattr(app_store, "_job_lifecycle_version", {})
     app_store._job_status[jid] = status or ACTIVE_JOB_STATUSES[0]  # "assigned"
     app_store._job_tech[jid] = tid
+    app_store._job_lifecycle_version[jid] = 1
     return jid
 
 
@@ -63,6 +67,28 @@ def test_snapshot_returns_active_job_version_and_actions():
     # deterministic: unchanged state -> same version
     again = client.get("/technicians/me/active-job/snapshot", headers=headers).json()
     assert again["version"] == body["version"]
+
+
+def test_snapshot_version_uses_lifecycle_marker_not_only_status():
+    client = TestClient(app)
+    tid, headers = _register_tech()
+    jid = _assign_job(tid)
+    first = client.get("/technicians/me/active-job/snapshot", headers=headers).json()["version"]
+    app_store._job_lifecycle_version[jid] += 1
+    second = client.get("/technicians/me/active-job/snapshot", headers=headers).json()["version"]
+    assert second != first
+
+
+def test_snapshot_version_changes_after_status_transition():
+    client = TestClient(app)
+    tid, headers = _register_tech()
+    jid = _assign_job(tid)
+    first = client.get("/technicians/me/active-job/snapshot", headers=headers).json()["version"]
+    asyncio.run(app_store.set_job_status(
+        UUID(jid), ACTIVE_JOB_STATUSES[1], expected_current=ACTIVE_JOB_STATUSES[0]))
+    second = client.get("/technicians/me/active-job/snapshot", headers=headers).json()
+    assert second["active_job"]["status"] == ACTIVE_JOB_STATUSES[1]
+    assert second["version"] != first
 
 
 def test_snapshot_null_when_idle():

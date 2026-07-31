@@ -2444,7 +2444,7 @@ async def my_active_job_snapshot(
 ) -> dict[str, Any]:
     """Versioned snapshot of the signed-in technician's current active job for the
     native client. Read-only and self-scoped (only ever this technician's own
-    job). `version` is an ETag over (job id + status) — see `_job_version`; the
+    job). `version` is an ETag over the job lifecycle marker — see `_job_version`; the
     client echoes it back as `expected_version` on lifecycle-scoped commands.
     When idle, returns {active_job: null}, mirroring get_technician_active_job.
     Only context the assigned technician already receives is exposed (no org ids
@@ -2475,7 +2475,7 @@ async def my_active_job_snapshot(
                 "location_updated_at": job.get("technician_location_updated_at"),
             },
         },
-        "version": _job_version(job["id"], status),
+        "version": _job_version(job["id"], status, job.get("lifecycle_version")),
         "allowed_actions": _allowed_active_job_actions(status),
     }
 
@@ -4787,13 +4787,11 @@ def _mutation_request_hash(*parts: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _job_version(job_id: Any, status: str | None) -> str:
-    """Deterministic ETag for a job's lifecycle state, derived from (job id +
-    status). It changes on every status transition — enough for the native
-    client's optimistic-concurrency guard on lifecycle-scoped commands. It does
-    NOT change on non-status edits (e.g. a note or photo); a finer-grained stored
-    job version / updated_at is still owed and would replace this derivation."""
-    return hashlib.sha256(f"{job_id}|{status or ''}".encode("utf-8")).hexdigest()[:16]
+def _job_version(job_id: Any, status: str | None, lifecycle_version: Any = None) -> str:
+    """Deterministic opaque ETag for a job's lifecycle state. Prefer the durable
+    jobs.lifecycle_version counter; fall back to status for any unstamped row."""
+    marker = lifecycle_version if lifecycle_version is not None else status or ""
+    return hashlib.sha256(f"{job_id}|{marker}".encode("utf-8")).hexdigest()[:16]
 
 
 # Forward lifecycle targets a technician may advance an active job to, in order.
@@ -4854,7 +4852,8 @@ async def report_issue(
     # client view never reserves a key or does work. (expected_version is a
     # precondition, not part of the mutation identity, so it stays out of the
     # idempotency hash — PR #60 replay/conflict semantics are unchanged.)
-    current_version = _job_version(job_id, lifecycle.get("status"))
+    current_version = _job_version(
+        job_id, lifecycle.get("status"), lifecycle.get("lifecycle_version"))
     if payload.expected_version is not None and payload.expected_version != current_version:
         raise HTTPException(status_code=409, detail={
             "code": "version_conflict",

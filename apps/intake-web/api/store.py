@@ -2688,6 +2688,7 @@ class InMemoryStore(Store):
             return None
         return {
             "status": statuses.get(jid),
+            "lifecycle_version": getattr(self, "_job_lifecycle_version", {}).get(jid, 1),
             "fulfillment_technician_id": getattr(self, "_job_tech", {}).get(jid),
             "fulfillment_org_id": getattr(self, "_job_fulfillment_org", {}).get(jid),
             "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
@@ -2714,6 +2715,7 @@ class InMemoryStore(Store):
                     "id": jid,
                     "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
                     "status": statuses[jid],
+                    "lifecycle_version": getattr(self, "_job_lifecycle_version", {}).get(jid, 1),
                     "access_type": getattr(self, "_job_access_type", {}).get(jid),
                     "situation": getattr(self, "_job_situation", {}).get(jid),
                     "address": getattr(self, "_job_address", {}).get(jid),
@@ -2956,10 +2958,12 @@ class InMemoryStore(Store):
         extra_timestamps: list[str] | None = None,
     ) -> dict | None:
         self._job_status = getattr(self, "_job_status", {})
+        self._job_lifecycle_version = getattr(self, "_job_lifecycle_version", {})
         jid = str(job_id)
         if expected_current is not None and self._job_status.get(jid) != expected_current:
             return None
         self._job_status[jid] = new_status
+        self._job_lifecycle_version[jid] = self._job_lifecycle_version.get(jid, 1) + 1
         cols = set(extra_timestamps or [])
         ts_col = STATUS_TIMESTAMP_COLUMN.get(new_status)
         if ts_col:
@@ -2971,10 +2975,12 @@ class InMemoryStore(Store):
         self, job_id: UUID, *, current_status: str, reason: str | None = None
     ) -> dict | None:
         self._job_status = getattr(self, "_job_status", {})
+        self._job_lifecycle_version = getattr(self, "_job_lifecycle_version", {})
         jid = str(job_id)
         if self._job_status.get(jid) != current_status:
             return None
         self._job_status[jid] = STATUS_CANCELLED
+        self._job_lifecycle_version[jid] = self._job_lifecycle_version.get(jid, 1) + 1
         self._stamp_job_timestamps(jid, {"cancelled_at", "closed_at"})
         for o in getattr(self, "_offers", {}).values():
             if o.get("job_id") == jid and o.get("status") == "offered":
@@ -5162,6 +5168,7 @@ class PostgresStore(Store):
                 " trust_state = 'matched',"
                 " status = %s,"
                 " assigned_at = coalesce(assigned_at, now()),"
+                " lifecycle_version = lifecycle_version + 1,"
                 " updated_at = now()"
                 " where id = %s"
                 "   and status = %s"
@@ -5495,8 +5502,8 @@ class PostgresStore(Store):
     async def get_job_lifecycle(self, job_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select status, fulfillment_technician_id, fulfillment_org_id,"
-                " customer_owner_org_id from jobs where id = %s",
+                "select status, lifecycle_version, fulfillment_technician_id,"
+                " fulfillment_org_id, customer_owner_org_id from jobs where id = %s",
                 (str(job_id),),
             )
             row = await cur.fetchone()
@@ -5504,15 +5511,17 @@ class PostgresStore(Store):
             return None
         return {
             "status": row[0],
-            "fulfillment_technician_id": str(row[1]) if row[1] else None,
-            "fulfillment_org_id": str(row[2]) if row[2] else None,
-            "customer_owner_org_id": str(row[3]) if row[3] else None,
+            "lifecycle_version": row[1],
+            "fulfillment_technician_id": str(row[2]) if row[2] else None,
+            "fulfillment_org_id": str(row[3]) if row[3] else None,
+            "customer_owner_org_id": str(row[4]) if row[4] else None,
         }
 
     async def get_technician_active_job(self, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select j.id, j.operational_id, j.status, j.access_type, j.situation, j.address, j.lat, j.lng,"
+                "select j.id, j.operational_id, j.status, j.lifecycle_version,"
+                " j.access_type, j.situation, j.address, j.lat, j.lng,"
                 " j.detail, t.current_lat, t.current_lng, t.location_updated_at,"
                 " m.photo_paths, j.customer_owner_org_id, j.fulfillment_org_id"
                 " from jobs j"
@@ -5530,32 +5539,33 @@ class PostgresStore(Store):
             row = await cur.fetchone()
         if not row:
             return None
-        dist = haversine_km(row[6], row[7], row[9], row[10])
+        dist = haversine_km(row[7], row[8], row[10], row[11])
         dist_km = dist if dist != float("inf") else None
         eta_min, eta_max = eta_range_from_km(dist_km)
         return {
             "id": str(row[0]),
             "operational_id": row[1],
             "status": row[2],
-            "access_type": row[3],
-            "situation": row[4],
-            "address": row[5],
-            "lat": row[6],
-            "lng": row[7],
-            "detail": row[8] or {},
-            "technician_current_lat": row[9],
-            "technician_current_lng": row[10],
-            "technician_location_updated_at": row[11].isoformat() if row[11] else None,
+            "lifecycle_version": row[3],
+            "access_type": row[4],
+            "situation": row[5],
+            "address": row[6],
+            "lat": row[7],
+            "lng": row[8],
+            "detail": row[9] or {},
+            "technician_current_lat": row[10],
+            "technician_current_lng": row[11],
+            "technician_location_updated_at": row[12].isoformat() if row[12] else None,
             "technician_location_is_fresh": location_is_fresh(
-                row[11],
+                row[12],
                 now=datetime.now(timezone.utc),
                 threshold_minutes=config.LOCATION_ONLINE_THRESHOLD_MINUTES,
             ),
-            "photo_paths": list(row[12] or []),
+            "photo_paths": list(row[13] or []),
             # Owning org travels with the job so cross-tenant views can mask the
             # detail (a dual-affiliated technician's job belongs to ONE company).
-            "customer_owner_org_id": str(row[13]) if row[13] else None,
-            "fulfillment_org_id": str(row[14]) if row[14] else None,
+            "customer_owner_org_id": str(row[14]) if row[14] else None,
+            "fulfillment_org_id": str(row[15]) if row[15] else None,
             "distance_km": round(dist_km, 2) if dist_km is not None else None,
             "distance_mi": round(dist_km * 0.621371, 2) if dist_km is not None else None,
             "eta_min": eta_min,
@@ -6247,7 +6257,7 @@ class PostgresStore(Store):
             cols.add(ts)
         # Column names come from a fixed whitelist (STATUS_TIMESTAMP_COLUMN /
         # caller constants), never user input — safe to inline.
-        sets = ["status = %s", "updated_at = now()"]
+        sets = ["status = %s", "lifecycle_version = lifecycle_version + 1", "updated_at = now()"]
         for col in sorted(cols):
             sets.append(f"{col} = coalesce({col}, now())")
         params: list = [new_status]
@@ -6258,13 +6268,13 @@ class PostgresStore(Store):
             params.append(expected_current)
         async with await self._connect() as conn:
             cur = await conn.execute(
-                f"update jobs set {', '.join(sets)} where {where} returning id, status",
+                f"update jobs set {', '.join(sets)} where {where} returning id, status, lifecycle_version",
                 tuple(params),
             )
             row = await cur.fetchone()
         if not row:
             return None
-        return {"id": str(row[0]), "status": row[1]}
+        return {"id": str(row[0]), "status": row[1], "lifecycle_version": row[2]}
 
     async def cancel_job(
         self, job_id: UUID, *, current_status: str, reason: str | None = None
@@ -6277,6 +6287,7 @@ class PostgresStore(Store):
                 "update jobs set status = %s,"
                 " cancelled_at = coalesce(cancelled_at, now()),"
                 " closed_at = coalesce(closed_at, now()),"
+                " lifecycle_version = lifecycle_version + 1,"
                 " updated_at = now()"
                 " where id = %s and status = %s"
                 " returning id, status",
@@ -6393,6 +6404,7 @@ class PostgresStore(Store):
                 "update jobs set status = %s,"
                 " fulfillment_technician_id = case when %s then null else fulfillment_technician_id end,"
                 " cancelled_at = case when %s = 'cancelled' then coalesce(cancelled_at, now()) else cancelled_at end,"
+                " lifecycle_version = lifecycle_version + 1,"
                 " updated_at = now()"
                 " where id = %s and status = any(%s)"
                 " returning id, status",
@@ -7221,7 +7233,8 @@ class PostgresStore(Store):
         confirm window → completed_auto_closed. Returns how many were closed."""
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "update jobs set status = %s, closed_at = now(), updated_at = now()"
+                "update jobs set status = %s, closed_at = now(),"
+                " lifecycle_version = lifecycle_version + 1, updated_at = now()"
                 " where status = %s and completed_pending_at is not null"
                 " and extract(epoch from (now() - completed_pending_at)) >= %s"
                 " returning 1",
@@ -7247,7 +7260,8 @@ class PostgresStore(Store):
                 cur = await conn.execute(
                     "update jobs set status = %s, trust_state = 'intake',"
                     " fulfillment_technician_id = null, fulfillment_org_id = null,"
-                    " assigned_at = null, dispatch_attempts = 0, updated_at = now()"
+                    " assigned_at = null, dispatch_attempts = 0,"
+                    " lifecycle_version = lifecycle_version + 1, updated_at = now()"
                     " where id = %s returning id, status",
                     (STATUS_PENDING_DISPATCH, str(job_id)),
                 )

@@ -572,15 +572,15 @@ background capabilities.
   `technician_mutations` store (migration `0043`), scoped per technician.
 - A versioned active-job snapshot is live at `GET /technicians/me/active-job/snapshot` (read-only,
   self-scoped): job id/status, `allowed_actions` (from the real transition guard), tenant-safe
-  context, and a `version` ETag. The client echoes `version` back as `expected_version` on
-  `report-issue`; a stale value returns `409 {code: "version_conflict", current_version}` before
-  any work or idempotency reservation.
+  context, and a `version` ETag backed by the durable `jobs.lifecycle_version` counter (migration
+  `0044`). The client echoes `version` back as `expected_version` on `report-issue`; a stale value
+  returns `409 {code: "version_conflict", current_version}` before any work or idempotency
+  reservation.
 
-**Still owed:** `version` is derived from `(job id + status)` only, so it changes on status
-transitions but not on non-status edits — a stored job version / `updated_at` would make it
-finer-grained; `expected_version` on the true lifecycle-transition commands (en_route → complete);
-and extending both contracts to more surfaces. This slice deliberately avoided offer acceptance /
-the P0 capacity lock and arrival/PIN.
+**Still owed:** bumping `lifecycle_version` on every future lifecycle-relevant non-status write as
+those writes are promoted into the native command surface; `expected_version` on the true
+lifecycle-transition commands (en_route → complete); and extending both contracts to more surfaces.
+This slice deliberately avoided offer acceptance / the P0 capacity lock and arrival/PIN.
 
 ### 13.4 Messaging
 
