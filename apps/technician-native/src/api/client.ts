@@ -9,6 +9,11 @@ import type {
 
 const DEFAULT_API_BASE = "https://intake.cluexp.com";
 
+type SessionHandlers = {
+  onRefresh: (result: LoginResponse) => Promise<void>;
+  onRefreshFailed: () => Promise<void>;
+};
+
 export class ApiError extends Error {
   problem: ApiProblem;
 
@@ -54,31 +59,89 @@ function problemFrom(status: number, body: unknown): ApiProblem {
 
 export class CluexpApi {
   private token: string | null;
+  private refreshToken: string | null;
+  private sessionHandlers: SessionHandlers | null = null;
 
   constructor(token: string | null) {
     this.token = token;
+    this.refreshToken = null;
   }
 
   setToken(token: string | null) {
     this.token = token;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  currentAccessToken() {
+    return this.token;
+  }
+
+  setSessionTokens(accessToken: string | null, refreshToken?: string | null) {
+    this.token = accessToken;
+    this.refreshToken = refreshToken ?? null;
+  }
+
+  configureSessionHandlers(handlers: SessionHandlers | null) {
+    this.sessionHandlers = handlers;
+  }
+
+  private async fetchJson(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     headers.set("accept", "application/json");
     if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
     const response = await fetch(`${apiBaseUrl()}/api${path}`, { ...init, headers });
     const body = await parseBody(response);
-    if (!response.ok) throw new ApiError(problemFrom(response.status, body));
-    return body as T;
+    return { response, body };
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}, options: { retryOnAuth?: boolean } = {}): Promise<T> {
+    const { response, body } = await this.fetchJson(path, init);
+    if (response.ok) return body as T;
+
+    const shouldRefresh = options.retryOnAuth !== false && response.status === 401 && Boolean(this.token && this.refreshToken);
+    if (shouldRefresh && this.refreshToken) {
+      let refreshed: LoginResponse;
+      try {
+        refreshed = await this.refresh(this.refreshToken);
+      } catch (cause) {
+        this.setSessionTokens(null, null);
+        await this.sessionHandlers?.onRefreshFailed();
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(problemFrom(response.status, body));
+      }
+      this.setSessionTokens(refreshed.access_token, refreshed.refresh_token);
+      await this.sessionHandlers?.onRefresh(refreshed);
+      const retry = await this.fetchJson(path, init);
+      if (retry.response.ok) return retry.body as T;
+      if (retry.response.status === 401) {
+        this.setSessionTokens(null, null);
+        await this.sessionHandlers?.onRefreshFailed();
+      }
+      throw new ApiError(problemFrom(retry.response.status, retry.body));
+    }
+
+    throw new ApiError(problemFrom(response.status, body));
+  }
+
+  async refresh(refreshToken: string): Promise<LoginResponse> {
+    return this.request<LoginResponse>("/auth/refresh", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: refreshToken })
+    }, { retryOnAuth: false });
+  }
+
+  async logout(refreshToken: string): Promise<{ revoked: boolean }> {
+    return this.request<{ revoked: boolean }>("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: refreshToken })
+    }, { retryOnAuth: false });
   }
 
   async login(identifier: string, password: string): Promise<LoginResponse> {
     return this.request<LoginResponse>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ identifier, password })
-    });
+      body: JSON.stringify({ identifier, password, want_refresh_token: true })
+    }, { retryOnAuth: false });
   }
 
   async me(): Promise<AuthSession> {

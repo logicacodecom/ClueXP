@@ -1,4 +1,5 @@
 import * as SecureStore from "expo-secure-store";
+import * as Crypto from "expo-crypto";
 import * as SQLite from "expo-sqlite";
 import type { QueuedMutation } from "../types";
 
@@ -8,19 +9,15 @@ const DATABASE_VERSION = 1;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
-function randomKey() {
-  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
-  let out = "";
-  for (let index = 0; index < 48; index += 1) {
-    out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return out;
+async function randomKey() {
+  const bytes = await Crypto.getRandomBytesAsync(32);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function databaseKey() {
   const existing = await SecureStore.getItemAsync(KEY_NAME);
   if (existing) return existing;
-  const created = randomKey();
+  const created = await randomKey();
   await SecureStore.setItemAsync(KEY_NAME, created);
   return created;
 }

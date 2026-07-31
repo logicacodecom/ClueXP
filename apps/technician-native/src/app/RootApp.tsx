@@ -94,6 +94,33 @@ export function RootApp() {
   const [queueCount, setQueueCount] = useState(0);
   const [workHint, setWorkHint] = useState<WorkHint>(null);
 
+  const hardSignOut = useCallback(async () => {
+    api.setSessionTokens(null, null);
+    await clearStoredSession();
+    await wipeOutbox();
+    setAccessToken(null);
+    setSession(null);
+    setQueueCount(0);
+    setTab("work");
+  }, []);
+
+  useEffect(() => {
+    api.configureSessionHandlers({
+      onRefresh: async (result) => {
+        api.setSessionTokens(result.access_token, result.refresh_token);
+        await saveStoredSession({
+          accessToken: result.access_token,
+          refreshToken: result.refresh_token,
+          session: result.session
+        });
+        setAccessToken(result.access_token);
+        setSession(result.session);
+      },
+      onRefreshFailed: hardSignOut
+    });
+    return () => api.configureSessionHandlers(null);
+  }, [hardSignOut]);
+
   useEffect(() => {
     let mounted = true;
     async function boot() {
@@ -101,11 +128,20 @@ export function RootApp() {
         await initOutbox();
         const stored = await loadStoredSession();
         if (stored) {
-          api.setToken(stored.accessToken);
-          await replayQueuedMutations(api);
-          const fresh = await api.me().catch(() => stored.session);
+          api.setSessionTokens(stored.accessToken, stored.refreshToken);
+          let fresh = stored.session;
+          try {
+            await replayQueuedMutations(api);
+            fresh = await api.me();
+          } catch (cause) {
+            if (cause instanceof ApiError && cause.problem.status === 401) {
+              await hardSignOut();
+              return;
+            }
+            fresh = stored.session;
+          }
           if (mounted) {
-            setAccessToken(stored.accessToken);
+            setAccessToken(api.currentAccessToken());
             setSession(fresh);
           }
         }
@@ -119,7 +155,7 @@ export function RootApp() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [hardSignOut]);
 
   useEffect(() => {
     let mounted = true;
@@ -152,21 +188,27 @@ export function RootApp() {
 
   const onLogin = useCallback(async (identifier: string, password: string) => {
     const result = await api.login(identifier, password);
-    api.setToken(result.access_token);
-    await saveStoredSession({ accessToken: result.access_token, session: result.session });
+    api.setSessionTokens(result.access_token, result.refresh_token);
+    await saveStoredSession({
+      accessToken: result.access_token,
+      refreshToken: result.refresh_token,
+      session: result.session
+    });
     setAccessToken(result.access_token);
     setSession(result.session);
   }, []);
 
   const onLogout = useCallback(async () => {
-    api.setToken(null);
-    await clearStoredSession();
-    await wipeOutbox();
-    setAccessToken(null);
-    setSession(null);
-    setQueueCount(0);
-    setTab("work");
-  }, []);
+    const stored = await loadStoredSession();
+    if (stored?.refreshToken) {
+      try {
+        await api.logout(stored.refreshToken);
+      } catch {
+        // Local logout must win even when the network is unavailable.
+      }
+    }
+    await hardSignOut();
+  }, [hardSignOut]);
 
   const refreshQueue = useCallback(async () => {
     setQueueCount(await queuedMutationCount());
