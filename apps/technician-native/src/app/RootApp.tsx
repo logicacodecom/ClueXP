@@ -607,6 +607,12 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
         <Text style={styles.mapTruth}>GPS is honest. No simulated movement is shown.</Text>
       </View>
       <StageHeader status={job.status} />
+      {job.status === "completed_pending_customer" ? (
+        <AlertBanner
+          text="Work submitted. Awaiting customer confirmation. You remain assigned here, and dispatch can help with support or dispute questions."
+          tone="warn"
+        />
+      ) : null}
       <Text style={styles.jobTitle}>{serviceLabel(job)}</Text>
       <Text style={styles.jobAddress}>{job.address || "Address will appear when authorized by the server."}</Text>
       <View style={styles.metricGrid}>
