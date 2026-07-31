@@ -1986,7 +1986,7 @@ def test_inmemory_accept_dispatch_offer_blocked_on_cancelled_job():
     assert offer and "id" in offer
     # Customer cancels before acceptance
     store._job_status[str(jid)] = "cancelled"
-    result = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"])))
+    result = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"]), tid))
     assert result is not None
     assert result.get("accepted") is False
     assert result.get("reason") == "job_not_pending"
@@ -2007,7 +2007,7 @@ def test_inmemory_accept_on_non_pending_does_not_assign_tech():
     offer = asyncio.run(store.ops_create_single_offer(jid, tid, None, expires))
     assert offer and "id" in offer
     store._job_status[str(jid)] = "assigned"
-    result = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"])))
+    result = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"]), tid))
     assert result is None or not result.get("accepted")
     assert getattr(store, "_job_tech", {}).get(str(jid)) is None
 
@@ -3138,7 +3138,14 @@ def test_active_job_lock_is_technician_scoped():
     assert active is not None and active["id"] == jid
 
 
-def test_completed_pending_customer_does_not_block_technician_active_job():
+def test_completed_pending_customer_still_holds_capacity_as_active_job():
+    """Per TECHNICIAN-APP-REDESIGN.md §6.2 "Customer review pending": "The
+    global capacity lock remains until the contractually defined
+    terminal/release event." completed_pending_customer is not that event —
+    the job still shows as the technician's active job (and, independently,
+    also still appears in history — TECHNICIAN_HISTORY_STATUSES is a separate
+    list that has always included this status; the two are not mutually
+    exclusive while confirmation is pending)."""
     store = InMemoryStore()
     tid, jid = str(uuid4()), str(uuid4())
     store._job_tech = {jid: tid}
@@ -3147,7 +3154,7 @@ def test_completed_pending_customer_does_not_block_technician_active_job():
     active = asyncio.run(store.get_technician_active_job(UUID(tid)))
     history = asyncio.run(store.get_technician_job_history(UUID(tid)))
 
-    assert active is None
+    assert active is not None and active["id"] == jid
     assert any(row["id"] == jid and row["status"] == STATUS_COMPLETED_PENDING for row in history)
 
 
@@ -3510,12 +3517,12 @@ def test_accept_is_blocked_while_the_technician_is_on_another_companys_job():
     offer_b = asyncio.run(store.ops_create_single_offer(
         UUID(job_b), UUID(tid), UUID(org_b), datetime.now(timezone.utc)))
 
-    first = asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"])))
+    first = asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"]), UUID(tid)))
     assert first["accepted"] is True
     # The job is booked to the DISPATCHING company, not the technician's primary org.
     assert store._job_fulfillment_org[job_a] == org_a
 
-    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"])))
+    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"]), UUID(tid)))
     assert second["accepted"] is False
     assert second["reason"] == "technician_busy"
     assert store._job_tech.get(job_b) is None, "the second job must stay unassigned"
@@ -3537,10 +3544,10 @@ def test_accept_is_blocked_while_the_technician_is_on_the_same_companys_other_jo
     offer_b = asyncio.run(store.ops_create_single_offer(
         UUID(job_b), UUID(tid), UUID(org), datetime.now(timezone.utc)))
 
-    first = asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"])))
+    first = asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"]), UUID(tid)))
     assert first["accepted"] is True
 
-    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"])))
+    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"]), UUID(tid)))
     assert second["accepted"] is False
     assert second["reason"] == "technician_busy"
     assert store._job_tech.get(job_b) is None
@@ -3556,9 +3563,13 @@ def test_accept_allowed_again_once_the_other_job_is_finished():
         UUID(job_a), UUID(tid), UUID(org_a), datetime.now(timezone.utc)))
     offer_b = asyncio.run(store.ops_create_single_offer(
         UUID(job_b), UUID(tid), UUID(org_b), datetime.now(timezone.utc)))
-    asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"])))
-    store._job_status[job_a] = STATUS_COMPLETED_PENDING  # done — not an active job
-    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"])))
+    asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"]), UUID(tid)))
+    # An authoritative terminal outcome (not completed_pending_customer, which
+    # per TECHNICIAN-APP-REDESIGN.md §6.2 "Customer review pending" still holds
+    # capacity: "The global capacity lock remains until the contractually
+    # defined terminal/release event.") releases capacity.
+    store._job_status[job_a] = STATUS_COMPLETED_CONFIRMED
+    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"]), UUID(tid)))
     assert second["accepted"] is True
 
 
@@ -3566,20 +3577,96 @@ def test_http_accept_while_busy_returns_409_with_a_usable_message():
     from datetime import datetime, timezone
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
+    from api.auth import create_access_token
 
     org_a, org_b, tid = str(uuid4()), str(uuid4()), str(uuid4())
     job_a, job_b = str(uuid4()), str(uuid4())
     app_store._job_status = {job_a: STATUS_PENDING_DISPATCH, job_b: STATUS_PENDING_DISPATCH}
     app_store._job_tech = {}
+    app_store.users[tid] = {
+        "id": tid, "email": f"race-{tid}@example.com", "phone": None,
+        "display_name": "Race Tech", "password_hash": "x",
+        "roles": ["technician"], "active_organization_id": None,
+        "organization_name": None,
+    }
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    app_store._technicians.append({
+        "id": tid, "display_name": "Race Tech", "status": "active",
+        "vetting_status": "verified", "is_available": True,
+    })
+    headers = {"Authorization": f"Bearer {create_access_token({'sub': tid, 'roles': ['technician']})}"}
     offer_a = asyncio.run(app_store.ops_create_single_offer(
         UUID(job_a), UUID(tid), UUID(org_a), datetime.now(timezone.utc)))
     offer_b = asyncio.run(app_store.ops_create_single_offer(
         UUID(job_b), UUID(tid), UUID(org_b), datetime.now(timezone.utc)))
     client = TestClient(app)
-    assert client.post(f"/offers/{offer_a['id']}/accept").status_code == 200
-    blocked = client.post(f"/offers/{offer_b['id']}/accept")
+    assert client.post(f"/offers/{offer_a['id']}/accept", headers=headers).status_code == 200
+    blocked = client.post(f"/offers/{offer_b['id']}/accept", headers=headers)
     assert blocked.status_code == 409, blocked.text
     assert "active job" in blocked.json()["detail"]
+
+
+def test_http_accept_requires_technician_auth():
+    from datetime import datetime, timezone
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org, tid = str(uuid4()), str(uuid4())
+    jid = str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    offer = asyncio.run(app_store.ops_create_single_offer(
+        UUID(jid), UUID(tid), UUID(org), datetime.now(timezone.utc)))
+    client = TestClient(app)
+    unauth = client.post(f"/offers/{offer['id']}/accept")
+    assert unauth.status_code == 401
+    assert app_store._offers[offer["id"]]["status"] == "offered"
+
+
+def test_http_technician_cannot_accept_another_technicians_offer():
+    from datetime import datetime, timezone
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org, owner_tid, other_tid = str(uuid4()), str(uuid4()), str(uuid4())
+    jid = str(uuid4())
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_PENDING_DISPATCH
+    app_store._technicians = getattr(app_store, "_technicians", [])
+    for tid in (owner_tid, other_tid):
+        app_store.users[tid] = {
+            "id": tid, "email": f"scope-{tid}@example.com", "phone": None,
+            "display_name": "Scope Tech", "password_hash": "x",
+            "roles": ["technician"], "active_organization_id": None,
+            "organization_name": None,
+        }
+        app_store._technicians.append({
+            "id": tid, "display_name": "Scope Tech", "status": "active",
+            "vetting_status": "verified", "is_available": True,
+        })
+    offer = asyncio.run(app_store.ops_create_single_offer(
+        UUID(jid), UUID(owner_tid), UUID(org), datetime.now(timezone.utc)))
+    other_headers = {
+        "Authorization": f"Bearer {create_access_token({'sub': other_tid, 'roles': ['technician']})}"
+    }
+    client = TestClient(app)
+
+    # a different technician cannot accept it -- and gets the SAME 404 an
+    # unknown offer_id would, never revealing the offer exists for someone else
+    stolen = client.post(f"/offers/{offer['id']}/accept", headers=other_headers)
+    assert stolen.status_code == 404
+    assert app_store._offers[offer["id"]]["status"] == "offered"
+    assert getattr(app_store, "_job_tech", {}).get(jid) is None
+
+    # the actual owner can still accept it afterward -- proves the offer
+    # wasn't consumed/corrupted by the other technician's failed attempt
+    owner_headers = {
+        "Authorization": f"Bearer {create_access_token({'sub': owner_tid, 'roles': ['technician']})}"
+    }
+    won = client.post(f"/offers/{offer['id']}/accept", headers=owner_headers)
+    assert won.status_code == 200, won.text
+    assert app_store._job_tech.get(jid) == owner_tid
 
 
 def test_postgres_accept_locks_on_any_active_job():
@@ -3590,6 +3677,41 @@ def test_postgres_accept_locks_on_any_active_job():
     sql = inspect.getsource(PostgresStore.accept_dispatch_offer)
     assert "not exists (" in sql and "busy.fulfillment_technician_id = %s" in sql
     assert "technician_busy" in sql
+
+
+def test_postgres_accept_is_self_scoped_to_the_offers_technician():
+    import inspect
+    from api.store import PostgresStore
+
+    sql = inspect.getsource(PostgresStore.accept_dispatch_offer)
+    assert "from dispatch_offers where id = %s and technician_id = %s" in sql
+
+
+def test_postgres_accept_serializes_capacity_decisions_per_technician():
+    """The NOT EXISTS busy-check reads OTHER job rows; plain row-level UPDATE
+    locking only protects the row being written (this job), not that cross-row
+    invariant -- two concurrent accepts for DIFFERENT jobs by the same
+    technician target different primary rows, so under READ COMMITTED neither
+    transaction's snapshot sees the other's still-uncommitted write and both
+    can pass NOT EXISTS (classic write skew, double-booking the technician).
+
+    A live-Postgres concurrent-transaction integration test would prove this
+    end to end, but no Postgres instance is available in this test
+    environment (the suite is InMemory-only; see the one skipped Postgres
+    test). This asserts the fix -- a transaction-scoped advisory lock keyed to
+    the technician, acquired before the busy-check/claim and released
+    automatically at commit/rollback -- is present and ordered correctly:
+    locked AFTER the offer's technician_id is known (can't lock by a key we
+    don't have yet) and BEFORE the busy-check UPDATE it protects."""
+    import inspect
+    from api.store import PostgresStore
+
+    sql = inspect.getsource(PostgresStore.accept_dispatch_offer)
+    assert "pg_advisory_xact_lock(%s, hashtext(%s))" in sql
+    lock_idx = sql.index("pg_advisory_xact_lock")
+    offer_lookup_idx = sql.index("from dispatch_offers where id = %s and technician_id = %s")
+    busy_check_idx = sql.index("not exists (")
+    assert offer_lookup_idx < lock_idx < busy_check_idx
 
 
 # --- Slice E: customer-safe assigned-technician identity ----------------------

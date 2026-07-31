@@ -545,14 +545,13 @@ background capabilities.
 - Expose a tenant-safe busy projection; only the owning company sees its job context.
 
 **Implemented (2026-07-30):**
-- The DB-enforced invariant is **not a separate capacity record** — it's derived, which is why
-  "release capacity on every terminal path" needs no separate code: `accept_dispatch_offer` claims
-  the job in one atomic statement guarded by
+- The DB-enforced invariant is **not a separate capacity record** — it's derived: `accept_dispatch_offer`
+  claims the job in one atomic statement guarded by
   `NOT EXISTS (SELECT 1 FROM jobs busy WHERE busy.fulfillment_technician_id = tech
-  AND busy.status = ANY(ACTIVE_JOB_STATUSES) AND busy.id <> job)` — race-safe under concurrent
-  accepts across companies for a dual-affiliated technician (`PostgresStore.accept_dispatch_offer`,
-  mirrored in `InMemoryStore`). Capacity is simply "no other job in an active status," so it can't
-  leak or double-release.
+  AND busy.status = ANY(ACTIVE_JOB_STATUSES) AND busy.id <> job)`. Capacity is simply "no other job
+  in an active status," so it can't leak or double-release on any terminal/recovery path.
+  ~~race-safe under concurrent accepts across companies~~ — **this specific claim was wrong; see the
+  2026-07-31 correction below.**
 - The overrideable immediate-offer path is fixed: `is_busy` in `_send_targeted_offer` is now a hard
   `409`, not an override-with-reason flag — a dispatcher can no longer create a doomed offer against
   a technician who is already provably busy (elsewhere, any company). Offline/stale-location and
@@ -577,6 +576,45 @@ technician can finish the job they won and still accept the other one before it 
 superseding sibling offers on every acceptance would silently reverse that flexibility and break
 those two tests' documented intent. Left as-is; revisit only as an explicit product decision, not a
 backend-only fix.
+
+**Correction (2026-07-31) — the 2026-07-30 "race-safe" claim was wrong, plus two more real gaps
+found by a follow-up review, all now fixed:**
+
+1. **Write-skew race in the capacity lock (launch-blocking).** The single atomic `UPDATE` only
+   protects the ONE row it writes (the job being accepted). Two concurrent accepts for **different**
+   jobs by the **same** technician touch different primary rows — under Postgres READ COMMITTED,
+   neither transaction's snapshot sees the other's still-uncommitted write, so both can pass the
+   `NOT EXISTS` busy-check and both commit, double-booking the technician. This is exactly the
+   classic write-skew anomaly. **Fixed** with a transaction-scoped advisory lock keyed to the
+   technician (`pg_advisory_xact_lock(namespace, hashtext(technician_id))`), acquired right after
+   the offer's technician is known and released automatically at commit/rollback — so a second
+   concurrent accept for the same technician blocks until the first resolves, and its busy-check
+   then correctly observes the result. A true concurrent-transaction integration test would prove
+   this against live Postgres, but no Postgres instance is available in this test environment (the
+   suite is InMemory-only); `test_postgres_accept_serializes_capacity_decisions_per_technician`
+   asserts the fix is present and correctly ordered, matching this codebase's established pattern
+   for verifying Postgres-only SQL without a live DB.
+2. **`POST /offers/{id}/accept` had no authentication at all.** Anyone — no bearer token, no
+   session — could accept any offer by ID. **Fixed:** requires a technician session and is
+   self-scoped to the offer's own technician; someone else's offer 404s exactly like an unknown
+   `offer_id`, never revealing that it exists for a different technician (matching the pattern
+   already used by `decline_dispatch_offer`, which was self-scoped correctly).
+3. **`completed_pending_customer` was excluded from `ACTIVE_JOB_STATUSES`**, contradicting this
+   very section's "Customer review pending" spec above it: *"The global capacity lock remains until
+   the contractually defined terminal/release event."* A confirmation-pending job is not that event.
+   **Fixed:** it's now included — a technician stays capacity-locked (busy, blocks new offer
+   acceptance) until an authoritative terminal outcome (`completed_confirmed`,
+   `completed_auto_closed`, `disputed` resolving, `cancelled`, or `no_show`). A duplicate hardcoded
+   copy of the old (incomplete) status list in `list_affiliated_technicians_directory`'s `on_job`
+   projection was also found and replaced with the shared constant — exactly the "if they drift, a
+   dispatcher sees 'free' for someone the lock refuses to assign" scenario `ACTIVE_JOB_STATUSES`'s
+   own comment warns about.
+
+The refresh-token rotation (§13.6) had the same class of bug — a plain SELECT-then-UPDATE with no
+lock between the read and the write, letting two concurrent refreshes of the same token both mint a
+valid replacement — fixed the same way conceptually (an atomic conditional `UPDATE ... WHERE
+revoked_at IS NULL ... RETURNING`, not a separate advisory lock, since a single-row compare-and-swap
+is sufficient there).
 
 ### 13.2 Readiness and device registration
 
@@ -698,6 +736,16 @@ should call it and then wipe its secure store, per §13.5's wipe-on-revocation r
 **Still owed:** device/session listing ("sign out this device" from a list of active sessions) and
 an admin-triggered force-revoke-all-sessions path are not built — `/auth/logout` only revokes the
 one token the caller presents.
+
+**Correction (2026-07-31):** "single-use rotation" above was not actually enforced under
+concurrency. The original implementation SELECTed the token row, then later UPDATEd it — no lock
+between the read and the write, so two concurrent `/auth/refresh` calls presenting the SAME
+still-valid token could both read `revoked_at IS NULL` and both mint a valid replacement. **Fixed**
+with an atomic conditional claim: `UPDATE auth_refresh_tokens SET revoked_at = now() WHERE
+token_hash = %s AND revoked_at IS NULL RETURNING ...` — Postgres row-level locking plus the
+WHERE-clause re-check on UPDATE (EvalPlanQual under READ COMMITTED) guarantee only the first
+concurrent caller ever transitions `revoked_at` from `NULL`, so only one caller can ever mint a
+replacement from a given token.
 
 ## 14. Security, privacy, and compliance
 

@@ -201,12 +201,21 @@ STATUS_NO_SHOW = "no_show"
 # A technician is "on a job" in exactly these statuses. One definition for the
 # busy signal, the fleet marker, and the accept-time lock — if they drift, a
 # dispatcher sees "free" for someone the lock refuses to assign (or worse).
-# `completed_pending_customer` is deliberately absent: the technician is done.
+# `completed_pending_customer` IS included: per
+# TECHNICIAN-APP-REDESIGN.md §6.2 "Customer review pending" — "The global
+# capacity lock remains until the contractually defined terminal/release
+# event" — and TAR-6's exit criterion "Release global capacity only on
+# authoritative terminal/release outcomes." A customer who hasn't confirmed,
+# disputed, or let the job auto-close has not produced a terminal outcome, so
+# the technician stays capacity-locked (busy) until one of those occurs —
+# STATUS_COMPLETED_CONFIRMED, STATUS_COMPLETED_AUTO_CLOSED, STATUS_DISPUTED
+# resolving to a terminal state, STATUS_CANCELLED, or STATUS_NO_SHOW.
 ACTIVE_JOB_STATUSES = (
     STATUS_ASSIGNED,
     STATUS_EN_ROUTE,
     STATUS_ARRIVED,
     STATUS_IN_PROGRESS,
+    STATUS_COMPLETED_PENDING,
 )
 
 # Forward progression ladder (dispatch -> on-site -> completion-pending).

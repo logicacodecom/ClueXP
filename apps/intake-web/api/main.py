@@ -4270,16 +4270,25 @@ async def provider_fleet(
 
 
 @app.post("/offers/{offer_id}/accept")
-async def accept_offer(offer_id: UUID) -> dict[str, Any]:
+async def accept_offer(
+    offer_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
     """First-accept-wins: atomically claim the job for the offer's technician,
     set ``fulfillment_technician_id``/``fulfillment_org_id``, flip
     ``trust_state=matched``, and supersede the sibling offers. Enforced in the
     backend (not UI timing); a losing or stale accept gets 409.
 
     The same statement enforces the GLOBAL active-job lock — a technician on a job
-    for company A cannot accept company B's offer (409, offer left open)."""
+    for company A cannot accept company B's offer (409, offer left open).
+
+    Self-scoped: only the signed-in technician the offer was made to may accept
+    it — someone else's offer_id (even if guessed) 404s exactly like an unknown
+    one, never revealing that it exists for a different technician."""
     await latency()
-    result = await store.accept_dispatch_offer(offer_id)
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=403, detail="Technician session required")
+    result = await store.accept_dispatch_offer(offer_id, UUID(tech["id"]))
     if result is None:
         raise HTTPException(status_code=404, detail="Offer not found")
     if not result.get("accepted"):

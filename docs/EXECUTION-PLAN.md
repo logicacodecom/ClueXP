@@ -699,13 +699,16 @@ finished-job history (`/activity`); global profile + photo upload/review + affil
 Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T3, T5–T7 done.)
 
 **Remaining:**
-- [x] **P0 global active-job capacity lock** (2026-07-30): one active job per global technician
-  enforced atomically at the DB acceptance boundary (`NOT EXISTS` guard in the same `UPDATE` as the
-  first-accept-wins claim); `409 technician_busy` on a concurrent losing accept; immediate-offer
-  creation no longer accepts an override for a busy technician (was overrideable, now a hard `409`);
-  same-company and cross-company races covered by test. Detail and one deliberately-deferred item
-  (proactively superseding a technician's *other* pending offers across companies — an already-
-  shipped, tested product decision to leave them open instead) in
+- [x] **P0 global active-job capacity lock** (2026-07-30, corrected 2026-07-31): one active job per
+  global technician enforced atomically at the DB acceptance boundary — `NOT EXISTS` guard plus a
+  transaction-scoped advisory lock keyed to the technician (the 2026-07-30 version was NOT actually
+  race-safe under concurrent Postgres transactions; a follow-up review caught the write-skew gap,
+  now fixed); `409 technician_busy` on a concurrent losing accept; immediate-offer creation no longer
+  accepts an override for a busy technician; `completed_pending_customer` now correctly holds
+  capacity per §6.2; `POST /offers/{id}/accept` is now authenticated and self-scoped (was previously
+  callable by anyone with no session at all). Detail and one deliberately-deferred item (proactively
+  superseding a technician's *other* pending offers across companies — an already-shipped, tested
+  product decision to leave them open instead) in
   `TECHNICIAN-APP-REDESIGN.md` §13.1.
 - [ ] Active-job alert policy: no ordinary offer alerts while `assigned`/`en_route`/`arrived`/
   `in_progress`/`completed_pending_customer`; only current-job communication, cancellation,
