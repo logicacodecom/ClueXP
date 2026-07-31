@@ -3548,3 +3548,36 @@ Notes:
   simulator build path is now available and verified; it does not produce an installable
   iPhone build.
 - Remote Android keystore was created on Expo servers for the project.
+
+### 2026-07-31 — Codex: reviewed native UI restyle + submitted fresh Android build
+
+Reviewed Claude's technician-native UI/UX alignment commit `f613326` and found it
+sound overall: native now uses the web logo asset, phone-shell preview, web-matched
+tokens, top/bottom chrome, readiness bar, offer card/countdown, active-job timeline,
+and polished empty/account states.
+
+Follow-up fix pushed:
+- `eba0231` — `fix: polish technician native readiness qa`
+  - Expo Doctor is back to 20/20 by excluding preview-only `react-dom` from Expo's
+    dependency validator, keeping the monorepo's single `react-dom@19.2.6`.
+  - ReadinessBar no longer offers a Go online/offline action before availability has
+    loaded.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npx expo export --platform web --output-dir .expo-web-preview` → passed; generated
+  export cleaned afterward.
+- `npx expo-doctor` → 20/20 passed.
+- `git diff --check` → passed.
+
+Build status:
+- Previous Android APK from `8ea9336` finished, but it predates Claude's UI restyle:
+  `https://expo.dev/artifacts/eas/Ne50RiQtZ_xDEC4jEV8Ek-Kp6-vWT4BtLIM_g2nHAUs.apk`
+- Fresh Android internal preview build from current `main` (`eba0231`) submitted and
+  queued:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/b69f309c-aab5-4d43-8eab-a8ff8f539551`
+
+Remaining: wait for the fresh Android build to finish, then install that APK for real
+device QA. Physical-device iOS still needs Apple signing credentials; simulator build
+path remains available.
