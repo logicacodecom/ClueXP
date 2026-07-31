@@ -52,6 +52,12 @@
           "defaultChannel": "job-alerts"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "10a489e5-0ee3-4ea8-9ee8-5ee8044ead22"
+      }
+    },
+    "owner": "logicacode"
   }
 }
