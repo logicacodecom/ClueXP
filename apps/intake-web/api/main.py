@@ -29,6 +29,7 @@ from api import config
 from api.job_text_parser import MAX_INPUT_LENGTH, PARSER_VERSION, parse_job_text
 from api.service_catalog import active_skill_codes, normalize_skill_code
 from api import settings as runtime_settings
+from api import push as push_service
 from api.dispatch import (
     CARD_PAYMENT_METHODS,
     STATUS_ARRIVED,
@@ -2544,6 +2545,35 @@ async def my_active_job_snapshot(
     }
 
 
+@app.get("/technicians/me/notifications")
+async def my_notifications(
+    unacknowledged_only: bool = False,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Self-scoped notification history for the native client. `provider_status`
+    is honest about delivery: this deployment has no configured push provider,
+    so every row is currently 'skipped_no_provider' — see api/push.py."""
+    tid = _me_technician_id(session)
+    return {
+        "notifications": await store.list_technician_notifications(
+            tid, unacknowledged_only=unacknowledged_only)
+    }
+
+
+@app.post("/technicians/me/notifications/{notification_id}/ack")
+async def acknowledge_notification(
+    notification_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Explicit acknowledgement — the one first-class client signal in the
+    ADR-0001 SS6 delivery model besides provider receipt. Idempotent: acking an
+    already-acked notification just returns it unchanged."""
+    tid = _me_technician_id(session)
+    result = await store.acknowledge_technician_notification(tid, notification_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return result
+
+
 # --- technician self-service: affiliations + profile photo (Slice D backend) ---
 def _me_technician_id(session: dict[str, Any]) -> UUID:
     require_any_role(session, {"technician"})
@@ -3428,6 +3458,17 @@ async def _send_targeted_offer(
     if override_reason:
         audit += f":override={override_reason[:100]}"
     await store.log_event_raw(job_id, audit)
+    # Best-effort: a new offer is exactly ADR-0001 §6's "critical alert" class.
+    # Never let a push failure block a real offer — notify_technician already
+    # swallows per-device send errors; this guards the store call itself too.
+    try:
+        await push_service.notify_technician(
+            store, technician_id, alert_class="offer",
+            envelope={"title": "New job offer", "body": "A new job offer is available."},
+            job_id=job_id, offer_id=UUID(offer["id"]) if offer.get("id") else None,
+        )
+    except Exception:
+        pass
     return {
         "offer_id": offer.get("id"),
         "technician_id": str(technician_id),

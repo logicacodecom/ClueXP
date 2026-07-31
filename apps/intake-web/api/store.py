@@ -1033,6 +1033,23 @@ class Store:
     ) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def create_technician_notification(
+        self, technician_id: UUID, *, device_id: UUID | None, alert_class: str,
+        payload: dict, job_id: UUID | None = None, offer_id: UUID | None = None,
+        thread_id: UUID | None = None, provider_status: str = "queued",
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_technician_notifications(
+        self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def acknowledge_technician_notification(
+        self, technician_id: UUID, notification_id: UUID,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1947,6 +1964,57 @@ class InMemoryStore(Store):
         if rec is not None:
             rec["status_code"] = status_code
             rec["response"] = response
+
+    @staticmethod
+    def _public_notification(row: dict) -> dict:
+        return {k: row.get(k) for k in (
+            "id", "device_id", "alert_class", "job_id", "offer_id", "thread_id",
+            "payload", "provider_status", "created_at", "provider_sent_at", "acknowledged_at",
+        )}
+
+    async def create_technician_notification(
+        self, technician_id: UUID, *, device_id: UUID | None, alert_class: str,
+        payload: dict, job_id: UUID | None = None, offer_id: UUID | None = None,
+        thread_id: UUID | None = None, provider_status: str = "queued",
+    ) -> dict:
+        notifications = self._notifications = getattr(self, "_notifications", [])
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": str(uuid4()), "technician_id": str(technician_id),
+            "device_id": str(device_id) if device_id else None,
+            "alert_class": alert_class, "job_id": str(job_id) if job_id else None,
+            "offer_id": str(offer_id) if offer_id else None,
+            "thread_id": str(thread_id) if thread_id else None,
+            "payload": payload, "provider_status": provider_status,
+            "created_at": now,
+            "provider_sent_at": now if provider_status == "sent" else None,
+            "acknowledged_at": None,
+        }
+        notifications.append(row)
+        return self._public_notification(row)
+
+    async def list_technician_notifications(
+        self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
+    ) -> list[dict]:
+        tid = str(technician_id)
+        rows = [
+            n for n in getattr(self, "_notifications", [])
+            if str(n.get("technician_id")) == tid
+            and (not unacknowledged_only or n.get("acknowledged_at") is None)
+        ]
+        rows.sort(key=lambda n: n["created_at"], reverse=True)
+        return [self._public_notification(n) for n in rows[:limit]]
+
+    async def acknowledge_technician_notification(
+        self, technician_id: UUID, notification_id: UUID,
+    ) -> dict | None:
+        tid, nid = str(technician_id), str(notification_id)
+        for n in getattr(self, "_notifications", []):
+            if str(n.get("id")) == nid and str(n.get("technician_id")) == tid:
+                if n.get("acknowledged_at") is None:
+                    n["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
+                return self._public_notification(n)
+        return None
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         return {"slug": f"org-{str(organization_id)[:8]}"}
@@ -8844,6 +8912,76 @@ class PostgresStore(Store):
                 " where technician_id = %s and client_mutation_id = %s",
                 (status_code, json.dumps(response), str(technician_id), client_mutation_id),
             )
+
+    _NOTIFICATION_COLS = (
+        "id, device_id, alert_class, job_id, offer_id, thread_id, payload,"
+        " provider_status, created_at, provider_sent_at, acknowledged_at"
+    )
+
+    @classmethod
+    def _notification_row(cls, row: tuple) -> dict:
+        return {
+            "id": str(row[0]), "device_id": str(row[1]) if row[1] else None,
+            "alert_class": row[2], "job_id": str(row[3]) if row[3] else None,
+            "offer_id": str(row[4]) if row[4] else None,
+            "thread_id": str(row[5]) if row[5] else None,
+            "payload": row[6], "provider_status": row[7],
+            "created_at": row[8].isoformat() if row[8] else None,
+            "provider_sent_at": row[9].isoformat() if row[9] else None,
+            "acknowledged_at": row[10].isoformat() if row[10] else None,
+        }
+
+    async def create_technician_notification(
+        self, technician_id: UUID, *, device_id: UUID | None, alert_class: str,
+        payload: dict, job_id: UUID | None = None, offer_id: UUID | None = None,
+        thread_id: UUID | None = None, provider_status: str = "queued",
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into technician_notifications"
+                " (technician_id, device_id, alert_class, job_id, offer_id, thread_id,"
+                "  payload, provider_status, provider_sent_at)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s,"
+                "  case when %s = 'sent' then now() else null end)"
+                f" returning {self._NOTIFICATION_COLS}",
+                (
+                    str(technician_id), str(device_id) if device_id else None, alert_class,
+                    str(job_id) if job_id else None, str(offer_id) if offer_id else None,
+                    str(thread_id) if thread_id else None, Jsonb(payload), provider_status,
+                    provider_status,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._notification_row(row)
+
+    async def list_technician_notifications(
+        self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
+    ) -> list[dict]:
+        clause = " and acknowledged_at is null" if unacknowledged_only else ""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._NOTIFICATION_COLS} from technician_notifications"
+                f" where technician_id = %s{clause}"
+                " order by created_at desc limit %s",
+                (str(technician_id), limit),
+            )
+            rows = await cur.fetchall()
+        return [self._notification_row(r) for r in rows]
+
+    async def acknowledge_technician_notification(
+        self, technician_id: UUID, notification_id: UUID,
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technician_notifications set acknowledged_at = coalesce(acknowledged_at, now())"
+                " where id = %s and technician_id = %s"
+                f" returning {self._NOTIFICATION_COLS}",
+                (str(notification_id), str(technician_id)),
+            )
+            row = await cur.fetchone()
+        return self._notification_row(row) if row else None
 
     async def ensure_intake_channel(self, organization_id: UUID) -> dict | None:
         """Guarantee the company has a branded intake slug, generating a unique one
