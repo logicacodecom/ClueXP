@@ -50,7 +50,7 @@ export function ReadinessBar({ readiness, busy, onSetAvailable, onLocation, onPu
       tone: available === null ? "neutral" : available ? "good" : "neutral",
       headline: available ? "You're marked available" : "You're offline",
       detail: available ? "Companies can see and offer you jobs." : "Go online to start receiving offers.",
-      action: { label: available ? "Go offline" : "Go online", onPress: () => onSetAvailable(!available) }
+      action: available === null ? undefined : { label: available ? "Go offline" : "Go online", onPress: () => onSetAvailable(!available) }
     },
     {
       key: "location",
