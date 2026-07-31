@@ -1,4 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -29,6 +30,7 @@ import type { ActiveJob, ActiveJobSnapshot, AuthSession, QueuedMutation, Readine
 
 type TabKey = "work" | "activity" | "earnings" | "account";
 type CommandSheet = "arrival" | "issue" | "collection" | null;
+type WorkHint = { kind: "work" | "job" | "offer"; id?: string; source: "link" | "notification" } | null;
 
 const api = new CluexpApi(null);
 const tabs: Array<{ key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
@@ -57,6 +59,27 @@ function offerId(offer: TechnicianOffer) {
   return offer.id || offer.offer_id || "";
 }
 
+function parseWorkHint(url: string, source: "link" | "notification"): WorkHint {
+  const match = url.match(/^(?:cluexp-tech:\/\/|https?:\/\/[^/]+\/)(work|jobs?|offers?)(?:\/([^/?#]+))?/i);
+  if (!match) return null;
+  const section = match[1].toLowerCase();
+  if (section.startsWith("job")) return { kind: "job", id: match[2], source };
+  if (section.startsWith("offer")) return { kind: "offer", id: match[2], source };
+  return { kind: "work", source };
+}
+
+function notificationHint(response: Notifications.NotificationResponse): WorkHint {
+  const data = response.notification.request.content.data ?? {};
+  const kind = typeof data.kind === "string" ? data.kind : typeof data.type === "string" ? data.type : "";
+  const jobId = typeof data.job_id === "string" ? data.job_id : typeof data.jobId === "string" ? data.jobId : undefined;
+  const offerIdValue = typeof data.offer_id === "string" ? data.offer_id : typeof data.offerId === "string" ? data.offerId : undefined;
+  const url = typeof data.url === "string" || typeof data.deep_link === "string" ? String(data.url ?? data.deep_link) : null;
+  if (url) return parseWorkHint(url, "notification");
+  if (kind.includes("offer") && offerIdValue) return { kind: "offer", id: offerIdValue, source: "notification" };
+  if (jobId) return { kind: "job", id: jobId, source: "notification" };
+  return { kind: "work", source: "notification" };
+}
+
 function outboxKind(kind: "arrival" | "issue" | "collection"): QueuedMutation["kind"] {
   if (kind === "arrival") return "arrival_verify";
   if (kind === "issue") return "report_issue";
@@ -69,6 +92,7 @@ export function RootApp() {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [tab, setTab] = useState<TabKey>("work");
   const [queueCount, setQueueCount] = useState(0);
+  const [workHint, setWorkHint] = useState<WorkHint>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -94,6 +118,35 @@ export function RootApp() {
     void boot();
     return () => {
       mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadInitialUrl() {
+      const url = await Linking.getInitialURL();
+      const hint = url ? parseWorkHint(url, "link") : null;
+      if (mounted && hint) {
+        setTab("work");
+        setWorkHint(hint);
+      }
+    }
+    void loadInitialUrl();
+    const linkSub = Linking.addEventListener("url", (event) => {
+      const hint = parseWorkHint(event.url, "link");
+      if (hint) {
+        setTab("work");
+        setWorkHint(hint);
+      }
+    });
+    const notificationSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      setTab("work");
+      setWorkHint(notificationHint(response));
+    });
+    return () => {
+      mounted = false;
+      linkSub.remove();
+      notificationSub.remove();
     };
   }, []);
 
@@ -140,7 +193,7 @@ export function RootApp() {
       <StatusBar style="light" />
       <View style={styles.root}>
         <Header session={session} queueCount={queueCount} />
-        {tab === "work" ? <WorkScreen session={session} onQueueChanged={refreshQueue} /> : null}
+        {tab === "work" ? <WorkScreen session={session} hint={workHint} onHintConsumed={() => setWorkHint(null)} onQueueChanged={refreshQueue} /> : null}
         {tab === "activity" ? <StaticTab title="Activity" text="Finished-job history is part of the next native slice. This first build keeps active work and command truth front and center." /> : null}
         {tab === "earnings" ? <StaticTab title="Earnings" text="Collections are recorded in the active job flow. Settlement history comes next, and this screen will keep recorded totals separate from payout." /> : null}
         {tab === "account" ? <AccountScreen session={session} onLogout={onLogout} /> : null}
@@ -223,7 +276,12 @@ function Header({ session, queueCount }: { session: AuthSession; queueCount: num
   );
 }
 
-function WorkScreen({ session, onQueueChanged }: { session: AuthSession; onQueueChanged: () => Promise<void> }) {
+function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
+  session: AuthSession;
+  hint: WorkHint;
+  onHintConsumed: () => void;
+  onQueueChanged: () => Promise<void>;
+}) {
   const technicianId = session.technician?.id;
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null);
   const [snapshot, setSnapshot] = useState<ActiveJobSnapshot | null>(null);
@@ -259,6 +317,11 @@ function WorkScreen({ session, onQueueChanged }: { session: AuthSession; onQueue
     const timer = setInterval(() => void load(true), 15000);
     return () => clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!hint) return;
+    void load(true).finally(onHintConsumed);
+  }, [hint, load, onHintConsumed]);
 
   async function goOnline() {
     setBusy(true);
@@ -373,6 +436,7 @@ function WorkScreen({ session, onQueueChanged }: { session: AuthSession; onQueue
         contentContainerStyle={styles.scrollBody}
         refreshControl={<RefreshControl refreshing={refreshing} tintColor={colors.primary} onRefresh={() => void load()} />}
       >
+        {hint ? <AlertBanner text={`Opened ${hint.kind}${hint.id ? ` ${hint.id.slice(0, 8)}` : ""} from ${hint.source}. Refreshing server state.`} tone="warn" /> : null}
         {error ? <AlertBanner text={error} tone="bad" /> : null}
         <ReadinessCard readiness={readiness} onAvailability={goOnline} onLocation={repairLocation} onPush={repairPush} busy={busy} />
         {job ? (
