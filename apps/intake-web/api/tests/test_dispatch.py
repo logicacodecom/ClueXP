@@ -1882,6 +1882,37 @@ def test_provider_assign_offline_tech_requires_override():
     assert "Override required" in resp.json().get("detail", "")
 
 
+def test_provider_assign_busy_tech_blocked_even_with_override():
+    """P0 global capacity: the immediate-offer path never overrides busy, with or
+    without a reason — unlike offline/skill-mismatch, which remain overrideable."""
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.auth import create_access_token
+
+    org = str(uuid4())
+    uid = str(uuid4())
+    jid = str(uuid4())
+    tid = str(uuid4())
+    other_job = str(uuid4())
+    _seed_dispatcher(app_store, uid, org)
+    _seed_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)  # online + verified — isolates the busy check
+    app_store._job_status[other_job] = STATUS_ASSIGNED
+    app_store._job_tech = getattr(app_store, "_job_tech", {})
+    app_store._job_tech[other_job] = tid
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["dispatcher"]})
+    client = TestClient(app)
+    resp = client.post(
+        f"/provider/queue/{jid}/assign",
+        json={"technician_id": tid, "override_reason": "urgent — only available tech"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "active job" in resp.json().get("detail", "")
+    assert not any(o.get("job_id") == jid for o in app_store._offers.values()), \
+        "no offer should be created for a busy technician, override or not"
+
+
 def test_provider_assign_offline_tech_with_override_succeeds():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -3259,6 +3290,29 @@ def test_accept_is_blocked_while_the_technician_is_on_another_companys_job():
     assert store._job_tech.get(job_b) is None, "the second job must stay unassigned"
     # The blocked offer stays open — finishing job A and accepting is legitimate.
     assert store._offers[offer_b["id"]]["status"] == "offered"
+
+
+def test_accept_is_blocked_while_the_technician_is_on_the_same_companys_other_job():
+    """Same-company variant of the cross-company race above: the global lock does
+    not care whether both jobs belong to the same dispatching org."""
+    from datetime import datetime, timezone
+    store = InMemoryStore()
+    org, tid = str(uuid4()), str(uuid4())
+    job_a, job_b = str(uuid4()), str(uuid4())
+    store._job_status = {job_a: STATUS_PENDING_DISPATCH, job_b: STATUS_PENDING_DISPATCH}
+    store._job_org = {job_a: org, job_b: org}
+    offer_a = asyncio.run(store.ops_create_single_offer(
+        UUID(job_a), UUID(tid), UUID(org), datetime.now(timezone.utc)))
+    offer_b = asyncio.run(store.ops_create_single_offer(
+        UUID(job_b), UUID(tid), UUID(org), datetime.now(timezone.utc)))
+
+    first = asyncio.run(store.accept_dispatch_offer(UUID(offer_a["id"])))
+    assert first["accepted"] is True
+
+    second = asyncio.run(store.accept_dispatch_offer(UUID(offer_b["id"])))
+    assert second["accepted"] is False
+    assert second["reason"] == "technician_busy"
+    assert store._job_tech.get(job_b) is None
 
 
 def test_accept_allowed_again_once_the_other_job_is_finished():

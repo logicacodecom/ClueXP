@@ -3316,6 +3316,18 @@ async def _send_targeted_offer(
         loc_updated = datetime.fromisoformat(str(loc_updated).replace("Z", "+00:00"))
     is_online = bool(loc_updated and (now_dt - loc_updated) < threshold) if loc_updated else False
     is_busy = (await store.get_technician_active_job(tech["id"])) is not None
+    if is_busy:
+        # P0 global capacity: the immediate-offer path never overrides busy, with
+        # or without a reason. Creating a doomed offer against a technician who is
+        # already provably busy elsewhere is misleading (looks like an assignment
+        # succeeded) and wastes the offer TTL; the atomic accept-time guard would
+        # reject it anyway, but rejecting at creation gives the dispatcher an
+        # honest, immediate signal instead of a silently-stuck offer.
+        raise HTTPException(
+            status_code=409,
+            detail="Technician already has an active job. Wait for it to finish or "
+                    "choose another technician.",
+        )
     skills = tech.get("skills") or []
     access_type = job.get("access_type")
     skill_needed = required_skill_for_job(job)
@@ -3331,8 +3343,6 @@ async def _send_targeted_offer(
     override_flags: list[str] = []
     if not is_online:
         override_flags.append("offline or location stale")
-    if is_busy:
-        override_flags.append("has an active job")
     if not skills_match:
         if not organization_supports_skill:
             override_flags.append(f"company does not offer '{skill_needed}'")

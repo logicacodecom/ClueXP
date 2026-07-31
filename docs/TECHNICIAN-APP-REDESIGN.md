@@ -108,9 +108,6 @@ The PWA already uses real application-server BFF routes for:
 - Location uses foreground browser geolocation and submits about every 25 seconds during active work.
 - There is no dependable background GPS, production push/alarm delivery, service worker, durable
   offline job cache, or offline mutation outbox.
-- The current DB acceptance transaction protects one job but does not yet enforce the global
-  cross-job technician-capacity lock.
-- Busy assignment remains overrideable in the current pilot flow.
 - Map and Messages appear as navigation destinations but currently redirect to Jobs.
 - Job chat and masked calling are unbuilt.
 - The active-job component combines map, lifecycle, safety/problem reporting, closeout, and payment
@@ -546,6 +543,40 @@ background capabilities.
 - Release capacity on every terminal/recovery path exactly once.
 - Add same-company and cross-company concurrency/integration tests.
 - Expose a tenant-safe busy projection; only the owning company sees its job context.
+
+**Implemented (2026-07-30):**
+- The DB-enforced invariant is **not a separate capacity record** — it's derived, which is why
+  "release capacity on every terminal path" needs no separate code: `accept_dispatch_offer` claims
+  the job in one atomic statement guarded by
+  `NOT EXISTS (SELECT 1 FROM jobs busy WHERE busy.fulfillment_technician_id = tech
+  AND busy.status = ANY(ACTIVE_JOB_STATUSES) AND busy.id <> job)` — race-safe under concurrent
+  accepts across companies for a dual-affiliated technician (`PostgresStore.accept_dispatch_offer`,
+  mirrored in `InMemoryStore`). Capacity is simply "no other job in an active status," so it can't
+  leak or double-release.
+- The overrideable immediate-offer path is fixed: `is_busy` in `_send_targeted_offer` is now a hard
+  `409`, not an override-with-reason flag — a dispatcher can no longer create a doomed offer against
+  a technician who is already provably busy (elsewhere, any company). Offline/stale-location and
+  skill-mismatch remain overrideable, unchanged.
+- Tenant-safe busy projection was already correct pre-existing code: `is_busy` is exposed globally
+  in candidate lists, but `active_job` detail is masked unless `_job_belongs_to_org` matches the
+  viewer's org.
+- Same-company and cross-company accept-race tests exist
+  (`test_accept_is_blocked_while_the_technician_is_on_another_companys_job`,
+  `test_accept_is_blocked_while_the_technician_is_on_the_same_companys_other_job`), plus a
+  Postgres-SQL-source assertion for the atomic guard clause (the established pattern in this suite
+  for verifying Postgres-only logic without a live DB) and a creation-time busy-override test
+  (`test_provider_assign_busy_tech_blocked_even_with_override`).
+
+**Deliberately NOT implemented — "supersede all other active offers … across companies":** a
+technician can hold open offers on multiple jobs from different companies simultaneously (each
+company dispatches without visibility into the others). The code and its pre-existing tests
+(`test_accept_is_blocked_while_the_technician_is_on_another_companys_job`,
+`test_accept_allowed_again_once_the_other_job_is_finished`) encode a **considered, already-shipped
+product decision**: a losing offer stays `offered` rather than being proactively superseded, so the
+technician can finish the job they won and still accept the other one before it expires. Blindly
+superseding sibling offers on every acceptance would silently reverse that flexibility and break
+those two tests' documented intent. Left as-is; revisit only as an explicit product decision, not a
+backend-only fix.
 
 ### 13.2 Readiness and device registration
 
