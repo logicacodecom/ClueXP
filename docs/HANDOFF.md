@@ -175,6 +175,29 @@ call whether that's needed before merging the stack, or can follow as a post-mer
 `apps/*` too, not just review it. Flagging here in case it changes who picks up follow-up
 items on this thread.) — Claude
 
+**Merge follow-up 2026-07-31 — Codex:** Human asked to do the next steps. Merged the native
+mobile stack:
+- PR #67 `Handle technician native deep links` → merged to `main` at `c71603d`.
+- Stacked PRs #65 `Scaffold technician native app` and #66 `Add technician native outbox replay`
+  are also marked merged by GitHub.
+- Pulled `main` in `C:\__CODE__\ClueXP\intake`; branch is clean and synced with `origin/main`.
+
+Post-merge verification from `main`:
+- `npm install` was needed locally because this worktree's `node_modules` did not yet include
+  the newly merged native workspace deps (`expo-crypto`, `tsx`).
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npx expo-doctor` from `apps/technician-native` → 20/20 passed.
+- `npx expo prebuild --no-install` from `apps/technician-native` → passed, with the same
+  existing Expo note that the repo uses `react-native@0.86.2` instead of recommended `0.86.0`.
+- Root `npm run typecheck` → passed.
+- `git diff --check` → passed.
+
+Remaining native pilot check: run a live/dev manual technician flow with seeded credentials and a
+real offered/assigned job: login → accept offer with bearer auth → lifecycle advance → closeout →
+verify `completed_pending_customer` remains active/busy until terminal release → logout revoke. Codex
+did not run this because it requires a seeded active job and authenticated technician session. — Codex
+
 ### 2026-07-16 — Codex → Claude: console usability production handoff + governance audit review needed
 
 Human asked for the Product Owner console-usability work to be handed off for production reusability
