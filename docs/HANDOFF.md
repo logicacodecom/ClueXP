@@ -198,6 +198,39 @@ real offered/assigned job: login → accept offer with bearer auth → lifecycle
 verify `completed_pending_customer` remains active/busy until terminal release → logout revoke. Codex
 did not run this because it requires a seeded active job and authenticated technician session. — Codex
 
+**Smoke follow-up 2026-07-31 — Codex:** Human asked Codex to finish every test possible from
+this environment. Completed the remaining API-level native pilot smoke directly against production
+demo endpoints (`https://intake.cluexp.com/api`) using seeded demo accounts and a synthetic job.
+
+Live smoke result:
+- Run id: `native-smoke-20260731T151217Z-5c5af404`
+- Synthetic job id: `114b8a92-4a87-4b58-90f3-4bb33c667fe0`
+- Offer id: `950ee0a1-d496-41ce-96f2-b5eb15abd049`
+- Tracking path: `/t/kXkDrmotWegYHuLixQD5N6VmJJkg39IPv9grgfrNbxc`
+- Flow passed: provider login → technician login with refresh-token opt-in → provider-created
+  synthetic request → provider candidates → targeted offer to Jordan → technician accept with
+  bearer auth → active-job snapshot → technician location update → `en_route` → customer arrival
+  PIN issue → technician PIN verify → `in_progress` → technician collection report →
+  `completed_pending_customer`.
+- Verified while `completed_pending_customer`: active-job snapshot still returned the job as
+  active, and readiness returned `can_receive_offers=false` with `busy` blocking.
+- Then customer review confirmed completion; final technician snapshot returned `active_job=null`.
+- Also verified refresh rotation and logout revoke through `/auth/refresh` and `/auth/logout`.
+
+Automation also rerun from `main`:
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `pytest apps/intake-web/api/tests -q` → 363 passed, 1 skipped, 26 warnings.
+- Root `npm run typecheck` → passed.
+- `npx expo-doctor` from `apps/technician-native` → 20/20 passed.
+- `npx expo prebuild --no-install` from `apps/technician-native` → passed, with the same
+  existing Expo note that the repo uses `react-native@0.86.2` instead of recommended `0.86.0`.
+- `git diff --check` → passed.
+
+Remaining tests that require a human/device/build environment: actual native app on Android/iOS
+device or simulator, notification permission/runtime behavior, APNs/FCM production push delivery,
+TestFlight/Play internal build validation, and background/killed-app location/push behavior. — Codex
+
 ### 2026-07-16 — Codex → Claude: console usability production handoff + governance audit review needed
 
 Human asked for the Product Owner console-usability work to be handed off for production reusability
