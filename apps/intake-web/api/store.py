@@ -1161,7 +1161,7 @@ class Store:
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
-    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:  # pragma: no cover
+    async def accept_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def bump_dispatch_attempt(self, job_id: UUID) -> int:  # pragma: no cover
@@ -2389,10 +2389,14 @@ class InMemoryStore(Store):
             created.append(rec)
         return created
 
-    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:
+    async def accept_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> dict | None:
         offers = getattr(self, "_offers", {})
         rec = offers.get(str(offer_id))
-        if rec is None:
+        # Self-scoped: an offer can only be accepted by the technician it was
+        # made to. Folded into the same not-found response as a truly unknown
+        # offer_id so the caller can't distinguish "doesn't exist" from
+        # "exists but isn't yours" by offer-ID probing.
+        if rec is None or rec.get("technician_id") != str(technician_id):
             return None
         if rec["status"] != "offered":
             return {"accepted": False, "reason": rec["status"], "job_id": rec["job_id"]}
@@ -3948,6 +3952,13 @@ class InMemoryStore(Store):
         self._organization_settings.pop((str(organization_id), key), None)
 
 
+# Namespace for pg_advisory_xact_lock(namespace, hashtext(key)) two-int4-arg
+# calls. Keeps different lock "domains" from ever colliding on the same
+# (namespace, hash) pair even if their hashed keys happened to collide.
+# Only one domain uses advisory locks today (technician capacity).
+_ADVISORY_LOCK_NAMESPACE_TECHNICIAN_CAPACITY = 872341
+
+
 class PostgresStore(Store):
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -4974,26 +4985,51 @@ class PostgresStore(Store):
     async def rotate_refresh_token(self, raw_token: str) -> dict:
         """Single-use rotation with reuse detection. Presenting a token that was
         already rotated away revokes the whole active chain for that user — a
-        replayed old token is a plausible theft signal."""
+        replayed old token is a plausible theft signal.
+
+        The claim below is an atomic conditional UPDATE (compare-and-swap via
+        `WHERE revoked_at IS NULL ... RETURNING`), not a plain SELECT followed
+        by a later UPDATE. A plain SELECT-then-UPDATE has no lock between the
+        read and the write, so two concurrent callers presenting the SAME
+        still-valid token can both read revoked_at IS NULL and both mint a
+        valid replacement — breaking single-use rotation. With the atomic
+        UPDATE, Postgres's row-level locking + WHERE-clause re-check
+        (EvalPlanQual under READ COMMITTED) guarantee only the first caller to
+        reach it ever transitions revoked_at from NULL; the second's identical
+        UPDATE matches zero rows once the first commits (or vice versa)."""
         digest = hash_refresh_token(raw_token)
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, user_id, expires_at, revoked_at from auth_refresh_tokens"
-                " where token_hash = %s",
+                "update auth_refresh_tokens set revoked_at = now()"
+                " where token_hash = %s and revoked_at is null"
+                " returning id, user_id, expires_at",
                 (digest,),
             )
-            row = await cur.fetchone()
-            if row is None:
-                return {"state": "invalid"}
-            token_id, user_id, expires_at, revoked_at = row
-            if revoked_at is not None:
+            claimed = await cur.fetchone()
+            if claimed is None:
+                # Either this token never existed, or it was already revoked --
+                # by a legitimate prior rotation, an explicit revoke, or a
+                # concurrent racer that won the claim above. Either way it
+                # cannot be used again; look up the owner (if any) to revoke
+                # their whole chain as a defensive measure against replay/theft.
+                cur = await conn.execute(
+                    "select user_id from auth_refresh_tokens where token_hash = %s",
+                    (digest,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return {"state": "invalid"}
+                user_id = row[0]
                 await conn.execute(
                     "update auth_refresh_tokens set revoked_at = now()"
                     " where user_id = %s and revoked_at is null",
                     (str(user_id),),
                 )
                 return {"state": "reused", "user_id": str(user_id)}
+            token_id, user_id, expires_at = claimed
             if expires_at is not None and expires_at.replace(tzinfo=expires_at.tzinfo) < datetime.now(timezone.utc):
+                # Already claimed (revoked) above -- an expired token is never
+                # usable again regardless, and must not mint a replacement.
                 return {"state": "expired"}
             new_raw = generate_refresh_token()
             cur = await conn.execute(
@@ -5002,9 +5038,11 @@ class PostgresStore(Store):
                 (str(user_id), hash_refresh_token(new_raw), config.REFRESH_TOKEN_TTL_SECONDS),
             )
             new_id = (await cur.fetchone())[0]
+            # Bookkeeping only -- the row's revoked_at transition (the actual
+            # single-use guarantee) is already exclusively ours from the claim
+            # above, so this plain UPDATE has no race to protect against.
             await conn.execute(
-                "update auth_refresh_tokens set revoked_at = now(), replaced_by = %s"
-                " where id = %s",
+                "update auth_refresh_tokens set replaced_by = %s where id = %s",
                 (new_id, token_id),
             )
         return {"state": "ok", "user_id": str(user_id), "token": new_raw}
@@ -5334,12 +5372,16 @@ class PostgresStore(Store):
                 )
         return offers
 
-    async def accept_dispatch_offer(self, offer_id: UUID) -> dict | None:
+    async def accept_dispatch_offer(self, offer_id: UUID, technician_id: UUID) -> dict | None:
         async with await self._connect() as conn:
+            # Self-scoped: an offer can only be accepted by the technician it was
+            # made to. Folded into the same not-found response as a truly unknown
+            # offer_id so the caller can't distinguish "doesn't exist" from
+            # "exists but isn't yours" by offer-ID probing.
             cur = await conn.execute(
                 "select job_id, technician_id, organization_id, status"
-                " from dispatch_offers where id = %s",
-                (str(offer_id),),
+                " from dispatch_offers where id = %s and technician_id = %s",
+                (str(offer_id), str(technician_id)),
             )
             offer = await cur.fetchone()
             if not offer:
@@ -5347,13 +5389,32 @@ class PostgresStore(Store):
             job_id, tech_id, org_id, status = offer[0], offer[1], offer[2], offer[3]
             if status != "offered":
                 return {"accepted": False, "reason": status, "job_id": str(job_id)}
+            # Serialize every capacity DECISION for this technician. The busy
+            # check below is a NOT EXISTS subquery reading OTHER job rows; plain
+            # single-row UPDATE locking only protects the row being written
+            # (this job), not that cross-row invariant. Two concurrent accepts
+            # for DIFFERENT jobs by the same technician target different primary
+            # rows, so neither transaction's snapshot (READ COMMITTED) sees the
+            # other's still-uncommitted write -- both can pass NOT EXISTS and
+            # both commit, double-booking the technician (classic write skew).
+            # A transaction-scoped advisory lock keyed to the technician forces
+            # the second concurrent accept to block until the first commits, so
+            # its busy-check correctly observes the first's result. Released
+            # automatically at COMMIT/ROLLBACK; only accepts for the SAME
+            # technician ever contend with each other.
+            await conn.execute(
+                "select pg_advisory_xact_lock(%s, hashtext(%s))",
+                (_ADVISORY_LOCK_NAMESPACE_TECHNICIAN_CAPACITY, str(tech_id)),
+            )
             # Atomic first-accept-wins: only one accept can win. Guard on
             # status='pending_dispatch' so that a cancellation or concurrent accept
             # that changed the job status before this UPDATE causes this path to fail
             # cleanly — no technician or trust_state is set on a cancelled job.
             # The NOT EXISTS is the GLOBAL active-job lock: one job at a time per
             # technician across every company, enforced in the same statement so two
-            # companies cannot both win a race against a dual-affiliated technician.
+            # companies cannot both win a race against a dual-affiliated technician
+            # (now additionally guarded by the advisory lock above against the
+            # cross-row write-skew race).
             cur = await conn.execute(
                 "update jobs set fulfillment_technician_id = %s, fulfillment_org_id = %s,"
                 " trust_state = 'matched',"
@@ -8590,7 +8651,9 @@ class PostgresStore(Store):
         rating, affiliation date, skills, and a compliance summary so the portal
         never needs mock data. Document compliance counts ONLY the technician's
         own credentials (provider companies do not own technician documents)."""
-        active_job = ("assigned", "en_route", "arrived", "in_progress")
+        # Shared definition (see dispatch.ACTIVE_JOB_STATUSES's own comment on
+        # why this must never be a second, independently-maintained copy).
+        active_job = ACTIVE_JOB_STATUSES
         completed = ("completed_confirmed", "completed_auto_closed")
         async with await self._connect() as conn:
             cur = await conn.execute(

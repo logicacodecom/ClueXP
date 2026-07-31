@@ -102,3 +102,35 @@ def test_invalid_and_empty_refresh_tokens_are_rejected():
     assert bad.status_code == 401
     empty = client.post("/auth/refresh", json={"refresh_token": ""})
     assert empty.status_code == 401
+
+
+def test_postgres_rotation_claims_via_atomic_conditional_update_not_select_then_update():
+    """A plain SELECT-then-UPDATE has no lock between the read and the write:
+    two concurrent callers presenting the SAME still-valid token can both read
+    revoked_at IS NULL and both mint a valid replacement, breaking single-use
+    rotation. The fix is an atomic UPDATE ... WHERE revoked_at IS NULL ...
+    RETURNING -- Postgres row-level locking + the WHERE-clause re-check
+    (EvalPlanQual under READ COMMITTED) guarantee only the first concurrent
+    caller ever transitions revoked_at from NULL, so only one caller can ever
+    see a claimed row and mint a replacement.
+
+    A live-Postgres concurrent-transaction integration test would prove this
+    end to end, but no Postgres instance is available in this test environment
+    (the suite is InMemory-only; see the one skipped Postgres test). This
+    asserts the fix -- the conditional claim, not a bare SELECT -- is present."""
+    import inspect
+    from api.store import PostgresStore
+
+    sql = inspect.getsource(PostgresStore.rotate_refresh_token)
+    assert "set revoked_at = now()" in sql
+    assert "where token_hash = %s and revoked_at is null" in sql
+    assert "returning id, user_id, expires_at" in sql
+    # The claim (the WHERE-guarded UPDATE) must be the FIRST statement to touch
+    # the row -- not a later step after an earlier plain, unguarded SELECT.
+    claim_idx = sql.index("where token_hash = %s and revoked_at is null")
+    first_query_idx = sql.index("await conn.execute(")
+    assert first_query_idx < claim_idx < sql.index("insert into auth_refresh_tokens")
+    # The bug this replaces: a plain SELECT of the row (no WHERE-guarded claim)
+    # followed by a LATER, unconditional UPDATE by id. Make sure that shape is
+    # gone -- the first statement touching the row must be the atomic claim.
+    assert "select id, user_id, expires_at, revoked_at from auth_refresh_tokens" not in sql
