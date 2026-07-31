@@ -645,6 +645,23 @@ capacity lock.
   sign-out/revocation. Native storage must be encrypted; PWA protection is best-effort within the web
   threat model and must not be represented as a native-equivalent guarantee.
 
+### 13.6 Native session / refresh tokens
+
+**Implemented (2026-07-31):** the native client has no BFF cookie, so it needs a session that
+survives past the ~24h access token without forcing a daily re-login. `POST /auth/login` accepts
+`want_refresh_token: true` (opt-in — web/BFF logins are unaffected and never receive one) and
+returns a long-lived, opaque `refresh_token` alongside the existing access token.
+`POST /auth/refresh {refresh_token}` exchanges it for a **new** access token and a **new** refresh
+token — single-use rotation; the presented token is consumed. Presenting an already-rotated-away
+token is treated as a possible theft signal and **revokes the entire active chain for that user**,
+not just that one token. `POST /auth/logout {refresh_token}` revokes on sign-out — the native client
+should call it and then wipe its secure store, per §13.5's wipe-on-revocation requirement. Backed by
+`auth_refresh_tokens` (migration `0045`), storing only a hash of the token, never the raw value.
+
+**Still owed:** device/session listing ("sign out this device" from a list of active sessions) and
+an admin-triggered force-revoke-all-sessions path are not built — `/auth/logout` only revokes the
+one token the caller presents.
+
 ## 14. Security, privacy, and compliance
 
 - Authenticate offer acceptance and every technician mutation against the signed-in technician.

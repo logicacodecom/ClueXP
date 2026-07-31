@@ -89,6 +89,11 @@ TOKEN_ACTION_WINDOW_SECONDS = _int("TOKEN_ACTION_WINDOW_SECONDS", 60)
 # --- auth hardening ---
 LOGIN_MAX_FAILURES = _int("LOGIN_MAX_FAILURES", 8)
 LOGIN_WINDOW_SECONDS = _int("LOGIN_WINDOW_SECONDS", 900)
+
+# --- native refresh tokens ---
+# Long-lived, rotating, revocable refresh token so native clients (no BFF cookie)
+# don't need to re-login every time the ~24h access token expires.
+REFRESH_TOKEN_TTL_SECONDS = _int("REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 60 * 60)
 _demo_seed_default = "false" if IS_PRODUCTION else "true"
 DEMO_SEED = os.environ.get("DEMO_SEED", _demo_seed_default).strip().lower() != "false"
 
