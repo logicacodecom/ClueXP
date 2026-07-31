@@ -183,12 +183,25 @@ class PhotoCompleteRequest(BaseModel):
 class LoginRequest(BaseModel):
     identifier: str
     password: str
+    # Native clients (no BFF cookie) opt in to also receive a long-lived, rotating
+    # refresh token so they don't need to re-login when the access token expires.
+    # Web/BFF logins omit this and are unaffected.
+    want_refresh_token: bool = False
 
 
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     session: dict[str, Any]
+    refresh_token: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class RevokeRefreshRequest(BaseModel):
+    refresh_token: str
 
 
 class ManualIntakeRequest(BaseModel):
@@ -1061,7 +1074,44 @@ async def login(payload: LoginRequest, request: Request) -> AuthResponse:
             "org": session.get("active_organization_id"),
         }
     )
-    return AuthResponse(access_token=token, session=session)
+    refresh_token = (
+        await store.issue_refresh_token(session["user"]["id"])
+        if payload.want_refresh_token else None
+    )
+    return AuthResponse(access_token=token, session=session, refresh_token=refresh_token)
+
+
+@app.post("/auth/refresh", response_model=AuthResponse)
+async def refresh(payload: RefreshRequest) -> AuthResponse:
+    """Native session refresh: exchange a refresh token for a new access token
+    AND a new refresh token (single-use rotation). The old refresh token is
+    consumed by this call and cannot be used again; presenting an already-used
+    one revokes the whole chain for that user (theft signal) and 401s."""
+    await latency()
+    result = await store.rotate_refresh_token(payload.refresh_token)
+    if result["state"] in ("invalid", "reused", "expired"):
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    session = await store.get_user_session(result["user_id"])
+    if session is None:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    token = create_access_token(
+        {
+            "sub": session["user"]["id"],
+            "roles": session.get("roles", []),
+            "org": session.get("active_organization_id"),
+        }
+    )
+    return AuthResponse(access_token=token, session=session, refresh_token=result["token"])
+
+
+@app.post("/auth/logout")
+async def logout(payload: RevokeRefreshRequest) -> dict[str, Any]:
+    """Native sign-out: revoke this refresh token so a stolen/lost device can't
+    silently keep the session alive. The still-live access token simply expires
+    on its own (~24h) — it is not separately revocable by design (stateless JWT)."""
+    await latency()
+    revoked = await store.revoke_refresh_token(payload.refresh_token)
+    return {"revoked": revoked}
 
 
 @app.get("/auth/me")

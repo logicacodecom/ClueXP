@@ -20,7 +20,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from api.auth import hash_password, verify_password
+from api.auth import (
+    generate_refresh_token,
+    hash_password,
+    hash_refresh_token,
+    verify_password,
+)
 from api.dispatch import (
     ACTIVE_JOB_STATUSES,
     CARD_PAYMENT_METHODS,
@@ -756,6 +761,15 @@ class Store:
         self, identifier: str, *, success: bool, ip: str | None
     ) -> None:  # pragma: no cover
         return None
+
+    async def issue_refresh_token(self, user_id: UUID) -> str:  # pragma: no cover
+        raise NotImplementedError
+
+    async def rotate_refresh_token(self, raw_token: str) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def revoke_refresh_token(self, raw_token: str) -> bool:  # pragma: no cover
+        raise NotImplementedError
 
     async def get_user_session(self, user_id: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
@@ -1552,6 +1566,56 @@ class InMemoryStore(Store):
                 return None
             return await self.get_user_session(user["id"])
         return None
+
+    async def issue_refresh_token(self, user_id: UUID) -> str:
+        tokens = self._refresh_tokens = getattr(self, "_refresh_tokens", [])
+        raw = generate_refresh_token()
+        now = datetime.now(timezone.utc)
+        tokens.append({
+            "id": str(uuid4()), "user_id": str(user_id), "token_hash": hash_refresh_token(raw),
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=config.REFRESH_TOKEN_TTL_SECONDS)).isoformat(),
+            "revoked_at": None, "replaced_by": None,
+        })
+        return raw
+
+    async def rotate_refresh_token(self, raw_token: str) -> dict:
+        tokens = self._refresh_tokens = getattr(self, "_refresh_tokens", [])
+        digest = hash_refresh_token(raw_token)
+        rec = next((t for t in tokens if t["token_hash"] == digest), None)
+        if rec is None:
+            return {"state": "invalid"}
+        if rec["revoked_at"] is not None:
+            # Reuse of an already-rotated-away token: possible theft. Revoke the
+            # whole active chain for this user as a defensive measure.
+            now = datetime.now(timezone.utc).isoformat()
+            for t in tokens:
+                if t["user_id"] == rec["user_id"] and t["revoked_at"] is None:
+                    t["revoked_at"] = now
+            return {"state": "reused", "user_id": rec["user_id"]}
+        if datetime.fromisoformat(rec["expires_at"]) < datetime.now(timezone.utc):
+            return {"state": "expired"}
+        new_raw = generate_refresh_token()
+        now = datetime.now(timezone.utc)
+        new_rec = {
+            "id": str(uuid4()), "user_id": rec["user_id"], "token_hash": hash_refresh_token(new_raw),
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=config.REFRESH_TOKEN_TTL_SECONDS)).isoformat(),
+            "revoked_at": None, "replaced_by": None,
+        }
+        tokens.append(new_rec)
+        rec["revoked_at"] = now.isoformat()
+        rec["replaced_by"] = new_rec["id"]
+        return {"state": "ok", "user_id": rec["user_id"], "token": new_raw}
+
+    async def revoke_refresh_token(self, raw_token: str) -> bool:
+        tokens = getattr(self, "_refresh_tokens", [])
+        digest = hash_refresh_token(raw_token)
+        rec = next((t for t in tokens if t["token_hash"] == digest and t["revoked_at"] is None), None)
+        if rec is None:
+            return False
+        rec["revoked_at"] = datetime.now(timezone.utc).isoformat()
+        return True
 
     async def get_user_session(self, user_id: str) -> dict | None:
         user = self.users.get(user_id)
@@ -4828,6 +4892,65 @@ class PostgresStore(Store):
             await conn.execute(
                 "delete from login_attempts where created_at < now() - interval '7 days'"
             )
+
+    async def issue_refresh_token(self, user_id: UUID) -> str:
+        raw = generate_refresh_token()
+        async with await self._connect() as conn:
+            await conn.execute(
+                "insert into auth_refresh_tokens (user_id, token_hash, expires_at)"
+                " values (%s, %s, now() + (%s * interval '1 second'))",
+                (str(user_id), hash_refresh_token(raw), config.REFRESH_TOKEN_TTL_SECONDS),
+            )
+        return raw
+
+    async def rotate_refresh_token(self, raw_token: str) -> dict:
+        """Single-use rotation with reuse detection. Presenting a token that was
+        already rotated away revokes the whole active chain for that user — a
+        replayed old token is a plausible theft signal."""
+        digest = hash_refresh_token(raw_token)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, user_id, expires_at, revoked_at from auth_refresh_tokens"
+                " where token_hash = %s",
+                (digest,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return {"state": "invalid"}
+            token_id, user_id, expires_at, revoked_at = row
+            if revoked_at is not None:
+                await conn.execute(
+                    "update auth_refresh_tokens set revoked_at = now()"
+                    " where user_id = %s and revoked_at is null",
+                    (str(user_id),),
+                )
+                return {"state": "reused", "user_id": str(user_id)}
+            if expires_at is not None and expires_at.replace(tzinfo=expires_at.tzinfo) < datetime.now(timezone.utc):
+                return {"state": "expired"}
+            new_raw = generate_refresh_token()
+            cur = await conn.execute(
+                "insert into auth_refresh_tokens (user_id, token_hash, expires_at)"
+                " values (%s, %s, now() + (%s * interval '1 second')) returning id",
+                (str(user_id), hash_refresh_token(new_raw), config.REFRESH_TOKEN_TTL_SECONDS),
+            )
+            new_id = (await cur.fetchone())[0]
+            await conn.execute(
+                "update auth_refresh_tokens set revoked_at = now(), replaced_by = %s"
+                " where id = %s",
+                (new_id, token_id),
+            )
+        return {"state": "ok", "user_id": str(user_id), "token": new_raw}
+
+    async def revoke_refresh_token(self, raw_token: str) -> bool:
+        digest = hash_refresh_token(raw_token)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update auth_refresh_tokens set revoked_at = now()"
+                " where token_hash = %s and revoked_at is null returning id",
+                (digest,),
+            )
+            row = await cur.fetchone()
+        return row is not None
 
     async def get_user_session(self, user_id: str) -> dict | None:
         async with await self._connect() as conn:
