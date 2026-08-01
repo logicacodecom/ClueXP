@@ -12,16 +12,30 @@ function numberField(payload: Record<string, unknown>, field: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function arrayField(payload: Record<string, unknown>, field: string): Record<string, unknown>[] {
+  const value = payload[field];
+  return Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+}
+
 async function replayOne(api: CluexpApi, mutation: QueuedMutation) {
   const common = {
     expected_version: mutation.expectedVersion ?? undefined,
     client_mutation_id: mutation.clientMutationId
   };
   if (mutation.kind === "arrival_verify") {
-    await api.verifyArrival(mutation.jobId, {
-      ...common,
-      pin: stringField(mutation.payload, "pin")
-    });
+    if (stringField(mutation.payload, "arrival_method") === "dispatcher_verified") {
+      await api.verifyArrival(mutation.jobId, {
+        ...common,
+        method: "dispatcher_verified",
+        dispatcher_name: stringField(mutation.payload, "dispatcher_name"),
+        reason: stringField(mutation.payload, "dispatcher_reason")
+      });
+    } else {
+      await api.verifyArrival(mutation.jobId, {
+        ...common,
+        pin: stringField(mutation.payload, "pin")
+      });
+    }
     return;
   }
   if (mutation.kind === "report_issue") {
@@ -33,11 +47,24 @@ async function replayOne(api: CluexpApi, mutation: QueuedMutation) {
     return;
   }
   if (mutation.kind === "collection") {
-    await api.reportCollection(mutation.jobId, {
-      ...common,
-      amount: numberField(mutation.payload, "amount"),
-      method: stringField(mutation.payload, "method") || "cash"
-    });
+    // Itemized closeouts queue line_items; older-shaped queued rows (or a
+    // retry from before this) fall back to the simple amount+method shape —
+    // the backend accepts both (see PaymentReportRequest).
+    const lineItems = arrayField(mutation.payload, "line_items");
+    if (lineItems.length > 0) {
+      await api.reportCollection(mutation.jobId, {
+        ...common,
+        line_items: lineItems,
+        method: stringField(mutation.payload, "method") || "cash",
+        tip_amount: numberField(mutation.payload, "tip_amount")
+      });
+    } else {
+      await api.reportCollection(mutation.jobId, {
+        ...common,
+        amount: numberField(mutation.payload, "amount"),
+        method: stringField(mutation.payload, "method") || "cash"
+      });
+    }
     return;
   }
   if (mutation.kind === "status") {

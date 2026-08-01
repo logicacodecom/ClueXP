@@ -228,3 +228,34 @@ export type SettlementPayload = {
   live: SettlementRow[];
   period_rows: SettlementPeriodRow[];
 };
+
+// Mirrors apps/technician-web/src/app/team/page.tsx's TechnicianAffiliation/Organization
+// — matches store.list_technician_affiliations/list_technician_organizations exactly.
+export type TechnicianAffiliation = {
+  id: string;
+  organization_id: string;
+  organization_name?: string | null;
+  status: "pending_invite" | "active" | "suspended" | "ended" | "rejected";
+  affiliation_type?: string | null;
+  exclusivity?: string | null;
+  dispatch_allowed?: boolean;
+  ended_at?: string | null;
+};
+
+export type TechnicianOrganization = {
+  id: string;
+  name: string;
+};
+
+// Mirrors apps/technician-web/src/components/active-job-workflow.tsx's
+// CloseoutLineDraft (a technician-authored line, not the server's recorded shape).
+export type CloseoutLineDraft = {
+  id: string;
+  item_type_code: string;
+  description: string;
+  quantity: string;
+  unit_amount: string;
+  taxable: boolean;
+  provided_by: string;
+  note: string;
+};

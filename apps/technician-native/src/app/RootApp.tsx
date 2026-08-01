@@ -34,11 +34,12 @@ import { ActivityScreen } from "../screens/ActivityScreen";
 import { DocumentsScreen } from "../screens/DocumentsScreen";
 import { EarningsScreen } from "../screens/EarningsScreen";
 import { ProfileEditor } from "../screens/ProfileEditor";
+import { TeamScreen } from "../screens/TeamScreen";
 import { clearStoredSession, loadStoredSession, saveStoredSession, updateStoredSession } from "../storage/sessionStore";
 import { enqueueMutation, failedMutationCount, failedMutations, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
 import type { FailedMutation } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
-import type { ActiveJob, ActiveJobDetail, ActiveJobSnapshot, AuthSession, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
+import type { ActiveJob, ActiveJobDetail, ActiveJobSnapshot, AuthSession, CloseoutLineDraft, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
 
 type CommandSheet = "arrival" | "safety" | "more" | "collection" | "messages" | "call" | null;
 type WorkHint = { kind: "work" | "job" | "offer"; id?: string; source: "link" | "notification" } | null;
@@ -62,6 +63,65 @@ const activeStages: Array<{ status: JobStatus; label: string; heading: string }>
   { status: "in_progress", label: "Service", heading: "Service underway" },
   { status: "completed_pending_customer", label: "Review", heading: "Waiting for customer" }
 ];
+
+// Mirrors technician-web's CLOSEOUT_ITEM_TYPES (active-job-workflow.tsx) — web
+// hardcodes this list locally too rather than fetching GET /closeout-item-types,
+// so native matches that behavior instead of diverging with a live fetch.
+const CLOSEOUT_ITEM_TYPES: Array<{ value: string; label: string; taxable: boolean; requiresProvidedBy?: boolean; requiresNote?: boolean }> = [
+  { value: "service_fee", label: "Service fee", taxable: true },
+  { value: "labor", label: "Labor", taxable: true },
+  { value: "diagnostic", label: "Diagnostic", taxable: true },
+  { value: "physical_part", label: "Physical part", taxable: true, requiresProvidedBy: true },
+  { value: "hardware", label: "Hardware", taxable: true, requiresProvidedBy: true },
+  { value: "key_code_purchase", label: "Key code purchase", taxable: false, requiresProvidedBy: true, requiresNote: true },
+  { value: "third_party_service", label: "Third-party service", taxable: false, requiresProvidedBy: true, requiresNote: true },
+  { value: "other", label: "Other", taxable: true, requiresProvidedBy: true, requiresNote: true }
+];
+
+const CLOSEOUT_PAYMENT_METHODS = [
+  { value: "credit_card", label: "Card reader" },
+  { value: "cash", label: "Cash" },
+  { value: "check", label: "Check" },
+  { value: "zelle", label: "Zelle" },
+  { value: "other", label: "Other" }
+];
+
+const PROVIDED_BY_OPTIONS = ["company", "technician", "customer", "third_party"];
+
+function newCloseoutLine(itemType = "service_fee"): CloseoutLineDraft {
+  const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === itemType) ?? CLOSEOUT_ITEM_TYPES[0];
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    item_type_code: spec.value,
+    description: "",
+    quantity: "1",
+    unit_amount: "",
+    taxable: spec.taxable,
+    provided_by: "",
+    note: ""
+  };
+}
+
+function moneyValue(value: string) {
+  const amount = Number.parseFloat(value);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function closeoutLineError(line: CloseoutLineDraft, index: number) {
+  const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
+  if (!line.description.trim()) return `Item ${index + 1}: add a customer receipt description.`;
+  if (moneyValue(line.quantity || "1") <= 0) return `${spec.label}: quantity must be greater than zero.`;
+  if (!line.unit_amount.trim() || moneyValue(line.unit_amount) < 0) return `${spec.label}: enter an amount.`;
+  if (spec.requiresProvidedBy && !line.provided_by) return `${spec.label}: choose who provided it.`;
+  return null;
+}
+
+function closeoutFormError(lines: CloseoutLineDraft[], method: string) {
+  const lineIssue = lines.map((line, index) => closeoutLineError(line, index)).find(Boolean);
+  if (lineIssue) return lineIssue;
+  if (!method) return "Choose how the money was collected.";
+  return null;
+}
 
 function clientMutationId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -642,6 +702,7 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
       </ScrollView>
       <CommandModal
         job={job}
+        jobDetail={jobDetail}
         onClose={() => setSheet(null)}
         onSubmitted={async (keepOpen) => {
           await load(true);
@@ -899,8 +960,9 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
   );
 }
 
-function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
+function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmitted }: {
   job: ActiveJob | null;
+  jobDetail: ActiveJobDetail | null;
   snapshotVersion: string | null;
   sheet: CommandSheet;
   onClose: () => void;
@@ -908,11 +970,14 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [pin, setPin] = useState("");
+  const [dispatcherName, setDispatcherName] = useState("");
+  const [dispatcherReason, setDispatcherReason] = useState("");
   const [issueKind, setIssueKind] = useState<string | null>(null);
   const [issueReason, setIssueReason] = useState("");
   const [issueDone, setIssueDone] = useState(false);
-  const [method, setMethod] = useState("cash");
-  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState("");
+  const [tipAmount, setTipAmount] = useState("");
+  const [closeoutLines, setCloseoutLines] = useState<CloseoutLineDraft[]>(() => [newCloseoutLine()]);
   const [error, setError] = useState<string | null>(null);
   const pinInputRef = useRef<TextInput>(null);
 
@@ -920,23 +985,69 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
     setIssueDone(false);
     setIssueKind(null);
     setIssueReason("");
+    setDispatcherName("");
+    setDispatcherReason("");
     setError(null);
   }, [sheet]);
 
-  async function run(kind: "arrival" | "issue" | "collection", overrideIssueKind?: string) {
+  const dispatcherFallbackAllowed = Boolean(jobDetail?.arrival_verification?.dispatcher_fallback_allowed);
+  const canDispatcherVerify = dispatcherName.trim().length >= 2 && dispatcherReason.trim().length >= 3;
+  const closeoutSubtotal = closeoutLines.reduce((sum, line) => sum + moneyValue(line.quantity || "1") * moneyValue(line.unit_amount), 0);
+  const closeoutValidationError = closeoutFormError(closeoutLines, method);
+
+  function updateCloseoutLine(id: string, patch: Partial<CloseoutLineDraft>) {
+    setCloseoutLines((current) => current.map((line) => {
+      if (line.id !== id) return line;
+      const next = { ...line, ...patch };
+      if (patch.item_type_code) {
+        const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === patch.item_type_code);
+        if (spec) {
+          next.taxable = spec.taxable;
+          if (!spec.requiresProvidedBy) next.provided_by = "";
+          if (!spec.requiresNote) next.note = "";
+        }
+      }
+      return next;
+    }));
+  }
+
+  async function run(kind: "arrival" | "issue" | "collection", options: { issueKind?: string; dispatcherVerified?: boolean } = {}) {
     if (!job) return;
     setBusy(true);
     setError(null);
     const mutationId = clientMutationId(kind);
-    const resolvedIssueKind = overrideIssueKind ?? issueKind ?? "cannot_complete";
-    const payload = { pin, kind: resolvedIssueKind, reason: issueReason.trim(), amount: Number.parseFloat(amount || "0"), method };
+    const resolvedIssueKind = options.issueKind ?? issueKind ?? "cannot_complete";
+    const lineItemsPayload = closeoutLines.map((line) => ({
+      item_type_code: line.item_type_code,
+      description: line.description.trim(),
+      quantity: moneyValue(line.quantity || "1"),
+      unit_amount: moneyValue(line.unit_amount),
+      taxable: line.taxable,
+      provided_by: line.provided_by || undefined,
+      note: line.note.trim() || undefined
+    }));
+    const arrivalPayload = options.dispatcherVerified
+      ? { method: "dispatcher_verified", dispatcher_name: dispatcherName.trim(), reason: dispatcherReason.trim(), expected_version: snapshotVersion, client_mutation_id: mutationId }
+      : { pin, expected_version: snapshotVersion, client_mutation_id: mutationId };
+    const outboxPayload = {
+      pin,
+      kind: resolvedIssueKind,
+      reason: issueReason.trim(),
+      arrival_method: options.dispatcherVerified ? "dispatcher_verified" : "pin",
+      dispatcher_name: dispatcherName.trim(),
+      dispatcher_reason: dispatcherReason.trim(),
+      line_items: lineItemsPayload,
+      method,
+      tip_amount: moneyValue(tipAmount),
+      amount: closeoutSubtotal
+    };
     try {
       if (kind === "arrival") {
-        await api.verifyArrival(job.id, { pin, expected_version: snapshotVersion, client_mutation_id: mutationId });
+        await api.verifyArrival(job.id, arrivalPayload);
       } else if (kind === "issue") {
         await api.reportIssue(job.id, { kind: resolvedIssueKind, reason: issueReason.trim(), expected_version: snapshotVersion, client_mutation_id: mutationId });
       } else {
-        await api.reportCollection(job.id, { amount: payload.amount, method, expected_version: snapshotVersion, client_mutation_id: mutationId });
+        await api.reportCollection(job.id, { line_items: lineItemsPayload, method, tip_amount: moneyValue(tipAmount), expected_version: snapshotVersion, client_mutation_id: mutationId });
         await api.updateJobStatus(job.id, "completed_pending_customer", snapshotVersion);
       }
       if (kind === "issue") {
@@ -945,12 +1056,16 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
       } else {
         await onSubmitted(false);
         setPin("");
+        setDispatcherName("");
+        setDispatcherReason("");
         setIssueReason("");
-        setAmount("");
+        setCloseoutLines([newCloseoutLine()]);
+        setTipAmount("");
+        setMethod("");
       }
     } catch (cause) {
       if ((cause instanceof ApiError && cause.problem.status === 0) || cause instanceof TypeError) {
-        await queueLocalMutation(job.id, outboxKind(kind), snapshotVersion, mutationId, payload);
+        await queueLocalMutation(job.id, outboxKind(kind), snapshotVersion, mutationId, outboxPayload);
         if (kind === "issue") {
           setIssueDone(true);
           await onSubmitted(true);
@@ -998,6 +1113,34 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
                 <Text style={styles.pinHint}>The button enables after six digits.</Text>
                 {error ? <AlertBanner text={error} tone="bad" /> : null}
                 <FieldButton disabled={pin.length !== 6} label="Confirm arrival" loading={busy} onPress={() => void run("arrival")} />
+
+                {dispatcherFallbackAllowed ? (
+                  <View style={styles.dispatcherBox}>
+                    <Text style={styles.dispatcherTitle}>Call-center verification</Text>
+                    <Text style={styles.dispatcherHint}>Use this only when dispatch confirms arrival for a call-center intake and the customer has no PIN page available.</Text>
+                    <Text style={styles.fieldLabel}>Dispatcher name or initials</Text>
+                    <TextInput onChangeText={setDispatcherName} placeholder="Example: NR or Nadia" placeholderTextColor={colors.mutedFaint} style={styles.input} value={dispatcherName} />
+                    <Text style={styles.fieldLabel}>Verification note</Text>
+                    <TextInput
+                      multiline
+                      onChangeText={setDispatcherReason}
+                      placeholder="Example: Customer called dispatch and confirmed technician is on site."
+                      placeholderTextColor={colors.mutedFaint}
+                      style={[styles.input, styles.textArea]}
+                      value={dispatcherReason}
+                    />
+                    <FieldButton
+                      disabled={!canDispatcherVerify}
+                      icon={<Ionicons color={colors.info} name="shield-checkmark-outline" size={18} />}
+                      label={busy ? "Verifying…" : "Mark dispatch verified"}
+                      loading={busy}
+                      onPress={() => void run("arrival", { dispatcherVerified: true })}
+                      tone="secondary"
+                    />
+                  </View>
+                ) : (
+                  <Text style={styles.noteBox}>No PIN available? Contact dispatch. Dispatcher override is handled from the provider console for this intake type.</Text>
+                )}
               </View>
             ) : null}
 
@@ -1010,7 +1153,7 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
                   icon={<Ionicons color="#250606" name="warning-outline" size={20} />}
                   label={busy ? "Sending alert…" : issueDone ? "Alert sent" : "I feel unsafe — alert dispatch"}
                   loading={busy}
-                  onPress={() => void run("issue", "unsafe")}
+                  onPress={() => void run("issue", { issueKind: "unsafe" })}
                   tone="danger"
                 />
                 <Pressable onPress={() => void Linking.openURL("tel:911")} style={styles.call911}>
@@ -1055,26 +1198,124 @@ function CommandModal({ job, snapshotVersion, sheet, onClose, onSubmitted }: {
             {sheet === "collection" ? (
               <View>
                 <Text style={sharedStyles.kicker}>Closeout record</Text>
-                <Text style={sharedStyles.title}>Record collection</Text>
-                <Text style={sharedStyles.body}>This is the record, not a payment. ClueXP does not process payout here.</Text>
-                <TextInput
-                  inputMode="decimal"
-                  keyboardType="decimal-pad"
-                  onChangeText={(value) => setAmount(value.replace(/[^0-9.]/g, ""))}
-                  placeholder="Amount"
-                  placeholderTextColor={colors.mutedFaint}
-                  style={styles.input}
-                  value={amount}
-                />
-                <View style={styles.methodRow}>
-                  {["cash", "credit_card", "check", "zelle"].map((item) => (
-                    <Pressable key={item} onPress={() => setMethod(item)} style={[styles.methodChip, method === item ? styles.choiceActive : null]}>
-                      <Text style={styles.choiceText}>{item.replaceAll("_", " ")}</Text>
-                    </Pressable>
-                  ))}
+                <Text style={sharedStyles.title}>What did you complete?</Text>
+                <Text style={sharedStyles.body}>Record what actually happened. ClueXP records this collection; it does not process payment or determine payout.</Text>
+
+                <View style={styles.closeoutLines}>
+                  {closeoutLines.map((line, index) => {
+                    const spec = CLOSEOUT_ITEM_TYPES.find((item) => item.value === line.item_type_code) ?? CLOSEOUT_ITEM_TYPES[0];
+                    return (
+                      <View key={line.id} style={styles.closeoutLineCard}>
+                        <View style={styles.closeoutLineHeader}>
+                          <Text style={styles.closeoutLineKicker}>Item {index + 1}</Text>
+                          {closeoutLines.length > 1 ? (
+                            <Pressable onPress={() => setCloseoutLines((current) => current.filter((item) => item.id !== line.id))}>
+                              <Text style={styles.closeoutRemoveText}>Remove</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.closeoutTypeRow}>
+                          {CLOSEOUT_ITEM_TYPES.map((type) => {
+                            const active = line.item_type_code === type.value;
+                            return (
+                              <Pressable key={type.value} onPress={() => updateCloseoutLine(line.id, { item_type_code: type.value })} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
+                                <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{type.label}</Text>
+                              </Pressable>
+                            );
+                          })}
+                        </ScrollView>
+                        <TextInput
+                          onChangeText={(value) => updateCloseoutLine(line.id, { description: value })}
+                          placeholder={`Describe this ${spec.label.toLowerCase()}`}
+                          placeholderTextColor={colors.mutedFaint}
+                          style={styles.input}
+                          value={line.description}
+                        />
+                        <View style={styles.closeoutAmountRow}>
+                          <TextInput
+                            inputMode="decimal"
+                            keyboardType="decimal-pad"
+                            onChangeText={(value) => updateCloseoutLine(line.id, { quantity: value.replace(/[^0-9.]/g, "") })}
+                            placeholder="Qty"
+                            placeholderTextColor={colors.mutedFaint}
+                            style={[styles.input, styles.closeoutAmountInput]}
+                            value={line.quantity}
+                          />
+                          <TextInput
+                            inputMode="decimal"
+                            keyboardType="decimal-pad"
+                            onChangeText={(value) => updateCloseoutLine(line.id, { unit_amount: value.replace(/[^0-9.]/g, "") })}
+                            placeholder="Amount"
+                            placeholderTextColor={colors.mutedFaint}
+                            style={[styles.input, styles.closeoutAmountInput]}
+                            value={line.unit_amount}
+                          />
+                        </View>
+                        {spec.requiresProvidedBy ? (
+                          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.closeoutTypeRow}>
+                            {PROVIDED_BY_OPTIONS.map((option) => {
+                              const active = line.provided_by === option;
+                              return (
+                                <Pressable key={option} onPress={() => updateCloseoutLine(line.id, { provided_by: option })} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
+                                  <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{option.replaceAll("_", " ")}</Text>
+                                </Pressable>
+                              );
+                            })}
+                          </ScrollView>
+                        ) : null}
+                        {spec.requiresNote ? (
+                          <TextInput
+                            onChangeText={(value) => updateCloseoutLine(line.id, { note: value })}
+                            placeholder="Add context if needed"
+                            placeholderTextColor={colors.mutedFaint}
+                            style={styles.input}
+                            value={line.note}
+                          />
+                        ) : null}
+                      </View>
+                    );
+                  })}
                 </View>
+
+                <Pressable onPress={() => setCloseoutLines((current) => [...current, newCloseoutLine()])} style={styles.addLineButton}>
+                  <Text style={styles.addLineButtonText}>+ Add service or part</Text>
+                </Pressable>
+
+                <View style={styles.closeoutTotalBox}>
+                  <View style={styles.closeoutTotalRow}>
+                    <Text style={styles.closeoutTotalLabel}>Total recorded</Text>
+                    <Text style={styles.closeoutTotalValue}>${closeoutSubtotal.toFixed(2)}</Text>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.closeoutTypeRow}>
+                    {CLOSEOUT_PAYMENT_METHODS.map((item) => {
+                      const active = method === item.value;
+                      return (
+                        <Pressable key={item.value} onPress={() => setMethod(item.value)} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
+                          <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{item.label}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                  <TextInput
+                    inputMode="decimal"
+                    keyboardType="decimal-pad"
+                    onChangeText={(value) => setTipAmount(value.replace(/[^0-9.]/g, ""))}
+                    placeholder="Tip received (optional)"
+                    placeholderTextColor={colors.mutedFaint}
+                    style={styles.input}
+                    value={tipAmount}
+                  />
+                </View>
+
+                {closeoutValidationError ? <Text style={styles.closeoutValidationText}>{closeoutValidationError}</Text> : null}
                 {error ? <AlertBanner text={error} tone="bad" /> : null}
-                <FieldButton disabled={!amount} label="Submit for customer confirmation" loading={busy} onPress={() => void run("collection")} />
+                <FieldButton
+                  disabled={Boolean(closeoutValidationError)}
+                  icon={<Ionicons color={colors.primaryText} name="shield-checkmark-outline" size={18} />}
+                  label={busy ? "Saving…" : "Record closeout"}
+                  loading={busy}
+                  onPress={() => void run("collection")}
+                />
               </View>
             ) : null}
           </ScrollView>
@@ -1197,6 +1438,20 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
   const [photoBusy, setPhotoBusy] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [showDocuments, setShowDocuments] = useState(false);
+  const [showTeam, setShowTeam] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.affiliations()
+      .then((rows) => {
+        if (!cancelled) setPendingInvites(rows.filter((row) => row.status === "pending_invite").length);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function changePhoto() {
     setPhotoError(null);
@@ -1267,6 +1522,21 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
           <Ionicons color={colors.muted} name="chevron-forward" size={16} />
         </Pressable>
 
+        <Pressable onPress={() => setShowTeam(true)} style={styles.linkRow}>
+          <View style={styles.linkRowLeft}>
+            <Ionicons color={colors.muted} name="people-outline" size={18} />
+            <Text style={styles.linkRowText}>Team</Text>
+          </View>
+          <View style={styles.linkRowRight}>
+            {pendingInvites > 0 ? (
+              <View style={styles.linkRowBadge}>
+                <Text style={styles.linkRowBadgeText}>{pendingInvites} invite{pendingInvites === 1 ? "" : "s"}</Text>
+              </View>
+            ) : null}
+            <Ionicons color={colors.muted} name="chevron-forward" size={16} />
+          </View>
+        </Pressable>
+
         <SyncIssuesPanel />
 
         <View style={styles.panel}>
@@ -1280,6 +1550,13 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
         <SafeAreaView style={sharedStyles.screen}>
           <View style={sharedStyles.phoneFrame}>
             <DocumentsScreen api={api} onClose={() => setShowDocuments(false)} />
+          </View>
+        </SafeAreaView>
+      </Modal>
+      <Modal animationType="slide" onRequestClose={() => setShowTeam(false)} visible={showTeam}>
+        <SafeAreaView style={sharedStyles.screen}>
+          <View style={sharedStyles.phoneFrame}>
+            <TeamScreen api={api} onClose={() => setShowTeam(false)} />
           </View>
         </SafeAreaView>
       </Modal>
@@ -2100,6 +2377,130 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     padding: 12
   },
+  dispatcherBox: {
+    backgroundColor: "rgba(98, 168, 255, 0.06)",
+    borderColor: colors.info,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    gap: 10,
+    marginTop: 20,
+    padding: 14
+  },
+  dispatcherTitle: {
+    color: colors.info,
+    fontSize: 20,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  dispatcherHint: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 19
+  },
+  closeoutLines: {
+    gap: 12,
+    marginTop: 16
+  },
+  closeoutLineCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    gap: 8,
+    padding: 12
+  },
+  closeoutLineHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between"
+  },
+  closeoutLineKicker: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase"
+  },
+  closeoutRemoveText: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  closeoutTypeRow: {
+    flexGrow: 0
+  },
+  typeChip: {
+    backgroundColor: colors.cardStrong,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: "center",
+    marginRight: 8,
+    minHeight: 36,
+    paddingHorizontal: 14
+  },
+  typeChipActive: {
+    backgroundColor: "rgba(255, 191, 0, 0.12)",
+    borderColor: colors.primary
+  },
+  typeChipText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "capitalize"
+  },
+  typeChipTextActive: {
+    color: colors.primary
+  },
+  closeoutAmountRow: {
+    flexDirection: "row",
+    gap: 8
+  },
+  closeoutAmountInput: {
+    flex: 1
+  },
+  addLineButton: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderStyle: "dashed",
+    borderWidth: 1,
+    justifyContent: "center",
+    marginTop: 12,
+    minHeight: 46
+  },
+  addLineButtonText: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: "700"
+  },
+  closeoutTotalBox: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    gap: 10,
+    marginTop: 16,
+    padding: 14
+  },
+  closeoutTotalRow: {
+    flexDirection: "row",
+    justifyContent: "space-between"
+  },
+  closeoutTotalLabel: {
+    color: colors.muted,
+    fontSize: 14
+  },
+  closeoutTotalValue: {
+    color: colors.foreground,
+    fontSize: 20,
+    fontWeight: "900"
+  },
+  closeoutValidationText: {
+    color: colors.primary,
+    fontSize: 12,
+    marginTop: 10,
+    textAlign: "center"
+  },
   noticeBox: {
     backgroundColor: "rgba(255, 191, 0, 0.08)",
     borderColor: colors.border,
@@ -2222,6 +2623,24 @@ const styles = StyleSheet.create({
   linkRowText: {
     color: colors.foreground,
     fontSize: 14,
+    fontWeight: "800"
+  },
+  linkRowRight: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8
+  },
+  linkRowBadge: {
+    backgroundColor: "rgba(255, 191, 0, 0.12)",
+    borderColor: colors.primary,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3
+  },
+  linkRowBadgeText: {
+    color: colors.primary,
+    fontSize: 10,
     fontWeight: "800"
   },
   sectionKicker: {

@@ -7,8 +7,10 @@ import type {
   LoginResponse,
   ReadinessSnapshot,
   SettlementPayload,
+  TechnicianAffiliation,
   TechnicianDocument,
   TechnicianOffer,
+  TechnicianOrganization,
   TechPayment
 } from "../types";
 import type { ServiceCategory } from "../data/serviceCatalog";
@@ -329,5 +331,30 @@ export class CluexpApi {
       method: "POST",
       body: JSON.stringify(payload)
     });
+  }
+
+  async affiliations(): Promise<TechnicianAffiliation[]> {
+    const body = await this.request<{ affiliations: TechnicianAffiliation[] }>("/technicians/me/affiliations");
+    return body.affiliations ?? [];
+  }
+
+  async organizations(): Promise<TechnicianOrganization[]> {
+    const body = await this.request<{ organizations: TechnicianOrganization[] }>("/technicians/me/organizations");
+    return body.organizations ?? [];
+  }
+
+  async acceptAffiliation(affiliationId: string): Promise<{ affiliation: TechnicianAffiliation; message: string }> {
+    return this.request(`/technicians/me/affiliations/${encodeURIComponent(affiliationId)}/accept`, { method: "POST" });
+  }
+
+  async declineAffiliation(affiliationId: string, reason?: string): Promise<{ affiliation: TechnicianAffiliation; message: string }> {
+    return this.request(`/technicians/me/affiliations/${encodeURIComponent(affiliationId)}/decline`, {
+      method: "POST",
+      body: JSON.stringify(reason ? { decline_reason: reason } : {})
+    });
+  }
+
+  async leaveAffiliation(affiliationId: string): Promise<{ affiliation: TechnicianAffiliation; message: string }> {
+    return this.request(`/technicians/me/affiliations/${encodeURIComponent(affiliationId)}/leave`, { method: "POST" });
   }
 }
