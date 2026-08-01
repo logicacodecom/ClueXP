@@ -3783,3 +3783,96 @@ Build note:
 Residual risk: review was code/static verification only. Photo/document upload,
 image/document pickers, push registration, and new parity screens still need
 real Android device QA with the latest parity APK/session.
+
+### 2026-08-01 — Claude: closed the four remaining parity gaps (Team, itemized
+closeout, dispatcher-fallback arrival, real map)
+
+User asked directly why these four weren't already done, then asked for all
+four. Same standard as the earlier autonomous pass: confirmed each backend
+contract in `apps/intake-web/api/main.py` before writing any native UI.
+
+**Team / company affiliations** (`6dd647d`) — technician-web's `/team` (accept/
+decline provider invites, leave an active affiliation, view history) had no
+native equivalent; a technician invited to a company had no way to accept it
+from the app. This wasn't in the original 9-item parity list — found only by
+re-reading `profile/page.tsx`'s "Companies" link when asked to audit remaining
+gaps.
+- Wired `GET /technicians/me/affiliations`, `GET /technicians/me/organizations`,
+  and the accept/decline/leave endpoints (confirmed shapes against
+  `store.list_technician_affiliations`/`list_technician_organizations`).
+- New `TeamScreen.tsx`, opened as a modal from an Account "Team" row with a
+  pending-invite count badge (mirrors web's profile-page badge).
+
+**Itemized closeout** (`6dd647d`) — native's collection sheet only took a lump
+amount + method. Replaced it with the same multi-line entry technician-web has
+(item type, description, qty, unit amount, provided-by/note where the item
+type requires it, running subtotal, tip, payment method), mirroring
+`active-job-workflow.tsx`'s `CLOSEOUT_ITEM_TYPES` and validation logic exactly
+— including matching web's own choice to hardcode the item-type list locally
+rather than fetch the public `GET /closeout-item-types`.
+
+**Dispatcher-fallback arrival verification** (`6dd647d`) — the arrival sheet was
+PIN-only, so a technician on a no-PIN call-center job (surfaced via
+`arrival_verification.dispatcher_fallback_allowed` from the Slice F active-job
+enrichment fetch) had no way to check in. Added web's "call-center
+verification" path: dispatcher name + note → `POST .../arrival/verify` with
+`method=dispatcher_verified`. Confirmed the backend already validates this
+exact shape (voice-channel-only, min-length checks on both fields) before
+building against it.
+- Updated `outboxReplay.ts`'s `replayOne` so a queued-offline dispatcher-verified
+  arrival or itemized collection replays with its real payload on reconnect
+  instead of the old pin-only/amount-only shape, which would have silently
+  dropped line items or dispatcher fields. Legacy simple-shaped queued rows
+  still replay via the old path (the backend accepts both).
+
+**Real embedded map** (`50cfbaa`) — native's active-job screen had a static
+panel only. Installed `react-native-maps` + `expo-constants`
+(`npx expo install`, SDK 57-matched). New `ActiveJobMap` component (+
+`.web.tsx` shim, since `react-native-maps` has no web implementation — same
+platform-extension pattern as this app's other native-only capabilities)
+renders the real job location on a live `MapView` (`PROVIDER_DEFAULT`: Apple
+Maps on iOS needs no key at all; Google Maps on Android needs one).
+- Deliberately does **not** plot web's synthetic technician marker
+  (`FieldMapPanel`'s `job.lat+0.012` offset labeled "You") — that's a
+  fabricated position, and this app's map fallback already commits to "GPS is
+  honest. No simulated movement is shown." Only the real job location is
+  plotted.
+- `app.json` got the `react-native-maps` config plugin with **no API key**. I
+  have no Google Cloud Console access, and the only Maps key in this repo
+  (`NEXT_PUBLIC_MAPS_BROWSER_KEY`) is HTTP-referrer-restricted for the
+  browser JS Maps API — the wrong product and restriction type for a native
+  Android SDK key, which needs "Android apps" restriction tied to
+  `com.cluexp.technician`'s package name + the EAS keystore's SHA-1
+  fingerprint. Shipping a wrong-scoped or unrestricted key inside a
+  distributed APK would be a real security exposure, so `ActiveJobMap` checks
+  for a configured key at runtime (`Constants.expoConfig`) and renders
+  nothing — falling back to the existing static panel — when absent.
+  **To activate on Android:** create that scoped key, then set
+  `["react-native-maps", {"androidGoogleMapsApiKey": "<key>"}]` in app.json.
+  iOS needs no key and will render real Apple Maps as soon as it's unblocked
+  from Apple signing credentials.
+- Confirmed via `expo export --platform web` that the `.web.tsx` shim actually
+  works (400 modules, clean bundle, no native map code pulled into the web
+  build) — the one real risk with this change, since without the shim
+  `react-native-maps` would break `npm run web` outright.
+
+Verification (all four slices): `npm run typecheck`, `npm run test:api` (4
+passed), `npx expo-doctor` (20/20), `npx expo export --platform web` (clean),
+`npx expo prebuild --no-install` (clean — confirmed no bogus Maps API key
+meta-data got written into `AndroidManifest.xml` without a real key),
+`git diff --check` — all passed on every slice, generated `android/`/`ios/`/
+`.expo-web-preview` cleaned after each check.
+
+Build:
+- New Android preview build submitted from `50cfbaa` (all four slices +
+  react-native-maps native module):
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/5b83aa2c-b928-4a34-849f-d5d3aec45325`
+
+Still open, unchanged: itemized closeout and photo capture are now write-
+capable from the technician side (this session), but the intake-photo *read*
+path (Slice F) still can't be exercised on a real device — no
+simulator/device available in this environment. Same for everything else
+built this session: build/typecheck-verified only, not device-verified.
+Full Spanish localization beyond the sign-in toggle, and the monorepo Metro
+resolution gap (`@cluexp/api-client`/`@cluexp/app-core` still unreachable from
+technician-native), remain as noted in the earlier parity memo.
