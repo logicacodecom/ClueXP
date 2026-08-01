@@ -3614,3 +3614,34 @@ Builds:
 Remaining for real push: create/provide Firebase project config for Android package
 `com.cluexp.technician`, add the `google-services.json` path to app config or EAS
 credentials flow, rebuild, then provision APNs/FCM send credentials/server send path.
+
+### 2026-08-01 — Codex: Android Firebase config added
+
+User provided `google-services.json`; verified it targets Android package
+`com.cluexp.technician`.
+
+Fix pushed:
+- `1474d45` — `chore: configure android firebase services`
+  - Added `apps/technician-native/google-services.json`.
+  - Added `android.googleServicesFile="./google-services.json"` in
+    `apps/technician-native/app.json`.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npx expo-doctor` → 20/20 passed.
+- `npx expo export --platform web --output-dir .expo-web-preview` → passed; export
+  cleaned afterward.
+- `npx expo prebuild --no-install` → passed with the existing Expo warning that
+  `react-native@0.86.2` is used instead of recommended `0.86.0`.
+- `git diff --check` → passed.
+
+Builds:
+- Pre-Firebase friendly-error Android APK from `a048a24` finished:
+  `https://expo.dev/artifacts/eas/qZdnNHEHEOfSAakKXIksyTLtiT_kSgKTFgsoqlfGLd0.apk`
+- Firebase-configured Android build from `1474d45` submitted:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/0a17f33c-8ace-4f13-9914-c045b09edf12`
+
+Next: wait for the `0a17f33c...` APK, install it on Android, tap Enable alerts, and
+verify `/technicians/me/devices` registration + readiness no longer reports
+`push_not_ready`.
