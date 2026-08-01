@@ -16,6 +16,22 @@ export async function queuedMutations(_limit = 25): Promise<QueuedMutation[]> {
   return [];
 }
 
+export type FailedMutation = {
+  clientMutationId: string;
+  jobId: string;
+  kind: QueuedMutation["kind"];
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export async function failedMutationCount() {
+  return 0;
+}
+
+export async function failedMutations(_limit = 25): Promise<FailedMutation[]> {
+  return [];
+}
+
 export async function markMutationDone(_clientMutationId: string) {
   return;
 }

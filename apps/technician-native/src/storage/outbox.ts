@@ -113,6 +113,44 @@ export async function queuedMutations(limit = 25): Promise<QueuedMutation[]> {
   }));
 }
 
+export type FailedMutation = {
+  clientMutationId: string;
+  jobId: string;
+  kind: QueuedMutation["kind"];
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export async function failedMutationCount() {
+  const conn = await db();
+  const row = await conn.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM mutation_outbox WHERE state = 'failed'"
+  );
+  return row?.count ?? 0;
+}
+
+export async function failedMutations(limit = 25): Promise<FailedMutation[]> {
+  const conn = await db();
+  const rows = await conn.getAllAsync<{
+    client_mutation_id: string;
+    job_id: string;
+    kind: QueuedMutation["kind"];
+    last_error: string | null;
+    updated_at: string;
+  }>(
+    "SELECT client_mutation_id, job_id, kind, last_error, updated_at " +
+      "FROM mutation_outbox WHERE state = 'failed' ORDER BY updated_at DESC LIMIT ?",
+    limit
+  );
+  return rows.map((row) => ({
+    clientMutationId: row.client_mutation_id,
+    jobId: row.job_id,
+    kind: row.kind,
+    lastError: row.last_error,
+    updatedAt: row.updated_at
+  }));
+}
+
 export async function markMutationDone(clientMutationId: string) {
   const conn = await db();
   await conn.runAsync(

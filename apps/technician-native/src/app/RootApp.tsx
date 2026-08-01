@@ -35,9 +35,10 @@ import { DocumentsScreen } from "../screens/DocumentsScreen";
 import { EarningsScreen } from "../screens/EarningsScreen";
 import { ProfileEditor } from "../screens/ProfileEditor";
 import { clearStoredSession, loadStoredSession, saveStoredSession, updateStoredSession } from "../storage/sessionStore";
-import { enqueueMutation, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
+import { enqueueMutation, failedMutationCount, failedMutations, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
+import type { FailedMutation } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
-import type { ActiveJob, ActiveJobSnapshot, AuthSession, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
+import type { ActiveJob, ActiveJobDetail, ActiveJobSnapshot, AuthSession, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
 
 type CommandSheet = "arrival" | "safety" | "more" | "collection" | "messages" | "call" | null;
 type WorkHint = { kind: "work" | "job" | "offer"; id?: string; source: "link" | "notification" } | null;
@@ -160,6 +161,7 @@ export function RootApp() {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [tab, setTab] = useState<TabKey>("work");
   const [queueCount, setQueueCount] = useState(0);
+  const [failedCount, setFailedCount] = useState(0);
   const [workHint, setWorkHint] = useState<WorkHint>(null);
 
   const hardSignOut = useCallback(async () => {
@@ -169,6 +171,7 @@ export function RootApp() {
     setAccessToken(null);
     setSession(null);
     setQueueCount(0);
+    setFailedCount(0);
     setTab("work");
   }, []);
 
@@ -213,8 +216,11 @@ export function RootApp() {
             setSession(fresh);
           }
         }
-        const count = await queuedMutationCount();
-        if (mounted) setQueueCount(count);
+        const [count, failed] = await Promise.all([queuedMutationCount(), failedMutationCount()]);
+        if (mounted) {
+          setQueueCount(count);
+          setFailedCount(failed);
+        }
       } finally {
         if (mounted) setBooting(false);
       }
@@ -277,13 +283,16 @@ export function RootApp() {
         setAccessToken(null);
         setSession(null);
         setQueueCount(0);
+        setFailedCount(0);
         setTab("work");
       }
     });
   }, []);
 
   const refreshQueue = useCallback(async () => {
-    setQueueCount(await queuedMutationCount());
+    const [count, failed] = await Promise.all([queuedMutationCount(), failedMutationCount()]);
+    setQueueCount(count);
+    setFailedCount(failed);
   }, []);
 
   const refreshSession = useCallback(async () => {
@@ -315,8 +324,8 @@ export function RootApp() {
       <StatusBar style="light" />
       <View style={sharedStyles.phoneFrame}>
         <View style={styles.root}>
-          <Header onAvatarPress={() => setTab("account")} queueCount={queueCount} session={session} />
-          {tab === "work" ? <WorkScreen hint={workHint} onHintConsumed={() => setWorkHint(null)} onQueueChanged={refreshQueue} session={session} /> : null}
+          <Header failedCount={failedCount} onAvatarPress={() => setTab("account")} queueCount={queueCount} session={session} />
+          {tab === "work" ? <WorkScreen failedCount={failedCount} hint={workHint} onHintConsumed={() => setWorkHint(null)} onQueueChanged={refreshQueue} queueCount={queueCount} session={session} /> : null}
           {tab === "activity" ? <ActivityScreen api={api} /> : null}
           {tab === "earnings" ? <EarningsScreen api={api} /> : null}
           {tab === "account" ? <AccountScreen onLogout={onLogout} onSessionRefresh={refreshSession} session={session} /> : null}
@@ -409,28 +418,31 @@ function AvatarContent({ photoUrl, initials, textStyle }: { photoUrl?: string | 
   return <Text style={textStyle}>{initials}</Text>;
 }
 
-function Header({ session, queueCount, onAvatarPress }: { session: AuthSession; queueCount: number; onAvatarPress: () => void }) {
+function Header({ session, queueCount, failedCount, onAvatarPress }: { session: AuthSession; queueCount: number; failedCount: number; onAvatarPress: () => void }) {
   const name = session.user?.display_name || session.user?.email || "Technician";
   return (
     <View style={styles.header}>
       <Logo height={20} />
       <Pressable accessibilityLabel="Open account" accessibilityRole="button" onPress={onAvatarPress} style={styles.avatar}>
         <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.avatarText} />
-        {queueCount > 0 ? <View style={styles.avatarBadge} /> : null}
+        {failedCount > 0 ? <View style={[styles.avatarBadge, styles.avatarBadgeDanger]} /> : queueCount > 0 ? <View style={styles.avatarBadge} /> : null}
       </Pressable>
     </View>
   );
 }
 
-function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
+function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount, failedCount }: {
   session: AuthSession;
   hint: WorkHint;
   onHintConsumed: () => void;
+  queueCount: number;
+  failedCount: number;
   onQueueChanged: () => Promise<void>;
 }) {
   const technicianId = session.technician?.id;
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null);
   const [snapshot, setSnapshot] = useState<ActiveJobSnapshot | null>(null);
+  const [jobDetail, setJobDetail] = useState<ActiveJobDetail | null>(null);
   const [offers, setOffers] = useState<TechnicianOffer[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -453,6 +465,19 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
       setOffers(offerFeed.offers.filter((offer) => offer.status === "offered" || offer.status === "seen"));
       setError(null);
       setOnline(true);
+      if (active.active_job && technicianId) {
+        // Read-only enrichment (customer detail, intake photos, recorded
+        // collection, approval status). The snapshot above stays the only
+        // source for version/mutations, so a failure here is silent — it
+        // just means that extra detail stays hidden, nothing breaks.
+        try {
+          setJobDetail(await api.activeJobDetail(technicianId));
+        } catch {
+          setJobDetail(null);
+        }
+      } else {
+        setJobDetail(null);
+      }
     } catch (cause) {
       setError(errorMessage(cause));
       // Same "network-level failure" heuristic the outbox already uses to
@@ -589,8 +614,13 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
       >
         {hint ? <AlertBanner text={`Opened ${hint.kind}${hint.id ? ` ${hint.id.slice(0, 8)}` : ""} from ${hint.source}. Refreshing server state.`} tone="warn" /> : null}
         {error ? <AlertBanner text={error} tone="bad" /> : null}
+        {failedCount > 0 ? (
+          <AlertBanner text={`${failedCount} action${failedCount === 1 ? "" : "s"} could not sync and ${failedCount === 1 ? "was" : "were"} not applied. Open Account to review, or contact dispatch if this was a job update.`} tone="bad" />
+        ) : queueCount > 0 ? (
+          <AlertBanner text={`${queueCount} action${queueCount === 1 ? "" : "s"} queued offline — will sync automatically once you're back online.`} tone="warn" />
+        ) : null}
         {job ? (
-          <ActiveJobCard allowedActions={snapshot?.allowed_actions ?? []} busy={busy} job={job} onAdvance={advanceJob} onSheet={setSheet} version={snapshot?.version ?? null} />
+          <ActiveJobCard allowedActions={snapshot?.allowed_actions ?? []} busy={busy} job={job} jobDetail={jobDetail} onAdvance={advanceJob} onSheet={setSheet} version={snapshot?.version ?? null} />
         ) : (
           <>
             <ReadinessBar busy={busy} onLocation={repairLocation} online={online} onPush={repairPush} onSetAvailable={setAvailability} readiness={readiness} />
@@ -693,8 +723,9 @@ function OfferCard({ offer, moreCount, busy, onAccept, onDecline }: {
   );
 }
 
-function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet }: {
+function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvance, onSheet }: {
   job: ActiveJob;
+  jobDetail: ActiveJobDetail | null;
   version: string | null;
   allowedActions: string[];
   busy: boolean;
@@ -720,11 +751,13 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
 
   const detail = recordValue(job.detail);
   const automotive = recordValue(detail.automotive);
-  const customerName = stringValue(detail.customer_name) || stringValue(detail.customerName);
-  const customerPhone = stringValue(detail.customer_phone) || stringValue(detail.customerPhone);
+  const customerName = jobDetail?.customer_name || stringValue(detail.customer_name) || stringValue(detail.customerName);
+  const customerPhone = jobDetail?.customer_phone || stringValue(detail.customer_phone) || stringValue(detail.customerPhone);
   const vehicle = [stringValue(automotive.year), stringValue(automotive.color), stringValue(automotive.make), stringValue(automotive.model)].filter(Boolean).join(" ") || null;
   const notes = stringValue(detail.additional_details) || stringValue(detail.notes) || stringValue(detail.description);
   const hasDetails = Boolean(customerName || customerPhone || vehicle || notes);
+  const intakePhotos = jobDetail?.intake_photos ?? [];
+  const collectionItems = jobDetail?.collection_items ?? [];
 
   return (
     <View style={styles.activeWrap}>
@@ -739,6 +772,18 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
         </View>
         <Text style={styles.mapTruth}>GPS is honest. No simulated movement is shown.</Text>
       </View>
+
+      {job.location_requirements?.location_updated_at ? (
+        <View style={styles.freshnessRow}>
+          <View style={[styles.freshnessDot, job.location_requirements.location_is_fresh ? styles.freshnessDotGood : styles.freshnessDotWarn]} />
+          <Text style={styles.freshnessText}>
+            Dispatch sees your location:{" "}
+            <Text style={job.location_requirements.location_is_fresh ? styles.freshnessGood : styles.freshnessWarn}>
+              {job.location_requirements.location_is_fresh ? "fresh" : "stale"}
+            </Text>
+          </Text>
+        </View>
+      ) : null}
 
       <View>
         <View style={styles.stageHeaderRow}>
@@ -761,9 +806,21 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
           <Text style={styles.pendingKicker}>Job {job.id.slice(0, 8)}</Text>
           <Text style={styles.pendingText}>The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</Text>
           <View style={styles.pendingStatusRow}>
+            <Text style={styles.pendingStatusLabel}>Customer approval</Text>
+            <Text style={[styles.pendingStatusValue, jobDetail?.approval_status === "disputed" ? styles.pendingStatusDanger : null]}>
+              {jobDetail?.approval_status === "approved" ? "Approved" :
+               jobDetail?.approval_status === "disputed" ? "Disputed — dispatch mediating" :
+               jobDetail?.approval_status === "expired" ? "Confirmation window expired" :
+               "Awaiting confirmation"}
+            </Text>
+          </View>
+          <View style={styles.pendingStatusRow}>
             <Text style={styles.pendingStatusLabel}>Your status</Text>
             <Text style={styles.pendingStatusValue}>Busy · no new offers</Text>
           </View>
+          {jobDetail?.approval_url && /^https?:\/\//.test(jobDetail.approval_url) ? (
+            <FieldButton icon={<Ionicons color={colors.foreground} name="open-outline" size={17} />} label="View approval status" onPress={() => void Linking.openURL(jobDetail.approval_url as string)} tone="secondary" />
+          ) : null}
         </View>
       ) : (
         <>
@@ -792,9 +849,42 @@ function ActiveJobCard({ job, version, allowedActions, busy, onAdvance, onSheet 
               {notes ? <DetailRow label="Job notes" value={notes} /> : null}
             </View>
           ) : null}
+          {intakePhotos.length > 0 ? (
+            <View style={styles.photosBlock}>
+              <Text style={sharedStyles.kicker}>Customer intake photos</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
+                {intakePhotos.map((photo, index) => (
+                  <Pressable key={`${photo.url}-${index}`} onPress={() => void Linking.openURL(photo.url)} style={styles.photoThumbWrap}>
+                    <Image accessibilityLabel={photo.label || `Intake photo ${index + 1}`} resizeMode="cover" source={{ uri: photo.url }} style={styles.photoThumb} />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
           {mapsUrl ? <FieldButton icon={<Ionicons color={colors.foreground} name="navigate" size={19} />} label="Open in maps" onPress={() => void Linking.openURL(mapsUrl)} tone="secondary" /> : null}
         </>
       )}
+
+      {collectionItems.length > 0 ? (
+        <View style={styles.detailsCard}>
+          <Text style={sharedStyles.kicker}>Recorded collection</Text>
+          {collectionItems.map((item, index) => (
+            <View key={`${item.description}-${index}`} style={styles.collectionRow}>
+              <Text style={styles.collectionDescription} numberOfLines={1}>
+                {item.description}{item.provided_by ? ` · provided by ${item.provided_by}` : ""}
+              </Text>
+              {item.amount != null ? <Text style={styles.collectionAmount}>${item.amount.toFixed(2)}</Text> : null}
+            </View>
+          ))}
+          {jobDetail?.collection_total != null ? (
+            <View style={styles.collectionTotalRow}>
+              <Text style={styles.collectionTotalLabel}>Total recorded</Text>
+              <Text style={styles.collectionTotalValue}>${jobDetail.collection_total.toFixed(2)}</Text>
+            </View>
+          ) : null}
+          <Text style={styles.collectionNote}>ClueXP records this collection; it does not process payment or determine payout.</Text>
+        </View>
+      ) : null}
 
       {version ? <Text style={styles.truthText}>server-verified version {version}</Text> : null}
       {!pendingCustomer ? <FieldButton disabled={!next} label={actionLabel} loading={busy} onPress={() => (next ? onAdvance(next) : undefined)} /> : null}
@@ -1068,6 +1158,38 @@ function AlertBanner({ text, tone }: { text: string; tone: "bad" | "warn" }) {
   );
 }
 
+function mutationLabel(kind: FailedMutation["kind"]) {
+  if (kind === "arrival_verify") return "Arrival verification";
+  if (kind === "report_issue") return "Problem report";
+  if (kind === "collection") return "Collection record";
+  return "Status update";
+}
+
+function SyncIssuesPanel() {
+  const [failed, setFailed] = useState<FailedMutation[]>([]);
+
+  useEffect(() => {
+    void failedMutations().then(setFailed).catch(() => undefined);
+  }, []);
+
+  if (failed.length === 0) return null;
+
+  return (
+    <View style={styles.syncPanel}>
+      <Text style={styles.syncPanelTitle}>Actions that could not sync</Text>
+      <Text style={styles.syncPanelHint}>These job actions were not applied to the server. Contact dispatch if the job still needs this update — the app will not retry them automatically.</Text>
+      <View style={styles.syncPanelList}>
+        {failed.map((item) => (
+          <View key={item.clientMutationId} style={styles.syncPanelRow}>
+            <Text style={styles.syncPanelRowTitle}>{mutationLabel(item.kind)} · job {item.jobId.slice(0, 8)}</Text>
+            <Text style={styles.syncPanelRowDetail}>{item.lastError || "Unknown error"}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthSession; onLogout: () => Promise<void>; onSessionRefresh: () => Promise<void> }) {
   const name = session.user?.display_name || "Technician";
   const vetting = session.technician?.vetting_status ?? "verified";
@@ -1144,6 +1266,8 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
           </View>
           <Ionicons color={colors.muted} name="chevron-forward" size={16} />
         </Pressable>
+
+        <SyncIssuesPanel />
 
         <View style={styles.panel}>
           <Text style={sharedStyles.kicker}>Native storage</Text>
@@ -1278,6 +1402,9 @@ const styles = StyleSheet.create({
     top: -2,
     width: 12
   },
+  avatarBadgeDanger: {
+    backgroundColor: colors.danger
+  },
   content: {
     flex: 1
   },
@@ -1291,6 +1418,43 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 20,
     padding: 16
+  },
+  syncPanel: {
+    backgroundColor: colors.cautionBg,
+    borderColor: colors.cautionBorder,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    gap: 8,
+    padding: 14
+  },
+  syncPanelTitle: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  syncPanelHint: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 17
+  },
+  syncPanelList: {
+    gap: 8
+  },
+  syncPanelRow: {
+    backgroundColor: colors.background,
+    borderRadius: radius.xs,
+    padding: 10
+  },
+  syncPanelRowTitle: {
+    color: colors.foreground,
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  syncPanelRowDetail: {
+    color: colors.dangerSoft,
+    fontSize: 12,
+    marginTop: 3
   },
   readyWrap: {
     alignItems: "center",
@@ -1492,6 +1656,34 @@ const styles = StyleSheet.create({
     textAlign: "center",
     textTransform: "uppercase"
   },
+  freshnessRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8
+  },
+  freshnessDot: {
+    borderRadius: 4,
+    height: 7,
+    width: 7
+  },
+  freshnessDotGood: {
+    backgroundColor: colors.success
+  },
+  freshnessDotWarn: {
+    backgroundColor: colors.primary
+  },
+  freshnessText: {
+    color: colors.muted,
+    fontSize: 12
+  },
+  freshnessGood: {
+    color: colors.success,
+    fontWeight: "700"
+  },
+  freshnessWarn: {
+    color: colors.primary,
+    fontWeight: "700"
+  },
   stageHeaderRow: {
     alignItems: "center",
     flexDirection: "row",
@@ -1616,6 +1808,61 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontWeight: "700"
   },
+  photosBlock: {
+    gap: 8
+  },
+  photoRow: {
+    flexGrow: 0
+  },
+  photoThumbWrap: {
+    borderRadius: radius.xs,
+    height: 76,
+    marginRight: 8,
+    overflow: "hidden",
+    width: 76
+  },
+  photoThumb: {
+    height: "100%",
+    width: "100%"
+  },
+  collectionRow: {
+    alignItems: "baseline",
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between"
+  },
+  collectionDescription: {
+    color: colors.foreground,
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700"
+  },
+  collectionAmount: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "900"
+  },
+  collectionTotalRow: {
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingTop: 10
+  },
+  collectionTotalLabel: {
+    color: colors.muted,
+    fontSize: 13
+  },
+  collectionTotalValue: {
+    color: colors.foreground,
+    fontSize: 16,
+    fontWeight: "900"
+  },
+  collectionNote: {
+    color: colors.mutedFaint,
+    fontSize: 11,
+    lineHeight: 16
+  },
   truthText: {
     color: colors.successSoft,
     fontFamily: "monospace",
@@ -1675,6 +1922,9 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontSize: 13,
     fontWeight: "800"
+  },
+  pendingStatusDanger: {
+    color: colors.danger
   },
   rail: {
     flexDirection: "row",
