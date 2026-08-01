@@ -19,6 +19,8 @@ import {
   View
 } from "react-native";
 import { ApiError, CluexpApi } from "../api/client";
+import { ActiveJobMap, canRenderActiveJobMap } from "../components/ActiveJobMap";
+import type { MapPoint } from "../components/ActiveJobMap";
 import { BottomNav, type TabKey } from "../components/BottomNav";
 import { Countdown } from "../components/Countdown";
 import { FieldButton } from "../components/FieldButton";
@@ -819,19 +821,24 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
   const hasDetails = Boolean(customerName || customerPhone || vehicle || notes);
   const intakePhotos = jobDetail?.intake_photos ?? [];
   const collectionItems = jobDetail?.collection_items ?? [];
+  const mapPoints: MapPoint[] = job.lat != null && job.lng != null ? [{ kind: "job", label: job.address ?? undefined, lat: job.lat, lng: job.lng }] : [];
+  const showRealMap = canRenderActiveJobMap(mapPoints);
 
   return (
     <View style={styles.activeWrap}>
       <View style={styles.mapFallback}>
+        {showRealMap ? <ActiveJobMap points={mapPoints} /> : null}
         <View style={styles.mapBadge}>
           <Ionicons color={colors.success} name="locate" size={13} />
           <Text style={styles.mapBadgeText}>GPS live</Text>
         </View>
-        <View style={styles.mapGrid}>
-          <MaterialCommunityIcons color={colors.primary} name="map-marker-radius-outline" size={34} />
-          <Text style={styles.mapText}>{job.address || "Service address unavailable"}</Text>
-        </View>
-        <Text style={styles.mapTruth}>GPS is honest. No simulated movement is shown.</Text>
+        {!showRealMap ? (
+          <View style={styles.mapGrid}>
+            <MaterialCommunityIcons color={colors.primary} name="map-marker-radius-outline" size={34} />
+            <Text style={styles.mapText}>{job.address || "Service address unavailable"}</Text>
+          </View>
+        ) : null}
+        <Text style={[styles.mapTruth, showRealMap ? styles.mapTruthOverlay : null]}>GPS is honest. No simulated movement is shown.</Text>
       </View>
 
       {job.location_requirements?.location_updated_at ? (
@@ -1932,6 +1939,15 @@ const styles = StyleSheet.create({
     fontSize: 10,
     textAlign: "center",
     textTransform: "uppercase"
+  },
+  mapTruthOverlay: {
+    backgroundColor: "rgba(14, 14, 14, 0.85)",
+    borderRadius: 999,
+    bottom: 12,
+    left: 12,
+    paddingVertical: 7,
+    position: "absolute",
+    right: 12
   },
   freshnessRow: {
     alignItems: "center",

@@ -59,7 +59,8 @@
         {
           "photosPermission": "ClueXP uses your photo library to update your profile headshot."
         }
-      ]
+      ],
+      "react-native-maps"
     ],
     "extra": {
       "eas": {
