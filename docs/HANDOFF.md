@@ -3878,3 +3878,56 @@ built this session: build/typecheck-verified only, not device-verified.
 Full Spanish localization beyond the sign-in toggle, and the monorepo Metro
 resolution gap (`@cluexp/api-client`/`@cluexp/app-core` still unreachable from
 technician-native), remain as noted in the earlier parity memo.
+
+### 2026-08-01 — Codex: Android Maps key configured + closeout replay review fix
+
+Pushed two follow-up fixes to `main` after reviewing Claude's Team/closeout/
+dispatcher-fallback/map parity work.
+
+Commits:
+- `51f2191` — `fix: preserve offline closeout completion`
+  - `RootApp.tsx` closeout now handles a partial network failure between the
+    two closeout writes. If `reportCollection()` succeeds but the follow-up
+    `updateJobStatus(..., "completed_pending_customer")` hits a network-level
+    failure, native queues a separate `status` outbox mutation so replay can
+    finish the workflow instead of stranding the technician in `in_progress`.
+  - Also fixed the active-job map badge so it says `GPS live` only when the
+    embedded map actually renders; fallback states now say `Map unavailable`
+    or `Address only`.
+- `f7c2366` — `chore: configure android maps api key`
+  - `apps/technician-native/app.json` now configures the `react-native-maps`
+    Expo plugin with the Android Maps SDK key.
+  - Verified `expo prebuild --no-install` writes
+    `com.google.android.geo.API_KEY` into the generated Android manifest.
+
+Android Maps restriction details for Google Cloud:
+- Package name: `com.cluexp.technician`
+- EAS keystore SHA-1:
+  `AC:FC:9D:F7:55:2F:60:3F:0C:4E:2F:11:BC:B4:D2:B8:16:FF:9F:34`
+- API restriction: Maps SDK for Android only.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` — passed.
+- `npm run test:api --workspace @cluexp/technician-native` — 4 passed.
+- `npx expo prebuild --no-install` — passed.
+- `npx expo-doctor` — 20/20 passed.
+- `git diff --check` — passed.
+
+Fresh Android preview build with the Maps key embedded:
+- Build page:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/bba6d900-1a70-4429-a0ce-d6f4a3329f13`
+- APK:
+  `https://expo.dev/artifacts/eas/cGLcHSo6L3CYWFZFj9Kb_WRvtU1YPtl6_G2_xtTogB4.apk`
+
+Next QA for Claude:
+- Install the new APK on Android.
+- Log in as a technician with an active job that has `lat`/`lng`.
+- Verify the active-job screen renders the embedded Google map instead of the
+  static fallback.
+- Verify no Google Maps authorization/API-key error or watermark appears.
+- Smoke closeout under weak network/offline if possible: collection record →
+  `completed_pending_customer` should not get stranded if the status write has
+  to replay.
+- If the map still does not render, first re-check Google Cloud restrictions:
+  package must be `com.cluexp.technician`, SHA-1 must match the EAS keystore
+  above, and Maps SDK for Android must be enabled.
