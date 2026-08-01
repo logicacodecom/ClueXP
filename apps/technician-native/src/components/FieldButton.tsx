@@ -11,9 +11,13 @@ type Props = {
   icon?: ReactNode;
 };
 
-// Mirrors technician-web's PrimaryButton (mobile.tsx): rounded-2xl, min-h-[52px],
-// font-black text-[15px]. "ghost" was dropped — web only has primary/secondary/danger.
+// Mirrors technician-web's .field-primary-action / .field-secondary-action
+// (globals.css) — the actual button classes used on the readiness, offer,
+// and active-job screens: uppercase, min-h-[58px] for primary, no rounding
+// beyond 6px. mobile.tsx's separate rounded-2xl PrimaryButton is not what's
+// live on those screens.
 export function FieldButton({ label, onPress, disabled = false, loading = false, tone = "primary", icon }: Props) {
+  const primaryDisabled = disabled && tone === "primary";
   return (
     <Pressable
       accessibilityRole="button"
@@ -26,7 +30,7 @@ export function FieldButton({ label, onPress, disabled = false, loading = false,
         tone === "secondary" ? styles.secondary : null,
         tone === "danger" ? styles.danger : null,
         pressed ? styles.pressed : null,
-        disabled || loading ? styles.disabled : null
+        primaryDisabled ? styles.primaryDisabled : (disabled || loading) ? styles.disabled : null
       ]}
     >
       {loading ? (
@@ -34,7 +38,16 @@ export function FieldButton({ label, onPress, disabled = false, loading = false,
       ) : icon ? (
         <View style={styles.icon}>{icon}</View>
       ) : null}
-      <Text style={[styles.label, tone === "primary" ? styles.primaryLabel : null, tone === "danger" ? styles.dangerLabel : null]}>{label}</Text>
+      <Text
+        style={[
+          styles.label,
+          tone === "primary" ? styles.primaryLabel : styles.secondaryLabel,
+          tone === "danger" ? styles.dangerLabel : null,
+          primaryDisabled ? styles.primaryDisabledLabel : null
+        ]}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -42,30 +55,35 @@ export function FieldButton({ label, onPress, disabled = false, loading = false,
 const styles = StyleSheet.create({
   base: {
     alignItems: "center",
-    borderRadius: radius.md,
+    borderRadius: radius.sm,
     borderWidth: 1,
     flexDirection: "row",
     gap: 8,
     justifyContent: "center",
-    minHeight: 52,
     paddingHorizontal: 16,
     width: "100%"
   },
   primary: {
     backgroundColor: colors.primary,
-    borderColor: colors.primary
+    borderWidth: 0,
+    minHeight: 58
   },
   secondary: {
-    backgroundColor: colors.cardStrong,
-    borderColor: colors.border
+    backgroundColor: "rgba(27, 25, 22, 0.96)",
+    borderColor: colors.borderStrong,
+    minHeight: 48
   },
   danger: {
     backgroundColor: colors.danger,
-    borderColor: colors.danger
+    borderWidth: 0,
+    minHeight: 58
   },
   pressed: {
     opacity: 0.9,
     transform: [{ scale: 0.99 }]
+  },
+  primaryDisabled: {
+    backgroundColor: "#5C4A14"
   },
   disabled: {
     opacity: 0.55
@@ -74,14 +92,23 @@ const styles = StyleSheet.create({
     minWidth: 1
   },
   label: {
-    color: colors.foreground,
     fontSize: 15,
-    fontWeight: "900"
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase"
   },
   primaryLabel: {
-    color: colors.primaryText
+    color: colors.primaryText,
+    fontSize: 21,
+    letterSpacing: 0.9
+  },
+  secondaryLabel: {
+    color: colors.foreground
   },
   dangerLabel: {
     color: "#250606"
+  },
+  primaryDisabledLabel: {
+    color: "#A6987B"
   }
 });

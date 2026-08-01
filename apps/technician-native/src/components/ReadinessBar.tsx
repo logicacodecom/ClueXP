@@ -6,7 +6,7 @@ import { FieldButton } from "./FieldButton";
 import { colors, radius } from "../theme";
 import type { ReadinessSnapshot } from "../types";
 
-type CellKey = "available" | "location" | "alerts" | "capacity";
+type CellKey = "available" | "location" | "alerts" | "connection";
 type Tone = "good" | "warn" | "bad" | "neutral";
 
 function ageLabel(iso: string) {
@@ -17,17 +17,27 @@ function ageLabel(iso: string) {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
+function toneColor(tone: Tone) {
+  if (tone === "good") return colors.success;
+  if (tone === "bad") return colors.danger;
+  if (tone === "warn") return colors.primary;
+  return colors.mutedFaint;
+}
+
 /**
  * Mirrors technician-web's WorkReadiness (readiness-bar.tsx): a tap-to-expand
- * four-cell grid, and — only while marked available — a blocker hero with the
- * named cause and a real one-tap fix. Simply being offline shows no hero, same
- * as web: the fix lives behind the Available cell's own expand panel.
- * "Connection" (browser online/offline) has no native equivalent, so this
- * swaps in "Capacity" (busy with a job), which is the readiness snapshot's
- * fourth real blocking dimension on this platform.
+ * four-cell grid (Available/Location/Alerts/Connection), and — only while
+ * marked available — a blocker hero with the named cause and a real one-tap
+ * fix. Simply being offline shows no hero, same as web: the fix lives behind
+ * the Available cell's own expand panel. `online` is a client-side signal
+ * (a fetch-level TypeError from the polling loop, same "offline" heuristic
+ * this app already uses to route mutations into the outbox) since native has
+ * no browser online/offline event — closer to web's own client-computed
+ * check than a server field would be.
  */
-export function ReadinessBar({ readiness, busy, onSetAvailable, onLocation, onPush }: {
+export function ReadinessBar({ readiness, online, busy, onSetAvailable, onLocation, onPush }: {
   readiness: ReadinessSnapshot | null;
+  online: boolean;
   busy: boolean;
   onSetAvailable: (next: boolean) => void;
   onLocation: () => void;
@@ -39,7 +49,6 @@ export function ReadinessBar({ readiness, busy, onSetAvailable, onLocation, onPu
   const locationFresh = Boolean(readiness?.location.fresh);
   const locationAt = readiness?.location.updated_at ?? null;
   const pushReady = Boolean(readiness?.push.push_ready);
-  const activeClear = readiness ? !readiness.active_job.busy : true;
   const blockers = readiness?.blocking_reasons ?? [];
 
   const cells: Array<{ key: CellKey; label: string; icon: keyof typeof Ionicons.glyphMap; tone: Tone; headline: string; detail: string; action?: { label: string; onPress: () => void } }> = [
@@ -75,24 +84,26 @@ export function ReadinessBar({ readiness, busy, onSetAvailable, onLocation, onPu
       action: pushReady ? undefined : { label: "Enable", onPress: onPush }
     },
     {
-      key: "capacity",
-      label: "Capacity",
-      icon: activeClear ? "briefcase-outline" : "hourglass-outline",
-      tone: activeClear ? "good" : "warn",
-      headline: activeClear ? "Capacity clear" : "Busy with a job",
-      detail: activeClear ? "You can receive new offers." : "Finish your current job before new offers arrive."
+      key: "connection",
+      label: "Connection",
+      icon: online ? "wifi-outline" : "cloud-offline-outline",
+      tone: online ? "good" : "bad",
+      headline: online ? "Connected" : "No connection",
+      detail: online ? "Live sync with dispatch is working." : "Reconnect to the internet to receive offers."
     }
   ];
 
   const openCellData = cells.find((cell) => cell.key === openCell) ?? null;
 
-  const showHero = Boolean(readiness) && available === true && !readiness?.can_receive_offers;
+  const showHero = Boolean(readiness) && available === true && (!online || !readiness?.can_receive_offers);
   const hero = showHero
-    ? blockers.includes("location_stale")
-      ? { tone: "warn" as Tone, icon: "locate-outline" as const, cause: "Location access is stale", detail: "ClueXP needs a fresh location fix while you're available so companies can send offers near you.", action: { label: "Fix location access", onPress: onLocation } }
-      : blockers.includes("push_not_ready")
-        ? { tone: "warn" as Tone, icon: "notifications-off-outline" as const, cause: "Alerts are off", detail: "Enable notifications on a physical device so offers can reach you.", action: { label: "Enable alerts", onPress: onPush } }
-        : { tone: "neutral" as Tone, icon: "time-outline" as const, cause: "Not receiving offers", detail: blockers.length > 0 ? blockers.join(" / ").replaceAll("_", " ") : "Resolve the blocker above.", action: undefined }
+    ? !online
+      ? { tone: "bad" as Tone, icon: "cloud-offline-outline" as const, cause: "No connection", detail: "Reconnect to the internet — offers can't reach you until it's back.", action: undefined }
+      : blockers.includes("location_stale")
+        ? { tone: "warn" as Tone, icon: "locate-outline" as const, cause: "Location access is stale", detail: "ClueXP needs a fresh location fix while you're available so companies can send offers near you.", action: { label: "Fix location access", onPress: onLocation } }
+        : blockers.includes("push_not_ready")
+          ? { tone: "warn" as Tone, icon: "notifications-off-outline" as const, cause: "Alerts are off", detail: "Enable notifications on a physical device so offers can reach you.", action: { label: "Enable alerts", onPress: onPush } }
+          : { tone: "neutral" as Tone, icon: "time-outline" as const, cause: "Not receiving offers", detail: blockers.length > 0 ? blockers.join(" / ").replaceAll("_", " ") : "Resolve the blocker above.", action: undefined }
     : null;
 
   return (
@@ -113,7 +124,7 @@ export function ReadinessBar({ readiness, busy, onSetAvailable, onLocation, onPu
 
       {openCellData ? (
         <View style={styles.detailPanel}>
-          <Ionicons color={openCellData.tone === "good" ? colors.success : openCellData.tone === "warn" ? colors.primary : colors.mutedFaint} name={openCellData.icon} size={20} style={styles.detailIcon} />
+          <Ionicons color={toneColor(openCellData.tone)} name={openCellData.icon} size={20} style={styles.detailIcon} />
           <View style={styles.detailBody}>
             <Text style={styles.detailHeadline}>{openCellData.headline}</Text>
             <Text style={styles.detailText}>{openCellData.detail}</Text>
@@ -126,12 +137,12 @@ export function ReadinessBar({ readiness, busy, onSetAvailable, onLocation, onPu
 
       {available === false || !hero ? null : (
         <View style={styles.hero}>
-          <View style={[styles.heroCircle, { borderColor: hero.tone === "warn" ? colors.primary : colors.mutedFaint }]}>
-            <Ionicons color={hero.tone === "warn" ? colors.primary : colors.mutedFaint} name={hero.icon} size={30} />
+          <View style={[styles.heroCircle, { borderColor: toneColor(hero.tone) }]}>
+            <Ionicons color={toneColor(hero.tone)} name={hero.icon} size={30} />
           </View>
           <View style={styles.heroTitleRow}>
-            <Ionicons color={hero.tone === "warn" ? colors.primary : colors.mutedFaint} name="alert-circle-outline" size={18} />
-            <Text style={[styles.heroTitle, { color: hero.tone === "warn" ? colors.primary : colors.mutedFaint }]}>Not receiving offers</Text>
+            <Ionicons color={toneColor(hero.tone)} name="alert-circle-outline" size={18} />
+            <Text style={[styles.heroTitle, { color: toneColor(hero.tone) }]}>Not receiving offers</Text>
           </View>
           <Text style={styles.heroCause}>{hero.cause}</Text>
           <Text style={styles.heroDetail}>{hero.detail}</Text>

@@ -412,6 +412,7 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<CommandSheet>(null);
+  const [online, setOnline] = useState(true);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -427,8 +428,12 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
       setSnapshot(active);
       setOffers(offerFeed.offers.filter((offer) => offer.status === "offered" || offer.status === "seen"));
       setError(null);
+      setOnline(true);
     } catch (cause) {
       setError(errorMessage(cause));
+      // Same "network-level failure" heuristic the outbox already uses to
+      // decide whether to queue a mutation locally (see CommandModal.run).
+      if (cause instanceof TypeError) setOnline(false);
     } finally {
       setRefreshing(false);
     }
@@ -564,7 +569,7 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
           <ActiveJobCard allowedActions={snapshot?.allowed_actions ?? []} busy={busy} job={job} onAdvance={advanceJob} onSheet={setSheet} version={snapshot?.version ?? null} />
         ) : (
           <>
-            <ReadinessBar busy={busy} onLocation={repairLocation} onPush={repairPush} onSetAvailable={setAvailability} readiness={readiness} />
+            <ReadinessBar busy={busy} onLocation={repairLocation} online={online} onPush={repairPush} onSetAvailable={setAvailability} readiness={readiness} />
             {readiness?.can_receive_offers ? (
               activeOffer ? (
                 <OfferCard
@@ -1155,7 +1160,7 @@ const styles = StyleSheet.create({
   input: {
     backgroundColor: colors.cardStrong,
     borderColor: colors.border,
-    borderRadius: radius.sm,
+    borderRadius: radius.xs,
     borderWidth: 1,
     color: colors.foreground,
     fontSize: 16,
