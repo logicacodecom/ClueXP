@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1017606557096",
+    "project_id": "cluexp-7d723",
+    "storage_bucket": "cluexp-7d723.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1017606557096:android:8fca779ceed51cd442a19d",
+        "android_client_info": {
+          "package_name": "com.cluexp.technician"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBk2N0m-ZdJigtFrxu7pApZz1E6cMVXFwQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
