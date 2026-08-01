@@ -173,7 +173,7 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
                 ) : job.status === "completed_pending_customer" ? (
                   <View style={styles.reviewRow}>
                     <Ionicons color={colors.primary} name="shield-checkmark-outline" size={14} />
-                    <Text style={styles.reviewText}>Receipt confirmation is with dispatch. You are available for new jobs.</Text>
+                    <Text style={styles.reviewText}>Awaiting customer confirmation. This job still holds your capacity until it is confirmed, auto-closed, disputed, or cancelled.</Text>
                   </View>
                 ) : (
                   <Text style={styles.noReviewText}>No customer review yet.</Text>
