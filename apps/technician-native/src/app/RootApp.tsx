@@ -135,6 +135,10 @@ function errorMessage(cause: unknown) {
   return "Unable to connect to ClueXP.";
 }
 
+function isNetworkFailure(cause: unknown) {
+  return (cause instanceof ApiError && cause.problem.status === 0) || cause instanceof TypeError;
+}
+
 function nativeCapabilityMessage(reason?: string) {
   if (reason === "android_fcm_not_configured") {
     return "Android push is not configured for this build yet. Add Firebase/FCM credentials and rebuild the app before enabling alerts.";
@@ -823,14 +827,15 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
   const collectionItems = jobDetail?.collection_items ?? [];
   const mapPoints: MapPoint[] = job.lat != null && job.lng != null ? [{ kind: "job", label: job.address ?? undefined, lat: job.lat, lng: job.lng }] : [];
   const showRealMap = canRenderActiveJobMap(mapPoints);
+  const mapBadgeText = showRealMap ? "GPS live" : job.lat != null && job.lng != null ? "Map unavailable" : "Address only";
 
   return (
     <View style={styles.activeWrap}>
       <View style={styles.mapFallback}>
         {showRealMap ? <ActiveJobMap points={mapPoints} /> : null}
         <View style={styles.mapBadge}>
-          <Ionicons color={colors.success} name="locate" size={13} />
-          <Text style={styles.mapBadgeText}>GPS live</Text>
+          <Ionicons color={showRealMap ? colors.success : colors.warn} name={showRealMap ? "locate" : "map-outline"} size={13} />
+          <Text style={styles.mapBadgeText}>{mapBadgeText}</Text>
         </View>
         {!showRealMap ? (
           <View style={styles.mapGrid}>
@@ -1055,7 +1060,18 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
         await api.reportIssue(job.id, { kind: resolvedIssueKind, reason: issueReason.trim(), expected_version: snapshotVersion, client_mutation_id: mutationId });
       } else {
         await api.reportCollection(job.id, { line_items: lineItemsPayload, method, tip_amount: moneyValue(tipAmount), expected_version: snapshotVersion, client_mutation_id: mutationId });
-        await api.updateJobStatus(job.id, "completed_pending_customer", snapshotVersion);
+        try {
+          await api.updateJobStatus(job.id, "completed_pending_customer", snapshotVersion);
+        } catch (statusCause) {
+          if (!isNetworkFailure(statusCause)) throw statusCause;
+          await queueLocalMutation(
+            job.id,
+            "status",
+            snapshotVersion,
+            `${mutationId}_status`,
+            { status: "completed_pending_customer" }
+          );
+        }
       }
       if (kind === "issue") {
         setIssueDone(true);
@@ -1071,7 +1087,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
         setMethod("");
       }
     } catch (cause) {
-      if ((cause instanceof ApiError && cause.problem.status === 0) || cause instanceof TypeError) {
+      if (isNetworkFailure(cause)) {
         await queueLocalMutation(job.id, outboxKind(kind), snapshotVersion, mutationId, outboxPayload);
         if (kind === "issue") {
           setIssueDone(true);
