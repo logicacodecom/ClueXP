@@ -3746,3 +3746,40 @@ been exercised on-device (no simulator/device available in this environment,
 same limitation noted for the earlier UI restyle). Photo/document upload in
 particular only got typecheck + build verification, not a real
 `{uri,name,type}` → multipart round-trip against the backend.
+
+### 2026-08-01 — Codex: review of Claude technician-native parity commits
+
+Reviewed `1955c11` and `87e3ddf` against the actual FastAPI route shapes in
+`apps/intake-web/api/main.py` plus the matching technician-web screens. Endpoints
+added to `CluexpApi` match live backend paths/verbs, including multipart upload
+routes, profile update, history, settlements, payments, active-job enrichment,
+and document download URL issuance. Multipart content-type handling in the API
+client is correct: JSON default is skipped for `FormData` so fetch can attach the
+boundary.
+
+Finding fixed:
+- `be07104` — `fix: correct pending customer history copy`
+  - Activity screen previously said a `completed_pending_customer` job meant the
+    technician was available for new jobs. That contradicts the backend P0 capacity
+    rule: this status still holds capacity until confirmed, auto-closed, disputed,
+    or cancelled. Copy now reflects the real behavior.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npx expo-doctor` → 20/20 passed.
+- `npx expo export --platform web --output-dir .expo-web-preview` → passed; export
+  cleaned afterward.
+- root `npm run typecheck` → passed.
+- `git diff --check` → passed.
+
+Build note:
+- Firebase-configured Android build `0a17f33c...` finished:
+  `https://expo.dev/artifacts/eas/vw0HDBg1E-Pnco-iLYb1rxWJT-3FjTlIaMjf9XSVUwY.apk`
+- Claude's all-parity Android build from `87e3ddf` remains the one to install for
+  parity QA:
+  `https://expo.dev/artifacts/eas/QkFClzWiEFQkxdeyZBP_Mo_ySZyrnYXhIMNTHi88urA.apk`
+
+Residual risk: review was code/static verification only. Photo/document upload,
+image/document pickers, push registration, and new parity screens still need
+real Android device QA with the latest parity APK/session.
