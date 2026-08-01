@@ -60,7 +60,12 @@
           "photosPermission": "ClueXP uses your photo library to update your profile headshot."
         }
       ],
-      "react-native-maps"
+      [
+        "react-native-maps",
+        {
+          "androidGoogleMapsApiKey": "AIzaSyD9kvzgbsOZLguUMEI_76nHtnmTlfeK4Hk"
+        }
+      ]
     ],
     "extra": {
       "eas": {
