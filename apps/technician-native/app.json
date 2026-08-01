@@ -53,6 +53,12 @@
           "color": "#FFBF00",
           "defaultChannel": "job-alerts"
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ClueXP uses your photo library to update your profile headshot."
+        }
       ]
     ],
     "extra": {

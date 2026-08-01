@@ -1,4 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -29,7 +30,11 @@ import { ReadinessBar } from "../components/ReadinessBar";
 import { registerPushDevice, requestAndSendLocation } from "../features/nativeCapabilities";
 import { replayQueuedMutations } from "../features/outboxReplay";
 import { logoutStoredSession } from "../features/sessionLifecycle";
-import { clearStoredSession, loadStoredSession, saveStoredSession } from "../storage/sessionStore";
+import { ActivityScreen } from "../screens/ActivityScreen";
+import { DocumentsScreen } from "../screens/DocumentsScreen";
+import { EarningsScreen } from "../screens/EarningsScreen";
+import { ProfileEditor } from "../screens/ProfileEditor";
+import { clearStoredSession, loadStoredSession, saveStoredSession, updateStoredSession } from "../storage/sessionStore";
 import { enqueueMutation, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
 import type { ActiveJob, ActiveJobSnapshot, AuthSession, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
@@ -281,6 +286,12 @@ export function RootApp() {
     setQueueCount(await queuedMutationCount());
   }, []);
 
+  const refreshSession = useCallback(async () => {
+    const fresh = await api.me();
+    setSession(fresh);
+    await updateStoredSession(fresh);
+  }, []);
+
   if (booting) {
     return (
       <SafeAreaView style={sharedStyles.screen}>
@@ -306,21 +317,9 @@ export function RootApp() {
         <View style={styles.root}>
           <Header onAvatarPress={() => setTab("account")} queueCount={queueCount} session={session} />
           {tab === "work" ? <WorkScreen hint={workHint} onHintConsumed={() => setWorkHint(null)} onQueueChanged={refreshQueue} session={session} /> : null}
-          {tab === "activity" ? (
-            <ComingSoonTab
-              icon="time-outline"
-              text="Finished jobs, collected money, and customer reviews will land here — matching the ClueXP web experience. This first native build keeps active work and command truth front and center."
-              title="Activity is coming to native"
-            />
-          ) : null}
-          {tab === "earnings" ? (
-            <ComingSoonTab
-              icon="wallet-outline"
-              text="Settlement periods and payout estimates will land here. Collections you record during a job are already saved server-side."
-              title="Earnings is coming to native"
-            />
-          ) : null}
-          {tab === "account" ? <AccountScreen onLogout={onLogout} session={session} /> : null}
+          {tab === "activity" ? <ActivityScreen api={api} /> : null}
+          {tab === "earnings" ? <EarningsScreen api={api} /> : null}
+          {tab === "account" ? <AccountScreen onLogout={onLogout} onSessionRefresh={refreshSession} session={session} /> : null}
           <BottomNav onSelect={setTab} selected={tab} />
         </View>
       </View>
@@ -1069,57 +1068,98 @@ function AlertBanner({ text, tone }: { text: string; tone: "bad" | "warn" }) {
   );
 }
 
-function ComingSoonTab({ icon, title, text }: { icon: keyof typeof Ionicons.glyphMap; title: string; text: string }) {
-  return (
-    <ScrollView contentContainerStyle={styles.scrollBody}>
-      <View style={styles.emptyState}>
-        <View style={styles.emptyIconWrap}>
-          <Ionicons color={colors.primary} name={icon} size={26} />
-        </View>
-        <Text style={styles.emptyTitle}>{title}</Text>
-        <Text style={styles.emptyText}>{text}</Text>
-      </View>
-    </ScrollView>
-  );
-}
-
-function AccountScreen({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
+function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthSession; onLogout: () => Promise<void>; onSessionRefresh: () => Promise<void> }) {
   const name = session.user?.display_name || "Technician";
   const vetting = session.technician?.vetting_status ?? "verified";
   const verified = vetting === "verified";
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [showDocuments, setShowDocuments] = useState(false);
+
+  async function changePhoto() {
+    setPhotoError(null);
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setPhotoError("Allow photo library access to update your headshot.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setPhotoBusy(true);
+    try {
+      await api.uploadPhoto({ name: asset.fileName || "photo.jpg", type: asset.mimeType || "image/jpeg", uri: asset.uri });
+      await onSessionRefresh();
+    } catch (cause) {
+      setPhotoError(cause instanceof Error ? cause.message : "Failed to upload photo");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
   return (
-    <ScrollView contentContainerStyle={styles.scrollBody}>
-      <View style={styles.accountHeader}>
-        <View style={styles.accountHeaderBody}>
-          <Text style={styles.accountName}>{name}</Text>
-          <Text style={styles.accountSub}>{session.organization_name || "No provider affiliation"}</Text>
-          <Text style={styles.accountId}>ID {(session.technician?.id || "—").slice(0, 8).toUpperCase()}</Text>
-          <Pill icon={<Ionicons color={verified ? colors.success : colors.primary} name={verified ? "shield-checkmark-outline" : "time-outline"} size={13} />} tone={verified ? "success" : "default"}>
-            {verified ? "Identity verified" : String(vetting).replaceAll("_", " ")}
-          </Pill>
+    <>
+      <ScrollView contentContainerStyle={styles.scrollBody}>
+        <View style={styles.accountHeader}>
+          <View style={styles.accountHeaderBody}>
+            <Text style={styles.accountName}>{name}</Text>
+            <Text style={styles.accountSub}>{session.organization_name || "No provider affiliation"}</Text>
+            <Text style={styles.accountId}>ID {(session.technician?.id || "—").slice(0, 8).toUpperCase()}</Text>
+            <Pill icon={<Ionicons color={verified ? colors.success : colors.primary} name={verified ? "shield-checkmark-outline" : "time-outline"} size={13} />} tone={verified ? "success" : "default"}>
+              {verified ? "Identity verified" : String(vetting).replaceAll("_", " ")}
+            </Pill>
+          </View>
+          <Pressable accessibilityLabel="Change profile photo" disabled={photoBusy} onPress={() => void changePhoto()} style={styles.avatarWrap}>
+            <View style={styles.accountAvatar}>
+              <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.accountAvatarText} />
+            </View>
+            <View style={styles.avatarEditBadge}>
+              <Ionicons color={colors.primaryText} name={photoBusy ? "hourglass-outline" : "camera-outline"} size={12} />
+            </View>
+          </Pressable>
         </View>
-        <View style={styles.accountAvatar}>
-          <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.accountAvatarText} />
+        {photoError ? <Text style={styles.photoError}>{photoError}</Text> : null}
+
+        <ProfileEditor api={api} onSaved={onSessionRefresh} session={session} />
+
+        <Text style={styles.sectionKicker}>Trust profile</Text>
+        <View style={styles.trustGrid}>
+          <MiniStat label="Role" value={session.roles?.[0] ?? "technician"} />
+          <MiniStat label="Status" value={String(session.technician?.status ?? "active")} />
         </View>
-      </View>
+        <View style={styles.trustGrid}>
+          <MiniStat label="Vetting" value={String(vetting)} />
+          <MiniStat label="Company" value={session.organization_name || "None"} />
+        </View>
 
-      <Text style={styles.sectionKicker}>Trust profile</Text>
-      <View style={styles.trustGrid}>
-        <MiniStat label="Role" value={session.roles?.[0] ?? "technician"} />
-        <MiniStat label="Status" value={String(session.technician?.status ?? "active")} />
-      </View>
-      <View style={styles.trustGrid}>
-        <MiniStat label="Vetting" value={String(vetting)} />
-        <MiniStat label="Company" value={session.organization_name || "None"} />
-      </View>
+        <Pressable onPress={() => setShowDocuments(true)} style={styles.linkRow}>
+          <View style={styles.linkRowLeft}>
+            <Ionicons color={colors.muted} name="document-text-outline" size={18} />
+            <Text style={styles.linkRowText}>Documents</Text>
+          </View>
+          <Ionicons color={colors.muted} name="chevron-forward" size={16} />
+        </Pressable>
 
-      <View style={styles.panel}>
-        <Text style={sharedStyles.kicker}>Native storage</Text>
-        <Text style={sharedStyles.body}>Sessions and offline actions are secured with SecureStore and a SQLCipher-encrypted outbox.</Text>
-      </View>
+        <View style={styles.panel}>
+          <Text style={sharedStyles.kicker}>Native storage</Text>
+          <Text style={sharedStyles.body}>Sessions and offline actions are secured with SecureStore and a SQLCipher-encrypted outbox.</Text>
+        </View>
 
-      <FieldButton icon={<Ionicons color="#250606" name="log-out-outline" size={18} />} label="Sign out" onPress={() => void onLogout()} tone="danger" />
-    </ScrollView>
+        <FieldButton icon={<Ionicons color="#250606" name="log-out-outline" size={18} />} label="Sign out" onPress={() => void onLogout()} tone="danger" />
+      </ScrollView>
+      <Modal animationType="slide" onRequestClose={() => setShowDocuments(false)} visible={showDocuments}>
+        <SafeAreaView style={sharedStyles.screen}>
+          <View style={sharedStyles.phoneFrame}>
+            <DocumentsScreen api={api} onClose={() => setShowDocuments(false)} />
+          </View>
+        </SafeAreaView>
+      </Modal>
+    </>
   );
 }
 
@@ -1854,36 +1894,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textTransform: "capitalize"
   },
-  emptyState: {
-    alignItems: "center",
-    borderColor: colors.border,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    marginTop: 20,
-    padding: 26
-  },
-  emptyIconWrap: {
-    alignItems: "center",
-    backgroundColor: colors.cardStrong,
-    borderRadius: radius.md,
-    height: 52,
-    justifyContent: "center",
-    width: 52
-  },
-  emptyTitle: {
-    color: colors.foreground,
-    fontSize: 19,
-    fontWeight: "900",
-    marginTop: 14,
-    textAlign: "center"
-  },
-  emptyText: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 21,
-    marginTop: 8,
-    textAlign: "center"
-  },
   accountHeader: {
     flexDirection: "row",
     gap: 14,
@@ -1907,6 +1917,10 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     fontSize: 11
   },
+  avatarWrap: {
+    height: 56,
+    width: 56
+  },
   accountAvatar: {
     alignItems: "center",
     backgroundColor: colors.cardStrong,
@@ -1920,6 +1934,45 @@ const styles = StyleSheet.create({
     color: colors.foreground,
     fontSize: 19,
     fontWeight: "900"
+  },
+  avatarEditBadge: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderColor: colors.background,
+    borderRadius: 10,
+    borderWidth: 2,
+    bottom: -2,
+    height: 20,
+    justifyContent: "center",
+    position: "absolute",
+    right: -2,
+    width: 20
+  },
+  photoError: {
+    color: colors.danger,
+    fontSize: 12,
+    marginTop: -8
+  },
+  linkRow: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 52,
+    paddingHorizontal: 14
+  },
+  linkRowLeft: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10
+  },
+  linkRowText: {
+    color: colors.foreground,
+    fontSize: 14,
+    fontWeight: "800"
   },
   sectionKicker: {
     color: colors.muted,

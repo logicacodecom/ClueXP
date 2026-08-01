@@ -1,11 +1,22 @@
 import type {
+  ActiveJobDetail,
   ActiveJobSnapshot,
   ApiProblem,
   AuthSession,
+  HistoryJob,
   LoginResponse,
   ReadinessSnapshot,
-  TechnicianOffer
+  SettlementPayload,
+  TechnicianDocument,
+  TechnicianOffer,
+  TechPayment
 } from "../types";
+import type { ServiceCategory } from "../data/serviceCatalog";
+
+// React Native's fetch/FormData accepts a plain {uri,name,type} descriptor for
+// a file part — not a Blob/File like the browser. expo-image-picker and
+// expo-document-picker results map directly onto this shape.
+export type UploadFile = { uri: string; name: string; type: string };
 
 const DEFAULT_API_BASE = "https://intake.cluexp.com";
 
@@ -105,7 +116,10 @@ export class CluexpApi {
   private async fetchJson(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     headers.set("accept", "application/json");
-    if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+    // FormData bodies (file uploads) must NOT get a manual content-type — fetch
+    // sets its own multipart boundary. Only default JSON requests get one.
+    const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
+    if (init.body && !isFormData && !headers.has("content-type")) headers.set("content-type", "application/json");
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
     const response = await fetch(`${apiBaseUrl()}/api${path}`, { ...init, headers });
     const body = await parseBody(response);
@@ -239,6 +253,79 @@ export class CluexpApi {
 
   async reportCollection(jobId: string, payload: Record<string, unknown>) {
     return this.request<Record<string, unknown>>(`/jobs/${encodeURIComponent(jobId)}/collection`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  }
+
+  async activeJobDetail(technicianId: string): Promise<ActiveJobDetail> {
+    return this.request<ActiveJobDetail>(`/technicians/${encodeURIComponent(technicianId)}/active-job`);
+  }
+
+  async serviceCatalog(): Promise<{ categories: ServiceCategory[] }> {
+    return this.request<{ categories: ServiceCategory[] }>("/service-catalog");
+  }
+
+  async updateProfile(payload: {
+    display_name?: string;
+    phone?: string;
+    skills?: string[];
+    service_area_radius_km?: number;
+  }): Promise<Record<string, unknown>> {
+    return this.request("/technicians/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    });
+  }
+
+  async uploadPhoto(file: UploadFile): Promise<{ photo_url: string; photo_status: string; message: string }> {
+    const form = new FormData();
+    form.append("file", file as unknown as Blob);
+    return this.request("/technicians/me/photo", { method: "POST", body: form });
+  }
+
+  async listDocuments(): Promise<TechnicianDocument[]> {
+    return this.request<TechnicianDocument[]>("/technicians/me/documents");
+  }
+
+  async uploadDocument(
+    file: UploadFile,
+    documentType: string,
+    options: { documentNumber?: string; expirationDate?: string } = {}
+  ): Promise<TechnicianDocument & { message: string; download_url?: string | null }> {
+    const form = new FormData();
+    form.append("file", file as unknown as Blob);
+    form.append("document_type", documentType);
+    if (options.documentNumber) form.append("document_number", options.documentNumber);
+    if (options.expirationDate) form.append("expiration_date", options.expirationDate);
+    return this.request("/technicians/me/documents", { method: "POST", body: form });
+  }
+
+  async documentDownloadUrl(documentId: string): Promise<{ download_url: string }> {
+    return this.request(`/technicians/me/documents/${encodeURIComponent(documentId)}/download`);
+  }
+
+  async jobHistory(): Promise<HistoryJob[]> {
+    return this.request<HistoryJob[]>("/technician/jobs/history");
+  }
+
+  async settlements(): Promise<SettlementPayload> {
+    return this.request<SettlementPayload>("/technician/settlements");
+  }
+
+  async payments(): Promise<TechPayment[]> {
+    return this.request<TechPayment[]>("/technician/payments");
+  }
+
+  async createPayment(payload: {
+    organization_id: string;
+    amount_cents: number;
+    payment_method: string;
+    paid_on?: string;
+    reference_number?: string;
+    note?: string;
+  }): Promise<TechPayment> {
+    return this.request<TechPayment>("/technician/payments", {
       method: "POST",
       body: JSON.stringify(payload)
     });

@@ -25,6 +25,10 @@ export type AuthSession = {
     is_available?: boolean;
     location_updated_at?: string | null;
     photo_url?: string | null;
+    photo_status?: "pending" | "approved" | "rejected" | null;
+    phone?: string | null;
+    skills?: string[] | null;
+    service_area_radius_km?: number | null;
   };
   active_organization_id?: string | null;
   organization_name?: string | null;
@@ -90,6 +94,22 @@ export type ActiveJobSnapshot = {
   allowed_actions: string[];
 };
 
+// Read-only enrichment from GET /technicians/{id}/active-job (the endpoint
+// technician-web's ActiveJobWorkflow uses). The snapshot above stays the
+// only source for `version`/mutations; this only feeds display-only UI —
+// see main.py's technician_active_job for the exact merged shape.
+export type ActiveJobDetail = {
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  intake_photos?: Array<{ url: string; label?: string | null }> | null;
+  collection_items?: Array<{ description: string; amount?: number | null; provided_by?: string | null }> | null;
+  collection_total?: number | null;
+  collection_currency?: string | null;
+  approval_status?: "pending" | "approved" | "disputed" | "expired" | null;
+  approval_url?: string | null;
+  arrival_verification?: { pin_required?: boolean; dispatcher_fallback_allowed?: boolean } | null;
+};
+
 export type TechnicianOffer = {
   id?: string;
   offer_id?: string;
@@ -127,4 +147,84 @@ export type QueuedMutation = {
   expectedVersion?: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
+};
+
+// Mirrors apps/technician-web/src/app/documents/page.tsx's TechnicianDocument.
+export type TechnicianDocument = {
+  id: string;
+  document_type: string;
+  document_number?: string | null;
+  status: "pending_review" | "approved" | "rejected";
+  uploaded_at?: string | null;
+  reviewed_at?: string | null;
+  expiration_date?: string | null;
+  rejected_reason?: string | null;
+};
+
+// Mirrors apps/technician-web/src/app/activity/page.tsx's PaymentReport/HistoryJob.
+export type PaymentReport = { amount: number; currency: string; method: string; reported_at: string | null } | null;
+
+export type HistoryJob = {
+  id: string;
+  operational_id?: string | null;
+  status: string;
+  address: string | null;
+  situation: string | null;
+  urgency?: string | null;
+  created_at?: string | null;
+  finished_at: string | null;
+  technician_display_name?: string | null;
+  review: { rating: number | null; comment: string | null } | null;
+  payments: { technician: PaymentReport; customer: PaymentReport };
+};
+
+// Mirrors apps/technician-web/src/app/earnings/page.tsx's TechPayment/SettlementRow/PeriodRow.
+export type TechPayment = {
+  id: string;
+  organization_id: string;
+  organization_name?: string | null;
+  direction: "company_to_technician" | "technician_to_company";
+  amount_cents: number;
+  payment_method: string;
+  reference_number?: string | null;
+  paid_on: string;
+  note?: string | null;
+  status: "pending" | "confirmed" | "rejected" | "voided";
+  submitted_by_role: "provider" | "technician";
+  rejected_reason?: string | null;
+  void_reason?: string | null;
+};
+
+export type SettlementRow = {
+  job_id: string;
+  status: string;
+  finished_at?: string | null;
+  skill_code?: string | null;
+  agreement_status: string;
+  cut_basis_points: number;
+  currency: string;
+  customer_total_cents: number;
+  tip_cents: number;
+  commissionable_cents: number;
+  tech_reimbursement_cents: number;
+  tech_service_payout_cents: number;
+  tech_tip_cents: number;
+  tech_payout_cents: number;
+  organization_id?: string | null;
+};
+
+export type SettlementPeriodRow = {
+  settlement_period_id: string;
+  status: "draft" | "locked" | "paid" | string;
+  label: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  locked_at?: string | null;
+  paid_at?: string | null;
+  row: SettlementRow;
+};
+
+export type SettlementPayload = {
+  live: SettlementRow[];
+  period_rows: SettlementPeriodRow[];
 };

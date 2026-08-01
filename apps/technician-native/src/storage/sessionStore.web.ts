@@ -45,6 +45,12 @@ export async function saveStoredSession(value: StoredSession) {
   store.setItem(SESSION_KEY, JSON.stringify(value.session));
 }
 
+export async function updateStoredSession(session: AuthSession) {
+  const store = storage();
+  if (!store) return;
+  store.setItem(SESSION_KEY, JSON.stringify(session));
+}
+
 export async function clearStoredSession() {
   const store = storage();
   if (!store) return;

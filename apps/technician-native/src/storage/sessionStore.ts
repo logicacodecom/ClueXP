@@ -40,6 +40,13 @@ export async function saveStoredSession(value: StoredSession) {
   ]);
 }
 
+// Refresh the cached session (profile/photo edits) without touching the
+// tokens — unlike saveStoredSession, a falsy refreshToken here would wipe
+// REFRESH_KEY, and callers here (profile/photo save) never have that token.
+export async function updateStoredSession(session: AuthSession) {
+  await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(session));
+}
+
 export async function clearStoredSession() {
   await Promise.all([
     SecureStore.deleteItemAsync(TOKEN_KEY),
