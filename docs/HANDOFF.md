@@ -3734,10 +3734,15 @@ after), `npx expo prebuild --no-install` (app.json plugin change), `git diff --c
 Builds:
 - Confirmed finished before starting: `0a17f33c-8ace-4f13-9914-c045b09edf12`
   (`https://expo.dev/artifacts/eas/vw0HDBg1E-Pnco-iLYb1rxWJT-3FjTlIaMjf9XSVUwY.apk`)
-- New Android preview build submitted from `87e3ddf` (includes the image-picker
-  plugin + all parity slices above):
+- New Android preview build from `87e3ddf` (image-picker plugin + all parity
+  slices above) submitted and **finished**:
   `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/0dbf2b1b-f19a-4071-abc2-28df9af3c65e`
+  APK: `https://expo.dev/artifacts/eas/QkFClzWiEFQkxdeyZBP_Mo_ySZyrnYXhIMNTHi88urA.apk`
 
-Next: wait for `0dbf2b1b...` to finish, install on Android, and QA the new
-Activity/Earnings/Profile/Photo/Documents screens plus the sync-issue banner
-against a real backend session.
+Next: install `0dbf2b1b...`'s APK on Android and QA the new Activity/Earnings/
+Profile/Photo/Documents screens plus the sync-issue banner against a real
+backend session — none of this pass's new upload/picker/enrichment code has
+been exercised on-device (no simulator/device available in this environment,
+same limitation noted for the earlier UI restyle). Photo/document upload in
+particular only got typecheck + build verification, not a real
+`{uri,name,type}` → multipart round-trip against the backend.
