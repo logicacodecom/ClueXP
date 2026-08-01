@@ -3864,9 +3864,11 @@ meta-data got written into `AndroidManifest.xml` without a real key),
 `.expo-web-preview` cleaned after each check.
 
 Build:
-- New Android preview build submitted from `50cfbaa` (all four slices +
-  react-native-maps native module):
+- Android preview build from `50cfbaa` (all four slices + react-native-maps
+  native module) submitted and **finished** — confirms the native module
+  linked and compiled correctly, not just that the JS bundled:
   `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/5b83aa2c-b928-4a34-849f-d5d3aec45325`
+  APK: `https://expo.dev/artifacts/eas/59Rk6X2B6IeECD50F3zpONeg2TLYLr5wbnNOwVc2vyk.apk`
 
 Still open, unchanged: itemized closeout and photo capture are now write-
 capable from the technician side (this session), but the intake-photo *read*
