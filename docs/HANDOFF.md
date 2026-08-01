@@ -3645,3 +3645,99 @@ Builds:
 Next: wait for the `0a17f33c...` APK, install it on Android, tap Enable alerts, and
 verify `/technicians/me/devices` registration + readiness no longer reports
 `push_not_ready`.
+
+### 2026-08-01 — Claude: technician-native feature-parity push (autonomous)
+
+Confirmed `0a17f33c...` (Firebase-configured Android build) **finished** before
+starting. Then worked autonomously through the technician-web parity backlog,
+inspecting `apps/intake-web/api/main.py` first to confirm each backend endpoint
+actually exists (and its real request/response shape) before building native UI
+against it — nothing here is speculative.
+
+**Slice A–E** (`1955c11`) — Activity, Earnings, profile editing, photo + document
+uploads:
+- Activity tab: real job history (`GET /technician/jobs/history`) replacing the
+  placeholder — stats, status/period filters, per-job payment/review detail.
+- Earnings tab: real settlements + payment history (`GET /technician/settlements`,
+  `GET`/`POST /technician/payments`) including the technician→company remittance
+  form.
+- Account tab: inline profile editor (display name, phone, skills, service radius)
+  via `PATCH /technicians/me/profile`. Skills use a small locally-mirrored service
+  catalog (`GET /service-catalog`) — `@cluexp/api-client` isn't Metro-resolvable
+  here (no monorepo `metro.config.js`/`watchFolders`), so ~50 lines were duplicated
+  rather than wiring up cross-package bundler resolution mid-mission.
+- Profile photo + compliance documents: added `expo-image-picker` /
+  `expo-document-picker` (via `npx expo install`, SDK 57-matched) and wired
+  `POST /technicians/me/photo` and the `/technicians/me/documents` list/upload/
+  download-url endpoints. New Documents screen opens as a modal from Account —
+  technician-web itself doesn't link to `/documents` from anywhere, so this is a
+  real discoverability improvement over web, not just parity.
+- Found and fixed a real bug while wiring uploads: `CluexpApi.fetchJson` always
+  set `content-type: application/json`, including for `FormData` bodies — would
+  have broken every multipart upload (fetch needs to set its own boundary).
+- Added `sessionStore.updateStoredSession` (native + web shim) to refresh the
+  cached session after profile/photo edits without touching the token keys —
+  the existing `saveStoredSession` deletes the stored refresh token when called
+  without one, which a naive "just call it again" fix would have done.
+- `app.json`: added the `expo-image-picker` config plugin (photo library usage
+  description) — a native config change.
+
+**Slice F+G** (`87e3ddf`) — active-job enrichment + offline UX hardening:
+- Active job now also fetches `GET /technicians/{id}/active-job` (the endpoint
+  technician-web's `ActiveJobWorkflow` itself uses) alongside — never instead of
+  — the versioned snapshot, purely for read-only enrichment: intake photos
+  (thumbnail row), recorded collection (already-reported closeout lines +
+  total), and real `approval_status`/`approval_url` on the
+  `completed_pending_customer` card instead of one generic line. Also surfaced
+  location freshness ("Dispatch sees your location: fresh/stale") from a field
+  the snapshot endpoint already returned but nothing rendered.
+- Offline UX: the SQLCipher outbox was silently marking mutations `'failed'` on
+  `version_conflict`/`idempotency_key_reuse`/other rejection with **zero UI
+  signal** — `queuedMutationCount()` only counts `'queued'` rows, so a failed
+  action just vanished from what the technician could see. Added
+  `failedMutationCount()`/`failedMutations()` (native + web shim), a Work-tab
+  banner distinguishing "N queued, will sync" (warn) from "N could not sync"
+  (danger), and a "Sync issues" panel on Account listing each failed action's
+  job and server error.
+
+**Already at parity, no code changed:** messages/chat (`/messages`,
+`/jobs/[id]/chat`) and masked call (`/jobs/[id]/call`) are themselves just
+`redirect()` stubs on technician-web — never implemented there either. Native's
+existing "Not enabled in this pilot" sheets for Message/Call/Safety/More already
+meet or exceed that bar. Same for map/navigation: `/map` and
+`/jobs/[id]/navigate` also redirect on web; the real "map" experience on both
+platforms is the inline panel + "Open in maps" external link (native's
+`mapFallback` + `Linking.openURL` to Google Maps directions already does this).
+A real embedded native map would mean `react-native-maps` + Google Maps API key
+config — deliberately not attempted mid-autonomous-mission given the "low risk
+only" instruction.
+
+**Explicitly not a gap:** itemized multi-line closeout (web's `CloseoutPanel` —
+item type, description, qty, tax, provided-by) looked like a missing feature,
+but `POST /jobs/{id}/collection`'s backend handler (`_build_closeout_report`) is
+fully backward-compatible: if `line_items` is omitted and `amount` is given, it
+auto-builds a single `service_fee` line. Native's existing simple amount+method
+flow is a fully supported first-class path, not a workaround — left as-is.
+
+**Still open** (unchanged from the earlier parity memo): itemized multi-line
+closeout entry (technician-authored, not just display) and intake-photo capture
+from the technician side remain unbuilt — the read side now exists via Slice F,
+but the write side wasn't in scope for this pass. iOS physical-device
+distribution remains blocked on Apple signing credentials.
+
+Verification (all slices): `npm run typecheck --workspace @cluexp/technician-native`,
+`npm run test:api --workspace @cluexp/technician-native` (4 passed), `npx expo-doctor`
+(20/20), `npx expo export --platform web --output-dir .expo-web-preview` (cleaned
+after), `npx expo prebuild --no-install` (app.json plugin change), `git diff --check`
+— all passed on every slice.
+
+Builds:
+- Confirmed finished before starting: `0a17f33c-8ace-4f13-9914-c045b09edf12`
+  (`https://expo.dev/artifacts/eas/vw0HDBg1E-Pnco-iLYb1rxWJT-3FjTlIaMjf9XSVUwY.apk`)
+- New Android preview build submitted from `87e3ddf` (includes the image-picker
+  plugin + all parity slices above):
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/0dbf2b1b-f19a-4071-abc2-28df9af3c65e`
+
+Next: wait for `0dbf2b1b...` to finish, install on Android, and QA the new
+Activity/Earnings/Profile/Photo/Documents screens plus the sync-issue banner
+against a real backend session.
