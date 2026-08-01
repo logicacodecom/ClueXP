@@ -3581,3 +3581,36 @@ Build status:
 Remaining: wait for the fresh Android build to finish, then install that APK for real
 device QA. Physical-device iOS still needs Apple signing credentials; simulator build
 path remains available.
+
+### 2026-08-01 — Codex: Android push credential error handled gracefully
+
+User tested Android and hit the raw Expo/Firebase error when tapping Enable alerts:
+`Unable to get Firebase Messaging instance... googleServicesFile... Default FirebaseApp
+is not initialized`. Root cause is expected for the current build: Android push cannot
+mint an Expo push token until Firebase/FCM credentials and `google-services.json` are
+configured for `com.cluexp.technician`.
+
+Fix pushed:
+- `a048a24` — `fix: handle missing android push credentials`
+  - `registerPushDevice` now calls `getExpoPushTokenAsync` with the EAS project id.
+  - Android Firebase/FCM setup failures are mapped to `android_fcm_not_configured`.
+  - RootApp maps native capability failure reasons to friendly ClueXP copy instead of
+    surfacing raw native exceptions.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` → passed.
+- `npm run test:api --workspace @cluexp/technician-native` → 4 passed.
+- `npx expo-doctor` → 20/20 passed.
+- `npx expo export --platform web --output-dir .expo-web-preview` → passed; export
+  cleaned afterward.
+- `git diff --check` → passed.
+
+Builds:
+- Restyled Android APK from `eba0231` finished:
+  `https://expo.dev/artifacts/eas/I0Um8aHvmBTsgqu9HydFJYjHSoc5emwnt9fc63dBQN4.apk`
+- Replacement Android build from `a048a24` (same UI + friendly push error) is in progress:
+  `https://expo.dev/accounts/logicacode/projects/cluexp-technician/builds/e1084947-93a6-450c-bdd0-f161d612c780`
+
+Remaining for real push: create/provide Firebase project config for Android package
+`com.cluexp.technician`, add the `google-services.json` path to app config or EAS
+credentials flow, rebuild, then provision APNs/FCM send credentials/server send path.
