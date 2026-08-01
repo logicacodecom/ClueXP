@@ -25,11 +25,15 @@ export const colors = {
   cautionBorder: "#5C4A14"
 } as const;
 
+// technician-web's actual work/offer/active-job screens (live-offers.tsx,
+// active-job-workflow.tsx) are almost entirely square `border border-border`
+// boxes — rounding is reserved for pills, dots, and circular avatars
+// (radius.pill). Only the field-* buttons/inputs/rail get a subtle radius.
 export const radius = {
-  xs: 8,
-  sm: 12,
-  md: 16,
-  lg: 22,
+  xs: 4,
+  sm: 6,
+  md: 6,
+  lg: 6,
   pill: 999
 } as const;
 

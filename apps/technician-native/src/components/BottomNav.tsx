@@ -57,8 +57,7 @@ const styles = StyleSheet.create({
     minHeight: 58
   },
   buttonActive: {
-    backgroundColor: colors.primary,
-    borderRadius: 12
+    backgroundColor: colors.primary
   },
   label: {
     color: colors.muted,

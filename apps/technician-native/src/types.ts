@@ -24,6 +24,7 @@ export type AuthSession = {
     vetting_status?: string | null;
     is_available?: boolean;
     location_updated_at?: string | null;
+    photo_url?: string | null;
   };
   active_organization_id?: string | null;
   organization_name?: string | null;

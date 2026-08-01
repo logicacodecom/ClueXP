@@ -3,6 +3,7 @@ import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Image,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -20,6 +21,7 @@ import { ApiError, CluexpApi } from "../api/client";
 import { BottomNav, type TabKey } from "../components/BottomNav";
 import { Countdown } from "../components/Countdown";
 import { FieldButton } from "../components/FieldButton";
+import { LanguageToggle, type Locale } from "../components/LanguageToggle";
 import { Logo } from "../components/Logo";
 import { MiniStat } from "../components/MiniStat";
 import { Pill } from "../components/Pill";
@@ -301,11 +303,18 @@ export function RootApp() {
   );
 }
 
+const LOGIN_COPY: Record<Locale, { signIn: string; subtitle: string; email: string; password: string }> = {
+  en: { signIn: "Sign in", subtitle: "Secure access for verified ClueXP technicians.", email: "Email or phone", password: "Password" },
+  es: { signIn: "Iniciar sesion", subtitle: "Acceso seguro para tecnicos ClueXP verificados.", email: "Correo o telefono", password: "Contrasena" }
+};
+
 function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: string) => Promise<void> }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [locale, setLocale] = useState<Locale>("en");
+  const copy = LOGIN_COPY[locale];
 
   async function submit() {
     if (!identifier.trim() || !password || busy) return;
@@ -325,15 +334,18 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
       <StatusBar style="light" />
       <View style={sharedStyles.phoneFrame}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.loginWrap}>
-          <Logo height={24} />
+          <View style={styles.loginTopRow}>
+            <Logo height={24} />
+            <LanguageToggle locale={locale} onChange={setLocale} />
+          </View>
           <View style={styles.loginForm}>
             <View style={styles.loginBadge}>
               <Ionicons color={colors.primaryText} name="shield-checkmark" size={24} />
             </View>
-            <Text style={styles.loginTitle}>Sign in</Text>
-            <Text style={styles.loginCopy}>Secure access for verified ClueXP technicians.</Text>
+            <Text style={styles.loginTitle}>{copy.signIn}</Text>
+            <Text style={styles.loginCopy}>{copy.subtitle}</Text>
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>Email or phone</Text>
+              <Text style={styles.fieldLabel}>{copy.email}</Text>
               <TextInput
                 autoCapitalize="none"
                 autoComplete="email"
@@ -346,7 +358,7 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
               />
             </View>
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>Password</Text>
+              <Text style={styles.fieldLabel}>{copy.password}</Text>
               <TextInput
                 autoCapitalize="none"
                 onChangeText={setPassword}
@@ -358,12 +370,19 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
               />
             </View>
             {error ? <AlertBanner text={error} tone="bad" /> : null}
-            <FieldButton disabled={!identifier.trim() || !password} label="Sign in" loading={busy} onPress={submit} />
+            <FieldButton disabled={!identifier.trim() || !password} label={copy.signIn} loading={busy} onPress={submit} />
           </View>
         </KeyboardAvoidingView>
       </View>
     </SafeAreaView>
   );
+}
+
+function AvatarContent({ photoUrl, initials, textStyle }: { photoUrl?: string | null; initials: string; textStyle: object }) {
+  if (photoUrl) {
+    return <Image accessibilityLabel="Profile photo" resizeMode="cover" source={{ uri: photoUrl }} style={styles.avatarImage} />;
+  }
+  return <Text style={textStyle}>{initials}</Text>;
 }
 
 function Header({ session, queueCount, onAvatarPress }: { session: AuthSession; queueCount: number; onAvatarPress: () => void }) {
@@ -372,7 +391,7 @@ function Header({ session, queueCount, onAvatarPress }: { session: AuthSession; 
     <View style={styles.header}>
       <Logo height={20} />
       <Pressable accessibilityLabel="Open account" accessibilityRole="button" onPress={onAvatarPress} style={styles.avatar}>
-        <Text style={styles.avatarText}>{initialsFor(name)}</Text>
+        <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.avatarText} />
         {queueCount > 0 ? <View style={styles.avatarBadge} /> : null}
       </Pressable>
     </View>
@@ -1050,7 +1069,7 @@ function AccountScreen({ session, onLogout }: { session: AuthSession; onLogout: 
           </Pill>
         </View>
         <View style={styles.accountAvatar}>
-          <Text style={styles.accountAvatarText}>{initialsFor(name)}</Text>
+          <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.accountAvatarText} />
         </View>
       </View>
 
@@ -1096,6 +1115,11 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "space-between",
     padding: 22
+  },
+  loginTopRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between"
   },
   loginForm: {
     paddingBottom: 12
@@ -1161,7 +1185,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     height: 44,
     justifyContent: "center",
+    overflow: "hidden",
     width: 44
+  },
+  avatarImage: {
+    height: "100%",
+    width: "100%"
   },
   avatarText: {
     color: colors.foreground,
@@ -1473,7 +1502,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: colors.card,
     borderColor: colors.border,
-    borderRadius: 999,
+    borderRadius: radius.xs,
     borderWidth: 1,
     flexDirection: "row",
     gap: 6,
@@ -1851,9 +1880,10 @@ const styles = StyleSheet.create({
   accountAvatar: {
     alignItems: "center",
     backgroundColor: colors.cardStrong,
-    borderRadius: radius.md,
+    borderRadius: 28,
     height: 56,
     justifyContent: "center",
+    overflow: "hidden",
     width: 56
   },
   accountAvatarText: {
