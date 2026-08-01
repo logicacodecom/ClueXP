@@ -67,6 +67,31 @@ function errorMessage(cause: unknown) {
   return "Unable to connect to ClueXP.";
 }
 
+function nativeCapabilityMessage(reason?: string) {
+  if (reason === "android_fcm_not_configured") {
+    return "Android push is not configured for this build yet. Add Firebase/FCM credentials and rebuild the app before enabling alerts.";
+  }
+  if (reason === "push_token_unavailable") {
+    return "This build could not get a push token. Try again after rebuilding with push credentials.";
+  }
+  if (reason === "notification_permission_denied") {
+    return "Notifications are blocked for ClueXP. Enable notifications in system settings to receive offers.";
+  }
+  if (reason === "physical_device_required") {
+    return "Push alerts require a physical device.";
+  }
+  if (reason === "native_push_required") {
+    return "Push alerts can only be enabled in the native Android or iOS app.";
+  }
+  if (reason === "location_permission_denied") {
+    return "Allow precise location access to receive offers.";
+  }
+  if (reason === "native_location_required") {
+    return "Location repair can only be tested in the native Android or iOS app.";
+  }
+  return "Unable to complete this device setup step.";
+}
+
 function serviceLabel(job: ActiveJob) {
   const raw = job.service_type || job.situation || job.access_type || "Service request";
   return raw.replaceAll("_", " ").replaceAll(".", " / ");
@@ -468,7 +493,7 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
     setError(null);
     try {
       const result = await requestAndSendLocation(api);
-      if (!result.ok) throw new Error("Allow precise location access to receive offers.");
+      if (!result.ok) throw new Error(nativeCapabilityMessage(result.reason));
       await load(true);
     } catch (cause) {
       setError(errorMessage(cause));
@@ -482,7 +507,7 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged }: {
     setError(null);
     try {
       const result = await registerPushDevice(api);
-      if (!result.ok) throw new Error("Enable notifications on a physical device to receive offers.");
+      if (!result.ok) throw new Error(nativeCapabilityMessage(result.reason));
       await load(true);
     } catch (cause) {
       setError(errorMessage(cause));

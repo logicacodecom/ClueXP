@@ -7,6 +7,7 @@ import * as SecureStore from "expo-secure-store";
 import type { CluexpApi } from "../api/client";
 
 const INSTALLATION_ID_KEY = "cluexp.installationId";
+const EAS_PROJECT_ID = "10a489e5-0ee3-4ea8-9ee8-5ee8044ead22";
 
 function makeLocalId() {
   return `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -53,7 +54,16 @@ export async function registerPushDevice(api: CluexpApi) {
   if (!granted.granted) {
     return { ok: false, reason: "notification_permission_denied" };
   }
-  const token = await Notifications.getExpoPushTokenAsync();
+  let token: Notifications.ExpoPushToken;
+  try {
+    token = await Notifications.getExpoPushTokenAsync({ projectId: EAS_PROJECT_ID });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (Platform.OS === "android" && /Firebase|googleServicesFile|Default FirebaseApp|FCM/i.test(message)) {
+      return { ok: false, reason: "android_fcm_not_configured" };
+    }
+    return { ok: false, reason: "push_token_unavailable" };
+  }
   await api.registerDevice({
     platform: Platform.OS === "ios" ? "ios" : "android",
     push_token: token.data,
