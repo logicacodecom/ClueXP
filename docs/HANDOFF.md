@@ -3960,3 +3960,69 @@ Recommended location behavior:
 - Backend readiness should still be source-of-truth for `location_stale`, but
   native should quietly prevent staleness before the technician sees that
   blocker.
+
+### 2026-08-02 — Claude: Navigate CTA, conservative ETA copy, foreground auto location refresh
+
+Picked up the product TODO above. Two of the three items done in full; the
+background-tracking piece is deliberately partial — see below.
+
+Commit `b52ae90`:
+- **Navigate CTA**: moved "Open in maps" off a scroll-down secondary button
+  onto the map card itself — a primary-colored "Navigate" pill overlaying the
+  map's top-right corner (mirrors the existing GPS badge, top-left), visible
+  without scrolling, on both the real map and the static fallback. Still MVP
+  scope per the TODO: deep-links to the device's own maps app for
+  turn-by-turn; no in-app routing was built.
+- **ETA copy**: the active-job ETA chip now reads "ETA (est.)" instead of a
+  bare "ETA", since it's a coarse server-provided figure, not
+  routing/traffic-backed.
+- **Automatic foreground location refresh**: previously there was no
+  periodic refresh at all — only a one-shot send on login and on advancing to
+  `en_route`, so technicians had to manually tap "Fix location" repeatedly.
+  Added one opportunistic fix on app start, then a recurring foreground
+  refresh: 20s cadence while there's an active job, 3min while merely
+  available, off otherwise (`WorkScreen`, two new `useEffect`s calling the
+  existing `requestAndSendLocation`). Manual "Fix location" in ReadinessBar
+  stays as the rescue path for denied permission / disabled GPS / failed
+  automatic updates.
+
+**Deliberately not built: true OS background location tracking** (continuing
+to update while the app is backgrounded/screen off during an active job).
+The TODO above asks for it, but implementing it is a materially different
+decision than a foreground timer:
+- A new, more sensitive permission class (`ACCESS_BACKGROUND_LOCATION` on
+  Android / "Always" on iOS) — both platforms specifically flag this in app
+  review and often expect a prominent in-app disclosure screen *before* the
+  system permission dialog, not just a permission-string justification.
+  app.json already has the usage-description strings for this
+  (`NSLocationAlwaysAndWhenInUseUsageDescription`,
+  `ACCESS_BACKGROUND_LOCATION`) from earlier scaffolding, but the strings
+  existing isn't the same as the UX/compliance flow being built.
+  - Google Play in particular requires a separate declaration form and
+    justification video/screenshots for apps requesting background location
+    — this can add real review latency to the next submission.
+- A new native dependency (`expo-task-manager`, needed for
+  `Location.startLocationUpdatesAsync`'s background task registration) —
+  another native module requiring a fresh EAS build to even smoke-test, on
+  top of everything already pending device QA.
+- Real battery-drain tradeoffs that deserve an explicit cadence decision, not
+  one made silently mid-session.
+
+Given all of that, I built the foreground piece (addresses the literal
+"stop making me tap Fix location" complaint for the common case: app open,
+working a job) and left background tracking as an open, explicitly-flagged
+decision rather than quietly shipping a new permission class. If background
+tracking is wanted, next step is: confirm the product decision, add
+`expo-task-manager`, define the background task, request
+`Location.requestBackgroundPermissionsAsync()` only when a job goes active,
+and add the in-app disclosure screen most app-review guidelines expect before
+that system prompt.
+
+Verification: typecheck, test:api (4 passed), `expo export --platform web`
+(clean) all pass. No native config changed this slice, so no new EAS build
+needed.
+
+Still needs real device QA (same standing limitation — no simulator/device in
+this environment): does the Navigate pill actually open the maps app
+correctly on Android, and does location visibly stop needing manual refresh
+during a live job.
