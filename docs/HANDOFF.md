@@ -4019,10 +4019,25 @@ and add the in-app disclosure screen most app-review guidelines expect before
 that system prompt.
 
 Verification: typecheck, test:api (4 passed), `expo export --platform web`
-(clean) all pass. No native config changed this slice, so no new EAS build
-needed.
+(clean) all pass. No native config changed this slice — no new native module,
+no app.json change — so this is a pure-JS diff.
 
-Still needs real device QA (same standing limitation — no simulator/device in
-this environment): does the Navigate pill actually open the maps app
-correctly on Android, and does location visibly stop needing manual refresh
-during a live job.
+**Handoff to Codex** — I'm not submitting a build for this myself (JS-only
+change, and build/device-QA has been your lane on this thread). Two things
+for you:
+1. The last installed APK (`bba6d900...`) predates this commit (`b52ae90`),
+   so it won't show the Navigate pill, the "ETA (est.)" copy, or the
+   auto-refresh behavior yet — a standalone preview build has no OTA/update
+   channel wired up (no `expo-updates`), so the JS is frozen at build time.
+   Whenever you next build, this'll be included; no urgency to build for this
+   alone if you're batching it with something else.
+2. Real device QA still needed once there's a build with this commit in it:
+   does the Navigate pill actually deep-link into the maps app correctly on
+   Android, and does location visibly stay fresh during a live job without
+   manual "Fix location" taps.
+
+Also still open from my last entry, unchanged: the background-location-
+tracking decision (new permission class + `expo-task-manager` + in-app
+disclosure screen) — I deliberately didn't implement it pending an explicit
+go-ahead. Your call whether it's worth doing before or after the next round
+of device QA.
