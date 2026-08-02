@@ -3,6 +3,7 @@ import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { StatusCell } from "./StatusCell";
 import { FieldButton } from "./FieldButton";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors, radius } from "../theme";
 import type { ReadinessSnapshot } from "../types";
 
@@ -43,6 +44,7 @@ export function ReadinessBar({ readiness, online, busy, onSetAvailable, onLocati
   onLocation: () => void;
   onPush: () => void;
 }) {
+  const { t } = useLocale();
   const [openCell, setOpenCell] = useState<CellKey | null>(null);
 
   const available = readiness?.account.available ?? null;
@@ -54,42 +56,42 @@ export function ReadinessBar({ readiness, online, busy, onSetAvailable, onLocati
   const cells: Array<{ key: CellKey; label: string; icon: keyof typeof Ionicons.glyphMap; tone: Tone; headline: string; detail: string; action?: { label: string; onPress: () => void } }> = [
     {
       key: "available",
-      label: "Available",
+      label: t("Available"),
       icon: "shield-checkmark-outline",
       tone: available === null ? "neutral" : available ? "good" : "neutral",
-      headline: available ? "You're marked available" : "You're offline",
-      detail: available ? "Companies can see and offer you jobs." : "Go online to start receiving offers.",
-      action: available === null ? undefined : { label: available ? "Go offline" : "Go online", onPress: () => onSetAvailable(!available) }
+      headline: available ? t("You're marked available") : t("You're offline"),
+      detail: available ? t("Companies can see and offer you jobs.") : t("Go online to start receiving offers."),
+      action: available === null ? undefined : { label: available ? t("Go offline") : t("Go online"), onPress: () => onSetAvailable(!available) }
     },
     {
       key: "location",
-      label: "Location",
+      label: t("Location"),
       icon: "locate-outline",
       tone: !locationAt ? "warn" : locationFresh ? "good" : "warn",
-      headline: !locationAt ? "Location not shared yet" : locationFresh ? "Location fresh" : "Location stale",
+      headline: !locationAt ? t("Location not shared yet") : locationFresh ? t("Location fresh") : t("Location stale"),
       detail: locationAt
-        ? `Updated ${ageLabel(locationAt)}. A fresher fix helps match nearby work precisely.`
-        : "Sharing a fix helps dispatch match you with nearby work precisely.",
-      action: { label: "Refresh", onPress: onLocation }
+        ? t(`Updated ${ageLabel(locationAt)}. A fresher fix helps match nearby work precisely.`)
+        : t("Sharing a fix helps dispatch match you with nearby work precisely."),
+      action: { label: t("Refresh"), onPress: onLocation }
     },
     {
       key: "alerts",
-      label: "Alerts",
+      label: t("Alerts"),
       icon: pushReady ? "notifications-outline" : "notifications-off-outline",
       tone: pushReady ? "good" : "warn",
-      headline: pushReady ? "Alerts on" : "Alerts needed",
+      headline: pushReady ? t("Alerts on") : t("Alerts needed"),
       detail: pushReady
-        ? "You'll get a push alert for new offers, even with the app backgrounded."
-        : "Enable notifications on a physical device so you don't miss an offer.",
-      action: pushReady ? undefined : { label: "Enable", onPress: onPush }
+        ? t("You'll get a push alert for new offers, even with the app backgrounded.")
+        : t("Enable notifications on a physical device so you don't miss an offer."),
+      action: pushReady ? undefined : { label: t("Enable"), onPress: onPush }
     },
     {
       key: "connection",
-      label: "Connection",
+      label: t("Connection"),
       icon: online ? "wifi-outline" : "cloud-offline-outline",
       tone: online ? "good" : "bad",
-      headline: online ? "Connected" : "No connection",
-      detail: online ? "Live sync with dispatch is working." : "Reconnect to the internet to receive offers."
+      headline: online ? t("Connected") : t("No connection"),
+      detail: online ? t("Live sync with dispatch is working.") : t("Reconnect to the internet to receive offers.")
     }
   ];
 
@@ -98,12 +100,12 @@ export function ReadinessBar({ readiness, online, busy, onSetAvailable, onLocati
   const showHero = Boolean(readiness) && available === true && (!online || !readiness?.can_receive_offers);
   const hero = showHero
     ? !online
-      ? { tone: "bad" as Tone, icon: "cloud-offline-outline" as const, cause: "No connection", detail: "Reconnect to the internet — offers can't reach you until it's back.", action: undefined }
+      ? { tone: "bad" as Tone, icon: "cloud-offline-outline" as const, cause: t("No connection"), detail: t("Reconnect to the internet — offers can't reach you until it's back."), action: undefined }
       : blockers.includes("location_stale")
-        ? { tone: "warn" as Tone, icon: "locate-outline" as const, cause: "Location access is stale", detail: "ClueXP needs a fresh location fix while you're available so companies can send offers near you.", action: { label: "Fix location access", onPress: onLocation } }
+        ? { tone: "warn" as Tone, icon: "locate-outline" as const, cause: t("Location access is stale"), detail: t("ClueXP needs a fresh location fix while you're available so companies can send offers near you."), action: { label: t("Fix location access"), onPress: onLocation } }
         : blockers.includes("push_not_ready")
-          ? { tone: "warn" as Tone, icon: "notifications-off-outline" as const, cause: "Alerts are off", detail: "Enable notifications on a physical device so offers can reach you.", action: { label: "Enable alerts", onPress: onPush } }
-          : { tone: "neutral" as Tone, icon: "time-outline" as const, cause: "Not receiving offers", detail: blockers.length > 0 ? blockers.join(" / ").replaceAll("_", " ") : "Resolve the blocker above.", action: undefined }
+          ? { tone: "warn" as Tone, icon: "notifications-off-outline" as const, cause: t("Alerts are off"), detail: t("Enable notifications on a physical device so offers can reach you."), action: { label: t("Enable alerts"), onPress: onPush } }
+          : { tone: "neutral" as Tone, icon: "time-outline" as const, cause: t("Not receiving offers"), detail: blockers.length > 0 ? t(blockers.join(" / ").replaceAll("_", " ")) : t("Resolve the blocker above."), action: undefined }
     : null;
 
   return (
@@ -142,12 +144,12 @@ export function ReadinessBar({ readiness, online, busy, onSetAvailable, onLocati
           </View>
           <View style={styles.heroTitleRow}>
             <Ionicons color={toneColor(hero.tone)} name="alert-circle-outline" size={18} />
-            <Text style={[styles.heroTitle, { color: toneColor(hero.tone) }]}>Not receiving offers</Text>
+            <Text style={[styles.heroTitle, { color: toneColor(hero.tone) }]}>{t("Not receiving offers")}</Text>
           </View>
           <Text style={styles.heroCause}>{hero.cause}</Text>
           <Text style={styles.heroDetail}>{hero.detail}</Text>
           {hero.action ? <FieldButton label={hero.action.label} loading={busy} onPress={hero.action.onPress} /> : null}
-          <FieldButton label="Go offline" loading={busy} onPress={() => onSetAvailable(false)} tone="secondary" />
+          <FieldButton label={t("Go offline")} loading={busy} onPress={() => onSetAvailable(false)} tone="secondary" />
         </View>
       )}
     </View>

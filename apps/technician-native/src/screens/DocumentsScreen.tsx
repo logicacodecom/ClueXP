@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { CluexpApi } from "../api/client";
 import { Pill } from "../components/Pill";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors, radius, sharedStyles } from "../theme";
 import type { TechnicianDocument } from "../types";
 
@@ -38,6 +39,7 @@ function statusTone(status: TechnicianDocument["status"]): "success" | "danger" 
 }
 
 export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () => void }) {
+  const { t } = useLocale();
   const [documents, setDocuments] = useState<TechnicianDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -50,7 +52,7 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
       const body = await api.listDocuments();
       setDocuments(Array.isArray(body) ? body : []);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load documents");
+      setError(cause instanceof Error ? cause.message : t("Could not load documents"));
     } finally {
       setLoading(false);
     }
@@ -68,7 +70,7 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
     if (result.canceled || !result.assets?.[0]) return;
     const asset = result.assets[0];
     if (asset.size != null && asset.size > 10 * 1024 * 1024) {
-      setError("File too large. Max 10MB.");
+      setError(t("File too large. Max 10MB."));
       return;
     }
     setUploading(true);
@@ -80,7 +82,7 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
       );
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to upload document");
+      setError(cause instanceof Error ? cause.message : t("Failed to upload document"));
     } finally {
       setUploading(false);
     }
@@ -90,10 +92,10 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
     setViewingId(id);
     try {
       const body = await api.documentDownloadUrl(id);
-      if (!body.download_url) throw new Error("Could not open document");
+      if (!body.download_url) throw new Error(t("Could not open document"));
       await Linking.openURL(body.download_url);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not open document");
+      setError(cause instanceof Error ? cause.message : t("Could not open document"));
     } finally {
       setViewingId(null);
     }
@@ -102,22 +104,22 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <Text style={sharedStyles.title}>Documents</Text>
-        <Pressable accessibilityLabel="Close" onPress={onClose} style={styles.closeButton}>
+        <Text style={sharedStyles.title}>{t("Documents")}</Text>
+        <Pressable accessibilityLabel={t("Close")} onPress={onClose} style={styles.closeButton}>
           <Ionicons color={colors.foreground} name="close" size={20} />
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={styles.body}>
-        <Section title="Compliance documents">
-          <Text style={styles.sectionHint}>Upload required documents to remain eligible for jobs. All documents are reviewed before becoming active.</Text>
+        <Section title={t("Compliance documents")}>
+          <Text style={styles.sectionHint}>{t("Upload required documents to remain eligible for jobs. All documents are reviewed before becoming active.")}</Text>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           {loading ? (
-            <Text style={styles.emptyText}>Loading documents…</Text>
+            <Text style={styles.emptyText}>{t("Loading documents…")}</Text>
           ) : documents.length === 0 ? (
             <View style={styles.emptyBox}>
               <Ionicons color={colors.muted} name="document-text-outline" size={26} />
-              <Text style={styles.emptyBoxTitle}>No documents uploaded</Text>
-              <Text style={styles.emptyBoxText}>Upload required documents to continue working.</Text>
+              <Text style={styles.emptyBoxTitle}>{t("No documents uploaded")}</Text>
+              <Text style={styles.emptyBoxText}>{t("Upload required documents to continue working.")}</Text>
             </View>
           ) : (
             <View style={styles.list}>
@@ -125,14 +127,14 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
                 <View key={doc.id} style={styles.docCard}>
                   <View style={styles.docHeaderRow}>
                     <View style={styles.docHeaderText}>
-                      <Text style={styles.docTitle}>{humanizeType(doc.document_type)}</Text>
-                      <Text style={styles.docMeta}>Uploaded {formatDate(doc.uploaded_at)}</Text>
-                      {doc.status === "rejected" && doc.rejected_reason ? <Text style={styles.docRejected}>Rejected: {doc.rejected_reason}</Text> : null}
+                      <Text style={styles.docTitle}>{t(humanizeType(doc.document_type))}</Text>
+                      <Text style={styles.docMeta}>{t("Uploaded")} {formatDate(doc.uploaded_at)}</Text>
+                      {doc.status === "rejected" && doc.rejected_reason ? <Text style={styles.docRejected}>{t("Rejected:")} {doc.rejected_reason}</Text> : null}
                     </View>
                     <View style={styles.docStatusCol}>
-                      <Pill tone={statusTone(doc.status)}>{doc.status === "pending_review" ? "Pending" : doc.status}</Pill>
+                      <Pill tone={statusTone(doc.status)}>{doc.status === "pending_review" ? t("Pending") : t(doc.status)}</Pill>
                       <Pressable disabled={viewingId === doc.id} onPress={() => void handleView(doc.id)}>
-                        <Text style={styles.viewLink}>{viewingId === doc.id ? "Opening…" : "View"}</Text>
+                        <Text style={styles.viewLink}>{viewingId === doc.id ? t("Opening…") : t("View")}</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -142,35 +144,35 @@ export function DocumentsScreen({ api, onClose }: { api: CluexpApi; onClose: () 
           )}
         </Section>
 
-        <Section title="Add document">
+        <Section title={t("Add document")}>
           <View style={styles.uploadBox}>
-            <Text style={styles.sectionHint}>Document type</Text>
+            <Text style={styles.sectionHint}>{t("Document type")}</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.typeRow}>
               {DOCUMENT_TYPES.map((type) => {
                 const active = docType === type.value;
                 return (
                   <Pressable disabled={uploading} key={type.value} onPress={() => setDocType(type.value)} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
-                    <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{type.label}</Text>
+                    <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{t(type.label)}</Text>
                   </Pressable>
                 );
               })}
             </ScrollView>
             <Pressable disabled={uploading} onPress={() => void handleUpload()} style={styles.dropZone}>
               <Ionicons color={colors.muted} name="cloud-upload-outline" size={26} />
-              <Text style={styles.dropZoneTitle}>{uploading ? "Uploading…" : "Tap to choose a file"}</Text>
-              <Text style={styles.dropZoneHint}>PDF, JPG, PNG up to 10MB</Text>
+              <Text style={styles.dropZoneTitle}>{uploading ? t("Uploading…") : t("Tap to choose a file")}</Text>
+              <Text style={styles.dropZoneHint}>{t("PDF, JPG, PNG up to 10MB")}</Text>
             </Pressable>
           </View>
         </Section>
 
-        <Section title="Document requirements">
+        <Section title={t("Document requirements")}>
           <View style={styles.requirementList}>
             {REQUIREMENTS.map((item) => (
               <View key={item.title} style={styles.requirementRow}>
                 <Ionicons color={colors.primary} name="checkmark-circle-outline" size={18} />
                 <View style={styles.requirementText}>
-                  <Text style={styles.requirementTitle}>{item.title}</Text>
-                  <Text style={styles.requirementSub}>{item.text}</Text>
+                  <Text style={styles.requirementTitle}>{t(item.title)}</Text>
+                  <Text style={styles.requirementSub}>{t(item.text)}</Text>
                 </View>
               </View>
             ))}

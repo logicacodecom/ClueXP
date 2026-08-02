@@ -1,16 +1,18 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useLocale } from "../i18n/LocaleContext";
+import type { Locale } from "../i18n/LocaleContext";
 import { colors } from "../theme";
 
-export type Locale = "en" | "es";
-
-const LABELS: Record<Locale, string> = { en: "English", es: "Espanol" };
 const LOCALES: Locale[] = ["en", "es"];
 
-// Mirrors technician-web's LanguageToggle (@cluexp/app-core locale.tsx):
-// a rounded-full segmented pill, only shown on sign-in on web too.
-export function LanguageToggle({ locale, onChange }: { locale: Locale; onChange: (locale: Locale) => void }) {
+// Mirrors technician-web's LanguageToggle (@cluexp/app-core locale.tsx): a
+// rounded-full segmented pill. Reads/writes the shared app-wide locale
+// directly via useLocale() rather than taking locale/onChange props, since
+// there's only ever one locale for the whole app now.
+export function LanguageToggle() {
+  const { locale, setLocale, t } = useLocale();
   return (
-    <View accessibilityLabel="Language" accessibilityRole="radiogroup" style={styles.track}>
+    <View accessibilityLabel={t("Language")} accessibilityRole="radiogroup" style={styles.track}>
       {LOCALES.map((item) => {
         const active = locale === item;
         return (
@@ -18,10 +20,10 @@ export function LanguageToggle({ locale, onChange }: { locale: Locale; onChange:
             accessibilityRole="radio"
             accessibilityState={{ selected: active }}
             key={item}
-            onPress={() => onChange(item)}
+            onPress={() => setLocale(item)}
             style={[styles.segment, active ? styles.segmentActive : null]}
           >
-            <Text style={[styles.label, active ? styles.labelActive : null]}>{LABELS[item]}</Text>
+            <Text style={[styles.label, active ? styles.labelActive : null]}>{item === "en" ? t("English") : t("Spanish")}</Text>
           </Pressable>
         );
       })}

@@ -24,7 +24,7 @@ import type { MapPoint } from "../components/ActiveJobMap";
 import { BottomNav, type TabKey } from "../components/BottomNav";
 import { Countdown } from "../components/Countdown";
 import { FieldButton } from "../components/FieldButton";
-import { LanguageToggle, type Locale } from "../components/LanguageToggle";
+import { LanguageToggle } from "../components/LanguageToggle";
 import { Logo } from "../components/Logo";
 import { MiniStat } from "../components/MiniStat";
 import { Pill } from "../components/Pill";
@@ -32,6 +32,7 @@ import { ReadinessBar } from "../components/ReadinessBar";
 import { registerPushDevice, requestAndSendLocation } from "../features/nativeCapabilities";
 import { replayQueuedMutations } from "../features/outboxReplay";
 import { logoutStoredSession } from "../features/sessionLifecycle";
+import { useLocale } from "../i18n/LocaleContext";
 import { ActivityScreen } from "../screens/ActivityScreen";
 import { DocumentsScreen } from "../screens/DocumentsScreen";
 import { EarningsScreen } from "../screens/EarningsScreen";
@@ -222,6 +223,7 @@ function outboxKind(kind: "arrival" | "issue" | "collection"): QueuedMutation["k
 }
 
 export function RootApp() {
+  const { t } = useLocale();
   const [booting, setBooting] = useState(true);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -374,7 +376,7 @@ export function RootApp() {
         <View style={sharedStyles.phoneFrame}>
           <View style={styles.center}>
             <Logo height={40} />
-            <Text style={styles.bootCaption}>Restoring secure session</Text>
+            <Text style={styles.bootCaption}>{t("Restoring secure session")}</Text>
           </View>
         </View>
       </SafeAreaView>
@@ -402,18 +404,12 @@ export function RootApp() {
   );
 }
 
-const LOGIN_COPY: Record<Locale, { signIn: string; subtitle: string; email: string; password: string }> = {
-  en: { signIn: "Sign in", subtitle: "Secure access for verified ClueXP technicians.", email: "Email or phone", password: "Password" },
-  es: { signIn: "Iniciar sesion", subtitle: "Acceso seguro para tecnicos ClueXP verificados.", email: "Correo o telefono", password: "Contrasena" }
-};
-
 function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: string) => Promise<void> }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [locale, setLocale] = useState<Locale>("en");
-  const copy = LOGIN_COPY[locale];
+  const { t } = useLocale();
 
   async function submit() {
     if (!identifier.trim() || !password || busy) return;
@@ -435,16 +431,16 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.loginWrap}>
           <View style={styles.loginTopRow}>
             <Logo height={24} />
-            <LanguageToggle locale={locale} onChange={setLocale} />
+            <LanguageToggle />
           </View>
           <View style={styles.loginForm}>
             <View style={styles.loginBadge}>
               <Ionicons color={colors.primaryText} name="shield-checkmark" size={24} />
             </View>
-            <Text style={styles.loginTitle}>{copy.signIn}</Text>
-            <Text style={styles.loginCopy}>{copy.subtitle}</Text>
+            <Text style={styles.loginTitle}>{t("Sign in")}</Text>
+            <Text style={styles.loginCopy}>{t("Secure access for verified ClueXP technicians.")}</Text>
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>{copy.email}</Text>
+              <Text style={styles.fieldLabel}>{t("Email or phone")}</Text>
               <TextInput
                 autoCapitalize="none"
                 autoComplete="email"
@@ -457,7 +453,7 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
               />
             </View>
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>{copy.password}</Text>
+              <Text style={styles.fieldLabel}>{t("Password")}</Text>
               <TextInput
                 autoCapitalize="none"
                 onChangeText={setPassword}
@@ -469,7 +465,7 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
               />
             </View>
             {error ? <AlertBanner text={error} tone="bad" /> : null}
-            <FieldButton disabled={!identifier.trim() || !password} label={copy.signIn} loading={busy} onPress={submit} />
+            <FieldButton disabled={!identifier.trim() || !password} label={t("Sign in")} loading={busy} onPress={submit} />
           </View>
         </KeyboardAvoidingView>
       </View>
@@ -478,18 +474,20 @@ function LoginScreen({ onLogin }: { onLogin: (identifier: string, password: stri
 }
 
 function AvatarContent({ photoUrl, initials, textStyle }: { photoUrl?: string | null; initials: string; textStyle: object }) {
+  const { t } = useLocale();
   if (photoUrl) {
-    return <Image accessibilityLabel="Profile photo" resizeMode="cover" source={{ uri: photoUrl }} style={styles.avatarImage} />;
+    return <Image accessibilityLabel={t("Profile photo")} resizeMode="cover" source={{ uri: photoUrl }} style={styles.avatarImage} />;
   }
   return <Text style={textStyle}>{initials}</Text>;
 }
 
 function Header({ session, queueCount, failedCount, onAvatarPress }: { session: AuthSession; queueCount: number; failedCount: number; onAvatarPress: () => void }) {
-  const name = session.user?.display_name || session.user?.email || "Technician";
+  const { t } = useLocale();
+  const name = session.user?.display_name || session.user?.email || t("Technician");
   return (
     <View style={styles.header}>
       <Logo height={20} />
-      <Pressable accessibilityLabel="Open account" accessibilityRole="button" onPress={onAvatarPress} style={styles.avatar}>
+      <Pressable accessibilityLabel={t("Open account")} accessibilityRole="button" onPress={onAvatarPress} style={styles.avatar}>
         <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.avatarText} />
         {failedCount > 0 ? <View style={[styles.avatarBadge, styles.avatarBadgeDanger]} /> : queueCount > 0 ? <View style={styles.avatarBadge} /> : null}
       </Pressable>
@@ -505,6 +503,7 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
   failedCount: number;
   onQueueChanged: () => Promise<void>;
 }) {
+  const { t } = useLocale();
   const technicianId = session.technician?.id;
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null);
   const [snapshot, setSnapshot] = useState<ActiveJobSnapshot | null>(null);
@@ -679,13 +678,13 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
     try {
       if (target === "en_route") {
         const located = await requestAndSendLocation(api);
-        if (!located.ok) throw new Error("Location must be shared before route start.");
+        if (!located.ok) throw new Error(t("Location must be shared before route start."));
       }
       await api.updateJobStatus(job.id, target, snapshot?.version);
       await load(true);
     } catch (cause) {
       if (cause instanceof ApiError && cause.problem.code === "version_conflict") {
-        setError("This job changed. Refreshed the latest server state.");
+        setError(t("This job changed. Refreshed the latest server state."));
         await load(true);
       } else {
         setError(errorMessage(cause));
@@ -704,12 +703,12 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
         contentContainerStyle={styles.scrollBody}
         refreshControl={<RefreshControl onRefresh={() => void load()} refreshing={refreshing} tintColor={colors.primary} />}
       >
-        {hint ? <AlertBanner text={`Opened ${hint.kind}${hint.id ? ` ${hint.id.slice(0, 8)}` : ""} from ${hint.source}. Refreshing server state.`} tone="warn" /> : null}
+        {hint ? <AlertBanner text={`${t("Opened")} ${hint.kind}${hint.id ? ` ${hint.id.slice(0, 8)}` : ""} ${t("from")} ${hint.source}. ${t("Refreshing server state.")}`} tone="warn" /> : null}
         {error ? <AlertBanner text={error} tone="bad" /> : null}
         {failedCount > 0 ? (
-          <AlertBanner text={`${failedCount} action${failedCount === 1 ? "" : "s"} could not sync and ${failedCount === 1 ? "was" : "were"} not applied. Open Account to review, or contact dispatch if this was a job update.`} tone="bad" />
+          <AlertBanner text={`${failedCount} ${t(failedCount === 1 ? "action could not sync and was not applied. Open Account to review, or contact dispatch if this was a job update." : "actions could not sync and were not applied. Open Account to review, or contact dispatch if this was a job update.")}`} tone="bad" />
         ) : queueCount > 0 ? (
-          <AlertBanner text={`${queueCount} action${queueCount === 1 ? "" : "s"} queued offline — will sync automatically once you're back online.`} tone="warn" />
+          <AlertBanner text={`${queueCount} ${t(queueCount === 1 ? "action queued offline — will sync automatically once you're back online." : "actions queued offline — will sync automatically once you're back online.")}`} tone="warn" />
         ) : null}
         {job ? (
           <ActiveJobCard allowedActions={snapshot?.allowed_actions ?? []} busy={busy} job={job} jobDetail={jobDetail} onAdvance={advanceJob} onSheet={setSheet} version={snapshot?.version ?? null} />
@@ -749,14 +748,15 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
 }
 
 function ReadyState() {
+  const { t } = useLocale();
   return (
     <View style={styles.readyWrap}>
       <View style={styles.readyCircle}>
         <Ionicons color={colors.success} name="checkmark" size={30} />
       </View>
-      <Text style={styles.readyTitle}>Ready for offers</Text>
-      <Text style={styles.readyCaption}>server feed connected</Text>
-      <Text style={styles.readyBody}>You are online. New offers will appear here. You can leave this screen open while working nearby.</Text>
+      <Text style={styles.readyTitle}>{t("Ready for offers")}</Text>
+      <Text style={styles.readyCaption}>{t("server feed connected")}</Text>
+      <Text style={styles.readyBody}>{t("You are online. New offers will appear here. You can leave this screen open while working nearby.")}</Text>
     </View>
   );
 }
@@ -768,46 +768,47 @@ function OfferCard({ offer, moreCount, busy, onAccept, onDecline }: {
   onAccept: () => void;
   onDecline: (reason?: string) => void;
 }) {
+  const { t } = useLocale();
   const [showReasons, setShowReasons] = useState(false);
   return (
     <View style={styles.offerWrap}>
-      {moreCount > 0 ? <Text style={styles.queueChip}>{moreCount} more offer{moreCount === 1 ? "" : "s"} waiting</Text> : null}
+      {moreCount > 0 ? <Text style={styles.queueChip}>{t(`${moreCount} more offer${moreCount === 1 ? "" : "s"} waiting`)}</Text> : null}
       <Countdown expiresAt={offer.expires_at} offeredAt={offer.offered_at} />
       <View style={styles.divider} />
-      <Text style={sharedStyles.kicker}>{offer.organization_name ? `Offer from ${offer.organization_name}` : "Incoming offer"}</Text>
-      <Text style={styles.offerTitle}>{offer.service_type || offer.situation || "Service request"}</Text>
+      <Text style={sharedStyles.kicker}>{offer.organization_name ? `${t("Offer from")} ${offer.organization_name}` : t("Incoming offer")}</Text>
+      <Text style={styles.offerTitle}>{offer.service_type || offer.situation || t("Service request")}</Text>
       <View style={styles.offerMetaRow}>
         <Ionicons color={colors.primary} name="location-outline" size={15} />
-        <Text style={styles.offerMeta}>{offer.area || "Nearby service area"}</Text>
+        <Text style={styles.offerMeta}>{offer.area || t("Nearby service area")}</Text>
       </View>
-      <Text style={styles.faintText}>Exact address and customer details unlock after acceptance.</Text>
+      <Text style={styles.faintText}>{t("Exact address and customer details unlock after acceptance.")}</Text>
       <View style={styles.metricGrid}>
-        <Metric label="Travel" value={offer.distance_mi != null ? `≈ ${offer.distance_mi} mi` : offer.dist_km != null ? `≈ ${offer.dist_km.toFixed(1)} km` : "Not provided"} />
-        <Metric label="Coarse drive" value={offer.eta_min != null ? `≈ ${offer.eta_min} min` : "Not provided"} />
+        <Metric label={t("Travel")} value={offer.distance_mi != null ? `≈ ${offer.distance_mi} mi` : offer.dist_km != null ? `≈ ${offer.dist_km.toFixed(1)} km` : t("Not provided")} />
+        <Metric label={t("Coarse drive")} value={offer.eta_min != null ? `≈ ${offer.eta_min} min` : t("Not provided")} />
       </View>
       <View style={styles.amountRow}>
-        <Text style={styles.faintText}>Your amount</Text>
-        <Text style={styles.amountText}>{offer.estimated_earnings || "Pending"}</Text>
+        <Text style={styles.faintText}>{t("Your amount")}</Text>
+        <Text style={styles.amountText}>{offer.estimated_earnings || t("Pending")}</Text>
       </View>
-      <FieldButton icon={<Ionicons color={colors.primaryText} name="checkmark" size={20} />} label="Accept" loading={busy} onPress={onAccept} />
+      <FieldButton icon={<Ionicons color={colors.primaryText} name="checkmark" size={20} />} label={t("Accept")} loading={busy} onPress={onAccept} />
       <FieldButton
         icon={<Ionicons color={colors.foreground} name="close" size={20} />}
-        label="Decline"
+        label={t("Decline")}
         loading={busy}
         onPress={() => setShowReasons((value) => !value)}
         tone="secondary"
       />
       {showReasons ? (
         <View style={styles.reasonPanel}>
-          <Text style={styles.reasonKicker}>Why are you declining?</Text>
+          <Text style={styles.reasonKicker}>{t("Why are you declining?")}</Text>
           <View style={styles.reasonRow}>
             {DECLINE_REASONS.map((reason) => (
               <Pressable disabled={busy} key={reason} onPress={() => onDecline(reason)} style={styles.reasonChip}>
-                <Text style={styles.reasonChipText}>{reason}</Text>
+                <Text style={styles.reasonChipText}>{t(reason)}</Text>
               </Pressable>
             ))}
             <Pressable disabled={busy} onPress={() => onDecline()} style={styles.reasonChip}>
-              <Text style={[styles.reasonChipText, styles.reasonChipMuted]}>Skip</Text>
+              <Text style={[styles.reasonChipText, styles.reasonChipMuted]}>{t("Skip")}</Text>
             </Pressable>
           </View>
         </View>
@@ -825,6 +826,7 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
   onAdvance: (target: string) => void;
   onSheet: (sheet: CommandSheet) => void;
 }) {
+  const { t } = useLocale();
   const next = useMemo(() => {
     const action = allowedActions.find((item) => item.startsWith("advance_to:"));
     return action ? action.replace("advance_to:", "") : null;
@@ -861,30 +863,30 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
         {showRealMap ? <ActiveJobMap points={mapPoints} /> : null}
         <View style={styles.mapBadge}>
           <Ionicons color={showRealMap ? colors.success : colors.warn} name={showRealMap ? "locate" : "map-outline"} size={13} />
-          <Text style={styles.mapBadgeText}>{mapBadgeText}</Text>
+          <Text style={styles.mapBadgeText}>{t(mapBadgeText)}</Text>
         </View>
         {!showRealMap ? (
           <View style={styles.mapGrid}>
             <MaterialCommunityIcons color={colors.primary} name="map-marker-radius-outline" size={34} />
-            <Text style={styles.mapText}>{job.address || "Service address unavailable"}</Text>
+            <Text style={styles.mapText}>{job.address || t("Service address unavailable")}</Text>
           </View>
         ) : null}
         {!pendingCustomer && mapsUrl ? (
           <Pressable onPress={() => void Linking.openURL(mapsUrl)} style={styles.navigateBadge}>
             <Ionicons color={colors.primaryText} name="navigate" size={13} />
-            <Text style={styles.navigateBadgeText}>Navigate</Text>
+            <Text style={styles.navigateBadgeText}>{t("Navigate")}</Text>
           </Pressable>
         ) : null}
-        <Text style={[styles.mapTruth, showRealMap ? styles.mapTruthOverlay : null]}>GPS is honest. No simulated movement is shown.</Text>
+        <Text style={[styles.mapTruth, showRealMap ? styles.mapTruthOverlay : null]}>{t("GPS is honest. No simulated movement is shown.")}</Text>
       </View>
 
       {job.location_requirements?.location_updated_at ? (
         <View style={styles.freshnessRow}>
           <View style={[styles.freshnessDot, job.location_requirements.location_is_fresh ? styles.freshnessDotGood : styles.freshnessDotWarn]} />
           <Text style={styles.freshnessText}>
-            Dispatch sees your location:{" "}
+            {t("Dispatch sees your location:")}{" "}
             <Text style={job.location_requirements.location_is_fresh ? styles.freshnessGood : styles.freshnessWarn}>
-              {job.location_requirements.location_is_fresh ? "fresh" : "stale"}
+              {t(job.location_requirements.location_is_fresh ? "fresh" : "stale")}
             </Text>
           </Text>
         </View>
@@ -892,15 +894,15 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
 
       <View>
         <View style={styles.stageHeaderRow}>
-          <Text style={sharedStyles.kicker}>Stage {stageIndex + 1} of 5</Text>
+          <Text style={sharedStyles.kicker}>{t("Stage")} {stageIndex + 1} {t("of 5")}</Text>
           <View style={styles.stageBars}>
             {activeStages.map((item, index) => (
               <View key={item.status} style={[styles.stageBar, index <= stageIndex ? styles.stageBarOn : null]} />
             ))}
           </View>
         </View>
-        <Text style={styles.stageHeading}>{stage.heading}</Text>
-        <Text style={styles.stageDetail}>{stageDetail(job.status)}</Text>
+        <Text style={styles.stageHeading}>{t(stage.heading)}</Text>
+        <Text style={styles.stageDetail}>{t(stageDetail(job.status))}</Text>
       </View>
 
       {pendingCustomer ? (
@@ -908,23 +910,23 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
           <View style={styles.pendingCircle}>
             <Text style={styles.pendingEllipsis}>…</Text>
           </View>
-          <Text style={styles.pendingKicker}>Job {job.id.slice(0, 8)}</Text>
-          <Text style={styles.pendingText}>The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.</Text>
+          <Text style={styles.pendingKicker}>{t(`Job ${job.id.slice(0, 8)}`)}</Text>
+          <Text style={styles.pendingText}>{t("The customer must confirm the receipt. You cannot complete this job yourself, and you remain busy until it is resolved.")}</Text>
           <View style={styles.pendingStatusRow}>
-            <Text style={styles.pendingStatusLabel}>Customer approval</Text>
+            <Text style={styles.pendingStatusLabel}>{t("Customer approval")}</Text>
             <Text style={[styles.pendingStatusValue, jobDetail?.approval_status === "disputed" ? styles.pendingStatusDanger : null]}>
-              {jobDetail?.approval_status === "approved" ? "Approved" :
+              {t(jobDetail?.approval_status === "approved" ? "Approved" :
                jobDetail?.approval_status === "disputed" ? "Disputed — dispatch mediating" :
                jobDetail?.approval_status === "expired" ? "Confirmation window expired" :
-               "Awaiting confirmation"}
+               "Awaiting confirmation")}
             </Text>
           </View>
           <View style={styles.pendingStatusRow}>
-            <Text style={styles.pendingStatusLabel}>Your status</Text>
-            <Text style={styles.pendingStatusValue}>Busy · no new offers</Text>
+            <Text style={styles.pendingStatusLabel}>{t("Your status")}</Text>
+            <Text style={styles.pendingStatusValue}>{t("Busy · no new offers")}</Text>
           </View>
           {jobDetail?.approval_url && /^https?:\/\//.test(jobDetail.approval_url) ? (
-            <FieldButton icon={<Ionicons color={colors.foreground} name="open-outline" size={17} />} label="View approval status" onPress={() => void Linking.openURL(jobDetail.approval_url as string)} tone="secondary" />
+            <FieldButton icon={<Ionicons color={colors.foreground} name="open-outline" size={17} />} label={t("View approval status")} onPress={() => void Linking.openURL(jobDetail.approval_url as string)} tone="secondary" />
           ) : null}
         </View>
       ) : (
@@ -934,33 +936,33 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
               <Ionicons color={colors.primary} name="location-outline" size={18} />
             </View>
             <View style={styles.addressBody}>
-              <Text style={styles.addressLabel}>Authorized service address</Text>
-              <Text style={styles.addressValue}>{job.address || "Address will appear when authorized by the server."}</Text>
-              <Text style={styles.addressSub}>{serviceLabel(job)}{job.access_type ? ` · ${job.access_type}` : ""}</Text>
+              <Text style={styles.addressLabel}>{t("Authorized service address")}</Text>
+              <Text style={styles.addressValue}>{job.address || t("Address will appear when authorized by the server.")}</Text>
+              <Text style={styles.addressSub}>{t(serviceLabel(job))}{job.access_type ? ` · ${t(job.access_type)}` : ""}</Text>
             </View>
           </View>
           {job.eta_min != null || job.distance_mi != null ? (
             <View style={styles.chipRow}>
-              {job.eta_min != null ? <MetaChip label="ETA (est.)" value={`${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min`} /> : null}
-              {job.distance_mi != null ? <MetaChip label="Distance" value={`${job.distance_mi} mi`} /> : null}
+              {job.eta_min != null ? <MetaChip label={t("ETA (est.)")} value={`${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min`} /> : null}
+              {job.distance_mi != null ? <MetaChip label={t("Distance")} value={`${job.distance_mi} mi`} /> : null}
             </View>
           ) : null}
           {hasDetails ? (
             <View style={styles.detailsCard}>
-              <Text style={sharedStyles.kicker}>Customer & job details</Text>
-              {customerName ? <DetailRow label="Customer" value={customerName} /> : null}
-              {customerPhone ? <DetailRow label="Phone" onPress={() => void Linking.openURL(`tel:${customerPhone.replace(/[^\d+]/g, "")}`)} value={customerPhone} /> : null}
-              {vehicle ? <DetailRow label="Vehicle" value={vehicle} /> : null}
-              {notes ? <DetailRow label="Job notes" value={notes} /> : null}
+              <Text style={sharedStyles.kicker}>{t("Customer & job details")}</Text>
+              {customerName ? <DetailRow label={t("Customer")} value={customerName} /> : null}
+              {customerPhone ? <DetailRow label={t("Phone")} onPress={() => void Linking.openURL(`tel:${customerPhone.replace(/[^\d+]/g, "")}`)} value={customerPhone} /> : null}
+              {vehicle ? <DetailRow label={t("Vehicle")} value={vehicle} /> : null}
+              {notes ? <DetailRow label={t("Job notes")} value={notes} /> : null}
             </View>
           ) : null}
           {intakePhotos.length > 0 ? (
             <View style={styles.photosBlock}>
-              <Text style={sharedStyles.kicker}>Customer intake photos</Text>
+              <Text style={sharedStyles.kicker}>{t("Customer intake photos")}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
                 {intakePhotos.map((photo, index) => (
                   <Pressable key={`${photo.url}-${index}`} onPress={() => void Linking.openURL(photo.url)} style={styles.photoThumbWrap}>
-                    <Image accessibilityLabel={photo.label || `Intake photo ${index + 1}`} resizeMode="cover" source={{ uri: photo.url }} style={styles.photoThumb} />
+                    <Image accessibilityLabel={photo.label || `${t("Intake photo")} ${index + 1}`} resizeMode="cover" source={{ uri: photo.url }} style={styles.photoThumb} />
                   </Pressable>
                 ))}
               </ScrollView>
@@ -971,33 +973,33 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
 
       {collectionItems.length > 0 ? (
         <View style={styles.detailsCard}>
-          <Text style={sharedStyles.kicker}>Recorded collection</Text>
+          <Text style={sharedStyles.kicker}>{t("Recorded collection")}</Text>
           {collectionItems.map((item, index) => (
             <View key={`${item.description}-${index}`} style={styles.collectionRow}>
               <Text style={styles.collectionDescription} numberOfLines={1}>
-                {item.description}{item.provided_by ? ` · provided by ${item.provided_by}` : ""}
+                {item.description}{item.provided_by ? ` · ${t("provided by")} ${item.provided_by}` : ""}
               </Text>
               {item.amount != null ? <Text style={styles.collectionAmount}>${item.amount.toFixed(2)}</Text> : null}
             </View>
           ))}
           {jobDetail?.collection_total != null ? (
             <View style={styles.collectionTotalRow}>
-              <Text style={styles.collectionTotalLabel}>Total recorded</Text>
+              <Text style={styles.collectionTotalLabel}>{t("Total recorded")}</Text>
               <Text style={styles.collectionTotalValue}>${jobDetail.collection_total.toFixed(2)}</Text>
             </View>
           ) : null}
-          <Text style={styles.collectionNote}>ClueXP records this collection; it does not process payment or determine payout.</Text>
+          <Text style={styles.collectionNote}>{t("ClueXP records this collection; it does not process payment or determine payout.")}</Text>
         </View>
       ) : null}
 
-      {version ? <Text style={styles.truthText}>server-verified version {version}</Text> : null}
-      {!pendingCustomer ? <FieldButton disabled={!next} label={actionLabel} loading={busy} onPress={() => (next ? onAdvance(next) : undefined)} /> : null}
+      {version ? <Text style={styles.truthText}>{t("server-verified version")} {version}</Text> : null}
+      {!pendingCustomer ? <FieldButton disabled={!next} label={t(actionLabel)} loading={busy} onPress={() => (next ? onAdvance(next) : undefined)} /> : null}
 
       <View style={styles.rail}>
-        <RailAction icon="chatbubble-outline" label="Message" onPress={() => onSheet("messages")} />
-        <RailAction icon="call-outline" label="Call" onPress={() => onSheet("call")} />
-        <RailAction danger icon="shield-outline" label="Safety" onPress={() => onSheet("safety")} />
-        <RailAction icon="ellipsis-horizontal" label="More" onPress={() => onSheet("more")} />
+        <RailAction icon="chatbubble-outline" label={t("Message")} onPress={() => onSheet("messages")} />
+        <RailAction icon="call-outline" label={t("Call")} onPress={() => onSheet("call")} />
+        <RailAction danger icon="shield-outline" label={t("Safety")} onPress={() => onSheet("safety")} />
+        <RailAction icon="ellipsis-horizontal" label={t("More")} onPress={() => onSheet("more")} />
       </View>
     </View>
   );
@@ -1011,6 +1013,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
   onClose: () => void;
   onSubmitted: (keepOpen: boolean) => Promise<void>;
 }) {
+  const { t } = useLocale();
   const [busy, setBusy] = useState(false);
   const [pin, setPin] = useState("");
   const [dispatcherName, setDispatcherName] = useState("");
@@ -1139,15 +1142,15 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
       <SafeAreaView style={sharedStyles.screen}>
         <View style={sharedStyles.phoneFrame}>
           <ScrollView contentContainerStyle={styles.modalBody}>
-            <Pressable accessibilityLabel="Close" accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
+            <Pressable accessibilityLabel={t("Close")} accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
               <Ionicons color={colors.foreground} name="close" size={22} />
             </Pressable>
 
             {sheet === "arrival" ? (
               <View>
-                <Text style={sharedStyles.kicker}>Stage 2 of 5</Text>
-                <Text style={sharedStyles.title}>Verify arrival</Text>
-                <Text style={sharedStyles.body}>Ask the customer for the six-digit PIN from their ClueXP tracking page.</Text>
+                <Text style={sharedStyles.kicker}>{t("Stage")} 2 {t("of 5")}</Text>
+                <Text style={sharedStyles.title}>{t("Verify arrival")}</Text>
+                <Text style={sharedStyles.body}>{t("Ask the customer for the six-digit PIN from their ClueXP tracking page.")}</Text>
                 <Pressable onPress={() => pinInputRef.current?.focus()} style={styles.pinBoxRow}>
                   {Array.from({ length: 6 }, (_, index) => (
                     <View key={index} style={[styles.pinBox, index === pin.length ? styles.pinBoxActive : null]}>
@@ -1164,21 +1167,21 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                   style={styles.hiddenInput}
                   value={pin}
                 />
-                <Text style={styles.pinHint}>The button enables after six digits.</Text>
+                <Text style={styles.pinHint}>{t("The button enables after six digits.")}</Text>
                 {error ? <AlertBanner text={error} tone="bad" /> : null}
-                <FieldButton disabled={pin.length !== 6} label="Confirm arrival" loading={busy} onPress={() => void run("arrival")} />
+                <FieldButton disabled={pin.length !== 6} label={t("Confirm arrival")} loading={busy} onPress={() => void run("arrival")} />
 
                 {dispatcherFallbackAllowed ? (
                   <View style={styles.dispatcherBox}>
-                    <Text style={styles.dispatcherTitle}>Call-center verification</Text>
-                    <Text style={styles.dispatcherHint}>Use this only when dispatch confirms arrival for a call-center intake and the customer has no PIN page available.</Text>
-                    <Text style={styles.fieldLabel}>Dispatcher name or initials</Text>
-                    <TextInput onChangeText={setDispatcherName} placeholder="Example: NR or Nadia" placeholderTextColor={colors.mutedFaint} style={styles.input} value={dispatcherName} />
-                    <Text style={styles.fieldLabel}>Verification note</Text>
+                    <Text style={styles.dispatcherTitle}>{t("Call-center verification")}</Text>
+                    <Text style={styles.dispatcherHint}>{t("Use this only when dispatch confirms arrival for a call-center intake and the customer has no PIN page available.")}</Text>
+                    <Text style={styles.fieldLabel}>{t("Dispatcher name or initials")}</Text>
+                    <TextInput onChangeText={setDispatcherName} placeholder={t("Example: NR or Nadia")} placeholderTextColor={colors.mutedFaint} style={styles.input} value={dispatcherName} />
+                    <Text style={styles.fieldLabel}>{t("Verification note")}</Text>
                     <TextInput
                       multiline
                       onChangeText={setDispatcherReason}
-                      placeholder="Example: Customer called dispatch and confirmed technician is on site."
+                      placeholder={t("Example: Customer called dispatch and confirmed technician is on site.")}
                       placeholderTextColor={colors.mutedFaint}
                       style={[styles.input, styles.textArea]}
                       value={dispatcherReason}
@@ -1186,48 +1189,48 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                     <FieldButton
                       disabled={!canDispatcherVerify}
                       icon={<Ionicons color={colors.info} name="shield-checkmark-outline" size={18} />}
-                      label={busy ? "Verifying…" : "Mark dispatch verified"}
+                      label={busy ? t("Verifying…") : t("Mark dispatch verified")}
                       loading={busy}
                       onPress={() => void run("arrival", { dispatcherVerified: true })}
                       tone="secondary"
                     />
                   </View>
                 ) : (
-                  <Text style={styles.noteBox}>No PIN available? Contact dispatch. Dispatcher override is handled from the provider console for this intake type.</Text>
+                  <Text style={styles.noteBox}>{t("No PIN available? Contact dispatch. Dispatcher override is handled from the provider console for this intake type.")}</Text>
                 )}
               </View>
             ) : null}
 
             {sheet === "safety" ? (
               <View>
-                <Text style={styles.dangerTitle}>Safety</Text>
-                <Text style={sharedStyles.body}>For unsafe conditions at or near this job. An alert is recorded against this job and sent to dispatch.</Text>
+                <Text style={styles.dangerTitle}>{t("Safety")}</Text>
+                <Text style={sharedStyles.body}>{t("For unsafe conditions at or near this job. An alert is recorded against this job and sent to dispatch.")}</Text>
                 <FieldButton
                   disabled={issueDone}
                   icon={<Ionicons color="#250606" name="warning-outline" size={20} />}
-                  label={busy ? "Sending alert…" : issueDone ? "Alert sent" : "I feel unsafe — alert dispatch"}
+                  label={busy ? t("Sending alert…") : issueDone ? t("Alert sent") : t("I feel unsafe — alert dispatch")}
                   loading={busy}
                   onPress={() => void run("issue", { issueKind: "unsafe" })}
                   tone="danger"
                 />
                 <Pressable onPress={() => void Linking.openURL("tel:911")} style={styles.call911}>
-                  <Text style={styles.call911Text}>Call 911</Text>
+                  <Text style={styles.call911Text}>{t("Call 911")}</Text>
                 </Pressable>
                 <View style={styles.dangerNote}>
-                  <Text style={styles.dangerNoteText}>If there is immediate danger, call 911 first. Reporting here is not a replacement for emergency services.</Text>
+                  <Text style={styles.dangerNoteText}>{t("If there is immediate danger, call 911 first. Reporting here is not a replacement for emergency services.")}</Text>
                 </View>
               </View>
             ) : null}
 
             {sheet === "more" ? (
               <View>
-                <Text style={sharedStyles.kicker}>More → Report problem</Text>
-                <Text style={sharedStyles.title}>Report a problem</Text>
-                <Text style={sharedStyles.body}>Non-emergency blockers for job {job ? job.id.slice(0, 8) : ""}. Dispatch decides what happens next.</Text>
+                <Text style={sharedStyles.kicker}>{t("More → Report problem")}</Text>
+                <Text style={sharedStyles.title}>{t("Report a problem")}</Text>
+                <Text style={sharedStyles.body}>{t("Non-emergency blockers for job")} {job ? job.id.slice(0, 8) : ""}. {t("Dispatch decides what happens next.")}</Text>
                 <View style={styles.issueList}>
                   {MORE_ISSUE_KINDS.map(([value, label]) => (
                     <Pressable key={value} onPress={() => setIssueKind(value)} style={[styles.issueRow, issueKind === value ? styles.issueRowActive : null]}>
-                      <Text style={styles.issueRowText}>{label}</Text>
+                      <Text style={styles.issueRowText}>{t(label)}</Text>
                       {issueKind === value ? <View style={styles.issueDot} /> : null}
                     </Pressable>
                   ))}
@@ -1235,14 +1238,14 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                 <TextInput
                   multiline
                   onChangeText={setIssueReason}
-                  placeholder="What is blocking you?"
+                  placeholder={t("What is blocking you?")}
                   placeholderTextColor={colors.mutedFaint}
                   style={[styles.input, styles.textArea]}
                   value={issueReason}
                 />
-                <Text style={styles.noteBox}>Submitting records the issue and notifies dispatch. It does not automatically reassign or cancel this job.</Text>
+                <Text style={styles.noteBox}>{t("Submitting records the issue and notifies dispatch. It does not automatically reassign or cancel this job.")}</Text>
                 {error ? <AlertBanner text={error} tone="bad" /> : null}
-                <FieldButton disabled={!issueKind || issueDone} label={busy ? "Submitting…" : issueDone ? "Problem submitted" : "Submit to dispatch"} loading={busy} onPress={() => void run("issue")} />
+                <FieldButton disabled={!issueKind || issueDone} label={busy ? t("Submitting…") : issueDone ? t("Problem submitted") : t("Submit to dispatch")} loading={busy} onPress={() => void run("issue")} />
               </View>
             ) : null}
 
@@ -1251,9 +1254,9 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
 
             {sheet === "collection" ? (
               <View>
-                <Text style={sharedStyles.kicker}>Closeout record</Text>
-                <Text style={sharedStyles.title}>What did you complete?</Text>
-                <Text style={sharedStyles.body}>Record what actually happened. ClueXP records this collection; it does not process payment or determine payout.</Text>
+                <Text style={sharedStyles.kicker}>{t("Closeout record")}</Text>
+                <Text style={sharedStyles.title}>{t("What did you complete?")}</Text>
+                <Text style={sharedStyles.body}>{t("Record what actually happened. ClueXP records this collection; it does not process payment or determine payout.")}</Text>
 
                 <View style={styles.closeoutLines}>
                   {closeoutLines.map((line, index) => {
@@ -1261,10 +1264,10 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                     return (
                       <View key={line.id} style={styles.closeoutLineCard}>
                         <View style={styles.closeoutLineHeader}>
-                          <Text style={styles.closeoutLineKicker}>Item {index + 1}</Text>
+                          <Text style={styles.closeoutLineKicker}>{t("Item")} {index + 1}</Text>
                           {closeoutLines.length > 1 ? (
                             <Pressable onPress={() => setCloseoutLines((current) => current.filter((item) => item.id !== line.id))}>
-                              <Text style={styles.closeoutRemoveText}>Remove</Text>
+                              <Text style={styles.closeoutRemoveText}>{t("Remove")}</Text>
                             </Pressable>
                           ) : null}
                         </View>
@@ -1273,14 +1276,14 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                             const active = line.item_type_code === type.value;
                             return (
                               <Pressable key={type.value} onPress={() => updateCloseoutLine(line.id, { item_type_code: type.value })} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
-                                <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{type.label}</Text>
+                                <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{t(type.label)}</Text>
                               </Pressable>
                             );
                           })}
                         </ScrollView>
                         <TextInput
                           onChangeText={(value) => updateCloseoutLine(line.id, { description: value })}
-                          placeholder={`Describe this ${spec.label.toLowerCase()}`}
+                          placeholder={`${t("Describe this")} ${t(spec.label).toLowerCase()}`}
                           placeholderTextColor={colors.mutedFaint}
                           style={styles.input}
                           value={line.description}
@@ -1290,7 +1293,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                             inputMode="decimal"
                             keyboardType="decimal-pad"
                             onChangeText={(value) => updateCloseoutLine(line.id, { quantity: value.replace(/[^0-9.]/g, "") })}
-                            placeholder="Qty"
+                            placeholder={t("Qty")}
                             placeholderTextColor={colors.mutedFaint}
                             style={[styles.input, styles.closeoutAmountInput]}
                             value={line.quantity}
@@ -1299,7 +1302,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                             inputMode="decimal"
                             keyboardType="decimal-pad"
                             onChangeText={(value) => updateCloseoutLine(line.id, { unit_amount: value.replace(/[^0-9.]/g, "") })}
-                            placeholder="Amount"
+                            placeholder={t("Amount")}
                             placeholderTextColor={colors.mutedFaint}
                             style={[styles.input, styles.closeoutAmountInput]}
                             value={line.unit_amount}
@@ -1311,7 +1314,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                               const active = line.provided_by === option;
                               return (
                                 <Pressable key={option} onPress={() => updateCloseoutLine(line.id, { provided_by: option })} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
-                                  <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{option.replaceAll("_", " ")}</Text>
+                                  <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{t(option.replaceAll("_", " "))}</Text>
                                 </Pressable>
                               );
                             })}
@@ -1320,7 +1323,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                         {spec.requiresNote ? (
                           <TextInput
                             onChangeText={(value) => updateCloseoutLine(line.id, { note: value })}
-                            placeholder="Add context if needed"
+                            placeholder={t("Add context if needed")}
                             placeholderTextColor={colors.mutedFaint}
                             style={styles.input}
                             value={line.note}
@@ -1332,12 +1335,12 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                 </View>
 
                 <Pressable onPress={() => setCloseoutLines((current) => [...current, newCloseoutLine()])} style={styles.addLineButton}>
-                  <Text style={styles.addLineButtonText}>+ Add service or part</Text>
+                  <Text style={styles.addLineButtonText}>+ {t("Add service or part")}</Text>
                 </Pressable>
 
                 <View style={styles.closeoutTotalBox}>
                   <View style={styles.closeoutTotalRow}>
-                    <Text style={styles.closeoutTotalLabel}>Total recorded</Text>
+                    <Text style={styles.closeoutTotalLabel}>{t("Total recorded")}</Text>
                     <Text style={styles.closeoutTotalValue}>${closeoutSubtotal.toFixed(2)}</Text>
                   </View>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.closeoutTypeRow}>
@@ -1345,7 +1348,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                       const active = method === item.value;
                       return (
                         <Pressable key={item.value} onPress={() => setMethod(item.value)} style={[styles.typeChip, active ? styles.typeChipActive : null]}>
-                          <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{item.label}</Text>
+                          <Text style={[styles.typeChipText, active ? styles.typeChipTextActive : null]}>{t(item.label)}</Text>
                         </Pressable>
                       );
                     })}
@@ -1354,19 +1357,19 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
                     inputMode="decimal"
                     keyboardType="decimal-pad"
                     onChangeText={(value) => setTipAmount(value.replace(/[^0-9.]/g, ""))}
-                    placeholder="Tip received (optional)"
+                    placeholder={t("Tip received (optional)")}
                     placeholderTextColor={colors.mutedFaint}
                     style={styles.input}
                     value={tipAmount}
                   />
                 </View>
 
-                {closeoutValidationError ? <Text style={styles.closeoutValidationText}>{closeoutValidationError}</Text> : null}
+                {closeoutValidationError ? <Text style={styles.closeoutValidationText}>{t(closeoutValidationError)}</Text> : null}
                 {error ? <AlertBanner text={error} tone="bad" /> : null}
                 <FieldButton
                   disabled={Boolean(closeoutValidationError)}
                   icon={<Ionicons color={colors.primaryText} name="shield-checkmark-outline" size={18} />}
-                  label={busy ? "Saving…" : "Record closeout"}
+                  label={busy ? t("Saving…") : t("Record closeout")}
                   loading={busy}
                   onPress={() => void run("collection")}
                 />
@@ -1380,12 +1383,13 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
 }
 
 function UnavailableSheet({ title, text }: { title: string; text: string }) {
+  const { t } = useLocale();
   return (
     <View>
-      <Text style={sharedStyles.title}>{title}</Text>
+      <Text style={sharedStyles.title}>{t(title)}</Text>
       <View style={styles.noticeBox}>
-        <Text style={styles.noticeTitle}>Not enabled in this pilot</Text>
-        <Text style={styles.noticeText}>{text}</Text>
+        <Text style={styles.noticeTitle}>{t("Not enabled in this pilot")}</Text>
+        <Text style={styles.noticeText}>{t(text)}</Text>
       </View>
     </View>
   );
@@ -1461,6 +1465,7 @@ function mutationLabel(kind: FailedMutation["kind"]) {
 }
 
 function SyncIssuesPanel() {
+  const { t } = useLocale();
   const [failed, setFailed] = useState<FailedMutation[]>([]);
 
   useEffect(() => {
@@ -1471,13 +1476,13 @@ function SyncIssuesPanel() {
 
   return (
     <View style={styles.syncPanel}>
-      <Text style={styles.syncPanelTitle}>Actions that could not sync</Text>
-      <Text style={styles.syncPanelHint}>These job actions were not applied to the server. Contact dispatch if the job still needs this update — the app will not retry them automatically.</Text>
+      <Text style={styles.syncPanelTitle}>{t("Actions that could not sync")}</Text>
+      <Text style={styles.syncPanelHint}>{t("These job actions were not applied to the server. Contact dispatch if the job still needs this update — the app will not retry them automatically.")}</Text>
       <View style={styles.syncPanelList}>
         {failed.map((item) => (
           <View key={item.clientMutationId} style={styles.syncPanelRow}>
-            <Text style={styles.syncPanelRowTitle}>{mutationLabel(item.kind)} · job {item.jobId.slice(0, 8)}</Text>
-            <Text style={styles.syncPanelRowDetail}>{item.lastError || "Unknown error"}</Text>
+            <Text style={styles.syncPanelRowTitle}>{t(mutationLabel(item.kind))} · {t("job")} {item.jobId.slice(0, 8)}</Text>
+            <Text style={styles.syncPanelRowDetail}>{item.lastError || t("Unknown error")}</Text>
           </View>
         ))}
       </View>
@@ -1486,7 +1491,8 @@ function SyncIssuesPanel() {
 }
 
 function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthSession; onLogout: () => Promise<void>; onSessionRefresh: () => Promise<void> }) {
-  const name = session.user?.display_name || "Technician";
+  const { t } = useLocale();
+  const name = session.user?.display_name || t("Technician");
   const vetting = session.technician?.vetting_status ?? "verified";
   const verified = vetting === "verified";
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -1511,7 +1517,7 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
     setPhotoError(null);
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setPhotoError("Allow photo library access to update your headshot.");
+      setPhotoError(t("Allow photo library access to update your headshot."));
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -1527,7 +1533,7 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
       await api.uploadPhoto({ name: asset.fileName || "photo.jpg", type: asset.mimeType || "image/jpeg", uri: asset.uri });
       await onSessionRefresh();
     } catch (cause) {
-      setPhotoError(cause instanceof Error ? cause.message : "Failed to upload photo");
+      setPhotoError(cause instanceof Error ? cause.message : t("Failed to upload photo"));
     } finally {
       setPhotoBusy(false);
     }
@@ -1539,13 +1545,13 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
         <View style={styles.accountHeader}>
           <View style={styles.accountHeaderBody}>
             <Text style={styles.accountName}>{name}</Text>
-            <Text style={styles.accountSub}>{session.organization_name || "No provider affiliation"}</Text>
+            <Text style={styles.accountSub}>{session.organization_name || t("No provider affiliation")}</Text>
             <Text style={styles.accountId}>ID {(session.technician?.id || "—").slice(0, 8).toUpperCase()}</Text>
             <Pill icon={<Ionicons color={verified ? colors.success : colors.primary} name={verified ? "shield-checkmark-outline" : "time-outline"} size={13} />} tone={verified ? "success" : "default"}>
-              {verified ? "Identity verified" : String(vetting).replaceAll("_", " ")}
+              {verified ? t("Identity verified") : t(String(vetting).replaceAll("_", " "))}
             </Pill>
           </View>
-          <Pressable accessibilityLabel="Change profile photo" disabled={photoBusy} onPress={() => void changePhoto()} style={styles.avatarWrap}>
+          <Pressable accessibilityLabel={t("Change profile photo")} disabled={photoBusy} onPress={() => void changePhoto()} style={styles.avatarWrap}>
             <View style={styles.accountAvatar}>
               <AvatarContent initials={initialsFor(name)} photoUrl={session.technician?.photo_url} textStyle={styles.accountAvatarText} />
             </View>
@@ -1558,20 +1564,20 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
 
         <ProfileEditor api={api} onSaved={onSessionRefresh} session={session} />
 
-        <Text style={styles.sectionKicker}>Trust profile</Text>
+        <Text style={styles.sectionKicker}>{t("Trust profile")}</Text>
         <View style={styles.trustGrid}>
-          <MiniStat label="Role" value={session.roles?.[0] ?? "technician"} />
-          <MiniStat label="Status" value={String(session.technician?.status ?? "active")} />
+          <MiniStat label={t("Role")} value={t(session.roles?.[0] ?? "technician")} />
+          <MiniStat label={t("Status")} value={t(String(session.technician?.status ?? "active"))} />
         </View>
         <View style={styles.trustGrid}>
-          <MiniStat label="Vetting" value={String(vetting)} />
-          <MiniStat label="Company" value={session.organization_name || "None"} />
+          <MiniStat label={t("Vetting")} value={t(String(vetting))} />
+          <MiniStat label={t("Company")} value={session.organization_name || t("None")} />
         </View>
 
         <Pressable onPress={() => setShowDocuments(true)} style={styles.linkRow}>
           <View style={styles.linkRowLeft}>
             <Ionicons color={colors.muted} name="document-text-outline" size={18} />
-            <Text style={styles.linkRowText}>Documents</Text>
+            <Text style={styles.linkRowText}>{t("Documents")}</Text>
           </View>
           <Ionicons color={colors.muted} name="chevron-forward" size={16} />
         </Pressable>
@@ -1579,12 +1585,12 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
         <Pressable onPress={() => setShowTeam(true)} style={styles.linkRow}>
           <View style={styles.linkRowLeft}>
             <Ionicons color={colors.muted} name="people-outline" size={18} />
-            <Text style={styles.linkRowText}>Team</Text>
+            <Text style={styles.linkRowText}>{t("Team")}</Text>
           </View>
           <View style={styles.linkRowRight}>
             {pendingInvites > 0 ? (
               <View style={styles.linkRowBadge}>
-                <Text style={styles.linkRowBadgeText}>{pendingInvites} invite{pendingInvites === 1 ? "" : "s"}</Text>
+                <Text style={styles.linkRowBadgeText}>{t(`${pendingInvites} invite${pendingInvites === 1 ? "" : "s"}`)}</Text>
               </View>
             ) : null}
             <Ionicons color={colors.muted} name="chevron-forward" size={16} />
@@ -1594,11 +1600,11 @@ function AccountScreen({ session, onLogout, onSessionRefresh }: { session: AuthS
         <SyncIssuesPanel />
 
         <View style={styles.panel}>
-          <Text style={sharedStyles.kicker}>Native storage</Text>
-          <Text style={sharedStyles.body}>Sessions and offline actions are secured with SecureStore and a SQLCipher-encrypted outbox.</Text>
+          <Text style={sharedStyles.kicker}>{t("Native storage")}</Text>
+          <Text style={sharedStyles.body}>{t("Sessions and offline actions are secured with SecureStore and a SQLCipher-encrypted outbox.")}</Text>
         </View>
 
-        <FieldButton icon={<Ionicons color="#250606" name="log-out-outline" size={18} />} label="Sign out" onPress={() => void onLogout()} tone="danger" />
+        <FieldButton icon={<Ionicons color="#250606" name="log-out-outline" size={18} />} label={t("Sign out")} onPress={() => void onLogout()} tone="danger" />
       </ScrollView>
       <Modal animationType="slide" onRequestClose={() => setShowDocuments(false)} visible={showDocuments}>
         <SafeAreaView style={sharedStyles.screen}>

@@ -5,10 +5,12 @@ import type { CluexpApi } from "../api/client";
 import { FieldButton } from "../components/FieldButton";
 import { DEFAULT_SERVICE_CATALOG, flattenServiceSkills } from "../data/serviceCatalog";
 import type { ServiceCategory } from "../data/serviceCatalog";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors, radius } from "../theme";
 import type { AuthSession } from "../types";
 
 export function ProfileEditor({ session, api, onSaved }: { session: AuthSession; api: CluexpApi; onSaved: () => Promise<void> }) {
+  const { t } = useLocale();
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -53,7 +55,7 @@ export function ProfileEditor({ session, api, onSaved }: { session: AuthSession;
       await onSaved();
       setEditing(false);
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Profile could not be saved");
+      setMessage(cause instanceof Error ? cause.message : t("Profile could not be saved"));
     } finally {
       setBusy(false);
     }
@@ -63,7 +65,7 @@ export function ProfileEditor({ session, api, onSaved }: { session: AuthSession;
     return (
       <Pressable onPress={() => setEditing(true)} style={styles.toggleButton}>
         <Ionicons color={colors.foreground} name="pencil-outline" size={16} />
-        <Text style={styles.toggleButtonText}>Edit profile</Text>
+        <Text style={styles.toggleButtonText}>{t("Edit profile")}</Text>
       </Pressable>
     );
   }
@@ -73,25 +75,25 @@ export function ProfileEditor({ session, api, onSaved }: { session: AuthSession;
   return (
     <View style={styles.form}>
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>Display name</Text>
+        <Text style={styles.fieldLabel}>{t("Display name")}</Text>
         <TextInput onChangeText={(value) => setForm((current) => ({ ...current, displayName: value }))} style={styles.input} value={form.displayName} />
       </View>
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>Phone</Text>
+        <Text style={styles.fieldLabel}>{t("Phone")}</Text>
         <TextInput inputMode="tel" onChangeText={(value) => setForm((current) => ({ ...current, phone: value }))} style={styles.input} value={form.phone} />
       </View>
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>Skills</Text>
+        <Text style={styles.fieldLabel}>{t("Skills")}</Text>
         <View style={styles.skillBox}>
           {catalog.filter((category) => category.skills.length > 0).map((category) => (
             <View key={category.code} style={styles.skillCategory}>
-              <Text style={styles.skillCategoryLabel}>{category.label}</Text>
+              <Text style={styles.skillCategoryLabel}>{t(category.label)}</Text>
               <View style={styles.skillChipRow}>
                 {category.skills.map((skill) => {
                   const active = form.skills.includes(skill.code);
                   return (
                     <Pressable key={skill.code} onPress={() => toggleSkill(skill.code)} style={[styles.skillChip, active ? styles.skillChipActive : null]}>
-                      <Text style={[styles.skillChipText, active ? styles.skillChipTextActive : null]}>{skill.label}</Text>
+                      <Text style={[styles.skillChipText, active ? styles.skillChipTextActive : null]}>{t(skill.label)}</Text>
                     </Pressable>
                   );
                 })}
@@ -99,23 +101,23 @@ export function ProfileEditor({ session, api, onSaved }: { session: AuthSession;
             </View>
           ))}
           {form.skills.length > 0 ? (
-            <Text style={styles.skillHint}>{form.skills.length} selected — {flattenServiceSkills(catalog).filter((s) => form.skills.includes(s.code)).map((s) => s.label).join(", ") || form.skills.join(", ")}</Text>
+            <Text style={styles.skillHint}>{form.skills.length} {t("selected")} — {flattenServiceSkills(catalog).filter((s) => form.skills.includes(s.code)).map((s) => t(s.label)).join(", ") || form.skills.join(", ")}</Text>
           ) : (
-            <Text style={styles.skillHint}>Choose the services you want to receive offers for.</Text>
+            <Text style={styles.skillHint}>{t("Choose the services you want to receive offers for.")}</Text>
           )}
         </View>
       </View>
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>Service radius (km)</Text>
+        <Text style={styles.fieldLabel}>{t("Service radius (km)")}</Text>
         <TextInput inputMode="decimal" onChangeText={(value) => setForm((current) => ({ ...current, radius: value.replace(/[^0-9.]/g, "") }))} style={styles.input} value={form.radius} />
       </View>
       {message ? <Text style={styles.message}>{message}</Text> : null}
       <View style={styles.actionRow}>
         <View style={styles.actionHalf}>
-          <FieldButton disabled={busy} icon={<Ionicons color={colors.foreground} name="close" size={16} />} label="Cancel" onPress={() => setEditing(false)} tone="secondary" />
+          <FieldButton disabled={busy} icon={<Ionicons color={colors.foreground} name="close" size={16} />} label={t("Cancel")} onPress={() => setEditing(false)} tone="secondary" />
         </View>
         <View style={styles.actionHalf}>
-          <FieldButton disabled={!canSave} icon={<Ionicons color={colors.primaryText} name="checkmark" size={16} />} label={busy ? "Saving" : "Save"} loading={busy} onPress={() => void save()} />
+          <FieldButton disabled={!canSave} icon={<Ionicons color={colors.primaryText} name="checkmark" size={16} />} label={busy ? t("Saving") : t("Save")} loading={busy} onPress={() => void save()} />
         </View>
       </View>
     </View>

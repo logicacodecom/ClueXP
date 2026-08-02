@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors } from "../theme";
 
 // Mirrors technician-web's Countdown (client-widgets.tsx): mm:ss driven by
 // the server's expires_at, progress bar denominator prefers the offer's real
 // offered_at→expires_at window over an assumed fixed TTL.
 export function Countdown({ expiresAt, offeredAt }: { expiresAt: string; offeredAt?: string | null }) {
+  const { t } = useLocale();
   const target = useMemo(() => new Date(expiresAt).getTime(), [expiresAt]);
   const [now, setNow] = useState(Date.now());
 
@@ -33,7 +35,7 @@ export function Countdown({ expiresAt, offeredAt }: { expiresAt: string; offered
   return (
     <View style={styles.wrap}>
       <Text style={styles.time}>{minutesPart}:{secondsPart}</Text>
-      <Text style={styles.caption}>offer expires · server timer</Text>
+      <Text style={styles.caption}>{t("offer expires · server timer")}</Text>
       <View style={styles.track}>
         <View style={[styles.fill, { width: `${pct}%` }]} />
       </View>

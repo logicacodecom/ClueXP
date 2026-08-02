@@ -4,6 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import type { CluexpApi } from "../api/client";
 import { FieldButton } from "../components/FieldButton";
 import { Pill } from "../components/Pill";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors, radius, sharedStyles } from "../theme";
 import type { SettlementPayload, SettlementPeriodRow, TechPayment } from "../types";
 
@@ -31,6 +32,7 @@ function periodStatusTone(status: string): "success" | "warn" | "muted" {
 }
 
 export function EarningsScreen({ api }: { api: CluexpApi }) {
+  const { t } = useLocale();
   const [payload, setPayload] = useState<SettlementPayload>({ live: [], period_rows: [] });
   const [payments, setPayments] = useState<TechPayment[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -51,7 +53,7 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
       setPayments(Array.isArray(paymentRows) ? paymentRows : []);
       setState("ready");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load earnings");
+      setError(cause instanceof Error ? cause.message : t("Could not load earnings"));
       setState("error");
     }
   }, [api]);
@@ -91,10 +93,10 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
         note: form.note || undefined
       });
       setForm((current) => ({ ...current, amount: "", reference: "", note: "" }));
-      setFormMessage("Submitted. Your company will confirm it.");
+      setFormMessage(t("Submitted. Your company will confirm it."));
       await load();
     } catch (cause) {
-      setFormMessage(cause instanceof Error ? cause.message : "Could not register payment");
+      setFormMessage(cause instanceof Error ? cause.message : t("Could not register payment"));
     } finally {
       setFormBusy(false);
     }
@@ -111,11 +113,11 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
     <ScrollView contentContainerStyle={styles.body}>
       <View style={styles.header}>
         <View style={styles.headerText}>
-          <Text style={sharedStyles.kicker}>Settlements</Text>
-          <Text style={styles.title}>Earnings</Text>
-          <Text style={styles.subtitle}>Your provider-calculated payout rows. Paid means your company marked external payment complete.</Text>
+          <Text style={sharedStyles.kicker}>{t("Settlements")}</Text>
+          <Text style={styles.title}>{t("Earnings")}</Text>
+          <Text style={styles.subtitle}>{t("Your provider-calculated payout rows. Paid means your company marked external payment complete.")}</Text>
         </View>
-        <Pressable accessibilityLabel="Refresh" onPress={() => void load()} style={styles.refreshButton}>
+        <Pressable accessibilityLabel={t("Refresh")} onPress={() => void load()} style={styles.refreshButton}>
           <Ionicons color={colors.foreground} name="refresh" size={16} />
         </Pressable>
       </View>
@@ -123,14 +125,14 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
       {state === "error" ? <Text style={styles.errorText}>{error}</Text> : null}
 
       <View style={styles.statsRow}>
-        <StatBox label="Estimate" value={money(stats.liveEstimate)} />
-        <StatBox label="Locked" tone="warn" value={money(stats.locked)} />
-        <StatBox label="Paid" tone="success" value={money(stats.paid)} />
+        <StatBox label={t("Estimate")} value={money(stats.liveEstimate)} />
+        <StatBox label={t("Locked")} tone="warn" value={money(stats.locked)} />
+        <StatBox label={t("Paid")} tone="success" value={money(stats.paid)} />
       </View>
 
-      <Section title="Payments" count={payments.length}>
+      <Section title={t("Payments")} count={payments.length}>
         <View style={styles.formBox}>
-          <Text style={styles.formHint}>Register a payment you made to the company</Text>
+          <Text style={styles.formHint}>{t("Register a payment you made to the company")}</Text>
           {formMessage ? <Text style={styles.formMessage}>{formMessage}</Text> : null}
           {companies.length > 1 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.companyRow}>
@@ -138,7 +140,7 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
                 const active = form.organizationId === company.id;
                 return (
                   <Pressable key={company.id} onPress={() => setForm((current) => ({ ...current, organizationId: company.id }))} style={[styles.companyChip, active ? styles.companyChipActive : null]}>
-                    <Text style={[styles.companyChipText, active ? styles.companyChipTextActive : null]}>{company.name ?? `Company ${company.id.slice(0, 8)}`}</Text>
+                    <Text style={[styles.companyChipText, active ? styles.companyChipTextActive : null]}>{company.name ?? t(`Company ${company.id.slice(0, 8)}`)}</Text>
                   </Pressable>
                 );
               })}
@@ -148,7 +150,7 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
             inputMode="decimal"
             keyboardType="decimal-pad"
             onChangeText={(value) => setForm((current) => ({ ...current, amount: value.replace(/[^0-9.]/g, "") }))}
-            placeholder="Amount $"
+            placeholder={t("Amount $")}
             placeholderTextColor={colors.mutedFaint}
             style={styles.input}
             value={form.amount}
@@ -158,26 +160,26 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
               const active = form.method === method;
               return (
                 <Pressable key={method} onPress={() => setForm((current) => ({ ...current, method }))} style={[styles.companyChip, active ? styles.companyChipActive : null]}>
-                  <Text style={[styles.companyChipText, active ? styles.companyChipTextActive : null]}>{method.replaceAll("_", " ")}</Text>
+                  <Text style={[styles.companyChipText, active ? styles.companyChipTextActive : null]}>{t(method.replaceAll("_", " "))}</Text>
                 </Pressable>
               );
             })}
           </ScrollView>
           <TextInput
             onChangeText={(value) => setForm((current) => ({ ...current, reference: value }))}
-            placeholder="Reference (optional)"
+            placeholder={t("Reference (optional)")}
             placeholderTextColor={colors.mutedFaint}
             style={styles.input}
             value={form.reference}
           />
           <TextInput
             onChangeText={(value) => setForm((current) => ({ ...current, note: value }))}
-            placeholder="Note (optional)"
+            placeholder={t("Note (optional)")}
             placeholderTextColor={colors.mutedFaint}
             style={styles.input}
             value={form.note}
           />
-          <FieldButton disabled={!form.organizationId || !form.amount} label="Submit for confirmation" loading={formBusy} onPress={() => void registerPayment()} tone="secondary" />
+          <FieldButton disabled={!form.organizationId || !form.amount} label={t("Submit for confirmation")} loading={formBusy} onPress={() => void registerPayment()} tone="secondary" />
         </View>
 
         {payments.length > 0 ? (
@@ -186,68 +188,68 @@ export function EarningsScreen({ api }: { api: CluexpApi }) {
               <View key={payment.id} style={styles.paymentRow}>
                 <View style={styles.paymentRowText}>
                   <Text style={styles.paymentTitle}>
-                    {payment.direction === "company_to_technician" ? "Company paid you" : "You paid the company"} · {money(payment.amount_cents)}
+                    {payment.direction === "company_to_technician" ? t("Company paid you") : t("You paid the company")} · {money(payment.amount_cents)}
                   </Text>
                   <Text style={styles.paymentMeta}>
-                    {formatDate(payment.paid_on)} · {payment.payment_method.replaceAll("_", " ")}
-                    {payment.reference_number ? ` · ref ${payment.reference_number}` : ""}
+                    {formatDate(payment.paid_on)} · {t(payment.payment_method.replaceAll("_", " "))}
+                    {payment.reference_number ? ` · ${t("ref")} ${payment.reference_number}` : ""}
                     {payment.organization_name ? ` · ${payment.organization_name}` : ""}
                   </Text>
                   {payment.status === "rejected" && payment.rejected_reason ? (
-                    <Text style={styles.paymentRejected}>Rejected: {payment.rejected_reason}</Text>
+                    <Text style={styles.paymentRejected}>{t("Rejected:")} {payment.rejected_reason}</Text>
                   ) : null}
                 </View>
-                <Pill tone={payment.status === "confirmed" ? "success" : payment.status === "pending" ? "warn" : "muted"}>{payment.status}</Pill>
+                <Pill tone={payment.status === "confirmed" ? "success" : payment.status === "pending" ? "warn" : "muted"}>{t(payment.status)}</Pill>
               </View>
             ))}
           </View>
         ) : null}
       </Section>
 
-      <Section title="Approved settlement periods" count={payload.period_rows.length}>
+      <Section title={t("Approved settlement periods")} count={payload.period_rows.length}>
         {state === "loading" ? (
-          <Text style={styles.emptyText}>Loading earnings…</Text>
+          <Text style={styles.emptyText}>{t("Loading earnings…")}</Text>
         ) : payload.period_rows.length === 0 ? (
-          <Text style={styles.emptyText}>No settlement periods yet. Your company must create and lock a settlement period before rows appear here.</Text>
+          <Text style={styles.emptyText}>{t("No settlement periods yet. Your company must create and lock a settlement period before rows appear here.")}</Text>
         ) : (
           <View style={styles.list}>
             {payload.period_rows.map((item: SettlementPeriodRow) => (
               <View key={`${item.settlement_period_id}-${item.row.job_id}`} style={styles.periodRow}>
                 <View style={styles.periodHeaderRow}>
                   <Text numberOfLines={1} style={styles.periodLabel}>{item.label}</Text>
-                  <Pill tone={periodStatusTone(item.status)}>{item.status}</Pill>
+                  <Pill tone={periodStatusTone(item.status)}>{t(item.status)}</Pill>
                 </View>
-                <Text style={styles.periodDates}>{formatDate(item.period_start)} – {formatDate(item.period_end)} · job {item.row.job_id.slice(0, 8)}</Text>
+                <Text style={styles.periodDates}>{formatDate(item.period_start)} – {formatDate(item.period_end)} · {t("job")} {item.row.job_id.slice(0, 8)}</Text>
                 <View style={styles.periodMetaGrid}>
-                  <MetaLine label="Payout" value={money(item.row.tech_payout_cents, item.row.currency)} />
-                  <MetaLine label="Service cut" value={percent(item.row.cut_basis_points)} />
-                  <MetaLine label="Reimbursement" value={money(item.row.tech_reimbursement_cents, item.row.currency)} />
-                  <MetaLine label="Tip share" value={money(item.row.tech_tip_cents, item.row.currency)} />
+                  <MetaLine label={t("Payout")} value={money(item.row.tech_payout_cents, item.row.currency)} />
+                  <MetaLine label={t("Service cut")} value={percent(item.row.cut_basis_points)} />
+                  <MetaLine label={t("Reimbursement")} value={money(item.row.tech_reimbursement_cents, item.row.currency)} />
+                  <MetaLine label={t("Tip share")} value={money(item.row.tech_tip_cents, item.row.currency)} />
                 </View>
-                {item.status === "paid" ? <Text style={styles.paidNote}>Marked paid by provider on {formatDate(item.paid_at)}.</Text> : null}
+                {item.status === "paid" ? <Text style={styles.paidNote}>{t("Marked paid by provider on")} {formatDate(item.paid_at)}.</Text> : null}
               </View>
             ))}
           </View>
         )}
       </Section>
 
-      <Section title="Current payout estimates" count={payload.live.length}>
+      <Section title={t("Current payout estimates")} count={payload.live.length}>
         {payload.live.length === 0 ? (
-          <Text style={styles.emptyText}>No calculated settlement rows yet. Completed itemized closeouts appear here before provider approval.</Text>
+          <Text style={styles.emptyText}>{t("No calculated settlement rows yet. Completed itemized closeouts appear here before provider approval.")}</Text>
         ) : (
           <View style={styles.list}>
             {payload.live.map((row) => (
               <View key={row.job_id} style={styles.periodRow}>
                 <View style={styles.periodHeaderRow}>
-                  <Text style={styles.periodLabel}>{row.skill_code?.replaceAll("_", " ") ?? "Service job"}</Text>
+                  <Text style={styles.periodLabel}>{row.skill_code ? t(row.skill_code.replaceAll("_", " ")) : t("Service job")}</Text>
                   <Ionicons color={colors.primary} name="briefcase-outline" size={16} />
                 </View>
-                <Text style={styles.periodDates}>Finished {formatDate(row.finished_at)} · agreement {row.agreement_status}</Text>
+                <Text style={styles.periodDates}>{t("Finished")} {formatDate(row.finished_at)} · {t("agreement")} {t(row.agreement_status)}</Text>
                 <View style={styles.periodMetaGrid}>
-                  <MetaLine label="Estimated payout" value={money(row.tech_payout_cents, row.currency)} />
-                  <MetaLine label="Commissionable" value={money(row.commissionable_cents, row.currency)} />
-                  <MetaLine label="Service cut" value={percent(row.cut_basis_points)} />
-                  <MetaLine label="Tech items" value={money(row.tech_reimbursement_cents, row.currency)} />
+                  <MetaLine label={t("Estimated payout")} value={money(row.tech_payout_cents, row.currency)} />
+                  <MetaLine label={t("Commissionable")} value={money(row.commissionable_cents, row.currency)} />
+                  <MetaLine label={t("Service cut")} value={percent(row.cut_basis_points)} />
+                  <MetaLine label={t("Tech items")} value={money(row.tech_reimbursement_cents, row.currency)} />
                 </View>
               </View>
             ))}

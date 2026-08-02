@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors } from "../theme";
 
 export type TabKey = "work" | "activity" | "earnings" | "account";
@@ -13,6 +14,7 @@ export const tabs: Array<{ key: TabKey; label: string; icon: keyof typeof Ionico
 ];
 
 export function BottomNav({ selected, onSelect }: { selected: TabKey; onSelect: (tab: TabKey) => void }) {
+  const { t } = useLocale();
   return (
     <View style={styles.bar}>
       {tabs.map((item) => {
@@ -26,7 +28,7 @@ export function BottomNav({ selected, onSelect }: { selected: TabKey; onSelect: 
             style={[styles.button, active ? styles.buttonActive : null]}
           >
             <Ionicons name={item.icon} color={active ? colors.primaryText : colors.muted} size={20} />
-            <Text style={[styles.label, active ? styles.labelActive : null]}>{item.label}</Text>
+            <Text style={[styles.label, active ? styles.labelActive : null]}>{t(item.label)}</Text>
           </Pressable>
         );
       })}

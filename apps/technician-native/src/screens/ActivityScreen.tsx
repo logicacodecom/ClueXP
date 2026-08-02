@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { CluexpApi } from "../api/client";
 import { Pill } from "../components/Pill";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors, radius, sharedStyles } from "../theme";
 import type { HistoryJob, PaymentReport } from "../types";
 
@@ -35,10 +36,10 @@ const PERIODS = [
   { key: "365d", label: "1 year", days: 365 }
 ] as const;
 
-function money(payment: PaymentReport): string {
+function money(payment: PaymentReport, t: (text: string) => string): string {
   if (!payment) return "—";
   const symbol = payment.currency === "USD" ? "$" : `${payment.currency} `;
-  return `${symbol}${payment.amount.toFixed(2)} · ${METHOD_LABELS[payment.method] ?? payment.method}`;
+  return `${symbol}${payment.amount.toFixed(2)} · ${t(METHOD_LABELS[payment.method] ?? payment.method)}`;
 }
 
 function statusTone(status: string): "success" | "warn" | "danger" | "muted" {
@@ -49,6 +50,7 @@ function statusTone(status: string): "success" | "warn" | "danger" | "muted" {
 }
 
 export function ActivityScreen({ api }: { api: CluexpApi }) {
+  const { t } = useLocale();
   const [jobs, setJobs] = useState<HistoryJob[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
       setJobs(Array.isArray(body) ? body : []);
       setState("ready");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load your history");
+      setError(cause instanceof Error ? cause.message : t("Could not load your history"));
       setState("error");
     }
   }, [api]);
@@ -91,11 +93,11 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
     <ScrollView contentContainerStyle={styles.body}>
       <View style={styles.header}>
         <View style={styles.headerText}>
-          <Text style={sharedStyles.kicker}>Completed work</Text>
-          <Text style={styles.title}>Activity</Text>
-          <Text style={styles.subtitle}>Finished jobs, collected money, and customer reviews.</Text>
+          <Text style={sharedStyles.kicker}>{t("Completed work")}</Text>
+          <Text style={styles.title}>{t("Activity")}</Text>
+          <Text style={styles.subtitle}>{t("Finished jobs, collected money, and customer reviews.")}</Text>
         </View>
-        <Pressable accessibilityLabel="Refresh" onPress={() => void load()} style={styles.refreshButton}>
+        <Pressable accessibilityLabel={t("Refresh")} onPress={() => void load()} style={styles.refreshButton}>
           <Ionicons color={colors.foreground} name="refresh" size={16} />
         </Pressable>
       </View>
@@ -105,9 +107,9 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
       {state === "ready" && jobs.length > 0 ? (
         <>
           <View style={styles.statsRow}>
-            <StatBox label="Collected" value={`$${totalCollected.toFixed(2)}`} />
-            <StatBox label="Jobs" value={String(filteredJobs.length)} />
-            <StatBox label="Reviews" value={String(reviewedCount)} />
+            <StatBox label={t("Collected")} value={`$${totalCollected.toFixed(2)}`} />
+            <StatBox label={t("Jobs")} value={String(filteredJobs.length)} />
+            <StatBox label={t("Reviews")} value={String(reviewedCount)} />
           </View>
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
@@ -116,7 +118,7 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
               return (
                 <Pressable key={status} onPress={() => setStatusFilter(status)} style={[styles.filterChip, active ? styles.filterChipActive : null]}>
                   <Text style={[styles.filterChipText, active ? styles.filterChipTextActive : null]}>
-                    {status === "all" ? "All" : STATUS_LABELS[status] ?? status}
+                    {status === "all" ? t("All") : t(STATUS_LABELS[status] ?? status)}
                   </Text>
                 </Pressable>
               );
@@ -127,7 +129,7 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
               const active = period === item.key;
               return (
                 <Pressable key={item.key} onPress={() => setPeriod(item.key)} style={[styles.filterChip, active ? styles.filterChipActive : null]}>
-                  <Text style={[styles.filterChipText, active ? styles.filterChipTextActive : null]}>{item.label}</Text>
+                  <Text style={[styles.filterChipText, active ? styles.filterChipTextActive : null]}>{t(item.label)}</Text>
                 </Pressable>
               );
             })}
@@ -136,15 +138,15 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
       ) : null}
 
       {state === "loading" ? (
-        <Text style={styles.emptyText}>Loading…</Text>
+        <Text style={styles.emptyText}>{t("Loading…")}</Text>
       ) : jobs.length === 0 && state === "ready" ? (
-        <Text style={styles.emptyText}>No finished jobs yet. Completed work appears here with payments and the customer's review.</Text>
+        <Text style={styles.emptyText}>{t("No finished jobs yet. Completed work appears here with payments and the customer's review.")}</Text>
       ) : filteredJobs.length === 0 && state === "ready" ? (
         <View style={styles.emptyBox}>
           <Ionicons color={colors.muted} name="calendar-outline" size={28} />
-          <Text style={styles.emptyBoxTitle}>No activity matches these filters</Text>
+          <Text style={styles.emptyBoxTitle}>{t("No activity matches these filters")}</Text>
           <Pressable onPress={() => { setStatusFilter("all"); setPeriod("all"); }} style={styles.resetButton}>
-            <Text style={styles.resetButtonText}>Reset filters</Text>
+            <Text style={styles.resetButtonText}>{t("Reset filters")}</Text>
           </Pressable>
         </View>
       ) : (
@@ -155,15 +157,15 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
               <View key={job.id} style={styles.jobCard}>
                 <View style={styles.jobHeaderRow}>
                   <View style={styles.jobHeaderText}>
-                    <Text numberOfLines={1} style={styles.jobAddress}>{job.address || "Address unavailable"}</Text>
-                    <Text style={styles.jobSituation}>{(job.situation || "Service request").replaceAll("_", " ")}</Text>
+                    <Text numberOfLines={1} style={styles.jobAddress}>{job.address || t("Address unavailable")}</Text>
+                    <Text style={styles.jobSituation}>{t((job.situation || "Service request").replaceAll("_", " "))}</Text>
                   </View>
-                  <Pill tone={statusTone(job.status)}>{STATUS_LABELS[job.status] ?? job.status}</Pill>
+                  <Pill tone={statusTone(job.status)}>{t(STATUS_LABELS[job.status] ?? job.status)}</Pill>
                 </View>
                 <View style={styles.jobMetaRow}>
-                  <MetaLine label="You collected" value={money(job.payments.technician)} />
-                  <MetaLine label="Customer reported" value={money(job.payments.customer)} />
-                  <MetaLine label="Finished" value={job.finished_at ? new Date(job.finished_at).toLocaleDateString() : "—"} />
+                  <MetaLine label={t("You collected")} value={money(job.payments.technician, t)} />
+                  <MetaLine label={t("Customer reported")} value={money(job.payments.customer, t)} />
+                  <MetaLine label={t("Finished")} value={job.finished_at ? new Date(job.finished_at).toLocaleDateString() : "—"} />
                 </View>
                 {job.review?.rating ? (
                   <View style={styles.reviewRow}>
@@ -173,20 +175,20 @@ export function ActivityScreen({ api }: { api: CluexpApi }) {
                 ) : job.status === "completed_pending_customer" ? (
                   <View style={styles.reviewRow}>
                     <Ionicons color={colors.primary} name="shield-checkmark-outline" size={14} />
-                    <Text style={styles.reviewText}>Awaiting customer confirmation. This job still holds your capacity until it is confirmed, auto-closed, disputed, or cancelled.</Text>
+                    <Text style={styles.reviewText}>{t("Awaiting customer confirmation. This job still holds your capacity until it is confirmed, auto-closed, disputed, or cancelled.")}</Text>
                   </View>
                 ) : (
-                  <Text style={styles.noReviewText}>No customer review yet.</Text>
+                  <Text style={styles.noReviewText}>{t("No customer review yet.")}</Text>
                 )}
                 <Pressable onPress={() => setExpandedId(expanded ? null : job.id)} style={styles.detailsToggle}>
                   <Ionicons color={colors.foreground} name={expanded ? "chevron-up" : "chevron-down"} size={14} />
-                  <Text style={styles.detailsToggleText}>{expanded ? "Hide details" : "View details"}</Text>
+                  <Text style={styles.detailsToggleText}>{expanded ? t("Hide details") : t("View details")}</Text>
                 </Pressable>
                 {expanded ? (
                   <View style={styles.detailsPanel}>
-                    <MetaLine label="Job ID" value={job.operational_id ?? job.id} />
-                    <MetaLine label="Urgency" value={(job.urgency || "—").replaceAll("_", " ")} />
-                    <MetaLine label="Created" value={job.created_at ? new Date(job.created_at).toLocaleString() : "—"} />
+                    <MetaLine label={t("Job ID")} value={job.operational_id ?? job.id} />
+                    <MetaLine label={t("Urgency")} value={t((job.urgency || "—").replaceAll("_", " "))} />
+                    <MetaLine label={t("Created")} value={job.created_at ? new Date(job.created_at).toLocaleString() : "—"} />
                   </View>
                 ) : null}
               </View>

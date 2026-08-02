@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { CluexpApi } from "../api/client";
 import { Pill } from "../components/Pill";
+import { useLocale } from "../i18n/LocaleContext";
 import { colors, radius, sharedStyles } from "../theme";
 import type { TechnicianAffiliation, TechnicianOrganization } from "../types";
 
@@ -22,6 +23,7 @@ function statusLabel(status: TechnicianAffiliation["status"]) {
 }
 
 export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => void }) {
+  const { t } = useLocale();
   const [affiliations, setAffiliations] = useState<TechnicianAffiliation[]>([]);
   const [organizations, setOrganizations] = useState<TechnicianOrganization[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -39,7 +41,7 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
       setNotReady(false);
       setState("ready");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Could not load affiliations");
+      setMessage(cause instanceof Error ? cause.message : t("Could not load affiliations"));
       setNotReady(true);
       setState("error");
     }
@@ -56,7 +58,7 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
       await api.acceptAffiliation(affiliationId);
       await load();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Failed to accept affiliation");
+      setMessage(cause instanceof Error ? cause.message : t("Failed to accept affiliation"));
     } finally {
       setBusyId(null);
     }
@@ -69,7 +71,7 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
       await api.declineAffiliation(affiliationId);
       await load();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Failed to decline affiliation");
+      setMessage(cause instanceof Error ? cause.message : t("Failed to decline affiliation"));
     } finally {
       setBusyId(null);
     }
@@ -82,7 +84,7 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
       await api.leaveAffiliation(affiliationId);
       await load();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Failed to leave company");
+      setMessage(cause instanceof Error ? cause.message : t("Failed to leave company"));
     } finally {
       setBusyId(null);
     }
@@ -91,7 +93,7 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
   function organizationName(affiliation: TechnicianAffiliation) {
     if (affiliation.organization_name) return affiliation.organization_name;
     const found = organizations.find((org) => org.id === affiliation.organization_id);
-    return found?.name || `Organization ${affiliation.organization_id.slice(0, 8)}`;
+    return found?.name || t(`Organization ${affiliation.organization_id.slice(0, 8)}`);
   }
 
   const pending = affiliations.filter((item) => item.status === "pending_invite");
@@ -101,48 +103,48 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <Text style={sharedStyles.title}>Team</Text>
-        <Pressable accessibilityLabel="Close" onPress={onClose} style={styles.closeButton}>
+        <Text style={sharedStyles.title}>{t("Team")}</Text>
+        <Pressable accessibilityLabel={t("Close")} onPress={onClose} style={styles.closeButton}>
           <Ionicons color={colors.foreground} name="close" size={20} />
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={styles.body}>
-        <Text style={styles.subtitle}>Provider affiliations, pending invites, and work history.</Text>
+        <Text style={styles.subtitle}>{t("Provider affiliations, pending invites, and work history.")}</Text>
 
         {notReady ? (
-          <Text style={styles.errorText}>{message || "Affiliations could not be loaded."}</Text>
+          <Text style={styles.errorText}>{message || t("Affiliations could not be loaded.")}</Text>
         ) : (
           <>
             <View style={styles.statsRow}>
-              <StatBox label="Pending" value={String(pending.length)} />
-              <StatBox label="Active" value={String(active.length)} />
-              <StatBox label="History" value={String(past.length)} />
+              <StatBox label={t("Pending")} value={String(pending.length)} />
+              <StatBox label={t("Active")} value={String(active.length)} />
+              <StatBox label={t("History")} value={String(past.length)} />
             </View>
 
             {message ? <Text style={styles.errorText}>{message}</Text> : null}
 
             {pending.length > 0 ? (
-              <Section title="Pending invites">
+              <Section title={t("Pending invites")}>
                 {pending.map((item) => (
                   <View key={item.id} style={styles.card}>
                     <View style={styles.cardHeaderRow}>
                       <Text style={styles.cardTitle}>{organizationName(item)}</Text>
-                      <Pill tone={statusTone(item.status)}>{statusLabel(item.status)}</Pill>
+                      <Pill tone={statusTone(item.status)}>{t(statusLabel(item.status))}</Pill>
                     </View>
                     {item.affiliation_type ? (
-                      <Text style={styles.cardMeta}>{item.affiliation_type.toUpperCase().replaceAll("_", " ")} · {(item.exclusivity || "non_exclusive").replaceAll("_", " ")}</Text>
+                      <Text style={styles.cardMeta}>{t(item.affiliation_type.toUpperCase().replaceAll("_", " "))} · {t((item.exclusivity || "non_exclusive").replaceAll("_", " "))}</Text>
                     ) : null}
                     <View style={styles.actionRow}>
                       <View style={styles.actionHalf}>
                         <Pressable disabled={busyId === item.id} onPress={() => void decline(item.id)} style={styles.declineButton}>
                           <Ionicons color={colors.danger} name="close" size={16} />
-                          <Text style={styles.declineButtonText}>Decline</Text>
+                          <Text style={styles.declineButtonText}>{t("Decline")}</Text>
                         </Pressable>
                       </View>
                       <View style={styles.actionHalf}>
                         <Pressable disabled={busyId === item.id} onPress={() => void accept(item.id)} style={styles.acceptButton}>
                           <Ionicons color={colors.primaryText} name="checkmark" size={16} />
-                          <Text style={styles.acceptButtonText}>{busyId === item.id ? "Working…" : "Accept"}</Text>
+                          <Text style={styles.acceptButtonText}>{busyId === item.id ? t("Working…") : t("Accept")}</Text>
                         </Pressable>
                       </View>
                     </View>
@@ -152,22 +154,22 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
             ) : null}
 
             {active.length > 0 ? (
-              <Section title="Active affiliations">
+              <Section title={t("Active affiliations")}>
                 {active.map((item) => (
                   <View key={item.id} style={styles.card}>
                     <View style={styles.cardHeaderRow}>
                       <Text style={styles.cardTitle}>{organizationName(item)}</Text>
-                      <Pill tone={statusTone(item.status)}>{statusLabel(item.status)}</Pill>
+                      <Pill tone={statusTone(item.status)}>{t(statusLabel(item.status))}</Pill>
                     </View>
                     <View style={styles.chipRow}>
-                      {item.affiliation_type ? <Text style={styles.metaChip}>{item.affiliation_type.replaceAll("_", " ")}</Text> : null}
-                      {item.exclusivity ? <Text style={styles.metaChip}>{item.exclusivity.replaceAll("_", " ")}</Text> : null}
+                      {item.affiliation_type ? <Text style={styles.metaChip}>{t(item.affiliation_type.replaceAll("_", " "))}</Text> : null}
+                      {item.exclusivity ? <Text style={styles.metaChip}>{t(item.exclusivity.replaceAll("_", " "))}</Text> : null}
                       <Text style={[styles.metaChip, item.dispatch_allowed ? styles.metaChipGood : null]}>
-                        {item.dispatch_allowed ? "Dispatch allowed" : "Not dispatchable"}
+                        {item.dispatch_allowed ? t("Dispatch allowed") : t("Not dispatchable")}
                       </Text>
                     </View>
                     <Pressable disabled={busyId === item.id} onPress={() => void leave(item.id)} style={styles.leaveButton}>
-                      <Text style={styles.leaveButtonText}>{busyId === item.id ? "Working…" : "Leave company"}</Text>
+                      <Text style={styles.leaveButtonText}>{busyId === item.id ? t("Working…") : t("Leave company")}</Text>
                     </Pressable>
                   </View>
                 ))}
@@ -175,12 +177,12 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
             ) : null}
 
             {past.length > 0 ? (
-              <Section title="Past affiliations">
+              <Section title={t("Past affiliations")}>
                 {past.map((item) => (
                   <View key={item.id} style={[styles.card, styles.cardFaded]}>
                     <View style={styles.cardHeaderRow}>
                       <Text style={styles.cardTitle}>{organizationName(item)}</Text>
-                      <Pill tone={statusTone(item.status)}>{statusLabel(item.status)}</Pill>
+                      <Pill tone={statusTone(item.status)}>{t(statusLabel(item.status))}</Pill>
                     </View>
                   </View>
                 ))}
@@ -190,8 +192,8 @@ export function TeamScreen({ api, onClose }: { api: CluexpApi; onClose: () => vo
             {state === "ready" && affiliations.length === 0 ? (
               <View style={styles.emptyBox}>
                 <Ionicons color={colors.muted} name="people-outline" size={26} />
-                <Text style={styles.emptyBoxTitle}>No provider affiliations</Text>
-                <Text style={styles.emptyBoxText}>You are not yet affiliated with any provider companies. When you accept an invitation, it will appear here.</Text>
+                <Text style={styles.emptyBoxTitle}>{t("No provider affiliations")}</Text>
+                <Text style={styles.emptyBoxText}>{t("You are not yet affiliated with any provider companies. When you accept an invitation, it will appear here.")}</Text>
               </View>
             ) : null}
           </>
