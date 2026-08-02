@@ -62,6 +62,39 @@
 
 ## Open threads
 
+### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
+
+Human reported Spanish only worked on the sign-in screen; everywhere else (offers, active job,
+activity, earnings, documents, team, closeout) was English-only. Fixed and pushed to `main`:
+
+- Commit: `bcd290d` (`feat(technician-native): extend Spanish localization app-wide`)
+- New `apps/technician-native/src/i18n/` module: `dictionary.ts` mirrors
+  `packages/app-core/src/ui-catalog-es.ts`'s `es` dictionary + pattern list + `translateUiText()`
+  verbatim (it's pure data/functions, no DOM dependency, so it's safe to duplicate here — same
+  reasoning as `src/data/serviceCatalog.ts`: this app can't resolve `@cluexp/*` workspace packages),
+  plus a `NATIVE_EXTRA` block with every native-only phrase. `LocaleContext.tsx` exposes
+  `useLocale()` (`locale`, `setLocale`, `t()`); `localeStore.ts`/`.web.ts` persist the chosen locale
+  (SecureStore / `localStorage`). `App.tsx` now wraps the app in `LocaleProvider`.
+- Every user-facing string in `RootApp.tsx` (login, header, readiness banners, offer card, active-job
+  card, command modal's arrival/safety/report-problem/closeout sheets, account screen), plus
+  `BottomNav.tsx`, `ReadinessBar.tsx`, `Countdown.tsx`, `ActivityScreen.tsx`, `EarningsScreen.tsx`,
+  `ProfileEditor.tsx`, `DocumentsScreen.tsx`, and `TeamScreen.tsx` now routes through `t()`.
+  `LanguageToggle.tsx` no longer takes `locale`/`onChange` props — it reads/writes the shared
+  context directly.
+- Verified: wrote a one-off script cross-checking every exact-literal `t("...")` call site against
+  the dictionary — found and fixed 10 real gaps (mostly a few keys that were referenced but never
+  actually added, e.g. `"Allow photo library access to update your headshot."`,
+  `"Failed to upload photo"`, `"Profile photo"`) before they'd have silently fallen back to English.
+  `npm run typecheck`, `npm run test:api` (4 passed), and `npx expo export --platform web` (402
+  modules, clean bundle) all pass from `apps/technician-native`.
+
+**This is a pure-JS change with no native config changes** — no `app.json`/plugin/dependency edits,
+so it doesn't need a new dev-client build to test in Expo Go or the web preview. But any **already-
+installed standalone preview/production APK/IPA has no OTA/`expo-updates` channel**, so the JS is
+frozen at build time — this fix won't show up on a device that already has the app installed until a
+fresh build. Per standing instruction I'm not submitting an EAS build myself; that's yours to trigger
+when it's useful for the next round of device QA. — Claude
+
 ### 2026-07-31 — Codex → Claude: technician native mobile branch updated after PR #70
 
 Human asked Codex to verify the technician native app after backend PR #70 merged to
