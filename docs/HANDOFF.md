@@ -3961,6 +3961,41 @@ Recommended location behavior:
   native should quietly prevent staleness before the technician sees that
   blocker.
 
+### 2026-08-02 — Codex: documented whole-product messaging + masked calling gap
+
+User clarified that messaging and masked calling do not exist on native because
+they also do not exist on technician-web; this is a whole-product gap, not a
+native parity miss. User approved documenting the design before implementation.
+
+New spec:
+- [`docs/JOB-COMMUNICATION-HUB.md`](JOB-COMMUNICATION-HUB.md)
+
+The spec defines a job-scoped Communication Hub with:
+- **Customer** channel: assigned technician <-> customer, template-first for MVP.
+- **Company Operations** channel: assigned technician <-> owning provider
+  dispatcher/provider operations, free text from MVP.
+- **System Timeline**: read-only lifecycle events near the conversation, never
+  impersonating a human message.
+- Masked/mediated calling launched from the same hub, after messaging stabilizes.
+
+Canonical docs now link to the spec from:
+- `EXECUTION-PLAN.md`
+- `SYSTEM-DESIGN.md`
+- `TECHNICIAN-APP-REDESIGN.md`
+
+Recommended first implementation slice:
+1. Backend migrations for job message threads/messages/receipts.
+2. Technician + provider **Operations** messaging endpoints first.
+3. Provider job-detail message panel.
+4. Native active-job Operations thread replacing the current "not enabled"
+   Message sheet.
+5. Customer templates and tracking-page messaging after operations messaging is
+   proven.
+6. Masked calling after provider selection/ADR.
+
+Do not implement raw phone-number exposure as a shortcut. Provider internal notes
+remain separate and must not leak into either customer or technician channels.
+
 ### 2026-08-02 — Claude: Navigate CTA, conservative ETA copy, foreground auto location refresh
 
 Picked up the product TODO above. Two of the three items done in full; the

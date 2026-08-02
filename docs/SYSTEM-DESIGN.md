@@ -8,7 +8,8 @@
 >
 > **Companion docs:** [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) (backlog/sprints/tasks + current
 > status) · [`DESIGN-SYSTEM.md`](DESIGN-SYSTEM.md) (UI Guide) · [`PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md)
-> (pilot runbook) · [`HANDOFF.md`](HANDOFF.md) (agent channel).
+> (pilot runbook) · [`JOB-COMMUNICATION-HUB.md`](JOB-COMMUNICATION-HUB.md)
+> (job messaging/calling spec) · [`HANDOFF.md`](HANDOFF.md) (agent channel).
 
 ## Contents
 
@@ -1190,7 +1191,8 @@ global active job; and no new-work interruption while the technician is active o
 **Status:** live on real BFF routes (offers, accept/decline, active-job, location push, collection,
 history, profile/photo/affiliations). The approved active-job-first UX, native-ready boundary, and
 complete development sequence are in
-[`TECHNICIAN-APP-REDESIGN.md`](TECHNICIAN-APP-REDESIGN.md). Remaining delivery gates are tracked in
+[`TECHNICIAN-APP-REDESIGN.md`](TECHNICIAN-APP-REDESIGN.md). The buildable communication contract is
+in [`JOB-COMMUNICATION-HUB.md`](JOB-COMMUNICATION-HUB.md). Remaining delivery gates are tracked in
 [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1.
 
 #### 18.2.1 Job-scoped technician communications (Approved; unbuilt)

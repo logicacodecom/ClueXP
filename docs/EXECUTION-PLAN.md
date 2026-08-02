@@ -26,7 +26,8 @@
 >
 > **Companion docs:** [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) (architecture, DB, subsystems,
 > ADRs) · [`PILOT-OPERATIONS.md`](PILOT-OPERATIONS.md) (pilot runbook) ·
-> [`DESIGN-SYSTEM.md`](DESIGN-SYSTEM.md) (UI Guide).
+> [`DESIGN-SYSTEM.md`](DESIGN-SYSTEM.md) (UI Guide) ·
+> [`JOB-COMMUNICATION-HUB.md`](JOB-COMMUNICATION-HUB.md) (job messaging/calling spec).
 
 ## Contents
 
@@ -453,6 +454,7 @@ completes the remaining communications surfaces and ops oversight depth.
   Customer vs Dispatcher destination, driving-safe quick replies/read-aloud, privacy-safe lock-screen
   copy, and distinct normal/operational/acknowledgement-required/critical treatments.
 - [ ] Masked call or mediated contact path, launched from the same job-scoped communication surface.
+  Detailed implementation contract: [`JOB-COMMUNICATION-HUB.md`](JOB-COMMUNICATION-HUB.md).
 - [ ] SMS/email delivery of the customer token link and critical status updates.
 - [ ] Reliable technician offer notification strategy: high-priority APNs/FCM push with
   sound/haptics + offer deep link; sent/delivered/displayed/acknowledged monitoring; safe retry;

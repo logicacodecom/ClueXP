@@ -10,6 +10,8 @@
 > **Authority:** [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) remains authoritative for dispatch,
 > fulfillment, trust, tenancy, financial, and communication contracts. This document translates
 > those contracts into the technician product experience and required development work.
+> The concrete messaging/calling implementation spec lives in
+> [`JOB-COMMUNICATION-HUB.md`](JOB-COMMUNICATION-HUB.md).
 >
 > **Visual reference:** the approved UI mock (full lifecycle, account/receipt/call/conflict
 > screens, and the gap screens: evidence capture, blocked/suspended modes, notification center,
