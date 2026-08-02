@@ -3931,3 +3931,32 @@ Next QA for Claude:
 - If the map still does not render, first re-check Google Cloud restrictions:
   package must be `com.cluexp.technician`, SHA-1 must match the EAS keystore
   above, and Maps SDK for Android must be enabled.
+
+### 2026-08-02 — Product TODO: navigation CTA + automatic location freshness
+
+User device feedback after the Android APK started working:
+- The embedded active-job map is useful as a location preview, but ETA inside
+  the app should not be treated as precise navigation. Keep in-app ETA copy
+  conservative unless/until it is backed by a real routing/traffic API.
+- Add a clear **Navigate** action on the active-job map/card. MVP behavior:
+  deep-link to the device maps app for turn-by-turn directions (Google Maps on
+  Android; Apple Maps or installed Google Maps on iOS). Do not build full
+  in-app turn-by-turn navigation for MVP.
+- Improve location freshness so technicians do not have to repeatedly tap
+  `Fix location`/manual refresh during normal work.
+
+Recommended location behavior:
+- On login/app start: request location permission if needed and send one current
+  location update.
+- While available/idle: keep location fresh lightly in foreground (for example
+  every 2-5 minutes, or only after meaningful movement).
+- While on an active job: increase foreground update cadence (for example every
+  15-30 seconds or meaningful movement), and use OS background location only
+  when permission is granted and the job is active.
+- Stop active tracking when the job reaches a terminal/released state.
+- Keep the manual `Fix location` action as a rescue path for denied permissions,
+  disabled GPS, background restrictions, battery throttling, or failed automatic
+  updates.
+- Backend readiness should still be source-of-truth for `location_stale`, but
+  native should quietly prevent staleness before the technician sees that
+  blocker.
