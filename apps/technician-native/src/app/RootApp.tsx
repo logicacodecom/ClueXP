@@ -565,6 +565,32 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
     void load(true).finally(onHintConsumed);
   }, [hint, load, onHintConsumed]);
 
+  // On app start: one opportunistic, silent location fix so "Location fresh"
+  // doesn't start stale. Foreground-only — just the permission the app
+  // already requests elsewhere, no new prompt.
+  useEffect(() => {
+    void requestAndSendLocation(api).catch(() => undefined);
+  }, []);
+
+  // Automatic foreground location refresh so a technician doesn't have to
+  // keep tapping "Fix location" — tight cadence while there's an active job,
+  // loose cadence while merely available, off otherwise. This is
+  // foreground-only (same permission as above, no background task, no new
+  // dependency); true OS background tracking while the app is backgrounded
+  // is a materially bigger decision (new permission class, new native
+  // module, real store-review/privacy implications) and isn't included here.
+  // Manual "Fix location" in ReadinessBar remains the rescue path.
+  const hasActiveJob = Boolean(snapshot?.active_job);
+  const isAvailable = Boolean(readiness?.account.available);
+  useEffect(() => {
+    if (!hasActiveJob && !isAvailable) return;
+    const intervalMs = hasActiveJob ? 20_000 : 3 * 60_000;
+    const timer = setInterval(() => {
+      void requestAndSendLocation(api).catch(() => undefined);
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [hasActiveJob, isAvailable]);
+
   async function setAvailability(next: boolean) {
     setBusy(true);
     setError(null);
@@ -843,6 +869,12 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
             <Text style={styles.mapText}>{job.address || "Service address unavailable"}</Text>
           </View>
         ) : null}
+        {!pendingCustomer && mapsUrl ? (
+          <Pressable onPress={() => void Linking.openURL(mapsUrl)} style={styles.navigateBadge}>
+            <Ionicons color={colors.primaryText} name="navigate" size={13} />
+            <Text style={styles.navigateBadgeText}>Navigate</Text>
+          </Pressable>
+        ) : null}
         <Text style={[styles.mapTruth, showRealMap ? styles.mapTruthOverlay : null]}>GPS is honest. No simulated movement is shown.</Text>
       </View>
 
@@ -909,7 +941,7 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
           </View>
           {job.eta_min != null || job.distance_mi != null ? (
             <View style={styles.chipRow}>
-              {job.eta_min != null ? <MetaChip label="ETA" value={`${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min`} /> : null}
+              {job.eta_min != null ? <MetaChip label="ETA (est.)" value={`${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min`} /> : null}
               {job.distance_mi != null ? <MetaChip label="Distance" value={`${job.distance_mi} mi`} /> : null}
             </View>
           ) : null}
@@ -934,7 +966,6 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
               </ScrollView>
             </View>
           ) : null}
-          {mapsUrl ? <FieldButton icon={<Ionicons color={colors.foreground} name="navigate" size={19} />} label="Open in maps" onPress={() => void Linking.openURL(mapsUrl)} tone="secondary" /> : null}
         </>
       )}
 
@@ -1934,6 +1965,23 @@ const styles = StyleSheet.create({
   },
   mapBadgeText: {
     color: colors.foreground,
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  navigateBadge: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    position: "absolute",
+    right: 12,
+    top: 12
+  },
+  navigateBadgeText: {
+    color: colors.primaryText,
     fontSize: 11,
     fontWeight: "800"
   },
