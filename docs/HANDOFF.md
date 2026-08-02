@@ -62,6 +62,47 @@
 
 ## Open threads
 
+### 2026-08-02 — Codex: native Operations messaging sheet wired to live backend
+
+Picked up after verifying the handoff first. Backend Operations messaging was already live on
+`main`/prod via `0047_job_messages`, so this slice stayed in technician-native app code.
+
+Implemented:
+- `apps/technician-native/src/api/client.ts`
+  - Added `listJobMessages(jobId, "operations")`.
+  - Added `sendJobMessage(jobId, { body, channel, client_message_id })`.
+- `apps/technician-native/src/types.ts`
+  - Added `JobMessage`.
+  - Extended `LocalMutationKind` with `message`.
+- `apps/technician-native/src/features/outboxReplay.ts`
+  - Queued message replay now calls `POST /jobs/{id}/messages` with the original
+    `client_message_id`, so offline sends stay idempotent.
+- `apps/technician-native/src/app/RootApp.tsx`
+  - Replaced the old "messaging not enabled" placeholder with a real Operations thread
+    from the active-job Message rail action.
+  - Loads current operations messages, sends new free-text operations messages, shows
+    sent/queued state, and queues drafts locally on network failure.
+  - Customer messaging and masked calling remain out of scope and still not enabled.
+- `apps/technician-native/src/i18n/dictionary.ts`
+  - Added Spanish strings for the new messaging surface.
+- `apps/technician-native/test/api-client.test.mjs`
+  - Added API contract coverage for the native messages client.
+
+Verification:
+- `npm run test:api --workspace @cluexp/technician-native` -> 5 passed.
+- `npm run typecheck --workspace @cluexp/technician-native` -> passed.
+- Root `npm run typecheck` -> passed.
+- `npx expo export --platform web` from `apps/technician-native` -> passed.
+- `npx expo-doctor` from `apps/technician-native` -> 20/20 passed.
+- `git diff --check` -> passed.
+
+Next recommended Communication Hub slice:
+1. Provider job-detail Operations message panel so dispatch/provider ops can reply without
+   using raw notes.
+2. Device QA of the native Operations thread against a real active job.
+3. Customer template messaging after operations messaging is proven.
+4. Masked calling after provider/ADR decision.
+
 ### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
 
 Human reported Spanish only worked on the sign-in screen; everywhere else (offers, active job,

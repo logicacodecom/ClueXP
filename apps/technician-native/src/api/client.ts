@@ -4,6 +4,7 @@ import type {
   ApiProblem,
   AuthSession,
   HistoryJob,
+  JobMessage,
   LoginResponse,
   ReadinessSnapshot,
   SettlementPayload,
@@ -257,6 +258,28 @@ export class CluexpApi {
     return this.request<Record<string, unknown>>(`/jobs/${encodeURIComponent(jobId)}/collection`, {
       method: "POST",
       body: JSON.stringify(payload)
+    });
+  }
+
+  async listJobMessages(jobId: string, channel = "operations"): Promise<JobMessage[]> {
+    const body = await this.request<{ messages: JobMessage[] }>(
+      `/jobs/${encodeURIComponent(jobId)}/messages?channel=${encodeURIComponent(channel)}`
+    );
+    return body.messages ?? [];
+  }
+
+  async sendJobMessage(jobId: string, payload: {
+    body: string;
+    channel?: "operations";
+    client_message_id?: string;
+  }): Promise<{ message: JobMessage }> {
+    return this.request(`/jobs/${encodeURIComponent(jobId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        channel: payload.channel ?? "operations",
+        body: payload.body,
+        client_message_id: payload.client_message_id
+      })
     });
   }
 

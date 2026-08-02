@@ -108,6 +108,55 @@ test("logout posts the supplied refresh token without auth retry", async () => {
   assert.deepEqual(calls, [{ path: "/auth/logout", body: { refresh_token: "stored-refresh" } }]);
 });
 
+test("job operations messages use the technician message contract", async () => {
+  const calls = [];
+  const api = new CluexpApi(null);
+  api.setSessionTokens("access", "refresh");
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    calls.push({
+      method: init?.method || "GET",
+      path,
+      body: init?.body ? JSON.parse(String(init.body)) : null
+    });
+    if (path.endsWith("/messages?channel=operations")) {
+      return jsonResponse(200, { messages: [] });
+    }
+    return jsonResponse(200, {
+      message: {
+        id: "msg-1",
+        job_id: "job-1",
+        channel: "operations",
+        sender_type: "technician",
+        body: "Running ten minutes behind",
+        client_message_id: "message-1",
+        delivery_state: "sent"
+      }
+    });
+  };
+
+  assert.deepEqual(await api.listJobMessages("job-1"), []);
+  const result = await api.sendJobMessage("job-1", {
+    body: "Running ten minutes behind",
+    client_message_id: "message-1"
+  });
+
+  assert.equal(result.message.id, "msg-1");
+  assert.deepEqual(calls, [
+    { method: "GET", path: "/jobs/job-1/messages?channel=operations", body: null },
+    {
+      method: "POST",
+      path: "/jobs/job-1/messages",
+      body: {
+        channel: "operations",
+        body: "Running ten minutes behind",
+        client_message_id: "message-1"
+      }
+    }
+  ]);
+});
+
 test("stored logout clears local state even when server revoke fails", async () => {
   const events = [];
 

@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
+  FlatList,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -42,7 +43,7 @@ import { clearStoredSession, loadStoredSession, saveStoredSession, updateStoredS
 import { enqueueMutation, failedMutationCount, failedMutations, initOutbox, queuedMutationCount, wipeOutbox } from "../storage/outbox";
 import type { FailedMutation } from "../storage/outbox";
 import { colors, radius, sharedStyles } from "../theme";
-import type { ActiveJob, ActiveJobDetail, ActiveJobSnapshot, AuthSession, CloseoutLineDraft, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
+import type { ActiveJob, ActiveJobDetail, ActiveJobSnapshot, AuthSession, CloseoutLineDraft, JobMessage, JobStatus, QueuedMutation, ReadinessSnapshot, TechnicianOffer } from "../types";
 
 type CommandSheet = "arrival" | "safety" | "more" | "collection" | "messages" | "call" | null;
 type WorkHint = { kind: "work" | "job" | "offer"; id?: string; source: "link" | "notification" } | null;
@@ -1249,7 +1250,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
               </View>
             ) : null}
 
-            {sheet === "messages" ? <UnavailableSheet text="Job-scoped messaging is not enabled on this pilot environment yet. No delivery status will be fabricated." title="Job messages" /> : null}
+            {sheet === "messages" ? <OperationsMessagesSheet job={job} onSubmitted={onSubmitted} /> : null}
             {sheet === "call" ? <UnavailableSheet text="Private call routing is not enabled on this pilot environment yet. Contact dispatch through your approved operational channel." title="Call" /> : null}
 
             {sheet === "collection" ? (
@@ -1379,6 +1380,159 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
         </View>
       </SafeAreaView>
     </Modal>
+  );
+}
+
+function messageAuthorLabel(message: JobMessage) {
+  if (message.sender_type === "technician") return "You";
+  if (message.sender_type === "provider_admin") return "Dispatch";
+  if (message.sender_type === "dispatcher") return "Dispatch";
+  if (message.sender_type === "system") return "System";
+  return "Operations";
+}
+
+function messageTime(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function OperationsMessagesSheet({ job, onSubmitted }: {
+  job: ActiveJob | null;
+  onSubmitted: (keepOpen: boolean) => Promise<void>;
+}) {
+  const { t } = useLocale();
+  const [messages, setMessages] = useState<JobMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [queuedNotice, setQueuedNotice] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadMessages = useCallback(async () => {
+    if (!job) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setMessages(await api.listJobMessages(job.id, "operations"));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, [job]);
+
+  useEffect(() => {
+    setMessages([]);
+    setDraft("");
+    setQueuedNotice(false);
+    setError(null);
+    void loadMessages();
+  }, [loadMessages]);
+
+  const renderMessage = useCallback(({ item }: { item: JobMessage }) => {
+    const mine = item.sender_type === "technician";
+    const body = item.body || item.template_code || "";
+    return (
+      <View style={[styles.messageBubbleRow, mine ? styles.messageBubbleRowMine : null]}>
+        <View style={[styles.messageBubble, mine ? styles.messageBubbleMine : null]}>
+          <View style={styles.messageMetaRow}>
+            <Text style={styles.messageAuthor}>{t(messageAuthorLabel(item))}</Text>
+            {messageTime(item.created_at) ? <Text style={styles.messageTime}>{messageTime(item.created_at)}</Text> : null}
+          </View>
+          <Text style={styles.messageBody}>{body}</Text>
+          {item.delivery_state ? <Text style={styles.messageState}>{t(item.delivery_state)}</Text> : null}
+        </View>
+      </View>
+    );
+  }, [t]);
+
+  async function sendMessage() {
+    if (!job || !draft.trim() || sending) return;
+    const body = draft.trim();
+    const clientMessageId = clientMutationId("message");
+    setSending(true);
+    setError(null);
+    setQueuedNotice(false);
+    try {
+      const result = await api.sendJobMessage(job.id, {
+        body,
+        channel: "operations",
+        client_message_id: clientMessageId
+      });
+      setMessages((current) => [...current, result.message]);
+      setDraft("");
+      await onSubmitted(true);
+    } catch (cause) {
+      if (isNetworkFailure(cause)) {
+        await queueLocalMutation(job.id, "message", null, clientMessageId, { body, channel: "operations" });
+        setMessages((current) => [...current, {
+          id: clientMessageId,
+          job_id: job.id,
+          channel: "operations",
+          sender_type: "technician",
+          body,
+          client_message_id: clientMessageId,
+          created_at: new Date().toISOString(),
+          delivery_state: "queued"
+        }]);
+        setDraft("");
+        setQueuedNotice(true);
+        await onSubmitted(true);
+      } else {
+        setError(errorMessage(cause));
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <View style={styles.messageSheet}>
+      <Text style={sharedStyles.kicker}>{t("Operations channel")}</Text>
+      <Text style={sharedStyles.title}>{t("Job messages")}</Text>
+      <Text style={sharedStyles.body}>{t("Message your company operations team about this active job. Customer messaging is still separate and not enabled yet.")}</Text>
+
+      {queuedNotice ? <AlertBanner text={t("Message queued offline — it will send automatically once you're back online.")} tone="warn" /> : null}
+      {error ? <AlertBanner text={error} tone="bad" /> : null}
+
+      <View style={styles.messageListBox}>
+        {loading ? <Text style={styles.emptyMessageText}>{t("Loading messages…")}</Text> : null}
+        {!loading && messages.length === 0 ? <Text style={styles.emptyMessageText}>{t("No operations messages yet.")}</Text> : null}
+        {messages.length > 0 ? (
+          <FlatList
+            data={messages}
+            keyExtractor={(item) => item.id}
+            renderItem={renderMessage}
+            scrollEnabled={false}
+          />
+        ) : null}
+      </View>
+
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={styles.messageComposer}>
+          <TextInput
+            multiline
+            onChangeText={setDraft}
+            placeholder={t("Type an operations message")}
+            placeholderTextColor={colors.mutedFaint}
+            style={styles.messageInput}
+            value={draft}
+          />
+          <Pressable
+            accessibilityLabel={t("Send message")}
+            accessibilityRole="button"
+            disabled={!draft.trim() || sending}
+            onPress={() => void sendMessage()}
+            style={[styles.messageSendButton, !draft.trim() || sending ? styles.messageSendButtonDisabled : null]}
+          >
+            <Ionicons color={colors.primaryText} name="send" size={18} />
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+      <Text style={styles.messageFinePrint}>{t("This thread is visible to your company operations team. Do not share payment card data or private access codes here.")}</Text>
+    </View>
   );
 }
 
@@ -2462,6 +2616,109 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     padding: 12
+  },
+  messageSheet: {
+    gap: 14
+  },
+  messageListBox: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    minHeight: 180,
+    padding: 10
+  },
+  emptyMessageText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    padding: 12,
+    textAlign: "center"
+  },
+  messageBubbleRow: {
+    alignItems: "flex-start",
+    marginVertical: 5
+  },
+  messageBubbleRowMine: {
+    alignItems: "flex-end"
+  },
+  messageBubble: {
+    backgroundColor: colors.cardStrong,
+    borderColor: colors.borderStrong,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    maxWidth: "86%",
+    padding: 11
+  },
+  messageBubbleMine: {
+    backgroundColor: "rgba(255, 191, 0, 0.1)",
+    borderColor: colors.primary
+  },
+  messageMetaRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between"
+  },
+  messageAuthor: {
+    color: colors.foreground,
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  messageTime: {
+    color: colors.mutedFaint,
+    fontSize: 11
+  },
+  messageBody: {
+    color: colors.foreground,
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: 6
+  },
+  messageState: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 7,
+    textTransform: "uppercase"
+  },
+  messageComposer: {
+    alignItems: "flex-end",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    padding: 10
+  },
+  messageInput: {
+    color: colors.foreground,
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 20,
+    maxHeight: 120,
+    minHeight: 42,
+    paddingHorizontal: 4,
+    paddingTop: 8,
+    textAlignVertical: "top"
+  },
+  messageSendButton: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderRadius: radius.sm,
+    height: 44,
+    justifyContent: "center",
+    width: 48
+  },
+  messageSendButtonDisabled: {
+    opacity: 0.45
+  },
+  messageFinePrint: {
+    color: colors.mutedFaint,
+    fontSize: 12,
+    lineHeight: 17
   },
   dispatcherBox: {
     backgroundColor: "rgba(98, 168, 255, 0.06)",

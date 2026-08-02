@@ -138,7 +138,23 @@ export type ApiProblem = {
   raw?: unknown;
 };
 
-export type LocalMutationKind = "status" | "report_issue" | "collection" | "arrival_verify";
+export type JobMessage = {
+  id: string;
+  job_id: string;
+  channel: "operations" | string;
+  sender_type: "technician" | "provider_admin" | "dispatcher" | "system" | string;
+  sender_user_id?: string | null;
+  sender_technician_id?: string | null;
+  sender_organization_id?: string | null;
+  body?: string | null;
+  template_code?: string | null;
+  template_params?: Record<string, unknown> | null;
+  client_message_id?: string | null;
+  created_at?: string | null;
+  delivery_state?: "sent" | string;
+};
+
+export type LocalMutationKind = "status" | "report_issue" | "collection" | "arrival_verify" | "message";
 
 export type QueuedMutation = {
   clientMutationId: string;
