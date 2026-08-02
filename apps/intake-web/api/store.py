@@ -1260,6 +1260,29 @@ class Store:
     async def list_job_notes(self, job_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def create_job_message(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        sender_type: str,
+        sender_user_id: str | None,
+        sender_technician_id: str | None = None,
+        sender_organization_id: str | None = None,
+        body: str | None = None,
+        template_code: str | None = None,
+        template_params: dict | None = None,
+        client_message_id: str | None = None,
+        request_hash: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_job_messages(
+        self, job_id: UUID, *, channel: str, limit: int = 100
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
     async def list_job_events(self, job_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -3045,6 +3068,67 @@ class InMemoryStore(Store):
 
     async def list_job_notes(self, job_id: UUID) -> list[dict]:
         return list(getattr(self, "_job_notes", {}).get(str(job_id), []))
+
+    async def create_job_message(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        sender_type: str,
+        sender_user_id: str | None,
+        sender_technician_id: str | None = None,
+        sender_organization_id: str | None = None,
+        body: str | None = None,
+        template_code: str | None = None,
+        template_params: dict | None = None,
+        client_message_id: str | None = None,
+        request_hash: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        messages = getattr(self, "_job_messages", None)
+        if messages is None:
+            messages = self._job_messages = {}
+        rows = messages.setdefault(str(job_id), [])
+        if client_message_id:
+            for row in rows:
+                if (
+                    row.get("sender_type") == sender_type
+                    and row.get("sender_user_id") == sender_user_id
+                    and row.get("client_message_id") == client_message_id
+                ):
+                    if row.get("request_hash") != request_hash:
+                        return {"error_code": "idempotency_key_reuse"}
+                    return dict(row)
+        rec = {
+            "id": str(uuid4()),
+            "thread_id": f"{job_id}:{channel}",
+            "job_id": str(job_id),
+            "channel": channel,
+            "sender_type": sender_type,
+            "sender_user_id": sender_user_id,
+            "sender_technician_id": sender_technician_id,
+            "sender_organization_id": sender_organization_id,
+            "body": body,
+            "template_code": template_code,
+            "template_params": template_params or {},
+            "client_message_id": client_message_id,
+            "request_hash": request_hash,
+            "metadata": metadata or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        rows.append(rec)
+        await self.log_event_raw(job_id, f"message:{channel}:{sender_type}:{rec['id']}")
+        return dict(rec)
+
+    async def list_job_messages(
+        self, job_id: UUID, *, channel: str, limit: int = 100
+    ) -> list[dict]:
+        rows = [
+            dict(row)
+            for row in getattr(self, "_job_messages", {}).get(str(job_id), [])
+            if row.get("channel") == channel
+        ]
+        return rows[-limit:]
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
@@ -6704,6 +6788,112 @@ class PostgresStore(Store):
             }
             for r in rows
         ]
+
+    async def create_job_message(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        sender_type: str,
+        sender_user_id: str | None,
+        sender_technician_id: str | None = None,
+        sender_organization_id: str | None = None,
+        body: str | None = None,
+        template_code: str | None = None,
+        template_params: dict | None = None,
+        client_message_id: str | None = None,
+        request_hash: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        async with await self._connect() as conn:
+            async with conn.transaction():
+                cur = await conn.execute(
+                    "insert into job_message_threads (job_id, channel)"
+                    " values (%s, %s)"
+                    " on conflict (job_id, channel) do update set job_id = excluded.job_id"
+                    " returning id",
+                    (str(job_id), channel),
+                )
+                thread = await cur.fetchone()
+                thread_id = thread[0]
+                cur = await conn.execute(
+                    "insert into job_messages ("
+                    " thread_id, job_id, channel, sender_type, sender_user_id,"
+                    " sender_technician_id, sender_organization_id, body,"
+                    " template_code, template_params, client_message_id,"
+                    " request_hash, metadata"
+                    ") values (%s, %s, %s, %s, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s::jsonb, %s, %s, %s::jsonb)"
+                    " on conflict do nothing"
+                    " returning id, thread_id, job_id, channel, sender_type,"
+                    " sender_user_id, sender_technician_id, sender_organization_id,"
+                    " body, template_code, template_params, client_message_id,"
+                    " request_hash, metadata, created_at",
+                    (
+                        str(thread_id), str(job_id), channel, sender_type, sender_user_id,
+                        sender_technician_id, sender_organization_id, body, template_code,
+                        json.dumps(template_params or {}), client_message_id, request_hash,
+                        json.dumps(metadata or {}),
+                    ),
+                )
+                row = await cur.fetchone()
+                inserted = row is not None
+                if row is None and client_message_id:
+                    cur = await conn.execute(
+                        "select id, thread_id, job_id, channel, sender_type,"
+                        " sender_user_id, sender_technician_id, sender_organization_id,"
+                        " body, template_code, template_params, client_message_id,"
+                        " request_hash, metadata, created_at"
+                        " from job_messages"
+                        " where job_id = %s and sender_type = %s"
+                        " and sender_user_id is not distinct from %s::uuid"
+                        " and client_message_id = %s",
+                        (str(job_id), sender_type, sender_user_id, client_message_id),
+                    )
+                    row = await cur.fetchone()
+                    if row is not None and row[12] != request_hash:
+                        return {"error_code": "idempotency_key_reuse"}
+                if row is None:
+                    raise RuntimeError("Message insert failed without an idempotent existing row")
+        if inserted:
+            await self.log_event_raw(job_id, f"message:{channel}:{sender_type}:{row[0]}")
+        return self._message_row(row)
+
+    @staticmethod
+    def _message_row(row: tuple) -> dict:
+        return {
+            "id": str(row[0]),
+            "thread_id": str(row[1]),
+            "job_id": str(row[2]),
+            "channel": row[3],
+            "sender_type": row[4],
+            "sender_user_id": str(row[5]) if row[5] else None,
+            "sender_technician_id": str(row[6]) if row[6] else None,
+            "sender_organization_id": str(row[7]) if row[7] else None,
+            "body": row[8],
+            "template_code": row[9],
+            "template_params": row[10] or {},
+            "client_message_id": row[11],
+            "request_hash": row[12],
+            "metadata": row[13] or {},
+            "created_at": row[14].isoformat() if row[14] else None,
+        }
+
+    async def list_job_messages(
+        self, job_id: UUID, *, channel: str, limit: int = 100
+    ) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, thread_id, job_id, channel, sender_type,"
+                " sender_user_id, sender_technician_id, sender_organization_id,"
+                " body, template_code, template_params, client_message_id,"
+                " request_hash, metadata, created_at"
+                " from job_messages"
+                " where job_id = %s and channel = %s and deleted_at is null"
+                " order by created_at asc, id asc limit %s",
+                (str(job_id), channel, limit),
+            )
+            rows = await cur.fetchall()
+        return [self._message_row(row) for row in rows]
 
     async def record_customer_review(
         self,

@@ -3996,6 +3996,56 @@ Recommended first implementation slice:
 Do not implement raw phone-number exposure as a shortcut. Provider internal notes
 remain separate and must not leak into either customer or technician channels.
 
+### 2026-08-02 — Codex: backend Operations messaging slice implemented locally
+
+Started the Communication Hub implementation backend-first while Claude is working
+on technician-native Spanish localization. I intentionally avoided all native app
+files so the localization worktree stays intact.
+
+Implemented first slice:
+- Migration `0047_job_messages`
+  - `job_message_threads`
+  - `job_messages`
+  - `job_message_receipts`
+  - idempotency uniqueness for `client_message_id`
+- Store support in `apps/intake-web/api/store.py`
+  - `create_job_message(...)`
+  - `list_job_messages(...)`
+  - InMemory + Postgres paths
+- FastAPI endpoints in `apps/intake-web/api/main.py`
+  - `GET /jobs/{job_id}/messages?channel=operations`
+  - `POST /jobs/{job_id}/messages`
+  - `GET /provider/jobs/{job_id}/messages?channel=operations`
+  - `POST /provider/jobs/{job_id}/messages`
+- New tests: `apps/intake-web/api/tests/test_job_messages.py`
+
+Scope intentionally enabled now:
+- Operations channel only: technician <-> owning provider dispatcher/provider_admin.
+- Customer channel returns structured `501 {code: "channel_not_enabled"}` until
+  customer templates/tracking-page messaging are built.
+- Provider internal notes remain separate.
+- Message creates support client idempotency for native/offline replay.
+- Tenant/self scope:
+  - wrong technician gets 404;
+  - foreign provider gets 404;
+  - closed/cancelled job writes get 409.
+
+Verification:
+- `pytest api/tests/test_job_messages.py -q` -> 4 passed.
+- `pytest api/tests/test_job_messages.py api/tests/test_idempotency.py api/tests/test_collection_idempotency.py -q` -> 18 passed.
+- `pytest api/tests/test_dispatch.py -k "notes or report_issue or timeline or tenant_scoped" -q` -> 13 passed.
+- `python -m py_compile api/main.py api/store.py ../../packages/db/alembic/versions/0047_job_messages.py` -> passed.
+- `alembic heads` -> `0047_job_messages (head)`.
+- `alembic history -r 0045_auth_refresh_tokens:head` -> linear `0045 -> 0046 -> 0047`.
+- `alembic upgrade head --sql` -> generated SQL through `0047`.
+- Full backend suite from `apps/intake-web`: `pytest -q` -> 367 passed, 1 skipped.
+
+Deployment gate:
+- This slice has a new migration. Do **not** push/deploy the endpoints to `main`
+  until `0047_job_messages` is applied to prod, or apply the migration before
+  merging/pushing the backend code. This shell has no `DATABASE_URL` or Supabase
+  executor available, so Codex could not apply prod migration from here.
+
 ### 2026-08-02 — Claude: Navigate CTA, conservative ETA copy, foreground auto location refresh
 
 Picked up the product TODO above. Two of the three items done in full; the

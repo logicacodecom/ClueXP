@@ -853,6 +853,14 @@ class NoteRequest(BaseModel):
     body: str
 
 
+class JobMessageRequest(BaseModel):
+    channel: str = "operations"
+    body: str | None = None
+    template_code: str | None = None
+    template_params: dict[str, Any] | None = None
+    client_message_id: str | None = None
+
+
 class DeclineAffiliationRequest(BaseModel):
     decline_reason: str | None = None
 
@@ -5023,6 +5031,76 @@ def _validated_client_mutation_id(raw: str | None) -> str | None:
     return cmid
 
 
+def _validated_client_message_id(raw: str | None) -> str | None:
+    cmid = (raw or "").strip()
+    if not cmid:
+        return None
+    if not _CLIENT_MUTATION_ID_RE.fullmatch(cmid):
+        raise HTTPException(status_code=422, detail=(
+            "client_message_id must be 8-128 characters of letters, digits, '-', or '_'"))
+    return cmid
+
+
+_MESSAGE_WRITABLE_STATUSES = {
+    STATUS_ASSIGNED,
+    STATUS_EN_ROUTE,
+    STATUS_ARRIVED,
+    STATUS_IN_PROGRESS,
+    STATUS_COMPLETED_PENDING,
+    STATUS_DISPUTED,
+}
+
+
+def _message_body(payload: JobMessageRequest) -> str | None:
+    body = (payload.body or "").strip()
+    if body:
+        return body[:2000]
+    if (payload.template_code or "").strip():
+        return None
+    raise HTTPException(status_code=422, detail="Message body or template_code is required.")
+
+
+def _message_channel(channel: str | None) -> str:
+    value = (channel or "operations").strip()
+    if value != "operations":
+        raise HTTPException(status_code=501, detail={
+            "code": "channel_not_enabled",
+            "message": "Only operations messaging is enabled in this slice.",
+        })
+    return value
+
+
+def _public_message(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "job_id": row.get("job_id"),
+        "channel": row.get("channel"),
+        "sender_type": row.get("sender_type"),
+        "sender_user_id": row.get("sender_user_id"),
+        "sender_technician_id": row.get("sender_technician_id"),
+        "sender_organization_id": row.get("sender_organization_id"),
+        "body": row.get("body"),
+        "template_code": row.get("template_code"),
+        "template_params": row.get("template_params") or {},
+        "client_message_id": row.get("client_message_id"),
+        "created_at": row.get("created_at"),
+        "delivery_state": "sent",
+    }
+
+
+async def _require_technician_message_job(job_id: UUID, session: dict[str, Any]) -> dict[str, Any]:
+    require_any_role(session, {"technician"})
+    tech = session.get("technician")
+    if not tech:
+        raise HTTPException(status_code=409, detail="Technician profile is required")
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None or lifecycle.get("fulfillment_technician_id") != tech.get("id"):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if lifecycle.get("status") not in _MESSAGE_WRITABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="Messaging is closed for this job.")
+    return lifecycle
+
+
 @app.post("/jobs/{job_id}/report-issue")
 async def report_issue(
     job_id: UUID,
@@ -5160,6 +5238,57 @@ async def report_collection(
         await store.complete_technician_mutation(
             UUID(tech["id"]), cmid, status_code=200, response=result)
     return result
+
+
+@app.get("/jobs/{job_id}/messages")
+async def technician_list_job_messages(
+    job_id: UUID,
+    channel: str = "operations",
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Assigned technician reads the job-scoped operations thread. Customer
+    messaging is intentionally gated to a later slice."""
+    channel = _message_channel(channel)
+    await _require_technician_message_job(job_id, session)
+    rows = await store.list_job_messages(job_id, channel=channel)
+    return {"messages": [_public_message(row) for row in rows]}
+
+
+@app.post("/jobs/{job_id}/messages")
+async def technician_send_job_message(
+    job_id: UUID,
+    payload: JobMessageRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Assigned technician sends an operations message to the owning company's
+    dispatch/provider operations thread. Idempotent for native offline replay."""
+    channel = _message_channel(payload.channel)
+    await _require_technician_message_job(job_id, session)
+    tech = session["technician"]
+    body = _message_body(payload)
+    cmid = _validated_client_message_id(payload.client_message_id)
+    template_code = (payload.template_code or "").strip() or None
+    template_params = payload.template_params or {}
+    req_hash = _mutation_request_hash(
+        "job-message", str(job_id), channel, "technician", body, template_code, template_params)
+    row = await store.create_job_message(
+        job_id,
+        channel=channel,
+        sender_type="technician",
+        sender_user_id=str(session.get("user", {}).get("id") or tech["id"]),
+        sender_technician_id=str(tech["id"]),
+        body=body,
+        template_code=template_code,
+        template_params=template_params,
+        client_message_id=cmid,
+        request_hash=req_hash,
+    )
+    if row.get("error_code") == "idempotency_key_reuse":
+        raise HTTPException(status_code=409, detail={
+            "code": "idempotency_key_reuse",
+            "message": "This client_message_id was already used with a different message.",
+        })
+    return {"message": _public_message(row)}
 
 
 @app.get("/technician/jobs/history")
@@ -5815,6 +5944,60 @@ async def provider_add_note(
         job_id, author_id=user.get("id", "unknown"),
         author_name=user.get("display_name"), body=body[:2000],
     )
+
+
+@app.get("/provider/jobs/{job_id}/messages")
+async def provider_list_job_messages(
+    job_id: UUID,
+    channel: str = "operations",
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Owning/fulfilling company reads a job-scoped communication thread.
+    Provider internal notes stay separate and are never surfaced here."""
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    channel = _message_channel(channel)
+    rows = await store.list_job_messages(job_id, channel=channel)
+    return {"messages": [_public_message(row) for row in rows]}
+
+
+@app.post("/provider/jobs/{job_id}/messages")
+async def provider_send_job_message(
+    job_id: UUID,
+    payload: JobMessageRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Dispatcher/provider admin replies in the operations thread for one of
+    their tenant-scoped jobs."""
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    channel = _message_channel(payload.channel)
+    body = _message_body(payload)
+    cmid = _validated_client_message_id(payload.client_message_id)
+    template_code = (payload.template_code or "").strip() or None
+    template_params = payload.template_params or {}
+    roles = set(session.get("roles", []))
+    sender_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
+    req_hash = _mutation_request_hash(
+        "job-message", str(job_id), channel, sender_type, body, template_code, template_params)
+    row = await store.create_job_message(
+        job_id,
+        channel=channel,
+        sender_type=sender_type,
+        sender_user_id=session.get("user", {}).get("id"),
+        sender_organization_id=org_id,
+        body=body,
+        template_code=template_code,
+        template_params=template_params,
+        client_message_id=cmid,
+        request_hash=req_hash,
+    )
+    if row.get("error_code") == "idempotency_key_reuse":
+        raise HTTPException(status_code=409, detail={
+            "code": "idempotency_key_reuse",
+            "message": "This client_message_id was already used with a different message.",
+        })
+    return {"message": _public_message(row)}
 
 
 @app.get("/provider/jobs/{job_id}/timeline")
