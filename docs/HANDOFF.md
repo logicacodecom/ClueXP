@@ -98,10 +98,23 @@ Verification:
 
 Next recommended Communication Hub slice:
 1. Provider job-detail Operations message panel so dispatch/provider ops can reply without
-   using raw notes.
+   using raw notes. **Done in follow-up commit after this entry.**
 2. Device QA of the native Operations thread against a real active job.
 3. Customer template messaging after operations messaging is proven.
 4. Masked calling after provider/ADR decision.
+
+Follow-up provider slice:
+- `apps/provider-web/src/app/api/provider/jobs/[jobId]/messages/route.ts`
+  proxies provider-authenticated GET/POST to the live backend Operations messages
+  endpoints.
+- `apps/provider-web/src/app/jobs/[id]/job-detail.tsx`
+  now loads Operations messages in parallel with jobs/history/timeline/notes and renders
+  a separate **Operations messages** card with a reply composer.
+- Internal notes remain separate and explicitly labeled as not visible to technicians.
+
+Verification:
+- `npm run build --workspace @cluexp/provider-web` -> passed.
+- Root `npm run typecheck` -> passed.
 
 ### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
 

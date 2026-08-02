@@ -13,7 +13,7 @@ import {
   PageHeader,
   StatCard,
 } from "@cluexp/console-ui";
-import { RefreshCw, Star } from "lucide-react";
+import { MessageSquare, RefreshCw, Send, Star } from "lucide-react";
 import { ProviderActionDialog } from "../../provider-action-dialog";
 
 type PaymentReport = { amount: number; currency: string; method: string } | null;
@@ -33,6 +33,14 @@ type HistoryJob = {
 
 type TimelineEvent = { event: string; at: string | null };
 type Note = { id: string; author_name: string | null; body: string; created_at: string | null };
+type JobMessage = {
+  id: string;
+  sender_type: string;
+  body: string | null;
+  template_code?: string | null;
+  created_at: string | null;
+  delivery_state?: string | null;
+};
 
 const STATUS_LABELS: Record<string, string> = {
   pending_dispatch: "Pending dispatch", assigned: "Assigned", en_route: "En route",
@@ -53,26 +61,37 @@ function eventLabel(ev: string): { action: string; detail: string } {
   const i = ev.indexOf(":");
   return i === -1 ? { action: ev, detail: "" } : { action: ev.slice(0, i), detail: ev.slice(i + 1) };
 }
+function messageAuthor(sender: string): string {
+  if (sender === "technician") return "Technician";
+  if (sender === "provider_admin") return "Operations";
+  if (sender === "dispatcher") return "Dispatcher";
+  if (sender === "system") return "System";
+  return sender.replaceAll("_", " ");
+}
 
 export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string; kicker?: string }) {
   const [active, setActive] = useState<ActiveJob | null>(null);
   const [history, setHistory] = useState<HistoryJob | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [messages, setMessages] = useState<JobMessage[]>([]);
+  const [messageDraft, setMessageDraft] = useState("");
   const [state, setState] = useState<"loading" | "ready" | "error" | "notfound">("loading");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   const load = useCallback(async () => {
     setState("loading");
     setError(null);
     try {
-      const [jobsRes, histRes, tlRes, notesRes] = await Promise.all([
+      const [jobsRes, histRes, tlRes, notesRes, messagesRes] = await Promise.all([
         fetch("/api/provider/jobs", { cache: "no-store" }),
         fetch("/api/provider/jobs/history", { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/timeline`, { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/notes`, { cache: "no-store" }),
+        fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=operations`, { cache: "no-store" }),
       ]);
       // The timeline endpoint is tenant-gated: a 404 means the job is not this org's.
       if (tlRes.status === 404) { setState("notfound"); return; }
@@ -82,6 +101,7 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       setHistory(historyJobs.find((j) => j.id === jobId) ?? null);
       setTimeline(tlRes.ok ? ((await tlRes.json()) as TimelineEvent[]) : []);
       setNotes(notesRes.ok ? ((await notesRes.json()) as Note[]) : []);
+      setMessages(messagesRes.ok ? (((await messagesRes.json()) as { messages?: JobMessage[] }).messages ?? []) : []);
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load the job");
@@ -108,6 +128,35 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       setState("error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function sendOperationsMessage() {
+    const body = messageDraft.trim();
+    if (!body || sendingMessage) return;
+    setSendingMessage(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channel: "operations",
+          body,
+          client_message_id: `provider_${Date.now().toString(36)}_${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail?.message || result.detail || "Could not send message");
+      const created = (result as { message?: JobMessage }).message;
+      if (created) setMessages((current) => [...current, created]);
+      setMessageDraft("");
+      setMessage("Operations message sent to the technician.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not send message");
+    } finally {
+      setSendingMessage(false);
     }
   }
 
@@ -181,6 +230,57 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Operations messages</CardTitle>
+              <CardDescription>Visible to the assigned technician. Internal notes stay separate.</CardDescription>
+            </div>
+            <Badge variant="outline">{messages.length}</Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {state === "loading" ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : messages.length === 0 ? (
+              <p className="rounded-md border border-border bg-secondary/20 p-3 text-sm text-muted-foreground">No operations messages yet.</p>
+            ) : (
+              <ul className="max-h-80 space-y-3 overflow-y-auto pr-1">
+                {messages.map((item) => {
+                  const fromProvider = item.sender_type === "provider_admin" || item.sender_type === "dispatcher";
+                  return (
+                    <li key={item.id} className={`rounded-md border p-3 ${fromProvider ? "border-primary/35 bg-primary/10" : "border-border bg-secondary/20"}`}>
+                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span className="font-semibold text-foreground">{messageAuthor(item.sender_type)}</span>
+                        <span>{item.created_at ? new Date(item.created_at).toLocaleString() : ""}</span>
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.body || item.template_code || ""}</p>
+                      {item.delivery_state ? <p className="mt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{item.delivery_state}</p> : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="space-y-2 rounded-md border border-border bg-background p-3">
+              <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground" htmlFor="operations-message">Reply to technician</label>
+              <textarea
+                className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                id="operations-message"
+                onChange={(event) => setMessageDraft(event.target.value)}
+                placeholder="Add an operational update, arrival instruction, or support note"
+                value={messageDraft}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">Do not include card data or private customer access codes.</p>
+                <Button disabled={!messageDraft.trim() || sendingMessage} onClick={() => void sendOperationsMessage()}>
+                  <Send className="size-4" />
+                  {sendingMessage ? "Sending" : "Send"}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <div><CardTitle>Audit timeline</CardTitle><CardDescription>Append-only lifecycle events.</CardDescription></div>

@@ -1,0 +1,36 @@
+import { NextRequest, NextResponse } from "next/server";
+import { jsonOrText, withApiErrors } from "@/app/api/_errors";
+
+const apiBase = process.env.NEXT_PUBLIC_CLUEXP_API_BASE_URL || "https://intake.cluexp.com";
+
+export const GET = withApiErrors(async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ jobId: string }> }
+) {
+  const token = request.cookies.get("cluexp_access_token")?.value;
+  if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
+  const { jobId } = await params;
+  const channel = request.nextUrl.searchParams.get("channel") || "operations";
+  const response = await fetch(`${apiBase}/api/provider/jobs/${jobId}/messages?channel=${encodeURIComponent(channel)}`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});
+
+export const POST = withApiErrors(async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ jobId: string }> }
+) {
+  const token = request.cookies.get("cluexp_access_token")?.value;
+  if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
+  const { jobId } = await params;
+  const body = await request.json().catch(() => ({}));
+  const response = await fetch(`${apiBase}/api/provider/jobs/${jobId}/messages`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});
