@@ -37,10 +37,11 @@ EXPO_RECEIPT_URL = "https://exp.host/--/api/v2/push/getReceipts"
 DEVICE_DEAD_ERROR = "DeviceNotRegistered"
 
 # Android channels created by technician-native (features/offerAlarm.ts).
-# 'job-offers' is MAX importance with sound+vibration — a ride-hail-style
+# 'job-offers-v2' is MAX importance with sound+vibration — a ride-hail-style
 # incoming-offer alert; everything else stays on the quieter default channel.
-OFFER_CHANNEL_ID = "job-offers"
+OFFER_CHANNEL_ID = "job-offers-v2"
 DEFAULT_CHANNEL_ID = "job-alerts"
+OFFER_SOUND = "offer_alarm.wav"
 
 # Alert classes worth breaking through iOS Focus / notification summaries.
 URGENT_ALERT_CLASSES = {"offer", "safety"}
@@ -149,7 +150,7 @@ def _expo_message(push_token: str, message: dict[str, Any]) -> dict[str, Any]:
         "title": message.get("title") or "ClueXP",
         "body": message.get("body") or "",
         "data": message.get("data") or {},
-        "sound": "default",
+        "sound": OFFER_SOUND if alert_class == "offer" else "default",
         "priority": "high" if urgent else "default",
         "channelId": OFFER_CHANNEL_ID if alert_class == "offer" else DEFAULT_CHANNEL_ID,
     }

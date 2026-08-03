@@ -11,11 +11,13 @@ import { Platform, Vibration } from "react-native";
 //   * foreground / opened-from-notification: run a real looping alarm until the
 //     offer is accepted, declined, expires, or is silenced.
 
-export const OFFER_CHANNEL_ID = "job-offers";
+export const OFFER_SOUND = "offer_alarm.wav";
+export const OFFER_CHANNEL_ID = "job-offers-v2";
 export const DEFAULT_CHANNEL_ID = "job-alerts";
 
-// Matches the backend's push data payload (api/push.py _push_data).
-const ALARM_SOURCE = require("../../assets/offer-alarm.wav");
+// Mixkit "Urgent simple tone loop" (item 2976), bundled via the
+// expo-notifications config plugin and reused for the foreground loop.
+const ALARM_SOURCE = require("../../assets/offer_alarm.wav");
 
 // Roughly the alarm loop length; each pass is one buzz so the phone keeps
 // pulsing in time with the tone. `true` repeats until we cancel.
@@ -65,7 +67,7 @@ export async function ensureNotificationChannels() {
       name: "Job offers",
       description: "Incoming job offers. Time-critical — keep this channel loud.",
       importance: Notifications.AndroidImportance.MAX,
-      sound: "default",
+      sound: OFFER_SOUND,
       vibrationPattern: [0, 400, 200, 400],
       enableVibrate: true,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,

@@ -55,7 +55,10 @@
         {
           "icon": "./assets/icon.png",
           "color": "#FFBF00",
-          "defaultChannel": "job-alerts"
+          "defaultChannel": "job-alerts",
+          "sounds": [
+            "./assets/offer_alarm.wav"
+          ]
         }
       ],
       [

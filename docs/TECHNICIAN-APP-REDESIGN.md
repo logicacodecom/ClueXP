@@ -632,26 +632,26 @@ is sufficient there).
 - Track notification preferences and mandatory alert classes.
 - Record last app acknowledgement, location freshness/accuracy, and background limitation honestly.
 
-**Implemented (2026-07-31), partial — push-send scaffolding up to the credentials wall:**
-`technician_notifications` (migration `0046`) records the ADR-0001 §6 four-event delivery model as
-far as this backend honestly can without a configured provider: `provider_status` is always
-`skipped_no_provider` today (see `api/push.py`'s `NullPushSender` — a real APNs/FCM provider is a
-still-open ADR-0001 §7 decision, not something this backend can pick for you), and
-`acknowledged_at` is the one real, working signal — `GET /technicians/me/notifications`
+**Implemented (2026-07-31 through 2026-08-03), provider-gated:** `technician_notifications`
+(migration `0046`, with provider receipt columns in `0049`) records the ADR-0001 §6 four-event
+delivery model. Without `PUSH_PROVIDER=expo`, sends remain honest `skipped_no_provider`; with Expo
+enabled, `api/push.py` sends through Expo Push Service, stores provider tickets/errors, polls Expo
+receipts from the dispatch sweep, and revokes devices Expo reports as `DeviceNotRegistered`.
+`acknowledged_at` remains the client/user signal via `GET /technicians/me/notifications`
 (self-scoped, `unacknowledged_only` filter) and `POST /technicians/me/notifications/{id}/ack`
-(idempotent). `push_service.notify_technician` fans out to every device a technician has
-registered (or records one un-targeted row if they have none, so the attempt stays visible) and is
-wired into the first real "critical alert" trigger, offer creation
-(`POST /provider/queue/{id}/assign`) — best-effort, never blocks the real offer. `PushSender` is a
-`Protocol`, so a real provider plugs in later (env-driven via `PUSH_PROVIDER`) without touching any
-caller.
+(idempotent).
 
-**Deliberately not built:** device receipt / user display tracking (no provider exists to report
-them — faking these would be dishonest, not scaffolding); per-technician notification
-*preferences* (opt out of optional classes) — ADR-0001 §6 already treats critical classes
-(`offer`, `safety`) as mandatory/non-optional, so there is currently nothing for a preference
-system to toggle; wiring more trigger points beyond offer creation (active-job status changes,
-safety flags) as those flows are built out.
+Offer creation (`POST /provider/queue/{id}/assign`) is wired as the first critical trigger:
+`push_service.notify_technician` fans out to every registered technician device, never blocks the
+real offer mutation, and uses a ride-hail-style native contract. Offer pushes target Android channel
+`job-offers-v2`, high priority, `interruptionLevel: time-sensitive`, and the bundled
+`offer_alarm.wav` custom sound; ordinary job/message updates stay on `job-alerts` with default
+sound. The custom sound is Mixkit's royalty-free "Urgent simple tone loop" (SFX 2976), bundled with
+the `expo-notifications` config plugin.
+
+**Still not faked:** user display tracking (no provider reports it); per-technician opt-out for
+mandatory critical classes (`offer`, `safety`); and additional trigger points beyond offer/message
+paths unless their flow explicitly calls `notify_technician`.
 
 ### 13.3 Active-job snapshot and commands
 

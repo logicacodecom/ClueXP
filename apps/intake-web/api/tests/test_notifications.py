@@ -105,9 +105,9 @@ def test_offer_message_uses_urgent_channel_and_priority():
         "alert_class": "offer", "title": "New job offer", "body": "b", "data": {"kind": "offer"},
     })
     assert message["to"] == "ExponentPushToken[abc]"
-    assert message["channelId"] == "job-offers"
+    assert message["channelId"] == "job-offers-v2"
     assert message["priority"] == "high"
-    assert message["sound"] == "default"
+    assert message["sound"] == "offer_alarm.wav"
     # time-sensitive, NOT 'critical': critical alerts need an Apple entitlement.
     assert message["interruptionLevel"] == "time-sensitive"
 
@@ -116,6 +116,7 @@ def test_non_offer_message_stays_on_the_quiet_channel():
     message = push_service._expo_message("t", {"alert_class": "message", "title": "x", "body": "y"})
     assert message["channelId"] == "job-alerts"
     assert message["priority"] == "default"
+    assert message["sound"] == "default"
     assert "interruptionLevel" not in message
 
 
@@ -177,7 +178,8 @@ def test_expo_send_marks_notification_sent_and_stores_ticket(expo):
     url, body = expo.calls[0]
     assert url == push_service.EXPO_SEND_URL
     assert body["to"] == f"tok-sent-{tid}"
-    assert body["channelId"] == "job-offers"
+    assert body["channelId"] == "job-offers-v2"
+    assert body["sound"] == "offer_alarm.wav"
     assert body["data"]["notification_id"] == records[0]["id"]
     assert body["data"]["offer_id"] == str(offer_id)
     assert body["data"]["urgent"] is True

@@ -65,7 +65,9 @@
 ### 2026-08-03 — Claude → Codex/Human: real Expo push sending + ride-hail incoming-offer alarm
 
 Push moved from audit-only rows to real sending, and offers now get an
-Uber/DoorDash-style alert. **Safe to deploy before credentials exist** — with
+Uber/DoorDash-style alert. Codex follow-up replaced the generated placeholder
+tone with Mixkit's royalty-free **"Urgent simple tone loop"** (SFX 2976) and
+wired it into the Android offer notification channel. **Safe to deploy before credentials exist** — with
 `PUSH_PROVIDER` unset the behavior is byte-for-byte what it was
 (`skipped_no_provider`, no outbound calls).
 
@@ -74,7 +76,8 @@ Uber/DoorDash-style alert. **Safe to deploy before credentials exist** — with
 `NoopPushProvider` fallback. Send stores the Expo ticket id or the provider
 error code; `/cron/dispatch-sweep` now also polls Expo receipts and **revokes
 a device whose token comes back `DeviceNotRegistered`**. Offers push on the
-`job-offers` channel at high priority + `interruptionLevel: time-sensitive`
+`job-offers-v2` channel with `offer_alarm.wav`, high priority, and
+`interruptionLevel: time-sensitive`
 (deliberately NOT iOS critical alerts — that needs an Apple entitlement we
 don't have).
 
@@ -91,10 +94,10 @@ real downgrade. Needs human authorization per the hard rules. Apply it
 new columns, so applying early is harmless.
 
 **Native** (`src/features/offerAlarm.ts` + `RootApp.tsx`): Android channels
-`job-offers` (MAX, sound+vibration) and `job-alerts` (HIGH); foreground offer
+`job-offers-v2` (MAX, custom sound+vibration) and `job-alerts` (HIGH); foreground offer
 push opens a full-screen incoming-offer modal that reuses the existing
 `OfferCard` (countdown, Accept, Decline) with a looping alarm tone
-(`assets/offer-alarm.wav`, generated) and repeating vibration. The alarm is
+(`assets/offer_alarm.wav`, Mixkit SFX 2976) and repeating vibration. The alarm is
 gated on **server** offer state, never on the push — accepted/declined/expired
 offers stop it on the next load, and resuming to foreground refetches first so
 a dead offer never rings. "Silence alert" is per-offer.
@@ -107,15 +110,17 @@ a dead offer never rings. "Silence alert" is per-offer.
 2. **Device QA** (I'm not submitting the build, per the usual split):
    - Android, app foreground: offer → full-screen alarm UI + sound + vibration;
      Accept / Decline / letting it expire each stop the noise immediately.
-   - Android, app backgrounded: notification arrives on `job-offers` with
+   - Android, app backgrounded: notification arrives on `job-offers-v2` with
      sound; tapping it opens straight to the offer and starts the alarm.
    - iPhone: same two cases. Expect the background alert to be a normal
      time-sensitive notification — no endless ring, that's an OS limit.
    - Check the alarm does NOT ring for message/system pushes.
 
-Not done deliberately: a custom Android *channel* sound (the bundled WAV is
-in-app only — a mis-bundled channel sound would make the most critical alert
-silent, so the channel uses the guaranteed system default). — Claude
+Important Android channel note: channel sound is immutable after the OS creates
+the channel, so the custom-sound channel intentionally uses a new id
+(`job-offers-v2`). Testers with an older app should install the fresh EAS build
+and confirm Settings → ClueXP → Notifications → Job offers shows the custom
+sound. — Claude / Codex
 
 ### 2026-08-03 — Codex: signed-in continuous background location decision + native implementation
 

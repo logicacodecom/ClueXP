@@ -1,6 +1,7 @@
 // react-native-web build: no notification channels, no alarm. The offer UI
 // still renders; only the sound/vibration side is native-only.
-export const OFFER_CHANNEL_ID = "job-offers";
+export const OFFER_CHANNEL_ID = "job-offers-v2";
+export const OFFER_SOUND = "offer_alarm.wav";
 export const DEFAULT_CHANNEL_ID = "job-alerts";
 
 export async function ensureNotificationChannels() {
