@@ -22,6 +22,14 @@ export async function requestAndSendLocation(_api: CluexpApi) {
   return { ok: false, reason: "native_location_required" };
 }
 
+export async function ensureBackgroundLocation() {
+  return { ok: false, reason: "native_location_required" };
+}
+
+export async function stopBackgroundLocation() {
+  return { ok: true, stopped: false };
+}
+
 export async function registerPushDevice(_api: CluexpApi) {
   return { ok: false, reason: "native_push_required" };
 }

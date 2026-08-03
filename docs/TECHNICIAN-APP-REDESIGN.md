@@ -518,7 +518,13 @@ Package names are proposed and require repository architecture review before cre
 
 - Native navigation and lifecycle handling.
 - APNs/FCM device registration and deep links.
-- Background/foreground location service and OS indicators.
+- Background/foreground location service and OS indicators. **Decision 2026-08-03:**
+  technician-native may keep location active whenever the technician is signed
+  in and location access is enabled, including background updates. Tracking
+  stops on sign-out, missing stored session, or OS permission denial. Customer
+  live tracking remains separately gated by assignment, fulfillment status, and
+  freshness; signed-in background collection does not make stale/customer-hidden
+  coordinates visible.
 - Native maps/navigation handoff.
 - Secure credential/token storage.
 - Encrypted local database/outbox.

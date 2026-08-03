@@ -2,12 +2,59 @@ import * as Application from "expo-application";
 import * as Device from "expo-device";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
+import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
-import type { CluexpApi } from "../api/client";
+import { CluexpApi, ApiError } from "../api/client";
+import { clearStoredSession, loadStoredSession, saveStoredSession } from "../storage/sessionStore";
+import type { LoginResponse } from "../types";
 
 const INSTALLATION_ID_KEY = "cluexp.installationId";
 const EAS_PROJECT_ID = "10a489e5-0ee3-4ea8-9ee8-5ee8044ead22";
+const BACKGROUND_LOCATION_TASK = "cluexp.backgroundLocation";
+
+async function apiForStoredSession() {
+  const stored = await loadStoredSession();
+  if (!stored) return null;
+  const backgroundApi = new CluexpApi(null);
+  backgroundApi.setSessionTokens(stored.accessToken, stored.refreshToken);
+  backgroundApi.configureSessionHandlers({
+    onRefresh: async (result: LoginResponse) => {
+      backgroundApi.setSessionTokens(result.access_token, result.refresh_token);
+      await saveStoredSession({
+        accessToken: result.access_token,
+        refreshToken: result.refresh_token,
+        session: result.session
+      });
+    },
+    onRefreshFailed: async () => {
+      backgroundApi.setSessionTokens(null, null);
+      await clearStoredSession();
+      await stopBackgroundLocation();
+    }
+  });
+  return backgroundApi;
+}
+
+TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+  if (error) return;
+  const locations = (data as { locations?: Location.LocationObject[] } | undefined)?.locations ?? [];
+  const latest = locations[locations.length - 1];
+  if (!latest) return;
+  const backgroundApi = await apiForStoredSession();
+  if (!backgroundApi) {
+    await stopBackgroundLocation();
+    return;
+  }
+  try {
+    await backgroundApi.updateLocation(latest.coords.latitude, latest.coords.longitude);
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.problem.status === 401) {
+      await clearStoredSession();
+      await stopBackgroundLocation();
+    }
+  }
+});
 
 function makeLocalId() {
   return `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -35,6 +82,44 @@ export async function requestAndSendLocation(api: CluexpApi) {
     accuracy: fix.coords.accuracy,
     savedAt: saved.last_location_at ?? new Date().toISOString()
   };
+}
+
+export async function ensureBackgroundLocation() {
+  const foreground = await Location.requestForegroundPermissionsAsync();
+  if (foreground.status !== "granted") {
+    return { ok: false, reason: "location_permission_denied" };
+  }
+  const background = await Location.requestBackgroundPermissionsAsync();
+  if (background.status !== "granted") {
+    return { ok: false, reason: "background_location_permission_denied" };
+  }
+  const alreadyStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+  if (!alreadyStarted) {
+    await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+      accuracy: Location.Accuracy.Balanced,
+      activityType: Location.ActivityType.AutomotiveNavigation,
+      deferredUpdatesDistance: 250,
+      deferredUpdatesInterval: 2 * 60 * 1000,
+      distanceInterval: 100,
+      foregroundService: {
+        notificationTitle: "ClueXP location is active",
+        notificationBody: "Sharing location while you are signed in. Sign out to stop.",
+        notificationColor: "#FFBF00"
+      },
+      pausesUpdatesAutomatically: false,
+      showsBackgroundLocationIndicator: true,
+      timeInterval: 60_000
+    });
+  }
+  return { ok: true, started: !alreadyStarted };
+}
+
+export async function stopBackgroundLocation() {
+  const started = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
+  if (started) {
+    await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+  }
+  return { ok: true, stopped: started };
 }
 
 export async function registerPushDevice(api: CluexpApi) {

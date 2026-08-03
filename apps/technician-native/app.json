@@ -12,8 +12,11 @@
       "bundleIdentifier": "com.cluexp.technician",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocationWhenInUseUsageDescription": "ClueXP uses your location while you are working a job so dispatch and the customer can see honest service progress.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "ClueXP can continue location updates during active work when the OS allows it. Tracking stops if the app is killed.",
+        "NSLocationWhenInUseUsageDescription": "ClueXP uses your location while you are signed in and location access is enabled so dispatch can route work and monitor active jobs honestly.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "ClueXP can continue location updates while you are signed in and location access is enabled, including in the background. Tracking stops when you sign out or disable location access.",
+        "UIBackgroundModes": [
+          "location"
+        ],
         "NSUserNotificationsUsageDescription": "ClueXP sends urgent job offers and current-job updates that require your attention."
       }
     },
@@ -52,6 +55,15 @@
           "icon": "./assets/icon.png",
           "color": "#FFBF00",
           "defaultChannel": "job-alerts"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "locationWhenInUsePermission": "ClueXP uses your location while you are signed in and location access is enabled so dispatch can route work and monitor active jobs honestly.",
+          "locationAlwaysAndWhenInUsePermission": "ClueXP can continue location updates while you are signed in and location access is enabled, including in the background. Tracking stops when you sign out or disable location access."
         }
       ],
       [

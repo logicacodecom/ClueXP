@@ -62,6 +62,31 @@
 
 ## Open threads
 
+### 2026-08-03 — Codex: signed-in continuous background location decision + native implementation
+
+Human changed the background-location product decision from "active jobs only" to:
+**track whenever the technician is signed in and location access is enabled**.
+
+Implemented in technician-native:
+- Added `expo-task-manager` and the Expo `expo-location` config plugin.
+- `app.json` now enables iOS/Android background location and updates permission
+  copy to say tracking continues while signed in and stops on sign-out/location
+  denial.
+- `nativeCapabilities.ts` defines `cluexp.backgroundLocation`, starts location
+  updates with a foreground-service notification on Android, loads the stored
+  session in the background task, refreshes rotated tokens if needed, posts
+  `/technicians/me/location`, and stops/clears session on auth failure.
+- `RootApp.tsx` starts background location after session restore/login and stops
+  it during hard sign-out/logout.
+
+Customer live tracking remains server-gated by assignment/status/freshness; this
+change collects technician location while signed in but does not broaden customer
+visibility rules.
+
+Store/release note: this requires a fresh native build and will trigger Apple/
+Google background-location scrutiny. Permission rationale/privacy text must match
+the signed-in continuous tracking behavior. — Codex
+
 ### 2026-08-02 — Codex: native Operations messaging sheet wired to live backend
 
 Picked up after verifying the handoff first. Backend Operations messaging was already live on

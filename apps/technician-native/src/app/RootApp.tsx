@@ -4,8 +4,9 @@ import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Image,
+  AppState,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -30,7 +31,7 @@ import { Logo } from "../components/Logo";
 import { MiniStat } from "../components/MiniStat";
 import { Pill } from "../components/Pill";
 import { ReadinessBar } from "../components/ReadinessBar";
-import { registerPushDevice, requestAndSendLocation } from "../features/nativeCapabilities";
+import { ensureBackgroundLocation, registerPushDevice, requestAndSendLocation, stopBackgroundLocation } from "../features/nativeCapabilities";
 import { replayQueuedMutations } from "../features/outboxReplay";
 import { logoutStoredSession } from "../features/sessionLifecycle";
 import { useLocale } from "../i18n/LocaleContext";
@@ -234,6 +235,7 @@ export function RootApp() {
   const [workHint, setWorkHint] = useState<WorkHint>(null);
 
   const hardSignOut = useCallback(async () => {
+    await stopBackgroundLocation().catch(() => undefined);
     api.setSessionTokens(null, null);
     await clearStoredSession();
     await wipeOutbox();
@@ -284,6 +286,7 @@ export function RootApp() {
             setAccessToken(api.currentAccessToken());
             setSession(fresh);
           }
+          void ensureBackgroundLocation().catch(() => undefined);
         }
         const [count, failed] = await Promise.all([queuedMutationCount(), failedMutationCount()]);
         if (mounted) {
@@ -298,6 +301,20 @@ export function RootApp() {
     return () => {
       mounted = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      void (async () => {
+        const stored = await loadStoredSession();
+        if (!stored) return;
+        api.setSessionTokens(stored.accessToken, stored.refreshToken);
+        setAccessToken(stored.accessToken);
+        setSession(stored.session);
+      })();
+    });
+    return () => sub.remove();
   }, []);
 
   useEffect(() => {
@@ -339,6 +356,7 @@ export function RootApp() {
     });
     setAccessToken(result.access_token);
     setSession(result.session);
+    void ensureBackgroundLocation().catch(() => undefined);
   }, []);
 
   const onLogout = useCallback(async () => {
@@ -348,6 +366,7 @@ export function RootApp() {
       clearStoredSession,
       wipeOutbox,
       afterLocalClear: () => {
+        void stopBackgroundLocation().catch(() => undefined);
         api.setSessionTokens(null, null);
         setAccessToken(null);
         setSession(null);
