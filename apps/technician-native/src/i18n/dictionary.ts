@@ -441,6 +441,11 @@ const NATIVE_EXTRA: Record<string, string> = {
   "Open account": "Abrir cuenta",
   "Work": "Trabajo",
 
+  // Incoming offer alarm
+  "Incoming job offer": "Oferta de trabajo entrante",
+  "Answer before the timer runs out.": "Responde antes de que se acabe el tiempo.",
+  "Silence alert": "Silenciar alerta",
+
   // Readiness bar
   "Available": "Disponible",
   "Alerts": "Alertas",

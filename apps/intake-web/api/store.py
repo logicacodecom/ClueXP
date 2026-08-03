@@ -1014,7 +1014,9 @@ class Store:
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
-    async def list_technician_devices(self, technician_id: UUID) -> list[dict]:  # pragma: no cover
+    async def list_technician_devices(
+        self, technician_id: UUID, *, with_tokens: bool = False,
+    ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
     async def revoke_technician_device(
@@ -1043,6 +1045,16 @@ class Store:
     async def list_technician_notifications(
         self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
     ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def record_push_delivery(
+        self, notification_id: UUID, *, status: str, ticket_id: str | None = None,
+        error_code: str | None = None, error_message: str | None = None,
+        stage: str = "send",
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_pending_push_receipts(self, *, limit: int = 200) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
     async def acknowledge_technician_notification(
@@ -1991,10 +2003,16 @@ class InMemoryStore(Store):
         devices.append(row)
         return self._public_device(row)
 
-    async def list_technician_devices(self, technician_id: UUID) -> list[dict]:
+    async def list_technician_devices(
+        self, technician_id: UUID, *, with_tokens: bool = False,
+    ) -> list[dict]:
+        """`with_tokens` is for api/push.py only — it adds the raw push_token,
+        which must never reach a client response."""
         tid = str(technician_id)
         return [
-            self._public_device(d) for d in getattr(self, "_devices", [])
+            {**self._public_device(d), "push_token": d.get("push_token")}
+            if with_tokens else self._public_device(d)
+            for d in getattr(self, "_devices", [])
             if str(d.get("technician_id")) == tid and d.get("revoked_at") is None
         ]
 
@@ -2038,6 +2056,8 @@ class InMemoryStore(Store):
         return {k: row.get(k) for k in (
             "id", "device_id", "alert_class", "job_id", "offer_id", "thread_id",
             "payload", "provider_status", "created_at", "provider_sent_at", "acknowledged_at",
+            "provider_ticket_id", "provider_error_code", "provider_error_message",
+            "provider_receipt_at",
         )}
 
     async def create_technician_notification(
@@ -2057,9 +2077,42 @@ class InMemoryStore(Store):
             "created_at": now,
             "provider_sent_at": now if provider_status == "sent" else None,
             "acknowledged_at": None,
+            "provider_ticket_id": None, "provider_error_code": None,
+            "provider_error_message": None, "provider_receipt_at": None,
         }
         notifications.append(row)
         return self._public_notification(row)
+
+    async def record_push_delivery(
+        self, notification_id: UUID, *, status: str, ticket_id: str | None = None,
+        error_code: str | None = None, error_message: str | None = None,
+        stage: str = "send",
+    ) -> dict | None:
+        nid = str(notification_id)
+        now = datetime.now(timezone.utc).isoformat()
+        for n in getattr(self, "_notifications", []):
+            if str(n.get("id")) != nid:
+                continue
+            n["provider_status"] = status
+            n["provider_error_code"] = error_code
+            n["provider_error_message"] = error_message
+            if ticket_id:
+                n["provider_ticket_id"] = ticket_id
+            if stage == "receipt":
+                n["provider_receipt_at"] = now
+            elif status == "sent" and not n.get("provider_sent_at"):
+                n["provider_sent_at"] = now
+            return self._public_notification(n)
+        return None
+
+    async def list_pending_push_receipts(self, *, limit: int = 200) -> list[dict]:
+        return [
+            {"id": n["id"], "technician_id": n["technician_id"],
+             "device_id": n.get("device_id"), "provider_ticket_id": n["provider_ticket_id"]}
+            for n in getattr(self, "_notifications", [])
+            if n.get("provider_ticket_id") and n.get("provider_receipt_at") is None
+            and n.get("provider_status") == "sent"
+        ][:limit]
 
     async def list_technician_notifications(
         self, technician_id: UUID, *, unacknowledged_only: bool = False, limit: int = 50,
@@ -9455,11 +9508,15 @@ class PostgresStore(Store):
             "last_seen_at": row[5].isoformat() if row[5] else None,
         }
 
-    async def list_technician_devices(self, technician_id: UUID) -> list[dict]:
+    async def list_technician_devices(
+        self, technician_id: UUID, *, with_tokens: bool = False,
+    ) -> list[dict]:
+        """`with_tokens` is for api/push.py only — it adds the raw push_token,
+        which must never reach a client response."""
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, platform, environment, app_version, created_at, last_seen_at"
-                " from technician_devices"
+                "select id, platform, environment, app_version, created_at, last_seen_at,"
+                " push_token from technician_devices"
                 " where technician_id = %s and revoked_at is null"
                 " order by last_seen_at desc",
                 (str(technician_id),),
@@ -9470,6 +9527,7 @@ class PostgresStore(Store):
                 "id": str(r[0]), "platform": r[1], "environment": r[2], "app_version": r[3],
                 "created_at": r[4].isoformat() if r[4] else None,
                 "last_seen_at": r[5].isoformat() if r[5] else None,
+                **({"push_token": r[6]} if with_tokens else {}),
             }
             for r in rows
         ]
@@ -9539,7 +9597,9 @@ class PostgresStore(Store):
 
     _NOTIFICATION_COLS = (
         "id, device_id, alert_class, job_id, offer_id, thread_id, payload,"
-        " provider_status, created_at, provider_sent_at, acknowledged_at"
+        " provider_status, created_at, provider_sent_at, acknowledged_at,"
+        " provider_ticket_id, provider_error_code, provider_error_message,"
+        " provider_receipt_at"
     )
 
     @classmethod
@@ -9553,6 +9613,9 @@ class PostgresStore(Store):
             "created_at": row[8].isoformat() if row[8] else None,
             "provider_sent_at": row[9].isoformat() if row[9] else None,
             "acknowledged_at": row[10].isoformat() if row[10] else None,
+            "provider_ticket_id": row[11], "provider_error_code": row[12],
+            "provider_error_message": row[13],
+            "provider_receipt_at": row[14].isoformat() if row[14] else None,
         }
 
     async def create_technician_notification(
@@ -9593,6 +9656,51 @@ class PostgresStore(Store):
             )
             rows = await cur.fetchall()
         return [self._notification_row(r) for r in rows]
+
+    async def record_push_delivery(
+        self, notification_id: UUID, *, status: str, ticket_id: str | None = None,
+        error_code: str | None = None, error_message: str | None = None,
+        stage: str = "send",
+    ) -> dict | None:
+        """Store one provider outcome — the send ticket (stage='send') or the
+        later device receipt (stage='receipt'). The ticket id is never cleared
+        by a receipt update, so a failed receipt still points at its ticket."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technician_notifications set"
+                "  provider_status = %s,"
+                "  provider_ticket_id = coalesce(%s, provider_ticket_id),"
+                "  provider_error_code = %s,"
+                "  provider_error_message = %s,"
+                "  provider_sent_at = case when %s = 'sent' and provider_sent_at is null"
+                "                          then now() else provider_sent_at end,"
+                "  provider_receipt_at = case when %s then now() else provider_receipt_at end"
+                " where id = %s"
+                f" returning {self._NOTIFICATION_COLS}",
+                (status, ticket_id, error_code, error_message, status,
+                 stage == "receipt", str(notification_id)),
+            )
+            row = await cur.fetchone()
+        return self._notification_row(row) if row else None
+
+    async def list_pending_push_receipts(self, *, limit: int = 200) -> list[dict]:
+        """Sent pushes still awaiting a device receipt. Bounded to 2 days because
+        Expo discards receipts after ~24h — older rows would never resolve."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, technician_id, device_id, provider_ticket_id"
+                " from technician_notifications"
+                " where provider_ticket_id is not null and provider_receipt_at is null"
+                "   and provider_status = 'sent' and created_at > now() - interval '2 days'"
+                " order by created_at limit %s",
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [
+            {"id": str(r[0]), "technician_id": str(r[1]),
+             "device_id": str(r[2]) if r[2] else None, "provider_ticket_id": r[3]}
+            for r in rows
+        ]
 
     async def acknowledge_technician_notification(
         self, technician_id: UUID, notification_id: UUID,

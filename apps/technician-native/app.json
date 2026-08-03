@@ -27,7 +27,8 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "VIBRATE"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0E0E0E",
