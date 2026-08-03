@@ -723,7 +723,8 @@ Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T
   acknowledgement, quick replies, privacy-safe push, release/reassignment permissions, and
   completion/dispute-window retention. _(Contract: `SYSTEM-DESIGN.md` §18.2.1; ties to §5 comms.)_
 - [ ] Voice/masked call — after messaging, once a comms provider is selected; launch from the same
-  job communication surface and preserve the same job/tenant authorization boundary.
+  job communication surface and preserve the same job/tenant authorization boundary. Provider
+  plan and recommendation: [`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
 - [ ] Production push/sound/alarm delivery strategy with APNs/FCM acknowledgement monitoring,
   privacy-safe lock-screen copy and polling fallback; native background GPS. _(§5/§8.)_
 - [ ] Activity pagination/date range as volume grows; keep "collected" separate from

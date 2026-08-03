@@ -45,6 +45,9 @@ workspace.
 Masked/mediated calling launches from the same job communication hub but should
 ship after messaging stabilizes.
 
+Provider selection and implementation plan:
+[`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
+
 MVP calling order:
 1. Company operations call path.
 2. Customer masked call path.
