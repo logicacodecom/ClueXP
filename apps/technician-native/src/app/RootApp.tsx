@@ -942,6 +942,17 @@ function ActiveJobCard({ job, jobDetail, version, allowedActions, busy, onAdvanc
               <Text style={styles.addressSub}>{t(serviceLabel(job))}{job.access_type ? ` · ${t(job.access_type)}` : ""}</Text>
             </View>
           </View>
+          {mapsUrl ? (
+            <View style={styles.navigationActionBlock}>
+              <FieldButton
+                icon={<Ionicons color={colors.foreground} name="navigate-outline" size={18} />}
+                label={t("Open navigation")}
+                onPress={() => void Linking.openURL(mapsUrl)}
+                tone="secondary"
+              />
+              <Text style={styles.navigationActionHint}>{t("Uses your phone's maps app for live routing and traffic.")}</Text>
+            </View>
+          ) : null}
           {job.eta_min != null || job.distance_mi != null ? (
             <View style={styles.chipRow}>
               {job.eta_min != null ? <MetaChip label={t("ETA (est.)")} value={`${job.eta_min}${job.eta_max && job.eta_max !== job.eta_min ? `-${job.eta_max}` : ""} min`} /> : null}
@@ -2378,6 +2389,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 6,
     textTransform: "capitalize"
+  },
+  navigationActionBlock: {
+    gap: 8
+  },
+  navigationActionHint: {
+    color: colors.mutedFaint,
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: "center"
   },
   chipRow: {
     flexDirection: "row",

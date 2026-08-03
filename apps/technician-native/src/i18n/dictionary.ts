@@ -222,6 +222,8 @@ const SHARED_ES: Record<string, string> = {
   "Mock reason": "Motivo de demostración",
   "Navigate": "Navegar",
   "Navigation": "Navegación",
+  "Open navigation": "Abrir navegación",
+  "Uses your phone's maps app for live routing and traffic.": "Usa la app de mapas de tu teléfono para ruta y tráfico en vivo.",
   "Nearby assigned work": "Trabajos asignados cercanos",
   "Nearby service area": "Zona de servicio cercana",
   "Nearby work": "Trabajo cercano",

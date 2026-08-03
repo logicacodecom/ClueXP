@@ -181,6 +181,24 @@ Verification:
 Note: the worktree still had pre-existing native SafeAreaProvider edits when this
 follow-up started; this slice preserves them and only commits the messaging changes.
 
+### 2026-08-02 — Codex: native active-job navigation handoff
+
+Human feedback: the embedded active-job map ETA was not precise enough, and the map
+itself should not be treated as turn-by-turn navigation. Kept the map honest and added
+a clear external navigation action in `apps/technician-native/src/app/RootApp.tsx`:
+
+- Active job address section now shows **Open navigation** when a server-authorized
+  destination is available.
+- The action opens the phone maps URL already used by the smaller map badge.
+- Supporting copy says it uses the phone's maps app for live routing and traffic.
+- Spanish strings were added in `apps/technician-native/src/i18n/dictionary.ts`.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` -> passed.
+- `npm run test:api --workspace @cluexp/technician-native` -> 6 passed.
+- root `npm run typecheck` -> passed.
+- `npx expo export --platform web` from `apps/technician-native` -> passed.
+
 ### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
 
 Human reported Spanish only worked on the sign-in screen; everywhere else (offers, active job,
