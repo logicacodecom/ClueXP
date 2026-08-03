@@ -2559,8 +2559,9 @@ async def my_notifications(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Self-scoped notification history for the native client. `provider_status`
-    is honest about delivery: this deployment has no configured push provider,
-    so every row is currently 'skipped_no_provider' — see api/push.py."""
+    is honest about delivery: 'sent'/'failed' once Expo answers (with
+    `provider_ticket_id` / `provider_error_code`), and 'skipped_no_provider'
+    while no push provider is configured — see api/push.py."""
     tid = _me_technician_id(session)
     return {
         "notifications": await store.list_technician_notifications(
@@ -3230,10 +3231,18 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     auto_closed = await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
     stale_hours = await runtime_settings.resolve(store, "technician_stale_hours")
     signed_off = await store.reap_stale_technicians(stale_hours=int(stale_hours))
+    # Push delivery event 2: resolve outstanding provider receipts and retire
+    # permanently dead device tokens. No-op without a configured provider.
+    try:
+        receipts = await push_service.poll_push_receipts(store)
+    except Exception:
+        logger.exception("push_receipt_sweep_failed")
+        receipts = {"checked": 0, "delivered": 0, "failed": 0, "devices_deactivated": 0}
     return {
         "expired_offers": expired,
         "auto_closed": auto_closed,
         "signed_off_technicians": len(signed_off),
+        "push_receipts": receipts,
     }
 
 
@@ -3472,7 +3481,13 @@ async def _send_targeted_offer(
     try:
         await push_service.notify_technician(
             store, technician_id, alert_class="offer",
-            envelope={"title": "New job offer", "body": "A new job offer is available."},
+            envelope={
+                "title": "New job offer",
+                "body": "A new job offer is available. Tap to review before it expires.",
+                # Drives the native incoming-offer countdown/alarm; the server
+                # timer stays authoritative — the client only mirrors it.
+                "expires_at": expires_at.isoformat(),
+            },
             job_id=job_id, offer_id=UUID(offer["id"]) if offer.get("id") else None,
         )
     except Exception:

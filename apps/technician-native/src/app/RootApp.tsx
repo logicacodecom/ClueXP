@@ -32,6 +32,7 @@ import { MiniStat } from "../components/MiniStat";
 import { Pill } from "../components/Pill";
 import { ReadinessBar } from "../components/ReadinessBar";
 import { ensureBackgroundLocation, registerPushDevice, requestAndSendLocation, stopBackgroundLocation } from "../features/nativeCapabilities";
+import { ensureNotificationChannels, isOfferPush, shouldAlarm, startOfferAlarm, stopOfferAlarm } from "../features/offerAlarm";
 import { replayQueuedMutations } from "../features/outboxReplay";
 import { logoutStoredSession } from "../features/sessionLifecycle";
 import { useLocale } from "../i18n/LocaleContext";
@@ -50,6 +51,21 @@ type CommandSheet = "arrival" | "safety" | "more" | "collection" | "messages" | 
 type WorkHint = { kind: "work" | "job" | "offer"; id?: string; source: "link" | "notification" } | null;
 
 const api = new CluexpApi(null);
+
+// Foreground presentation policy. An offer is taken over by the full-screen
+// incoming-offer alarm below, so its banner is suppressed — a duplicate banner
+// on top of a ringing alarm is noise. Everything else presents normally.
+Notifications.setNotificationHandler({
+  handleNotification: async (notification) => {
+    const offer = isOfferPush(notification.request.content.data);
+    return {
+      shouldPlaySound: !offer,
+      shouldSetBadge: false,
+      shouldShowBanner: !offer,
+      shouldShowList: true
+    };
+  }
+});
 
 const DECLINE_REASONS = ["Too far", "On another job", "Outside my skills", "Schedule conflict"];
 
@@ -206,8 +222,8 @@ function parseWorkHint(url: string, source: "link" | "notification"): WorkHint {
   return { kind: "work", source };
 }
 
-function notificationHint(response: Notifications.NotificationResponse): WorkHint {
-  const data = response.notification.request.content.data ?? {};
+function notificationHint(content: { data?: Record<string, unknown> | null }): WorkHint {
+  const data = content.data ?? {};
   const kind = typeof data.kind === "string" ? data.kind : typeof data.type === "string" ? data.type : "";
   const jobId = typeof data.job_id === "string" ? data.job_id : typeof data.jobId === "string" ? data.jobId : undefined;
   const offerIdValue = typeof data.offer_id === "string" ? data.offer_id : typeof data.offerId === "string" ? data.offerId : undefined;
@@ -337,12 +353,21 @@ export function RootApp() {
     });
     const notificationSub = Notifications.addNotificationResponseReceivedListener((response) => {
       setTab("work");
-      setWorkHint(notificationHint(response));
+      setWorkHint(notificationHint(response.notification.request.content));
     });
+    // Delivered while the app is open: jump to Work and refresh so the offer
+    // alarm is driven by real server state, never by the push alone.
+    const receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+      if (!isOfferPush(notification.request.content.data)) return;
+      setTab("work");
+      setWorkHint(notificationHint(notification.request.content));
+    });
+    void ensureNotificationChannels();
     return () => {
       mounted = false;
       linkSub.remove();
       notificationSub.remove();
+      receivedSub.remove();
     };
   }, []);
 
@@ -534,6 +559,8 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
   const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<CommandSheet>(null);
   const [online, setOnline] = useState(true);
+  const [silencedOfferId, setSilencedOfferId] = useState<string | null>(null);
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -716,6 +743,28 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
 
   const job = snapshot?.active_job ?? null;
   const activeOffer = offers[0] ?? null;
+  const activeOfferId = activeOffer ? offerId(activeOffer) : "";
+  const alarming = shouldAlarm({ activeOfferId: activeOfferId || null, appActive, silencedOfferId });
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      const active = state === "active";
+      setAppActive(active);
+      // Resumed from a notification tap or the background: re-read offers so a
+      // stale/expired one never rings, and a fresh one does.
+      if (active) void load(true);
+    });
+    return () => sub.remove();
+  }, [load]);
+
+  useEffect(() => {
+    if (!alarming) {
+      stopOfferAlarm();
+      return;
+    }
+    startOfferAlarm();
+    return () => stopOfferAlarm();
+  }, [alarming, activeOfferId]);
 
   return (
     <View style={styles.content}>
@@ -751,6 +800,14 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
           </>
         )}
       </ScrollView>
+      <IncomingOfferModal
+        busy={busy}
+        offer={alarming ? activeOffer : null}
+        onAccept={() => void acceptOffer(activeOffer!)}
+        onDecline={(reason) => void declineOffer(activeOffer!, reason)}
+        onSilence={() => setSilencedOfferId(activeOfferId)}
+        queued={Math.max(0, offers.length - 1)}
+      />
       <CommandModal
         job={job}
         jobDetail={jobDetail}
@@ -764,6 +821,45 @@ function WorkScreen({ session, hint, onHintConsumed, onQueueChanged, queueCount,
         snapshotVersion={snapshot?.version ?? null}
       />
     </View>
+  );
+}
+
+/**
+ * Full-screen incoming-offer alert — the visual half of the ride-hail-style
+ * alarm (the sound/vibration half is features/offerAlarm.ts). Deliberately
+ * reuses OfferCard so the countdown, metrics and Accept/Decline behaviour are
+ * the same ones already accepted for the inline card. "Silence" only stops the
+ * noise; the offer itself stays live on the Work screen until it is answered
+ * or the server expires it.
+ */
+function IncomingOfferModal({ offer, queued, busy, onAccept, onDecline, onSilence }: {
+  offer: TechnicianOffer | null;
+  queued: number;
+  busy: boolean;
+  onAccept: () => void;
+  onDecline: (reason?: string) => void;
+  onSilence: () => void;
+}) {
+  const { t } = useLocale();
+  return (
+    <Modal animationType="slide" onRequestClose={onSilence} transparent={false} visible={Boolean(offer)}>
+      <SafeAreaView style={styles.incomingWrap}>
+        <ScrollView contentContainerStyle={styles.incomingBody}>
+          <View style={styles.incomingHeader}>
+            <Ionicons color={colors.primary} name="notifications" size={22} />
+            <Text style={styles.incomingTitle}>{t("Incoming job offer")}</Text>
+          </View>
+          <Text style={styles.incomingCaption}>{t("Answer before the timer runs out.")}</Text>
+          {offer ? (
+            <OfferCard busy={busy} moreCount={queued} offer={offer} onAccept={onAccept} onDecline={onDecline} />
+          ) : null}
+          <Pressable onPress={onSilence} style={styles.silenceButton}>
+            <Ionicons color={colors.muted} name="volume-mute-outline" size={18} />
+            <Text style={styles.silenceText}>{t("Silence alert")}</Text>
+          </Pressable>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -2203,6 +2299,45 @@ const styles = StyleSheet.create({
   },
   offerWrap: {
     gap: 13
+  },
+  incomingWrap: {
+    backgroundColor: colors.background,
+    flex: 1
+  },
+  incomingBody: {
+    gap: 13,
+    paddingBottom: 40,
+    paddingHorizontal: 18,
+    paddingTop: 24
+  },
+  incomingHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 9,
+    justifyContent: "center"
+  },
+  incomingTitle: {
+    color: colors.foreground,
+    fontSize: 19,
+    fontWeight: "800"
+  },
+  incomingCaption: {
+    color: colors.mutedFaint,
+    fontSize: 13,
+    marginBottom: 6,
+    textAlign: "center"
+  },
+  silenceButton: {
+    alignItems: "center",
+    alignSelf: "center",
+    flexDirection: "row",
+    gap: 7,
+    marginTop: 6,
+    paddingVertical: 12
+  },
+  silenceText: {
+    color: colors.muted,
+    fontSize: 14
   },
   queueChip: {
     alignSelf: "center",
