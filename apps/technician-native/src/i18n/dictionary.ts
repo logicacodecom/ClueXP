@@ -306,6 +306,7 @@ const SHARED_ES: Record<string, string> = {
   "Reassign": "Reasignar",
   "Recent activity": "Actividad reciente",
   "Refresh": "Actualizar",
+  "Refresh messages": "Actualizar mensajes",
   "Reject": "Rechazar",
   "Release to Network": "Liberar a la red",
   "Requires your current password. At least 8 characters.": "Requiere tu contraseña actual. Al menos 8 caracteres.",

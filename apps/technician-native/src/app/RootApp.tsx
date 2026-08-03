@@ -1453,16 +1453,16 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
   const [queuedNotice, setQueuedNotice] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadMessages = useCallback(async () => {
+  const loadMessages = useCallback(async (silent = false) => {
     if (!job) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       setMessages(await api.listJobMessages(job.id, channel));
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (!silent) setError(errorMessage(cause));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [channel, job]);
 
@@ -1473,6 +1473,14 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
     setError(null);
     void loadMessages();
   }, [loadMessages]);
+
+  useEffect(() => {
+    if (!job) return;
+    const timer = setInterval(() => {
+      void loadMessages(true);
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [job, loadMessages]);
 
   const renderMessage = useCallback(({ item }: { item: JobMessage }) => {
     const mine = item.sender_type === "technician";
@@ -1578,7 +1586,19 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
   return (
     <View style={styles.messageSheet}>
       <Text style={sharedStyles.kicker}>{channel === "operations" ? t("Operations channel") : t("Customer channel")}</Text>
-      <Text style={sharedStyles.title}>{t("Job messages")}</Text>
+      <View style={styles.messageTitleRow}>
+        <Text style={sharedStyles.title}>{t("Job messages")}</Text>
+        <Pressable
+          accessibilityLabel={t("Refresh messages")}
+          accessibilityRole="button"
+          disabled={loading}
+          onPress={() => void loadMessages()}
+          style={[styles.messageRefreshButton, loading ? styles.messageSendButtonDisabled : null]}
+        >
+          <Ionicons color={colors.foreground} name="refresh" size={17} />
+          <Text style={styles.messageRefreshText}>{t("Refresh")}</Text>
+        </Pressable>
+      </View>
       <Text style={sharedStyles.body}>{channel === "operations" ? t("Message your company operations team about this active job.") : t("Send customer-visible template updates about this active job.")}</Text>
 
       <View style={styles.messageChannelTabs}>
@@ -2746,6 +2766,29 @@ const styles = StyleSheet.create({
   },
   messageSheet: {
     gap: 14
+  },
+  messageTitleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between"
+  },
+  messageRefreshButton: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 6,
+    minHeight: 36,
+    paddingHorizontal: 10
+  },
+  messageRefreshText: {
+    color: colors.foreground,
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase"
   },
   messageListBox: {
     backgroundColor: colors.card,

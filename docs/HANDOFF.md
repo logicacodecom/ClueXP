@@ -199,6 +199,18 @@ Verification:
 - root `npm run typecheck` -> passed.
 - `npx expo export --platform web` from `apps/technician-native` -> passed.
 
+Follow-up native messaging UX:
+- The active-job Message sheet now has a visible **Refresh** action and silently
+  refreshes the selected Operations/Customer thread every 15 seconds while open.
+- This does not add unread/read receipts; it is just a no-migration live-thread
+  improvement until the receipt contract lands.
+
+Verification:
+- `npm run typecheck --workspace @cluexp/technician-native` -> passed.
+- `npm run test:api --workspace @cluexp/technician-native` -> 6 passed.
+- root `npm run typecheck` -> passed.
+- `npx expo export --platform web` from `apps/technician-native` -> passed.
+
 ### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
 
 Human reported Spanish only worked on the sign-in screen; everywhere else (offers, active job,
