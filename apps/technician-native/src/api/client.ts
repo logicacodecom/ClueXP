@@ -5,6 +5,8 @@ import type {
   AuthSession,
   HistoryJob,
   JobMessage,
+  JobMessageThread,
+  JobCallSession,
   LoginResponse,
   ReadinessSnapshot,
   SettlementPayload,
@@ -262,10 +264,20 @@ export class CluexpApi {
   }
 
   async listJobMessages(jobId: string, channel = "operations"): Promise<JobMessage[]> {
-    const body = await this.request<{ messages: JobMessage[] }>(
+    return (await this.listJobMessageThread(jobId, channel)).messages;
+  }
+
+  async listJobMessageThread(jobId: string, channel = "operations"): Promise<JobMessageThread> {
+    const body = await this.request<{ messages: JobMessage[]; unread_count?: number }>(
       `/jobs/${encodeURIComponent(jobId)}/messages?channel=${encodeURIComponent(channel)}`
     );
-    return body.messages ?? [];
+    return { messages: body.messages ?? [], unread_count: body.unread_count ?? 0 };
+  }
+
+  async markJobMessagesRead(jobId: string, channel = "operations"): Promise<{ read_at?: string | null; read_count: number }> {
+    return this.request(`/jobs/${encodeURIComponent(jobId)}/messages/read?channel=${encodeURIComponent(channel)}`, {
+      method: "POST"
+    });
   }
 
   async sendJobMessage(jobId: string, payload: {
@@ -284,6 +296,16 @@ export class CluexpApi {
         template_params: payload.template_params,
         client_message_id: payload.client_message_id
       })
+    });
+  }
+
+  async startJobCall(jobId: string, calleeType: "customer" | "operations"): Promise<{
+    available: boolean;
+    message: string;
+    call: JobCallSession;
+  }> {
+    return this.request(`/jobs/${encodeURIComponent(jobId)}/calls/${encodeURIComponent(calleeType)}`, {
+      method: "POST"
     });
   }
 

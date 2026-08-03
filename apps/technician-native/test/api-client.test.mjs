@@ -207,6 +207,61 @@ test("job customer messages use template-only customer channel contract", async 
   ]);
 });
 
+test("job message thread exposes unread count and mark-read contract", async () => {
+  const calls = [];
+  const api = new CluexpApi(null);
+  api.setSessionTokens("access", "refresh");
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    calls.push({ method: init?.method || "GET", path });
+    if (path.endsWith("/messages/read?channel=customer")) {
+      return jsonResponse(200, { read_count: 2, read_at: "2026-08-02T12:00:00Z" });
+    }
+    return jsonResponse(200, { messages: [], unread_count: 2 });
+  };
+
+  const thread = await api.listJobMessageThread("job-1", "customer");
+  const read = await api.markJobMessagesRead("job-1", "customer");
+
+  assert.deepEqual(thread, { messages: [], unread_count: 2 });
+  assert.deepEqual(read, { read_count: 2, read_at: "2026-08-02T12:00:00Z" });
+  assert.deepEqual(calls, [
+    { method: "GET", path: "/jobs/job-1/messages?channel=customer" },
+    { method: "POST", path: "/jobs/job-1/messages/read?channel=customer" }
+  ]);
+});
+
+test("job masked call request uses scoped call endpoint", async () => {
+  const calls = [];
+  const api = new CluexpApi(null);
+  api.setSessionTokens("access", "refresh");
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    calls.push({ method: init?.method || "GET", path });
+    return jsonResponse(200, {
+      available: false,
+      message: "Masked calling provider is not configured.",
+      call: {
+        id: "call-1",
+        job_id: "job-1",
+        caller_type: "technician",
+        callee_type: "customer",
+        status: "unavailable",
+        provider_status: "skipped_no_provider",
+        masked_number: null
+      }
+    });
+  };
+
+  const result = await api.startJobCall("job-1", "customer");
+
+  assert.equal(result.available, false);
+  assert.equal(result.call.provider_status, "skipped_no_provider");
+  assert.deepEqual(calls, [{ method: "POST", path: "/jobs/job-1/calls/customer" }]);
+});
+
 test("stored logout clears local state even when server revoke fails", async () => {
   const events = [];
 

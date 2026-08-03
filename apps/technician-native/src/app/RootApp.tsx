@@ -1262,7 +1262,7 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
             ) : null}
 
             {sheet === "messages" ? <OperationsMessagesSheet job={job} onSubmitted={onSubmitted} /> : null}
-            {sheet === "call" ? <UnavailableSheet text="Private call routing is not enabled on this pilot environment yet. Contact dispatch through your approved operational channel." title="Call" /> : null}
+            {sheet === "call" ? <MaskedCallSheet job={job} /> : null}
 
             {sheet === "collection" ? (
               <View>
@@ -1450,6 +1450,7 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [queuedNotice, setQueuedNotice] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1458,7 +1459,12 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      setMessages(await api.listJobMessages(job.id, channel));
+      const thread = await api.listJobMessageThread(job.id, channel);
+      setMessages(thread.messages);
+      setUnreadCount(thread.unread_count);
+      if (thread.unread_count > 0) {
+        await api.markJobMessagesRead(job.id, channel);
+      }
     } catch (cause) {
       if (!silent) setError(errorMessage(cause));
     } finally {
@@ -1469,6 +1475,7 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
   useEffect(() => {
     setMessages([]);
     setDraft("");
+    setUnreadCount(0);
     setQueuedNotice(false);
     setError(null);
     void loadMessages();
@@ -1588,6 +1595,7 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
       <Text style={sharedStyles.kicker}>{channel === "operations" ? t("Operations channel") : t("Customer channel")}</Text>
       <View style={styles.messageTitleRow}>
         <Text style={sharedStyles.title}>{t("Job messages")}</Text>
+        {unreadCount > 0 ? <Text style={styles.messageUnreadPill}>{unreadCount} {t("new")}</Text> : null}
         <Pressable
           accessibilityLabel={t("Refresh messages")}
           accessibilityRole="button"
@@ -1683,6 +1691,57 @@ function UnavailableSheet({ title, text }: { title: string; text: string }) {
         <Text style={styles.noticeTitle}>{t("Not enabled in this pilot")}</Text>
         <Text style={styles.noticeText}>{t(text)}</Text>
       </View>
+    </View>
+  );
+}
+
+function MaskedCallSheet({ job }: { job: ActiveJob | null }) {
+  const { t } = useLocale();
+  const [busy, setBusy] = useState<"customer" | "operations" | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function start(calleeType: "customer" | "operations") {
+    if (!job || busy) return;
+    setBusy(calleeType);
+    setResult(null);
+    setError(null);
+    try {
+      const response = await api.startJobCall(job.id, calleeType);
+      setResult(response.available
+        ? "Masked call session started."
+        : response.message || "Masked calling provider is not configured.");
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <View style={styles.callSheet}>
+      <Text style={sharedStyles.kicker}>{t("Masked Call")}</Text>
+      <Text style={sharedStyles.title}>{t("Call")}</Text>
+      <Text style={sharedStyles.body}>{t("Call attempts are recorded against this job. Raw customer and technician phone numbers stay hidden.")}</Text>
+      {result ? <AlertBanner text={t(result)} tone="warn" /> : null}
+      {error ? <AlertBanner text={error} tone="bad" /> : null}
+      <FieldButton
+        disabled={!job}
+        icon={<Ionicons color={colors.foreground} name="business-outline" size={18} />}
+        label={busy === "operations" ? t("Starting…") : t("Call operations")}
+        loading={busy === "operations"}
+        onPress={() => void start("operations")}
+        tone="secondary"
+      />
+      <FieldButton
+        disabled={!job}
+        icon={<Ionicons color={colors.foreground} name="person-outline" size={18} />}
+        label={busy === "customer" ? t("Starting…") : t("Call customer")}
+        loading={busy === "customer"}
+        onPress={() => void start("customer")}
+        tone="secondary"
+      />
+      <Text style={styles.messageFinePrint}>{t("If masked calling is unavailable, use job messages or your approved dispatch channel.")}</Text>
     </View>
   );
 }
@@ -2767,6 +2826,9 @@ const styles = StyleSheet.create({
   messageSheet: {
     gap: 14
   },
+  callSheet: {
+    gap: 14
+  },
   messageTitleRow: {
     alignItems: "center",
     flexDirection: "row",
@@ -2788,6 +2850,17 @@ const styles = StyleSheet.create({
     color: colors.foreground,
     fontSize: 12,
     fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  messageUnreadPill: {
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    color: colors.primaryText,
+    fontSize: 11,
+    fontWeight: "900",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     textTransform: "uppercase"
   },
   messageListBox: {

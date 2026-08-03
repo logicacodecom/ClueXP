@@ -1283,6 +1283,51 @@ class Store:
     ) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
+    async def mark_job_messages_read(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        recipient_type: str,
+        recipient_user_id: str | None = None,
+        recipient_technician_id: str | None = None,
+        recipient_organization_id: str | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def count_unread_job_messages(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        recipient_type: str,
+        recipient_user_id: str | None = None,
+        recipient_technician_id: str | None = None,
+        recipient_organization_id: str | None = None,
+    ) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_job_call_session(
+        self,
+        job_id: UUID,
+        *,
+        caller_type: str,
+        callee_type: str,
+        caller_user_id: str | None = None,
+        caller_technician_id: str | None = None,
+        caller_organization_id: str | None = None,
+        callee_user_id: str | None = None,
+        callee_technician_id: str | None = None,
+        callee_organization_id: str | None = None,
+        provider: str | None = None,
+        provider_call_sid: str | None = None,
+        masked_number: str | None = None,
+        status: str = "unavailable",
+        provider_status: str = "skipped_no_provider",
+        metadata: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
     async def list_job_events(self, job_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -3129,6 +3174,144 @@ class InMemoryStore(Store):
             if row.get("channel") == channel
         ]
         return rows[-limit:]
+
+    @staticmethod
+    def _message_is_own(row: dict, *, recipient_type: str, recipient_user_id: str | None,
+                        recipient_technician_id: str | None,
+                        recipient_organization_id: str | None) -> bool:
+        if row.get("sender_type") == recipient_type:
+            if recipient_type == "technician":
+                return bool(recipient_technician_id and row.get("sender_technician_id") == recipient_technician_id)
+            if recipient_type in {"dispatcher", "provider_admin"}:
+                return bool(recipient_organization_id and row.get("sender_organization_id") == recipient_organization_id)
+            if recipient_type == "customer":
+                return True
+            return bool(recipient_user_id and row.get("sender_user_id") == recipient_user_id)
+        if recipient_type in {"dispatcher", "provider_admin"} and row.get("sender_type") in {"dispatcher", "provider_admin"}:
+            return bool(recipient_organization_id and row.get("sender_organization_id") == recipient_organization_id)
+        return False
+
+    @staticmethod
+    def _receipt_key(message_id: str, *, recipient_type: str, recipient_user_id: str | None,
+                     recipient_technician_id: str | None, recipient_organization_id: str | None) -> tuple:
+        return (
+            message_id, recipient_type, recipient_user_id or "",
+            recipient_technician_id or "", recipient_organization_id or "",
+        )
+
+    async def mark_job_messages_read(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        recipient_type: str,
+        recipient_user_id: str | None = None,
+        recipient_technician_id: str | None = None,
+        recipient_organization_id: str | None = None,
+    ) -> dict:
+        receipts = self._job_message_receipts = getattr(self, "_job_message_receipts", {})
+        read_at = datetime.now(timezone.utc).isoformat()
+        changed = 0
+        for row in getattr(self, "_job_messages", {}).get(str(job_id), []):
+            if row.get("channel") != channel:
+                continue
+            if self._message_is_own(
+                row, recipient_type=recipient_type, recipient_user_id=recipient_user_id,
+                recipient_technician_id=recipient_technician_id,
+                recipient_organization_id=recipient_organization_id,
+            ):
+                continue
+            key = self._receipt_key(
+                row["id"], recipient_type=recipient_type,
+                recipient_user_id=recipient_user_id,
+                recipient_technician_id=recipient_technician_id,
+                recipient_organization_id=recipient_organization_id,
+            )
+            rec = receipts.get(key)
+            if rec is None:
+                receipts[key] = {"read_at": read_at}
+                changed += 1
+            elif rec.get("read_at") is None:
+                rec["read_at"] = read_at
+                changed += 1
+        return {"read_at": read_at, "read_count": changed}
+
+    async def count_unread_job_messages(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        recipient_type: str,
+        recipient_user_id: str | None = None,
+        recipient_technician_id: str | None = None,
+        recipient_organization_id: str | None = None,
+    ) -> int:
+        receipts = getattr(self, "_job_message_receipts", {})
+        unread = 0
+        for row in getattr(self, "_job_messages", {}).get(str(job_id), []):
+            if row.get("channel") != channel:
+                continue
+            if self._message_is_own(
+                row, recipient_type=recipient_type, recipient_user_id=recipient_user_id,
+                recipient_technician_id=recipient_technician_id,
+                recipient_organization_id=recipient_organization_id,
+            ):
+                continue
+            key = self._receipt_key(
+                row["id"], recipient_type=recipient_type,
+                recipient_user_id=recipient_user_id,
+                recipient_technician_id=recipient_technician_id,
+                recipient_organization_id=recipient_organization_id,
+            )
+            if not receipts.get(key, {}).get("read_at"):
+                unread += 1
+        return unread
+
+    async def create_job_call_session(
+        self,
+        job_id: UUID,
+        *,
+        caller_type: str,
+        callee_type: str,
+        caller_user_id: str | None = None,
+        caller_technician_id: str | None = None,
+        caller_organization_id: str | None = None,
+        callee_user_id: str | None = None,
+        callee_technician_id: str | None = None,
+        callee_organization_id: str | None = None,
+        provider: str | None = None,
+        provider_call_sid: str | None = None,
+        masked_number: str | None = None,
+        status: str = "unavailable",
+        provider_status: str = "skipped_no_provider",
+        metadata: dict | None = None,
+    ) -> dict:
+        calls = self._job_call_sessions = getattr(self, "_job_call_sessions", [])
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": str(uuid4()),
+            "job_id": str(job_id),
+            "caller_type": caller_type,
+            "caller_user_id": caller_user_id,
+            "caller_technician_id": caller_technician_id,
+            "caller_organization_id": caller_organization_id,
+            "callee_type": callee_type,
+            "callee_user_id": callee_user_id,
+            "callee_technician_id": callee_technician_id,
+            "callee_organization_id": callee_organization_id,
+            "provider": provider,
+            "provider_call_sid": provider_call_sid,
+            "masked_number": masked_number,
+            "status": status,
+            "provider_status": provider_status,
+            "metadata": metadata or {},
+            "created_at": now,
+            "connected_at": None,
+            "ended_at": None,
+        }
+        calls.append(row)
+        await self.log_event_raw(job_id, f"call:{caller_type}:{callee_type}:{status}:{row['id']}")
+        return dict(row)
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
@@ -6904,6 +7087,184 @@ class PostgresStore(Store):
             )
             rows = await cur.fetchall()
         return [self._message_row(row) for row in rows]
+
+    @staticmethod
+    def _message_own_sql(recipient_type: str) -> str:
+        if recipient_type == "technician":
+            return "sender_type = 'technician' and sender_technician_id is not distinct from %s::uuid"
+        if recipient_type == "customer":
+            return "sender_type = 'customer'"
+        if recipient_type in {"dispatcher", "provider_admin"}:
+            return "sender_type in ('dispatcher','provider_admin') and sender_organization_id is not distinct from %s::uuid"
+        return "sender_type = %s and sender_user_id is not distinct from %s::uuid"
+
+    @staticmethod
+    def _message_own_params(
+        recipient_type: str, *, recipient_user_id: str | None,
+        recipient_technician_id: str | None, recipient_organization_id: str | None,
+    ) -> tuple:
+        if recipient_type == "technician":
+            return (recipient_technician_id,)
+        if recipient_type == "customer":
+            return ()
+        if recipient_type in {"dispatcher", "provider_admin"}:
+            return (recipient_organization_id,)
+        return (recipient_type, recipient_user_id)
+
+    async def mark_job_messages_read(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        recipient_type: str,
+        recipient_user_id: str | None = None,
+        recipient_technician_id: str | None = None,
+        recipient_organization_id: str | None = None,
+    ) -> dict:
+        own_sql = self._message_own_sql(recipient_type)
+        own_params = self._message_own_params(
+            recipient_type, recipient_user_id=recipient_user_id,
+            recipient_technician_id=recipient_technician_id,
+            recipient_organization_id=recipient_organization_id,
+        )
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "with target as ("
+                " select id from job_messages"
+                " where job_id = %s and channel = %s and deleted_at is null"
+                f" and not ({own_sql})"
+                "), upserted as ("
+                " insert into job_message_receipts ("
+                "  message_id, recipient_type, recipient_user_id, recipient_technician_id,"
+                "  recipient_organization_id, delivered_at, read_at"
+                " )"
+                " select id, %s, %s::uuid, %s::uuid, %s::uuid, now(), now() from target"
+                " on conflict ("
+                "  message_id, recipient_type,"
+                "  coalesce(recipient_user_id, '00000000-0000-0000-0000-000000000000'::uuid),"
+                "  coalesce(recipient_technician_id, '00000000-0000-0000-0000-000000000000'::uuid),"
+                "  coalesce(recipient_organization_id, '00000000-0000-0000-0000-000000000000'::uuid)"
+                " ) do update set read_at = coalesce(job_message_receipts.read_at, excluded.read_at)"
+                " returning id"
+                ") select count(*), now() from upserted",
+                (
+                    str(job_id), channel, *own_params, recipient_type, recipient_user_id,
+                    recipient_technician_id, recipient_organization_id,
+                ),
+            )
+            row = await cur.fetchone()
+        return {
+            "read_count": int(row[0]) if row else 0,
+            "read_at": row[1].isoformat() if row and row[1] else None,
+        }
+
+    async def count_unread_job_messages(
+        self,
+        job_id: UUID,
+        *,
+        channel: str,
+        recipient_type: str,
+        recipient_user_id: str | None = None,
+        recipient_technician_id: str | None = None,
+        recipient_organization_id: str | None = None,
+    ) -> int:
+        own_sql = self._message_own_sql(recipient_type)
+        own_params = self._message_own_params(
+            recipient_type, recipient_user_id=recipient_user_id,
+            recipient_technician_id=recipient_technician_id,
+            recipient_organization_id=recipient_organization_id,
+        )
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from job_messages m"
+                " where m.job_id = %s and m.channel = %s and m.deleted_at is null"
+                f" and not ({own_sql})"
+                " and not exists ("
+                "  select 1 from job_message_receipts r"
+                "  where r.message_id = m.id and r.read_at is not null"
+                "  and r.recipient_type = %s"
+                "  and r.recipient_user_id is not distinct from %s::uuid"
+                "  and r.recipient_technician_id is not distinct from %s::uuid"
+                "  and r.recipient_organization_id is not distinct from %s::uuid"
+                " )",
+                (
+                    str(job_id), channel, *own_params, recipient_type,
+                    recipient_user_id, recipient_technician_id, recipient_organization_id,
+                ),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _call_session_row(row: tuple) -> dict:
+        return {
+            "id": str(row[0]),
+            "job_id": str(row[1]),
+            "caller_type": row[2],
+            "caller_user_id": str(row[3]) if row[3] else None,
+            "caller_technician_id": str(row[4]) if row[4] else None,
+            "caller_organization_id": str(row[5]) if row[5] else None,
+            "callee_type": row[6],
+            "callee_user_id": str(row[7]) if row[7] else None,
+            "callee_technician_id": str(row[8]) if row[8] else None,
+            "callee_organization_id": str(row[9]) if row[9] else None,
+            "provider": row[10],
+            "provider_call_sid": row[11],
+            "masked_number": row[12],
+            "status": row[13],
+            "provider_status": row[14],
+            "metadata": row[15] or {},
+            "created_at": row[16].isoformat() if row[16] else None,
+            "connected_at": row[17].isoformat() if row[17] else None,
+            "ended_at": row[18].isoformat() if row[18] else None,
+        }
+
+    async def create_job_call_session(
+        self,
+        job_id: UUID,
+        *,
+        caller_type: str,
+        callee_type: str,
+        caller_user_id: str | None = None,
+        caller_technician_id: str | None = None,
+        caller_organization_id: str | None = None,
+        callee_user_id: str | None = None,
+        callee_technician_id: str | None = None,
+        callee_organization_id: str | None = None,
+        provider: str | None = None,
+        provider_call_sid: str | None = None,
+        masked_number: str | None = None,
+        status: str = "unavailable",
+        provider_status: str = "skipped_no_provider",
+        metadata: dict | None = None,
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into job_call_sessions ("
+                " job_id, caller_type, caller_user_id, caller_technician_id,"
+                " caller_organization_id, callee_type, callee_user_id,"
+                " callee_technician_id, callee_organization_id, provider,"
+                " provider_call_sid, masked_number, status, provider_status, metadata"
+                ") values (%s, %s, %s::uuid, %s::uuid, %s::uuid, %s, %s::uuid,"
+                " %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)"
+                " returning id, job_id, caller_type, caller_user_id, caller_technician_id,"
+                " caller_organization_id, callee_type, callee_user_id,"
+                " callee_technician_id, callee_organization_id, provider,"
+                " provider_call_sid, masked_number, status, provider_status, metadata,"
+                " created_at, connected_at, ended_at",
+                (
+                    str(job_id), caller_type, caller_user_id, caller_technician_id,
+                    caller_organization_id, callee_type, callee_user_id,
+                    callee_technician_id, callee_organization_id, provider,
+                    provider_call_sid, masked_number, status, provider_status,
+                    Jsonb(metadata or {}),
+                ),
+            )
+            row = await cur.fetchone()
+        await self.log_event_raw(job_id, f"call:{caller_type}:{callee_type}:{status}:{row[0]}")
+        return self._call_session_row(row)
 
     async def record_customer_review(
         self,

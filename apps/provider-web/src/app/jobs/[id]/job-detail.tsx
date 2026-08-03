@@ -41,6 +41,7 @@ type JobMessage = {
   created_at: string | null;
   delivery_state?: string | null;
 };
+type MessageThreadResponse = { messages?: JobMessage[]; unread_count?: number };
 
 const STATUS_LABELS: Record<string, string> = {
   pending_dispatch: "Pending dispatch", assigned: "Assigned", en_route: "En route",
@@ -99,6 +100,8 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
   const [notes, setNotes] = useState<Note[]>([]);
   const [messages, setMessages] = useState<JobMessage[]>([]);
   const [customerMessages, setCustomerMessages] = useState<JobMessage[]>([]);
+  const [operationsUnread, setOperationsUnread] = useState(0);
+  const [customerUnread, setCustomerUnread] = useState(0);
   const [messageDraft, setMessageDraft] = useState("");
   const [state, setState] = useState<"loading" | "ready" | "error" | "notfound">("loading");
   const [error, setError] = useState<string | null>(null);
@@ -127,8 +130,22 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       setHistory(historyJobs.find((j) => j.id === jobId) ?? null);
       setTimeline(tlRes.ok ? ((await tlRes.json()) as TimelineEvent[]) : []);
       setNotes(notesRes.ok ? ((await notesRes.json()) as Note[]) : []);
-      setMessages(messagesRes.ok ? (((await messagesRes.json()) as { messages?: JobMessage[] }).messages ?? []) : []);
-      setCustomerMessages(customerMessagesRes.ok ? (((await customerMessagesRes.json()) as { messages?: JobMessage[] }).messages ?? []) : []);
+      const operationsThread = messagesRes.ok ? ((await messagesRes.json()) as MessageThreadResponse) : {};
+      const customerThread = customerMessagesRes.ok ? ((await customerMessagesRes.json()) as MessageThreadResponse) : {};
+      setMessages(operationsThread.messages ?? []);
+      setCustomerMessages(customerThread.messages ?? []);
+      setOperationsUnread(operationsThread.unread_count ?? 0);
+      setCustomerUnread(customerThread.unread_count ?? 0);
+      if ((operationsThread.unread_count ?? 0) > 0) {
+        void fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages/read?channel=operations`, { method: "POST" })
+          .then(() => setOperationsUnread(0))
+          .catch(() => undefined);
+      }
+      if ((customerThread.unread_count ?? 0) > 0) {
+        void fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages/read?channel=customer`, { method: "POST" })
+          .then(() => setCustomerUnread(0))
+          .catch(() => undefined);
+      }
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load the job");
@@ -289,7 +306,10 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
               <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Operations messages</CardTitle>
               <CardDescription>Visible to the assigned technician. Internal notes stay separate.</CardDescription>
             </div>
-            <Badge variant="outline">{messages.length}</Badge>
+            <div className="flex gap-2">
+              {operationsUnread > 0 ? <Badge variant="info">{operationsUnread} unread</Badge> : null}
+              <Badge variant="outline">{messages.length}</Badge>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {state === "loading" ? (
@@ -340,7 +360,10 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
               <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Customer messages</CardTitle>
               <CardDescription>Customer-visible template thread. Operations and internal notes are hidden from customers.</CardDescription>
             </div>
-            <Badge variant="outline">{customerMessages.length}</Badge>
+            <div className="flex gap-2">
+              {customerUnread > 0 ? <Badge variant="info">{customerUnread} unread</Badge> : null}
+              <Badge variant="outline">{customerMessages.length}</Badge>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {state === "loading" ? (

@@ -154,6 +154,23 @@ export type JobMessage = {
   delivery_state?: "sent" | string;
 };
 
+export type JobMessageThread = {
+  messages: JobMessage[];
+  unread_count: number;
+};
+
+export type JobCallSession = {
+  id: string;
+  job_id: string;
+  caller_type: string;
+  callee_type: "customer" | "operations" | "technician" | string;
+  provider?: string | null;
+  status: "requested" | "ringing" | "connected" | "completed" | "failed" | "unavailable" | string;
+  provider_status: "queued" | "sent" | "failed" | "skipped_no_provider" | string;
+  masked_number?: string | null;
+  created_at?: string | null;
+};
+
 export type LocalMutationKind = "status" | "report_issue" | "collection" | "arrival_verify" | "message";
 
 export type QueuedMutation = {

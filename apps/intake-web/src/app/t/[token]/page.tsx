@@ -254,12 +254,14 @@ function TechnicianPhoto({ name, photoUrl, locale }: { name: string; photoUrl: s
 function CustomerMessagesPanel({
   locale,
   messages,
+  unreadCount,
   busy,
   error,
   onSend
 }: {
   locale: string;
   messages: JobMessage[];
+  unreadCount: number;
   busy: boolean;
   error: string | null;
   onSend: (templateCode: string) => void;
@@ -268,6 +270,11 @@ function CustomerMessagesPanel({
     <div className="panel">
       <p className="panel-title">
         {locale === "es" ? "Mensajes del trabajo" : "Job messages"}
+        {unreadCount > 0 ? (
+          <span className="pill" style={{ marginLeft: 8 }}>
+            {unreadCount} {locale === "es" ? "nuevo" : "new"}
+          </span>
+        ) : null}
       </p>
       <p className="fine">
         {locale === "es"
@@ -336,6 +343,7 @@ export default function TokenTrackingPage() {
   const [arrivalPin, setArrivalPin] = useState<string | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
   const [messages, setMessages] = useState<JobMessage[]>([]);
+  const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const [messageBusy, setMessageBusy] = useState(false);
   const [messageError, setMessageError] = useState<string | null>(null);
 
@@ -518,8 +526,14 @@ export default function TokenTrackingPage() {
   const loadMessages = async () => {
     if (!token) return;
     try {
-      const data = await api<{ messages: JobMessage[] }>(`/t/${token}/messages`);
+      const data = await api<{ messages: JobMessage[]; unread_count?: number }>(`/t/${token}/messages`);
       setMessages(data.messages ?? []);
+      setMessageUnreadCount(data.unread_count ?? 0);
+      if ((data.unread_count ?? 0) > 0) {
+        void api<{ read_count: number }>(`/t/${token}/messages/read`, { method: "POST" })
+          .then(() => setMessageUnreadCount(0))
+          .catch(() => undefined);
+      }
       setMessageError(null);
     } catch (err) {
       setMessageError(err instanceof Error ? err.message : (locale === "es" ? "No se pudieron cargar los mensajes" : "Could not load messages"));
@@ -785,13 +799,14 @@ export default function TokenTrackingPage() {
   };
 
   const renderCustomerMessages = () => (
-    <CustomerMessagesPanel
-      busy={messageBusy}
-      error={messageError}
-      locale={locale}
-      messages={messages}
-      onSend={(code) => void sendCustomerTemplate(code)}
-    />
+      <CustomerMessagesPanel
+        busy={messageBusy}
+        error={messageError}
+        locale={locale}
+        messages={messages}
+        unreadCount={messageUnreadCount}
+        onSend={(code) => void sendCustomerTemplate(code)}
+      />
   );
 
   const toggleReviewTag = (tag: string) => {

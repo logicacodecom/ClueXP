@@ -2,7 +2,8 @@
 
 Operations messaging is technician <-> provider operations. Customer messaging
 is a separate template-only channel exposed to the tracking-token customer.
-Masked calling remains deliberately gated to a later slice.
+Read receipts, push-attempt audit, and masked-call session scaffolding are part
+of the same Communication Hub contract.
 """
 from __future__ import annotations
 
@@ -218,3 +219,103 @@ def test_closed_job_writes_are_gated():
         json={"channel": "operations", "body": "Can you see this?"},
     )
     assert blocked.status_code == 409
+
+
+def test_message_unread_counts_read_receipts_and_tech_push_attempts():
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, tech_h = _register_tech()
+    _, provider_h = _register_dispatcher(org)
+    jid = _seed_job(tid, org)
+
+    sent = client.post(
+        f"/jobs/{jid}/messages",
+        headers=tech_h,
+        json={"channel": "operations", "body": "Need dispatch guidance."},
+    )
+    assert sent.status_code == 200, sent.text
+
+    provider_view = client.get(f"/provider/jobs/{jid}/messages", headers=provider_h)
+    assert provider_view.status_code == 200
+    assert provider_view.json()["unread_count"] == 1
+
+    marked = client.post(f"/provider/jobs/{jid}/messages/read", headers=provider_h)
+    assert marked.status_code == 200, marked.text
+    assert marked.json()["read_count"] == 1
+    assert client.get(f"/provider/jobs/{jid}/messages", headers=provider_h).json()["unread_count"] == 0
+
+    reply = client.post(
+        f"/provider/jobs/{jid}/messages",
+        headers=provider_h,
+        json={"channel": "operations", "body": "Proceed and document it."},
+    )
+    assert reply.status_code == 200, reply.text
+
+    notifications = [
+        n for n in getattr(app_store, "_notifications", [])
+        if n.get("job_id") == jid and n.get("alert_class") == "message"
+    ]
+    assert notifications
+    assert notifications[-1]["provider_status"] == "skipped_no_provider"
+    assert notifications[-1]["payload"]["body"] == "Open ClueXP to view the secure job thread."
+
+    tech_view = client.get(f"/jobs/{jid}/messages", headers=tech_h)
+    assert tech_view.status_code == 200
+    assert tech_view.json()["unread_count"] == 1
+    tech_read = client.post(f"/jobs/{jid}/messages/read", headers=tech_h)
+    assert tech_read.status_code == 200
+    assert tech_read.json()["read_count"] == 1
+    assert client.get(f"/jobs/{jid}/messages", headers=tech_h).json()["unread_count"] == 0
+
+
+def test_customer_read_receipts_are_channel_scoped():
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, tech_h = _register_tech()
+    jid = _seed_job(tid, org)
+    token = app_store._tokens[jid]
+
+    client.post(
+        f"/jobs/{jid}/messages",
+        headers=tech_h,
+        json={"channel": "customer", "template_code": "on_my_way"},
+    )
+    customer_view = client.get(f"/t/{token}/messages")
+    assert customer_view.status_code == 200
+    assert customer_view.json()["unread_count"] == 1
+
+    read = client.post(f"/t/{token}/messages/read")
+    assert read.status_code == 200
+    assert read.json()["read_count"] == 1
+    assert client.get(f"/t/{token}/messages").json()["unread_count"] == 0
+
+
+def test_masked_call_sessions_are_scoped_and_honest_when_provider_missing():
+    client = TestClient(app)
+    org_a, org_b = str(uuid4()), str(uuid4())
+    tid, tech_h = _register_tech()
+    _, other_tech_h = _register_tech()
+    _, provider_a_h = _register_dispatcher(org_a)
+    _, provider_b_h = _register_dispatcher(org_b)
+    jid = _seed_job(tid, org_a)
+    token = app_store._tokens[jid]
+
+    tech_call = client.post(f"/jobs/{jid}/calls/customer", headers=tech_h)
+    assert tech_call.status_code == 200, tech_call.text
+    assert tech_call.json()["available"] is False
+    assert tech_call.json()["call"]["callee_type"] == "customer"
+    assert tech_call.json()["call"]["masked_number"] is None
+    assert tech_call.json()["call"]["provider_status"] == "skipped_no_provider"
+
+    assert client.post(f"/jobs/{jid}/calls/customer", headers=other_tech_h).status_code == 404
+
+    provider_call = client.post(f"/provider/jobs/{jid}/calls/technician", headers=provider_a_h)
+    assert provider_call.status_code == 200, provider_call.text
+    assert provider_call.json()["call"]["callee_type"] == "technician"
+    assert client.post(f"/provider/jobs/{jid}/calls/technician", headers=provider_b_h).status_code == 404
+
+    customer_call = client.post(f"/t/{token}/calls/technician")
+    assert customer_call.status_code == 200, customer_call.text
+    assert customer_call.json()["call"]["caller_type"] == "customer"
+
+    assert client.post(f"/jobs/{jid}/calls/raw-phone", headers=tech_h).status_code == 404

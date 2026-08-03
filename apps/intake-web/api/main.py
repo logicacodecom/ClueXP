@@ -4526,7 +4526,32 @@ async def customer_list_job_messages(token: str) -> dict[str, Any]:
     messages and provider internal notes are never exposed on this capability link."""
     job_id = await _require_customer_message_job(token, rate_limit=False)
     rows = await store.list_job_messages(job_id, channel="customer")
-    return {"messages": [_public_message(row) for row in rows]}
+    unread = await store.count_unread_job_messages(job_id, channel="customer", recipient_type="customer")
+    return _message_read_result(rows, unread)
+
+
+@app.post("/t/{token}/messages/read")
+async def customer_mark_job_messages_read(token: str) -> dict[str, Any]:
+    job_id = await _require_customer_message_job(token, rate_limit=False)
+    return await store.mark_job_messages_read(job_id, channel="customer", recipient_type="customer")
+
+
+@app.post("/t/{token}/calls/technician")
+async def customer_start_technician_call(token: str) -> dict[str, Any]:
+    job_id = await _require_customer_message_job(token, rate_limit=True)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    tech_id = (lifecycle or {}).get("fulfillment_technician_id")
+    row = await store.create_job_call_session(
+        job_id,
+        caller_type="customer",
+        caller_user_id=None,
+        callee_type="technician",
+        callee_technician_id=str(tech_id) if tech_id else None,
+        status="unavailable",
+        provider_status="skipped_no_provider",
+        metadata={"reason": "voice_provider_not_configured"},
+    )
+    return _call_unavailable_response(row)
 
 
 @app.post("/t/{token}/messages")
@@ -4557,6 +4582,7 @@ async def customer_send_job_message(token: str, payload: JobMessageRequest) -> d
             "code": "idempotency_key_reuse",
             "message": "This client_message_id was already used with a different message.",
         })
+    await _notify_technician_message(job_id, row)
     return {"message": _public_message(row)}
 
 
@@ -5175,6 +5201,41 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _notify_technician_message(job_id: UUID, row: dict[str, Any]) -> None:
+    """Privacy-safe message push hint for the assigned technician. Push is still
+    best-effort/nullable through api.push; the server thread remains source of truth."""
+    if row.get("sender_type") == "technician":
+        return
+    lifecycle = await store.get_job_lifecycle(job_id)
+    tech_id = (lifecycle or {}).get("fulfillment_technician_id")
+    if not tech_id:
+        return
+    thread_id: UUID | None = None
+    if row.get("thread_id"):
+        try:
+            thread_id = UUID(str(row["thread_id"]))
+        except ValueError:
+            thread_id = None
+    try:
+        await push_service.notify_technician(
+            store,
+            UUID(str(tech_id)),
+            alert_class="message",
+            job_id=job_id,
+            thread_id=thread_id,
+            envelope={
+                "type": "job_message",
+                "job_id": str(job_id),
+                "channel": row.get("channel"),
+                "message_id": row.get("id"),
+                "title": "New message about your active job",
+                "body": "Open ClueXP to view the secure job thread.",
+            },
+        )
+    except Exception:
+        logger.exception("message_push_notify_failed", extra={"job_id": str(job_id), "message_id": row.get("id")})
+
+
 async def _require_technician_message_job(job_id: UUID, session: dict[str, Any]) -> dict[str, Any]:
     require_any_role(session, {"technician"})
     tech = session.get("technician")
@@ -5186,6 +5247,32 @@ async def _require_technician_message_job(job_id: UUID, session: dict[str, Any])
     if lifecycle.get("status") not in _MESSAGE_WRITABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Messaging is closed for this job.")
     return lifecycle
+
+
+def _message_read_result(messages: list[dict[str, Any]], unread_count: int) -> dict[str, Any]:
+    return {"messages": [_public_message(row) for row in messages], "unread_count": unread_count}
+
+
+def _public_call_session(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "job_id": row.get("job_id"),
+        "caller_type": row.get("caller_type"),
+        "callee_type": row.get("callee_type"),
+        "provider": row.get("provider"),
+        "status": row.get("status"),
+        "provider_status": row.get("provider_status"),
+        "masked_number": row.get("masked_number"),
+        "created_at": row.get("created_at"),
+    }
+
+
+def _call_unavailable_response(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": False,
+        "message": "Masked calling provider is not configured.",
+        "call": _public_call_session(row),
+    }
 
 
 @app.post("/jobs/{job_id}/report-issue")
@@ -5336,9 +5423,35 @@ async def technician_list_job_messages(
     """Assigned technician reads a job-scoped communication thread for their
     active assignment. Customer messaging is template-only in this slice."""
     channel = _message_channel(channel)
-    await _require_technician_message_job(job_id, session)
+    lifecycle = await _require_technician_message_job(job_id, session)
+    tech = session["technician"]
     rows = await store.list_job_messages(job_id, channel=channel)
-    return {"messages": [_public_message(row) for row in rows]}
+    unread = await store.count_unread_job_messages(
+        job_id,
+        channel=channel,
+        recipient_type="technician",
+        recipient_user_id=str(session.get("user", {}).get("id") or tech["id"]),
+        recipient_technician_id=str(lifecycle.get("fulfillment_technician_id") or tech["id"]),
+    )
+    return _message_read_result(rows, unread)
+
+
+@app.post("/jobs/{job_id}/messages/read")
+async def technician_mark_job_messages_read(
+    job_id: UUID,
+    channel: str = "operations",
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    channel = _message_channel(channel)
+    lifecycle = await _require_technician_message_job(job_id, session)
+    tech = session["technician"]
+    return await store.mark_job_messages_read(
+        job_id,
+        channel=channel,
+        recipient_type="technician",
+        recipient_user_id=str(session.get("user", {}).get("id") or tech["id"]),
+        recipient_technician_id=str(lifecycle.get("fulfillment_technician_id") or tech["id"]),
+    )
 
 
 @app.post("/jobs/{job_id}/messages")
@@ -5374,7 +5487,32 @@ async def technician_send_job_message(
             "code": "idempotency_key_reuse",
             "message": "This client_message_id was already used with a different message.",
         })
+    await _notify_technician_message(job_id, row)
     return {"message": _public_message(row)}
+
+
+@app.post("/jobs/{job_id}/calls/{callee_type}")
+async def technician_start_job_call(
+    job_id: UUID,
+    callee_type: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    if callee_type not in {"customer", "operations"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    lifecycle = await _require_technician_message_job(job_id, session)
+    tech = session["technician"]
+    row = await store.create_job_call_session(
+        job_id,
+        caller_type="technician",
+        caller_user_id=str(session.get("user", {}).get("id") or tech["id"]),
+        caller_technician_id=str(tech["id"]),
+        callee_type=callee_type,
+        callee_organization_id=lifecycle.get("fulfillment_org_id") if callee_type == "operations" else None,
+        status="unavailable",
+        provider_status="skipped_no_provider",
+        metadata={"reason": "voice_provider_not_configured"},
+    )
+    return _call_unavailable_response(row)
 
 
 @app.get("/technician/jobs/history")
@@ -6044,7 +6182,36 @@ async def provider_list_job_messages(
     await _require_org_job(org_id, job_id)
     channel = _message_channel(channel)
     rows = await store.list_job_messages(job_id, channel=channel)
-    return {"messages": [_public_message(row) for row in rows]}
+    roles = set(session.get("roles", []))
+    recipient_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
+    unread = await store.count_unread_job_messages(
+        job_id,
+        channel=channel,
+        recipient_type=recipient_type,
+        recipient_user_id=session.get("user", {}).get("id"),
+        recipient_organization_id=org_id,
+    )
+    return _message_read_result(rows, unread)
+
+
+@app.post("/provider/jobs/{job_id}/messages/read")
+async def provider_mark_job_messages_read(
+    job_id: UUID,
+    channel: str = "operations",
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    channel = _message_channel(channel)
+    roles = set(session.get("roles", []))
+    recipient_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
+    return await store.mark_job_messages_read(
+        job_id,
+        channel=channel,
+        recipient_type=recipient_type,
+        recipient_user_id=session.get("user", {}).get("id"),
+        recipient_organization_id=org_id,
+    )
 
 
 @app.post("/provider/jobs/{job_id}/messages")
@@ -6081,7 +6248,31 @@ async def provider_send_job_message(
             "code": "idempotency_key_reuse",
             "message": "This client_message_id was already used with a different message.",
         })
+    await _notify_technician_message(job_id, row)
     return {"message": _public_message(row)}
+
+
+@app.post("/provider/jobs/{job_id}/calls/technician")
+async def provider_start_technician_call(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    lifecycle = await _require_org_job(org_id, job_id)
+    roles = set(session.get("roles", []))
+    caller_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
+    row = await store.create_job_call_session(
+        job_id,
+        caller_type=caller_type,
+        caller_user_id=session.get("user", {}).get("id"),
+        caller_organization_id=org_id,
+        callee_type="technician",
+        callee_technician_id=lifecycle.get("fulfillment_technician_id"),
+        status="unavailable",
+        provider_status="skipped_no_provider",
+        metadata={"reason": "voice_provider_not_configured"},
+    )
+    return _call_unavailable_response(row)
 
 
 @app.get("/provider/jobs/{job_id}/timeline")
