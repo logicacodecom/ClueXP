@@ -62,6 +62,64 @@
 
 ## Open threads
 
+### 2026-08-03 — Claude → Codex: push rollout is LIVE in prod — status + what's left
+
+Handoff of the thread below, which I took all the way to production this
+session. **You don't need to build or deploy anything for it** — the human had
+me own the whole chain end to end. This is state, not a task list, except for
+the two items at the bottom that I genuinely cannot do.
+
+**What I did, in order (ordering mattered — migration had to precede deploy,
+because `_NOTIFICATION_COLS` now selects the new columns on every read *and* on
+the insert's `RETURNING`):**
+1. Reviewed your `4b328eb` (Mixkit sound, `job-offers-v2` channel) and re-ran
+   verification myself rather than taking it on trust: backend 387 passed /
+   1 skipped, native typecheck clean, native tests 14 passed. Your channel-id
+   bump is right — Android channel sound really is immutable after creation.
+2. Applied **migration 0049** to prod (Supabase MCP), verified the 4 columns +
+   partial index exist, synced `alembic_version`.
+3. Merged **PR #71** → `main` as `8c4aa18`. Production auto-deployed (Ready,
+   28s), `/api/healthz` 200.
+4. Set **`PUSH_PROVIDER=expo`** on `cluexp-intake` Production and **redeployed**
+   — env vars only bind on a new deployment, so the merge deploy alone would
+   NOT have switched sending on. Re-aliased to `intake.cluexp.com`, healthz 200.
+5. Submitted both EAS builds on `8c4aa18`.
+6. Pushed `16308ba` documenting the rollout.
+
+**Real Expo sending is ON in production right now.** Prod has exactly one
+registered device (android/production) holding a well-formed
+`ExponentPushToken[...]`, so the next real offer is a live end-to-end test —
+check that row's `provider_status` / `provider_ticket_id` afterward.
+`EXPO_ACCESS_TOKEN` is deliberately unset (only needed with Expo enhanced push
+security).
+
+**Builds:**
+- iOS `preview-simulator` `54f8cd76` — **finished**, artifact:
+  `https://expo.dev/artifacts/eas/WpKj9_xzG8Ecu2exoH1kQ6tgBNDe_CA_aY7LkNf--MM.tar.gz`
+- Android `preview` `3cb698a6` — **still in EAS queue** at time of writing
+  (submitted 12:47 PM, hadn't started compiling). This is the APK for QA.
+
+**Two things I could not do — neither is a tooling or permission problem:**
+1. **iOS device build is impossible for anyone today.** `eas device:list`
+   returns *"No Apple teams found for account logicacode"* — there is no Apple
+   Developer account linked to the Expo org at all. Ad-hoc distribution needs a
+   Developer Program membership, an interactive Apple ID login + 2FA, and
+   registered UDIDs. Until the human links one, the simulator build is the
+   ceiling. It still exercises the **foreground** alarm honestly, because the
+   alarm is gated on server offer state rather than the push — assign an offer
+   and the 15s poll surfaces it — but it cannot test push delivery (no APNs
+   token in a simulator).
+2. **Physical-device QA** — no hardware here. Checklist is in the thread below.
+   The item I'd put first is whether `offer_alarm.wav` resolves as the **iOS**
+   notification sound: Android is proven (`res/raw/offer_alarm.wav` confirmed by
+   your prebuild), iOS is not, and a filename mismatch there makes APNs play
+   *silence* — worse than the default tone, and invisible unless listened for.
+
+One environment note that cost me time: the machine's C: drive was at 100%
+(66 MB free of 237 GB) and the first EAS upload died with `ENOSPC`. Cleared the
+7.5 GB npm cache to get it through; `%LOCALAPPDATA%\Temp` still holds ~2.4 GB.
+Worth checking before you queue a build from here. — Claude
+
 ### 2026-08-03 — Claude → Human: real Expo push sending + ride-hail incoming-offer alarm
 
 Push moved from audit-only rows to real sending, and offers now get an
