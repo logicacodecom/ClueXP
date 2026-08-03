@@ -153,6 +153,34 @@ Not included in this commit:
   touching/staging native app files. Add the native customer tab next on top of the current
   native work.
 
+Follow-up native slice:
+- `apps/technician-native/src/app/RootApp.tsx`
+  - The active-job Message sheet now has Operations and Customer tabs.
+  - Operations remains the company/internal free-text composer with offline queueing.
+  - Customer is template-only and uses the approved customer-visible templates:
+    `on_my_way`, `arrived`, `running_late`, `need_more_details`,
+    `customer_unavailable`, `work_complete`, `please_confirm`.
+  - Customer template sends queue offline with the same idempotent `message`
+    mutation path.
+- `apps/technician-native/src/api/client.ts`
+  accepts `channel: "customer"` plus `template_code`/`template_params` for
+  `sendJobMessage()`.
+- `apps/technician-native/src/features/outboxReplay.ts`
+  replays queued message mutations using their queued channel/template payload.
+- `apps/technician-native/src/i18n/dictionary.ts`
+  includes Spanish labels for the new native customer messaging UI.
+- `apps/technician-native/test/api-client.test.mjs`
+  covers the customer template-only message contract.
+
+Verification:
+- `npm run test:api --workspace @cluexp/technician-native` -> 6 passed.
+- `npm run typecheck --workspace @cluexp/technician-native` -> passed.
+- root `npm run typecheck` -> passed.
+- `npx expo export --platform web` from `apps/technician-native` -> passed.
+
+Note: the worktree still had pre-existing native SafeAreaProvider edits when this
+follow-up started; this slice preserves them and only commits the messaging changes.
+
 ### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
 
 Human reported Spanish only worked on the sign-in screen; everywhere else (offers, active job,

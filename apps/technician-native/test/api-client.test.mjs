@@ -157,6 +157,56 @@ test("job operations messages use the technician message contract", async () => 
   ]);
 });
 
+test("job customer messages use template-only customer channel contract", async () => {
+  const calls = [];
+  const api = new CluexpApi(null);
+  api.setSessionTokens("access", "refresh");
+
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).replace("https://intake.cluexp.com/api", "");
+    calls.push({
+      method: init?.method || "GET",
+      path,
+      body: init?.body ? JSON.parse(String(init.body)) : null
+    });
+    if (path.endsWith("/messages?channel=customer")) {
+      return jsonResponse(200, { messages: [] });
+    }
+    return jsonResponse(200, {
+      message: {
+        id: "msg-2",
+        job_id: "job-1",
+        channel: "customer",
+        sender_type: "technician",
+        template_code: "on_my_way",
+        client_message_id: "message-2",
+        delivery_state: "sent"
+      }
+    });
+  };
+
+  assert.deepEqual(await api.listJobMessages("job-1", "customer"), []);
+  const result = await api.sendJobMessage("job-1", {
+    channel: "customer",
+    template_code: "on_my_way",
+    client_message_id: "message-2"
+  });
+
+  assert.equal(result.message.template_code, "on_my_way");
+  assert.deepEqual(calls, [
+    { method: "GET", path: "/jobs/job-1/messages?channel=customer", body: null },
+    {
+      method: "POST",
+      path: "/jobs/job-1/messages",
+      body: {
+        channel: "customer",
+        template_code: "on_my_way",
+        client_message_id: "message-2"
+      }
+    }
+  ]);
+});
+
 test("stored logout clears local state even when server revoke fails", async () => {
   const events = [];
 

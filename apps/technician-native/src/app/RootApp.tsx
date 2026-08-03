@@ -1383,12 +1383,43 @@ function CommandModal({ job, jobDetail, snapshotVersion, sheet, onClose, onSubmi
   );
 }
 
+type MessageChannel = "operations" | "customer";
+
+const CUSTOMER_MESSAGE_TEMPLATES = [
+  "on_my_way",
+  "arrived",
+  "running_late",
+  "need_more_details",
+  "customer_unavailable",
+  "work_complete",
+  "please_confirm"
+] as const;
+
+const CUSTOMER_TEMPLATE_LABELS: Record<(typeof CUSTOMER_MESSAGE_TEMPLATES)[number], string> = {
+  on_my_way: "On my way",
+  arrived: "I have arrived",
+  running_late: "Running late",
+  need_more_details: "Need more details",
+  customer_unavailable: "Customer unavailable",
+  work_complete: "Work complete",
+  please_confirm: "Please confirm"
+};
+
 function messageAuthorLabel(message: JobMessage) {
   if (message.sender_type === "technician") return "You";
   if (message.sender_type === "provider_admin") return "Dispatch";
   if (message.sender_type === "dispatcher") return "Dispatch";
+  if (message.sender_type === "customer") return "Customer";
   if (message.sender_type === "system") return "System";
   return "Operations";
+}
+
+function messageDisplayBody(message: JobMessage) {
+  if (message.body) return message.body;
+  if (message.template_code && message.template_code in CUSTOMER_TEMPLATE_LABELS) {
+    return CUSTOMER_TEMPLATE_LABELS[message.template_code as keyof typeof CUSTOMER_TEMPLATE_LABELS];
+  }
+  return message.template_code || "";
 }
 
 function messageTime(value?: string | null) {
@@ -1403,6 +1434,7 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
   onSubmitted: (keepOpen: boolean) => Promise<void>;
 }) {
   const { t } = useLocale();
+  const [channel, setChannel] = useState<MessageChannel>("operations");
   const [messages, setMessages] = useState<JobMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1415,13 +1447,13 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
     setLoading(true);
     setError(null);
     try {
-      setMessages(await api.listJobMessages(job.id, "operations"));
+      setMessages(await api.listJobMessages(job.id, channel));
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
       setLoading(false);
     }
-  }, [job]);
+  }, [channel, job]);
 
   useEffect(() => {
     setMessages([]);
@@ -1433,7 +1465,7 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
 
   const renderMessage = useCallback(({ item }: { item: JobMessage }) => {
     const mine = item.sender_type === "technician";
-    const body = item.body || item.template_code || "";
+    const body = messageDisplayBody(item);
     return (
       <View style={[styles.messageBubbleRow, mine ? styles.messageBubbleRowMine : null]}>
         <View style={[styles.messageBubble, mine ? styles.messageBubbleMine : null]}>
@@ -1447,6 +1479,13 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
       </View>
     );
   }, [t]);
+
+  function selectChannel(nextChannel: MessageChannel) {
+    setChannel(nextChannel);
+    setDraft("");
+    setQueuedNotice(false);
+    setError(null);
+  }
 
   async function sendMessage() {
     if (!job || !draft.trim() || sending) return;
@@ -1488,18 +1527,70 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
     }
   }
 
+  async function sendCustomerTemplate(templateCode: (typeof CUSTOMER_MESSAGE_TEMPLATES)[number]) {
+    if (!job || sending) return;
+    const clientMessageId = clientMutationId("message");
+    setSending(true);
+    setError(null);
+    setQueuedNotice(false);
+    try {
+      const result = await api.sendJobMessage(job.id, {
+        channel: "customer",
+        template_code: templateCode,
+        client_message_id: clientMessageId
+      });
+      setMessages((current) => [...current, result.message]);
+      await onSubmitted(true);
+    } catch (cause) {
+      if (isNetworkFailure(cause)) {
+        await queueLocalMutation(job.id, "message", null, clientMessageId, { channel: "customer", template_code: templateCode });
+        setMessages((current) => [...current, {
+          id: clientMessageId,
+          job_id: job.id,
+          channel: "customer",
+          sender_type: "technician",
+          template_code: templateCode,
+          client_message_id: clientMessageId,
+          created_at: new Date().toISOString(),
+          delivery_state: "queued"
+        }]);
+        setQueuedNotice(true);
+        await onSubmitted(true);
+      } else {
+        setError(errorMessage(cause));
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <View style={styles.messageSheet}>
-      <Text style={sharedStyles.kicker}>{t("Operations channel")}</Text>
+      <Text style={sharedStyles.kicker}>{channel === "operations" ? t("Operations channel") : t("Customer channel")}</Text>
       <Text style={sharedStyles.title}>{t("Job messages")}</Text>
-      <Text style={sharedStyles.body}>{t("Message your company operations team about this active job. Customer messaging is still separate and not enabled yet.")}</Text>
+      <Text style={sharedStyles.body}>{channel === "operations" ? t("Message your company operations team about this active job.") : t("Send customer-visible template updates about this active job.")}</Text>
+
+      <View style={styles.messageChannelTabs}>
+        {(["operations", "customer"] as const).map((nextChannel) => (
+          <Pressable
+            accessibilityRole="button"
+            key={nextChannel}
+            onPress={() => selectChannel(nextChannel)}
+            style={[styles.messageChannelTab, channel === nextChannel ? styles.messageChannelTabActive : null]}
+          >
+            <Text style={[styles.messageChannelTabText, channel === nextChannel ? styles.messageChannelTabTextActive : null]}>
+              {t(nextChannel === "operations" ? "Operations" : "Customer")}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
 
       {queuedNotice ? <AlertBanner text={t("Message queued offline — it will send automatically once you're back online.")} tone="warn" /> : null}
       {error ? <AlertBanner text={error} tone="bad" /> : null}
 
       <View style={styles.messageListBox}>
         {loading ? <Text style={styles.emptyMessageText}>{t("Loading messages…")}</Text> : null}
-        {!loading && messages.length === 0 ? <Text style={styles.emptyMessageText}>{t("No operations messages yet.")}</Text> : null}
+        {!loading && messages.length === 0 ? <Text style={styles.emptyMessageText}>{t(channel === "operations" ? "No operations messages yet." : "No customer messages yet.")}</Text> : null}
         {messages.length > 0 ? (
           <FlatList
             data={messages}
@@ -1510,28 +1601,44 @@ function OperationsMessagesSheet({ job, onSubmitted }: {
         ) : null}
       </View>
 
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <View style={styles.messageComposer}>
-          <TextInput
-            multiline
-            onChangeText={setDraft}
-            placeholder={t("Type an operations message")}
-            placeholderTextColor={colors.mutedFaint}
-            style={styles.messageInput}
-            value={draft}
-          />
-          <Pressable
-            accessibilityLabel={t("Send message")}
-            accessibilityRole="button"
-            disabled={!draft.trim() || sending}
-            onPress={() => void sendMessage()}
-            style={[styles.messageSendButton, !draft.trim() || sending ? styles.messageSendButtonDisabled : null]}
-          >
-            <Ionicons color={colors.primaryText} name="send" size={18} />
-          </Pressable>
+      {channel === "operations" ? (
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <View style={styles.messageComposer}>
+            <TextInput
+              multiline
+              onChangeText={setDraft}
+              placeholder={t("Type an operations message")}
+              placeholderTextColor={colors.mutedFaint}
+              style={styles.messageInput}
+              value={draft}
+            />
+            <Pressable
+              accessibilityLabel={t("Send message")}
+              accessibilityRole="button"
+              disabled={!draft.trim() || sending}
+              onPress={() => void sendMessage()}
+              style={[styles.messageSendButton, !draft.trim() || sending ? styles.messageSendButtonDisabled : null]}
+            >
+              <Ionicons color={colors.primaryText} name="send" size={18} />
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      ) : (
+        <View style={styles.customerTemplateGrid}>
+          {CUSTOMER_MESSAGE_TEMPLATES.map((templateCode) => (
+            <Pressable
+              accessibilityRole="button"
+              disabled={sending}
+              key={templateCode}
+              onPress={() => void sendCustomerTemplate(templateCode)}
+              style={[styles.customerTemplateButton, sending ? styles.messageSendButtonDisabled : null]}
+            >
+              <Text style={styles.customerTemplateText}>{t(CUSTOMER_TEMPLATE_LABELS[templateCode])}</Text>
+            </Pressable>
+          ))}
         </View>
-      </KeyboardAvoidingView>
-      <Text style={styles.messageFinePrint}>{t("This thread is visible to your company operations team. Do not share payment card data or private access codes here.")}</Text>
+      )}
+      <Text style={styles.messageFinePrint}>{t(channel === "operations" ? "This thread is visible to your company operations team. Do not share payment card data or private access codes here." : "Customer messages are visible on the live tracking page. Use approved templates only.")}</Text>
     </View>
   );
 }
@@ -2628,6 +2735,33 @@ const styles = StyleSheet.create({
     minHeight: 180,
     padding: 10
   },
+  messageChannelTabs: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: "row",
+    overflow: "hidden"
+  },
+  messageChannelTab: {
+    alignItems: "center",
+    flex: 1,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 10
+  },
+  messageChannelTabActive: {
+    backgroundColor: colors.primary
+  },
+  messageChannelTabText: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  messageChannelTabTextActive: {
+    color: colors.primaryText
+  },
   emptyMessageText: {
     color: colors.muted,
     fontSize: 14,
@@ -2719,6 +2853,25 @@ const styles = StyleSheet.create({
     color: colors.mutedFaint,
     fontSize: 12,
     lineHeight: 17
+  },
+  customerTemplateGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10
+  },
+  customerTemplateButton: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    minHeight: 44,
+    paddingHorizontal: 14,
+    paddingVertical: 11
+  },
+  customerTemplateText: {
+    color: colors.foreground,
+    fontSize: 13,
+    fontWeight: "900"
   },
   dispatcherBox: {
     backgroundColor: "rgba(98, 168, 255, 0.06)",

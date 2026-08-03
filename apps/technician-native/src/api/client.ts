@@ -269,8 +269,10 @@ export class CluexpApi {
   }
 
   async sendJobMessage(jobId: string, payload: {
-    body: string;
-    channel?: "operations";
+    body?: string;
+    channel?: "operations" | "customer";
+    template_code?: string;
+    template_params?: Record<string, unknown>;
     client_message_id?: string;
   }): Promise<{ message: JobMessage }> {
     return this.request(`/jobs/${encodeURIComponent(jobId)}/messages`, {
@@ -278,6 +280,8 @@ export class CluexpApi {
       body: JSON.stringify({
         channel: payload.channel ?? "operations",
         body: payload.body,
+        template_code: payload.template_code,
+        template_params: payload.template_params,
         client_message_id: payload.client_message_id
       })
     });

@@ -20,8 +20,9 @@ function arrayField(payload: Record<string, unknown>, field: string): Record<str
 async function replayOne(api: CluexpApi, mutation: QueuedMutation) {
   if (mutation.kind === "message") {
     await api.sendJobMessage(mutation.jobId, {
-      body: stringField(mutation.payload, "body"),
-      channel: "operations",
+      body: stringField(mutation.payload, "body") || undefined,
+      channel: stringField(mutation.payload, "channel") === "customer" ? "customer" : "operations",
+      template_code: stringField(mutation.payload, "template_code") || undefined,
       client_message_id: mutation.clientMutationId
     });
     return;

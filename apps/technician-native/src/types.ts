@@ -141,8 +141,8 @@ export type ApiProblem = {
 export type JobMessage = {
   id: string;
   job_id: string;
-  channel: "operations" | string;
-  sender_type: "technician" | "provider_admin" | "dispatcher" | "system" | string;
+  channel: "operations" | "customer" | string;
+  sender_type: "technician" | "provider_admin" | "dispatcher" | "customer" | "system" | string;
   sender_user_id?: string | null;
   sender_technician_id?: string | null;
   sender_organization_id?: string | null;
