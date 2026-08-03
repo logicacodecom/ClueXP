@@ -819,30 +819,12 @@ export function ProviderNewRequest() {
   }
 
   function buildNotes() {
-    // Second and later numbers are only a warning on screen, and the warning is
-    // gone once the job exists. Written down, they stay reachable.
-    const extraPhones = (parsedJob?.conflicts ?? [])
-      .filter((item) => item.field === "customer.phone")
-      .flatMap((item) => (item.candidates ?? []).slice(1));
-    const importedDetails = parsedJob ? [
-      "Imported partner details:",
-      parsedJob.externalJobId?.value ? `External Job ID: ${parsedJob.externalJobId.value}` : "",
-      parsedJob.secondaryReference?.value ? `Secondary Reference: ${parsedJob.secondaryReference.value}` : "",
-      parsedJob.price?.value ? `Quoted price: ${parsedJob.price.value}` : "",
-      extraPhones.length ? `Additional phone: ${extraPhones.join(", ")}` : "",
-      parsedJob.externalUrl?.value ? `External Confirmation URL: ${parsedJob.externalUrl.value}` : "",
-      form.access_type === "vehicle" && [form.vehicle_year, form.vehicle_make, form.vehicle_model].filter(Boolean).length
-        ? ""
-        : parsedJob.vehicle ? `Vehicle: ${[parsedJob.vehicle.year?.value, parsedJob.vehicle.make?.value, parsedJob.vehicle.model?.value].filter(Boolean).join(" ")}` : "",
-      parsedJob.detectedSource && parsedJob.detectedSource !== "unknown" ? `Detected source: ${parsedJob.detectedSource}` : "",
-      "Source: Partner pasted text",
-      // Lines no rule understood. Labelled here so they survive the note cap that
-      // trims the verbatim paste below, which is otherwise their only home.
-      parsedJob.unmappedLines?.length ? `Unmapped details:\n${parsedJob.unmappedLines.join("\n")}` : "",
-    ].filter(Boolean).join("\n") : "";
+    // Technician-facing notes: the human note plus operational fields only.
+    // Parser/import provenance (external IDs, confirmation URLs, detected
+    // source, unmapped lines, the raw paste) is dispatcher-only context and
+    // must not ride along in the field a technician sees on their job screen.
     const details = [
       form.notes.trim(),
-      importedDetails,
       `Authority: ${optionLabel(authorityOptions, form.authority_role)}`,
       `Safety flag: ${optionLabel(safetyOptions, form.safety_flag)}`,
       form.urgency === "scheduled"
@@ -856,8 +838,6 @@ export function ProviderNewRequest() {
         : "",
       form.access_type === "other" ? `Other service detail: ${form.other_detail.trim() || "not provided"}` : "",
       addressStatus === "selected" ? `Address verified: ${geocodeConfidence || "confidence unknown"}` : "Address not verified by autocomplete",
-      // Last so the 2,000 char cap trims the bulky verbatim paste, not the operational fields above it.
-      parsedJob?.rawText ? `Original pasted text: ${parsedJob.rawText}` : "",
     ].filter(Boolean);
     const joined = details.join("\n\n");
     return joined.length > 2000 ? joined.slice(0, 1970).trimEnd() + "\n[Imported notes truncated]" : joined;

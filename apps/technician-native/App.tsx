@@ -1,10 +1,13 @@
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { LocaleProvider } from "./src/i18n/LocaleContext";
 import { RootApp } from "./src/app/RootApp";
 
 export default function App() {
   return (
-    <LocaleProvider>
-      <RootApp />
-    </LocaleProvider>
+    <SafeAreaProvider>
+      <LocaleProvider>
+        <RootApp />
+      </LocaleProvider>
+    </SafeAreaProvider>
   );
 }

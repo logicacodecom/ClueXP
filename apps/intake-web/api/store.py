@@ -4806,6 +4806,16 @@ class PostgresStore(Store):
         customer_phone, customer_name = _customer_from_payload(payload)
         customer_phone = customer_phone or origin.get("customer_phone")
         customer_name = customer_name or origin.get("customer_name")
+        # detail is the JSONB blob every job-detail reader (technician app
+        # included) actually pulls customer_name/customer_phone from. The
+        # Ticket model itself has no customer fields (see
+        # _customer_from_payload), so without this the name/phone captured
+        # above only ever reaches the `customers` table, which no read path
+        # joins back to a job.
+        if customer_name:
+            payload["customer_name"] = customer_name
+        if customer_phone:
+            payload["customer_phone"] = customer_phone
         technician_id = _uuid_or_none(assignment.get("technician_id"))
         origin_org_id = _uuid_or_none(origin.get("origin_org_id"))
         customer_owner_org_id = _uuid_or_none(origin.get("customer_owner_org_id"))
