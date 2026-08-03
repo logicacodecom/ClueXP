@@ -62,7 +62,7 @@
 
 ## Open threads
 
-### 2026-08-03 — Claude → Codex/Human: real Expo push sending + ride-hail incoming-offer alarm
+### 2026-08-03 — Claude → Human: real Expo push sending + ride-hail incoming-offer alarm
 
 Push moved from audit-only rows to real sending, and offers now get an
 Uber/DoorDash-style alert. Codex follow-up replaced the generated placeholder
@@ -81,17 +81,21 @@ a device whose token comes back `DeviceNotRegistered`**. Offers push on the
 (deliberately NOT iOS critical alerts — that needs an Apple entitlement we
 don't have).
 
-**Env to set when going live** (both on the `cluexp-intake` Vercel project):
-- `PUSH_PROVIDER=expo` — the on-switch. Nothing sends until this is set.
-- `EXPO_ACCESS_TOKEN` — optional, only if the Expo project has enhanced push
-  security enabled.
-
-**Migration 0049 (`0049_push_provider_receipts`) is NOT applied to prod.**
-Additive + nullable (`provider_ticket_id`, `provider_error_code`,
-`provider_error_message`, `provider_receipt_at` + one partial index) with a
-real downgrade. Needs human authorization per the hard rules. Apply it
-*before* setting `PUSH_PROVIDER=expo`; the old code path doesn't touch the
-new columns, so applying early is harmless.
+**SHIPPED TO PRODUCTION 2026-08-03** (human authorized the full chain):
+- **Migration 0049 applied** — 4 nullable columns + partial index verified
+  present; `alembic_version` = `0049_push_provider_receipts`. Applied *before*
+  the deploy, so there was never a window where the new SELECT hit missing
+  columns.
+- **PR #71 merged** to `main` as `8c4aa18`; production auto-deployed (Ready,
+  28s) and `/api/healthz` returns 200.
+- **`PUSH_PROVIDER=expo` set** on `cluexp-intake` Production, then redeployed
+  (env vars only take effect on a new deployment) and re-aliased to
+  `intake.cluexp.com`. **Real Expo sending is LIVE.**
+- `EXPO_ACCESS_TOKEN` deliberately NOT set — only needed if the Expo project
+  turns on enhanced push security.
+- Prod has exactly **one** registered device (android/production) and its token
+  is a well-formed `ExponentPushToken[...]`, so the first real offer is a valid
+  end-to-end test.
 
 **Native** (`src/features/offerAlarm.ts` + `RootApp.tsx`): Android channels
 `job-offers-v2` (MAX, custom sound+vibration) and `job-alerts` (HIGH); foreground offer
@@ -102,19 +106,36 @@ gated on **server** offer state, never on the push — accepted/declined/expired
 offers stop it on the next load, and resuming to foreground refetches first so
 a dead offer never rings. "Silence alert" is per-offer.
 
-**Codex → you, two things:**
-1. **New native module: `expo-audio` (~57.0.3).** Needs a fresh EAS build —
-   the current APK will run the vibration-only fallback (the module is
-   `require`d lazily inside a try/catch precisely so an older build degrades
-   instead of white-screening).
-2. **Device QA** (I'm not submitting the build, per the usual split):
-   - Android, app foreground: offer → full-screen alarm UI + sound + vibration;
-     Accept / Decline / letting it expire each stop the noise immediately.
-   - Android, app backgrounded: notification arrives on `job-offers-v2` with
-     sound; tapping it opens straight to the offer and starts the alarm.
-   - iPhone: same two cases. Expect the background alert to be a normal
-     time-sensitive notification — no endless ring, that's an OS limit.
-   - Check the alarm does NOT ring for message/system pushes.
+**Builds submitted 2026-08-03** (both on merged commit `8c4aa18`):
+- **Android `preview`** — `3cb698a6-0e03-4848-a317-86ec645e02e0`. This is the
+  build to QA; `expo-audio` (~57.0.3) is a new native module, so any older APK
+  runs the vibration-only fallback (it's `require`d lazily inside a try/catch
+  precisely so old builds degrade instead of white-screening).
+- **iOS `preview-simulator`** — `54f8cd76-b0c2-437b-be7e-34cb7d1fd83a`.
+
+**iOS device builds are blocked at the account level, not by tooling:**
+`eas device:list` reports **"No Apple teams found for account logicacode"** —
+there is no Apple Developer account linked to the Expo org at all. An
+internal-distribution (ad-hoc) iOS build needs an Apple Developer Program
+membership, an interactive Apple ID login + 2FA on EAS, and registered device
+UDIDs (`eas device:create`). Nobody can produce an installable iPhone build
+until that account exists and is linked. The simulator build above needs no
+credentials and still exercises the **foreground** alarm end to end, because the
+alarm is driven by server offer state rather than by the push — assign an offer
+and the 15s poll surfaces it. It cannot test push delivery (simulators get no
+APNs device token).
+
+**Device QA remaining** (needs physical hardware):
+- Android, app foreground: offer → full-screen alarm UI + custom sound +
+  vibration; Accept / Decline / letting it expire each stop the noise.
+- Android, app backgrounded: notification on `job-offers-v2` with the custom
+  sound; tapping opens straight to the offer and starts the alarm.
+- iPhone: blocked until an Apple team is linked (above).
+- Confirm the alarm does NOT ring for message/system pushes.
+- **Highest-risk item:** whether `offer_alarm.wav` resolves as the iOS
+  notification sound. Android is proven (`res/raw/offer_alarm.wav` confirmed by
+  prebuild); iOS is not. A filename mismatch there means APNs plays *silence* —
+  a worse failure than the default tone and invisible unless listened for.
 
 Important Android channel note: channel sound is immutable after the OS creates
 the channel, so the custom-sound channel intentionally uses a new id
