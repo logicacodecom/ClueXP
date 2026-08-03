@@ -116,6 +116,43 @@ Verification:
 - `npm run build --workspace @cluexp/provider-web` -> passed.
 - Root `npm run typecheck` -> passed.
 
+### 2026-08-02 — Codex: customer template messaging backend + customer/provider web
+
+Continued Communication Hub Slice 4 without adding a migration. `0047_job_messages` already
+has the required `channel`, `template_code`, and `template_params` fields.
+
+Implemented:
+- Backend now accepts both `operations` and `customer` channels.
+- Customer channel is **template-only** for MVP. Allowed templates:
+  `on_my_way`, `arrived`, `running_late`, `need_more_details`,
+  `customer_unavailable`, `work_complete`, `please_confirm`.
+- `GET /t/{token}/messages`
+  - tracking-token customer reads only the customer-visible thread.
+  - operations messages and provider internal notes are never exposed.
+- `POST /t/{token}/messages`
+  - tracking-token customer sends template-only customer-channel replies.
+  - operations channel via token returns 404.
+- Technician/provider existing message endpoints can read/send customer channel templates
+  for assigned/tenant-scoped jobs.
+- Customer tracking page now renders a customer-visible job messages panel and quick
+  template replies on matched/live/completion-pending states.
+- Provider job detail now renders a separate Customer messages card with template buttons,
+  distinct from Operations messages and Internal notes.
+
+Verification:
+- `pytest api/tests/test_job_messages.py -q` -> 6 passed.
+- `python -m py_compile api/main.py api/store.py` -> passed.
+- root `npm run typecheck` -> passed.
+- `npm run build --workspace @cluexp/intake-web` -> passed when run sequentially with
+  `NODE_OPTIONS=--max-old-space-size=8192`.
+- `npm run build --workspace @cluexp/provider-web` -> passed with the same heap setting.
+
+Not included in this commit:
+- Technician-native Customer/Operations tab switch. Native files currently have unrelated
+  SafeAreaProvider dirty changes in the worktree, so this commit deliberately avoids
+  touching/staging native app files. Add the native customer tab next on top of the current
+  native work.
+
 ### 2026-08-02 — Claude → Codex: technician native app-wide Spanish localization — needs a fresh build to appear
 
 Human reported Spanish only worked on the sign-in screen; everywhere else (offers, active job,

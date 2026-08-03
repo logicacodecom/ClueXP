@@ -56,17 +56,40 @@ const STATUS_VARIANTS: Record<string, "success" | "warn" | "danger" | "outline">
   cancelled: "danger", no_show: "danger",
 };
 
+const CUSTOMER_MESSAGE_TEMPLATES = [
+  "on_my_way",
+  "arrived",
+  "running_late",
+  "need_more_details",
+  "customer_unavailable",
+  "work_complete",
+  "please_confirm",
+] as const;
+
 function statusLabel(s: string): string { return STATUS_LABELS[s] ?? s.replaceAll("_", " "); }
 function eventLabel(ev: string): { action: string; detail: string } {
   const i = ev.indexOf(":");
   return i === -1 ? { action: ev, detail: "" } : { action: ev.slice(0, i), detail: ev.slice(i + 1) };
 }
 function messageAuthor(sender: string): string {
+  if (sender === "customer") return "Customer";
   if (sender === "technician") return "Technician";
   if (sender === "provider_admin") return "Operations";
   if (sender === "dispatcher") return "Dispatcher";
   if (sender === "system") return "System";
   return sender.replaceAll("_", " ");
+}
+function customerTemplateLabel(code: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    on_my_way: "I'm on my way",
+    arrived: "I'm here",
+    running_late: "Running late",
+    need_more_details: "Need more details",
+    customer_unavailable: "Cannot reach customer",
+    work_complete: "Work complete",
+    please_confirm: "Please confirm",
+  };
+  return code ? (labels[code] ?? code.replaceAll("_", " ")) : "";
 }
 
 export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string; kicker?: string }) {
@@ -75,23 +98,26 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [messages, setMessages] = useState<JobMessage[]>([]);
+  const [customerMessages, setCustomerMessages] = useState<JobMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState("");
   const [state, setState] = useState<"loading" | "ready" | "error" | "notfound">("loading");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [sendingCustomerTemplate, setSendingCustomerTemplate] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState("loading");
     setError(null);
     try {
-      const [jobsRes, histRes, tlRes, notesRes, messagesRes] = await Promise.all([
+      const [jobsRes, histRes, tlRes, notesRes, messagesRes, customerMessagesRes] = await Promise.all([
         fetch("/api/provider/jobs", { cache: "no-store" }),
         fetch("/api/provider/jobs/history", { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/timeline`, { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/notes`, { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=operations`, { cache: "no-store" }),
+        fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=customer`, { cache: "no-store" }),
       ]);
       // The timeline endpoint is tenant-gated: a 404 means the job is not this org's.
       if (tlRes.status === 404) { setState("notfound"); return; }
@@ -102,6 +128,7 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       setTimeline(tlRes.ok ? ((await tlRes.json()) as TimelineEvent[]) : []);
       setNotes(notesRes.ok ? ((await notesRes.json()) as Note[]) : []);
       setMessages(messagesRes.ok ? (((await messagesRes.json()) as { messages?: JobMessage[] }).messages ?? []) : []);
+      setCustomerMessages(customerMessagesRes.ok ? (((await customerMessagesRes.json()) as { messages?: JobMessage[] }).messages ?? []) : []);
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load the job");
@@ -157,6 +184,32 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       setError(cause instanceof Error ? cause.message : "Could not send message");
     } finally {
       setSendingMessage(false);
+    }
+  }
+
+  async function sendCustomerTemplate(templateCode: string) {
+    setSendingCustomerTemplate(templateCode);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channel: "customer",
+          template_code: templateCode,
+          client_message_id: `provider_customer_${Date.now().toString(36)}_${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail?.message || result.detail || "Could not send customer-visible message");
+      const created = (result as { message?: JobMessage }).message;
+      if (created) setCustomerMessages((current) => [...current, created]);
+      setMessage("Customer-visible template sent.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not send customer-visible message");
+    } finally {
+      setSendingCustomerTemplate(null);
     }
   }
 
@@ -277,6 +330,57 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
                   {sendingMessage ? "Sending" : "Send"}
                 </Button>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Customer messages</CardTitle>
+              <CardDescription>Customer-visible template thread. Operations and internal notes are hidden from customers.</CardDescription>
+            </div>
+            <Badge variant="outline">{customerMessages.length}</Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {state === "loading" ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : customerMessages.length === 0 ? (
+              <p className="rounded-md border border-border bg-secondary/20 p-3 text-sm text-muted-foreground">No customer-visible messages yet.</p>
+            ) : (
+              <ul className="max-h-80 space-y-3 overflow-y-auto pr-1">
+                {customerMessages.map((item) => {
+                  const fromProvider = item.sender_type === "provider_admin" || item.sender_type === "dispatcher";
+                  return (
+                    <li key={item.id} className={`rounded-md border p-3 ${fromProvider ? "border-primary/35 bg-primary/10" : "border-border bg-secondary/20"}`}>
+                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span className="font-semibold text-foreground">{messageAuthor(item.sender_type)}</span>
+                        <span>{item.created_at ? new Date(item.created_at).toLocaleString() : ""}</span>
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.body || customerTemplateLabel(item.template_code)}</p>
+                      {item.delivery_state ? <p className="mt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{item.delivery_state}</p> : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="space-y-2 rounded-md border border-border bg-background p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Send customer-visible template</div>
+              <div className="flex flex-wrap gap-2">
+                {CUSTOMER_MESSAGE_TEMPLATES.map((code) => (
+                  <Button
+                    disabled={Boolean(sendingCustomerTemplate)}
+                    key={code}
+                    onClick={() => void sendCustomerTemplate(code)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    {sendingCustomerTemplate === code ? "Sending" : customerTemplateLabel(code)}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">Templates only for MVP. Do not send customer-specific free text from this panel.</p>
             </div>
           </CardContent>
         </Card>

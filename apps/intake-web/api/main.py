@@ -4503,6 +4503,63 @@ async def _require_token_job(token: str) -> UUID:
     return UUID(job_id)
 
 
+async def _resolve_token_job(token: str) -> UUID:
+    job_id = await store.resolve_tracking_token(token)
+    if job_id is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return UUID(job_id)
+
+
+async def _require_customer_message_job(token: str, *, rate_limit: bool) -> UUID:
+    job_id = await (_require_token_job(token) if rate_limit else _resolve_token_job(token))
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if rate_limit and lifecycle.get("status") not in _MESSAGE_WRITABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="Messaging is closed for this job.")
+    return job_id
+
+
+@app.get("/t/{token}/messages")
+async def customer_list_job_messages(token: str) -> dict[str, Any]:
+    """Tracking-token customer reads only the customer-visible thread. Operations
+    messages and provider internal notes are never exposed on this capability link."""
+    job_id = await _require_customer_message_job(token, rate_limit=False)
+    rows = await store.list_job_messages(job_id, channel="customer")
+    return {"messages": [_public_message(row) for row in rows]}
+
+
+@app.post("/t/{token}/messages")
+async def customer_send_job_message(token: str, payload: JobMessageRequest) -> dict[str, Any]:
+    """Tracking-token customer sends a template-only customer-channel message.
+    No account is required; the tracking token is the job capability."""
+    job_id = await _require_customer_message_job(token, rate_limit=True)
+    channel = _message_channel(payload.channel)
+    if channel != "customer":
+        raise HTTPException(status_code=404, detail="Not found")
+    cmid = _validated_client_message_id(payload.client_message_id)
+    body, template_code, template_params = _message_content(payload, channel=channel)
+    req_hash = _mutation_request_hash(
+        "job-message", str(job_id), channel, "customer", body, template_code, template_params)
+    row = await store.create_job_message(
+        job_id,
+        channel=channel,
+        sender_type="customer",
+        sender_user_id=None,
+        body=body,
+        template_code=template_code,
+        template_params=template_params,
+        client_message_id=cmid,
+        request_hash=req_hash,
+    )
+    if row.get("error_code") == "idempotency_key_reuse":
+        raise HTTPException(status_code=409, detail={
+            "code": "idempotency_key_reuse",
+            "message": "This client_message_id was already used with a different message.",
+        })
+    return {"message": _public_message(row)}
+
+
 @app.post("/t/{token}/confirm")
 async def confirm_by_token(token: str) -> dict[str, Any]:
     """Customer confirms completion: completed_pending_customer → completed_confirmed."""
@@ -5050,6 +5107,17 @@ _MESSAGE_WRITABLE_STATUSES = {
     STATUS_DISPUTED,
 }
 
+_MESSAGE_CHANNELS = {"operations", "customer"}
+_CUSTOMER_MESSAGE_TEMPLATES = {
+    "on_my_way",
+    "arrived",
+    "running_late",
+    "need_more_details",
+    "customer_unavailable",
+    "work_complete",
+    "please_confirm",
+}
+
 
 def _message_body(payload: JobMessageRequest) -> str | None:
     body = (payload.body or "").strip()
@@ -5062,12 +5130,31 @@ def _message_body(payload: JobMessageRequest) -> str | None:
 
 def _message_channel(channel: str | None) -> str:
     value = (channel or "operations").strip()
-    if value != "operations":
-        raise HTTPException(status_code=501, detail={
-            "code": "channel_not_enabled",
-            "message": "Only operations messaging is enabled in this slice.",
-        })
+    if value not in _MESSAGE_CHANNELS:
+        raise HTTPException(status_code=422, detail=f"channel must be one of {sorted(_MESSAGE_CHANNELS)}")
     return value
+
+
+def _message_content(payload: JobMessageRequest, *, channel: str) -> tuple[str | None, str | None, dict[str, Any]]:
+    template_code = (payload.template_code or "").strip() or None
+    template_params = payload.template_params or {}
+    if not isinstance(template_params, dict):
+        raise HTTPException(status_code=422, detail="template_params must be an object.")
+    if len(template_params) > 12:
+        raise HTTPException(status_code=422, detail="template_params has too many fields.")
+    if channel == "customer":
+        if not template_code:
+            raise HTTPException(status_code=422, detail={
+                "code": "template_required",
+                "message": "Customer messaging is template-only in this slice.",
+            })
+        if template_code not in _CUSTOMER_MESSAGE_TEMPLATES:
+            raise HTTPException(status_code=422, detail={
+                "code": "unknown_template",
+                "message": f"template_code must be one of {sorted(_CUSTOMER_MESSAGE_TEMPLATES)}",
+            })
+        return None, template_code, template_params
+    return _message_body(payload), template_code, template_params
 
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:
@@ -5246,8 +5333,8 @@ async def technician_list_job_messages(
     channel: str = "operations",
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Assigned technician reads the job-scoped operations thread. Customer
-    messaging is intentionally gated to a later slice."""
+    """Assigned technician reads a job-scoped communication thread for their
+    active assignment. Customer messaging is template-only in this slice."""
     channel = _message_channel(channel)
     await _require_technician_message_job(job_id, session)
     rows = await store.list_job_messages(job_id, channel=channel)
@@ -5260,15 +5347,14 @@ async def technician_send_job_message(
     payload: JobMessageRequest,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Assigned technician sends an operations message to the owning company's
-    dispatch/provider operations thread. Idempotent for native offline replay."""
+    """Assigned technician sends a job-scoped message. Operations accepts free
+    text; customer is template-only for this slice. Idempotent for native
+    offline replay."""
     channel = _message_channel(payload.channel)
     await _require_technician_message_job(job_id, session)
     tech = session["technician"]
-    body = _message_body(payload)
     cmid = _validated_client_message_id(payload.client_message_id)
-    template_code = (payload.template_code or "").strip() or None
-    template_params = payload.template_params or {}
+    body, template_code, template_params = _message_content(payload, channel=channel)
     req_hash = _mutation_request_hash(
         "job-message", str(job_id), channel, "technician", body, template_code, template_params)
     row = await store.create_job_message(
@@ -5967,15 +6053,13 @@ async def provider_send_job_message(
     payload: JobMessageRequest,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Dispatcher/provider admin replies in the operations thread for one of
-    their tenant-scoped jobs."""
+    """Dispatcher/provider admin replies in a job-scoped thread for one of
+    their tenant-scoped jobs. Customer-visible sends are template-only."""
     org_id = _require_dispatch_org(session)
     await _require_org_job(org_id, job_id)
     channel = _message_channel(payload.channel)
-    body = _message_body(payload)
     cmid = _validated_client_message_id(payload.client_message_id)
-    template_code = (payload.template_code or "").strip() or None
-    template_params = payload.template_params or {}
+    body, template_code, template_params = _message_content(payload, channel=channel)
     roles = set(session.get("roles", []))
     sender_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
     req_hash = _mutation_request_hash(

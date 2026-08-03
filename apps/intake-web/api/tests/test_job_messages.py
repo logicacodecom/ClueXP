@@ -1,8 +1,8 @@
-"""Job-scoped operations messaging contract.
+"""Job-scoped communication hub contract.
 
-This is the first Communication Hub implementation slice: technician <-> owning
-provider operations. Customer messaging and masked calling remain deliberately
-gated to later slices.
+Operations messaging is technician <-> provider operations. Customer messaging
+is a separate template-only channel exposed to the tracking-token customer.
+Masked calling remains deliberately gated to a later slice.
 """
 from __future__ import annotations
 
@@ -56,6 +56,8 @@ def _seed_job(tid: str, org_id: str, status: str = STATUS_ASSIGNED) -> str:
     app_store._job_tech[jid] = tid
     app_store._job_org[jid] = org_id
     app_store._job_fulfillment_org[jid] = org_id
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = f"track-{jid}"
     return jid
 
 
@@ -132,18 +134,82 @@ def test_messages_are_self_and_tenant_scoped():
     assert client.get(f"/provider/jobs/{jid}/messages", headers=provider_b_h).status_code == 404
 
 
-def test_customer_channel_and_closed_job_writes_are_gated():
+def test_customer_channel_is_template_only_and_visible_to_customer_provider_and_tech():
     client = TestClient(app)
     org = str(uuid4())
     tid, tech_h = _register_tech()
+    _, provider_h = _register_dispatcher(org)
     jid = _seed_job(tid, org)
-    customer = client.post(
+    token = app_store._tokens[jid]
+
+    free_text = client.post(
         f"/jobs/{jid}/messages",
         headers=tech_h,
         json={"channel": "customer", "body": "I am on my way."},
     )
-    assert customer.status_code == 501
-    assert customer.json()["detail"]["code"] == "channel_not_enabled"
+    assert free_text.status_code == 422
+    assert free_text.json()["detail"]["code"] == "template_required"
+
+    sent = client.post(
+        f"/jobs/{jid}/messages",
+        headers=tech_h,
+        json={"channel": "customer", "template_code": "on_my_way", "client_message_id": "cust_msg_123"},
+    )
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["message"]["channel"] == "customer"
+    assert sent.json()["message"]["body"] is None
+    assert sent.json()["message"]["template_code"] == "on_my_way"
+
+    customer_view = client.get(f"/t/{token}/messages")
+    assert customer_view.status_code == 200, customer_view.text
+    assert customer_view.json()["messages"][0]["template_code"] == "on_my_way"
+
+    customer_reply = client.post(
+        f"/t/{token}/messages",
+        json={"channel": "customer", "template_code": "need_more_details", "client_message_id": "reply_123456"},
+    )
+    assert customer_reply.status_code == 200, customer_reply.text
+    assert customer_reply.json()["message"]["sender_type"] == "customer"
+
+    tech_view = client.get(f"/jobs/{jid}/messages?channel=customer", headers=tech_h)
+    provider_view = client.get(f"/provider/jobs/{jid}/messages?channel=customer", headers=provider_h)
+    assert tech_view.status_code == 200
+    assert provider_view.status_code == 200
+    assert [m["sender_type"] for m in tech_view.json()["messages"]] == ["technician", "customer"]
+    assert [m["sender_type"] for m in provider_view.json()["messages"]] == ["technician", "customer"]
+
+
+def test_customer_channel_unknown_template_and_operations_leak_are_blocked():
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, tech_h = _register_tech()
+    jid = _seed_job(tid, org)
+    token = app_store._tokens[jid]
+
+    unknown = client.post(
+        f"/jobs/{jid}/messages",
+        headers=tech_h,
+        json={"channel": "customer", "template_code": "raw_free_text"},
+    )
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["code"] == "unknown_template"
+
+    blocked = client.post(
+        f"/t/{token}/messages",
+        json={"channel": "operations", "template_code": "need_more_details"},
+    )
+    assert blocked.status_code == 404
+
+    client.post(f"/jobs/{jid}/messages", headers=tech_h, json={"channel": "operations", "body": "ops-only"})
+    customer_view = client.get(f"/t/{token}/messages")
+    assert customer_view.status_code == 200
+    assert customer_view.json()["messages"] == []
+
+
+def test_closed_job_writes_are_gated():
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, tech_h = _register_tech()
 
     closed = _seed_job(tid, org, status=STATUS_CANCELLED)
     blocked = client.post(

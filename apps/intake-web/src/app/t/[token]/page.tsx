@@ -92,6 +92,16 @@ interface TrackingResponse {
   dispatch_phone?: string | null;
 }
 
+interface JobMessage {
+  id: string;
+  sender_type: string;
+  body: string | null;
+  template_code?: string | null;
+  template_params?: Record<string, unknown>;
+  created_at: string | null;
+  delivery_state?: string | null;
+}
+
 interface ReviewData {
   rating: number | null;
   tags: string[];
@@ -123,6 +133,14 @@ const emptyCustomerActions: CustomerActions = {
   can_dispute: false
 };
 
+const CUSTOMER_MESSAGE_TEMPLATES = [
+  "need_more_details",
+  "arrived",
+  "running_late",
+  "customer_unavailable",
+  "please_confirm"
+] as const;
+
 // Display labels for the technician-reported payment method (read-only on the
 // customer side). Mirrors the backend PAYMENT_METHODS set; "other" is the catch-all.
 const PAYMENT_METHOD_LABELS: Record<string, { en: string; es: string }> = {
@@ -148,6 +166,28 @@ function paymentMethodLabel(method: string, locale: string): string {
 function moneyFromCents(cents: number, currency = "USD"): string {
   const amount = (cents || 0) / 100;
   return currency === "USD" ? `$${amount.toFixed(2)}` : `${currency} ${amount.toFixed(2)}`;
+}
+
+function messageTemplateLabel(code: string | null | undefined, locale: string): string {
+  const labels: Record<string, { en: string; es: string }> = {
+    on_my_way: { en: "I'm on my way.", es: "Estoy en camino." },
+    arrived: { en: "I'm here.", es: "Ya estoy aquí." },
+    running_late: { en: "I'm running late.", es: "Voy retrasado." },
+    need_more_details: { en: "I need more details.", es: "Necesito más detalles." },
+    customer_unavailable: { en: "I can't reach you.", es: "No puedo comunicarme con usted." },
+    work_complete: { en: "The work is complete.", es: "El trabajo está completo." },
+    please_confirm: { en: "Please confirm the work.", es: "Por favor confirme el trabajo." }
+  };
+  if (!code) return "";
+  const entry = labels[code];
+  return entry ? (locale === "es" ? entry.es : entry.en) : code.replaceAll("_", " ");
+}
+
+function messageAuthor(sender: string, locale: string): string {
+  if (sender === "customer") return locale === "es" ? "Usted" : "You";
+  if (sender === "technician") return locale === "es" ? "Técnico" : "Technician";
+  if (sender === "provider_admin" || sender === "dispatcher") return locale === "es" ? "Despacho" : "Dispatch";
+  return locale === "es" ? "Sistema" : "System";
 }
 
 function TopBar() {
@@ -211,6 +251,66 @@ function TechnicianPhoto({ name, photoUrl, locale }: { name: string; photoUrl: s
   );
 }
 
+function CustomerMessagesPanel({
+  locale,
+  messages,
+  busy,
+  error,
+  onSend
+}: {
+  locale: string;
+  messages: JobMessage[];
+  busy: boolean;
+  error: string | null;
+  onSend: (templateCode: string) => void;
+}) {
+  return (
+    <div className="panel">
+      <p className="panel-title">
+        {locale === "es" ? "Mensajes del trabajo" : "Job messages"}
+      </p>
+      <p className="fine">
+        {locale === "es"
+          ? "Mensajes rápidos con el técnico sobre este trabajo. Operaciones internas no aparecen aquí."
+          : "Quick messages with the technician for this job. Internal operations messages never appear here."}
+      </p>
+      <div className="stack" style={{ marginTop: 12 }}>
+        {messages.length === 0 ? (
+          <p className="fine">
+            {locale === "es" ? "Aún no hay mensajes." : "No messages yet."}
+          </p>
+        ) : (
+          messages.map((message) => (
+            <div className="panel" key={message.id} style={{ padding: 12 }}>
+              <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+                <strong>{messageAuthor(message.sender_type, locale)}</strong>
+                <span className="fine">{message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}</span>
+              </div>
+              <p className="fine" style={{ marginTop: 6 }}>
+                {message.body || messageTemplateLabel(message.template_code, locale)}
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="chip-grid" style={{ marginTop: 14 }}>
+        {CUSTOMER_MESSAGE_TEMPLATES.map((code) => (
+          <button
+            className="chip"
+            disabled={busy}
+            key={code}
+            onClick={() => onSend(code)}
+            type="button"
+          >
+            {messageTemplateLabel(code, locale)}
+          </button>
+        ))}
+      </div>
+      {error ? <p className="fine" style={{ color: "#f87171", marginTop: 10 }}>{error}</p> : null}
+    </div>
+  );
+}
+
 export default function TokenTrackingPage() {
   const router = useRouter();
   const params = useParams();
@@ -235,6 +335,9 @@ export default function TokenTrackingPage() {
   const [closeout, setCloseout] = useState<CloseoutView | null>(null);
   const [arrivalPin, setArrivalPin] = useState<string | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
+  const [messages, setMessages] = useState<JobMessage[]>([]);
+  const [messageBusy, setMessageBusy] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
 
   const localeText = {
     waiting: {
@@ -412,10 +515,42 @@ export default function TokenTrackingPage() {
     }
   };
 
+  const loadMessages = async () => {
+    if (!token) return;
+    try {
+      const data = await api<{ messages: JobMessage[] }>(`/t/${token}/messages`);
+      setMessages(data.messages ?? []);
+      setMessageError(null);
+    } catch (err) {
+      setMessageError(err instanceof Error ? err.message : (locale === "es" ? "No se pudieron cargar los mensajes" : "Could not load messages"));
+    }
+  };
+
+  const sendCustomerTemplate = async (templateCode: string) => {
+    setMessageBusy(true);
+    setMessageError(null);
+    try {
+      const data = await api<{ message: JobMessage }>(`/t/${token}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          channel: "customer",
+          template_code: templateCode,
+          client_message_id: `customer_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`
+        })
+      });
+      setMessages((current) => [...current, data.message]);
+    } catch (err) {
+      setMessageError(err instanceof Error ? err.message : (locale === "es" ? "No se pudo enviar el mensaje" : "Could not send message"));
+    } finally {
+      setMessageBusy(false);
+    }
+  };
+
   // Load tracking data on mount
   useEffect(() => {
     if (token) {
       void loadTracking();
+      void loadMessages();
     }
   }, [token]);
 
@@ -424,6 +559,7 @@ export default function TokenTrackingPage() {
     if (screen === "waiting" || screen === "matched" || screen === "en_route" || screen === "arrived" || screen === "in_progress") {
       const interval = setInterval(() => {
         void loadTracking();
+        void loadMessages();
       }, 5000);
       return () => clearInterval(interval);
     }
@@ -648,6 +784,16 @@ export default function TokenTrackingPage() {
     }
   };
 
+  const renderCustomerMessages = () => (
+    <CustomerMessagesPanel
+      busy={messageBusy}
+      error={messageError}
+      locale={locale}
+      messages={messages}
+      onSend={(code) => void sendCustomerTemplate(code)}
+    />
+  );
+
   const toggleReviewTag = (tag: string) => {
     setReviewData(prev => ({
       ...prev,
@@ -829,6 +975,9 @@ export default function TokenTrackingPage() {
               </p>
             </div>
           )}
+          <div className="stack" style={{ marginTop: "2rem" }}>
+            {renderCustomerMessages()}
+          </div>
           {customerActions.can_cancel && (
             <div className="stack" style={{ marginTop: "2rem" }}>
               {renderCancelControl()}
@@ -899,6 +1048,7 @@ export default function TokenTrackingPage() {
                 </>
               )}
             </div>
+            {renderCustomerMessages()}
           </div>
           {customerActions.can_cancel && (
             <div className="stack" style={{ marginTop: "2rem" }}>
@@ -938,6 +1088,9 @@ export default function TokenTrackingPage() {
               <p className="fine">{assignment.role}</p>
             </div>
           )}
+          <div className="stack" style={{ marginTop: "2rem" }}>
+            {renderCustomerMessages()}
+          </div>
         </main>
       </div>
     );
@@ -976,6 +1129,9 @@ export default function TokenTrackingPage() {
                 : "The specialist is working on your issue."}
             </p>
           </div>
+          <div className="stack" style={{ marginTop: "2rem" }}>
+            {renderCustomerMessages()}
+          </div>
         </main>
       </div>
     );
@@ -989,6 +1145,7 @@ export default function TokenTrackingPage() {
           <AgentMessage support={localeText.completed_pending_customer.support}>
             {localeText.completed_pending_customer.title}
           </AgentMessage>
+          {renderCustomerMessages()}
           {closeout ? (
             <div className="panel">
               <p className="panel-title">
