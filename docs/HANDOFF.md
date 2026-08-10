@@ -62,6 +62,163 @@
 
 ## Open threads
 
+### 2026-08-09 — Claude → Codex: Twilio communications slice — review findings, 13 items
+
+Review of `6acfc1b` (Add Twilio communications integration) + `fe457f1` (docs).
+Human directed the handoff to you, so this is yours to fix — including the `api/`
+items that would normally sit with me. **Nothing needs a new migration.** I made no
+code changes; the tree is exactly as you left it.
+
+Three findings I confirmed by running the code, not by reading it. Evidence inline.
+
+**Do not set `COMMUNICATIONS_PROVIDER=twilio` until 1–7 are fixed.** #1 breaks the
+entire API, not just Twilio.
+
+#### Blockers — will not work in prod as committed
+
+**1. `twilio` missing from the Vercel dependency file → every `/api` route 500s.**
+`pyproject.toml` got `twilio==9.8.0`; `apps/intake-web/requirements.txt` is what the
+Vercel function actually installs from, and it's untouched. `api/communications.py:14-17`
+imports twilio at module scope and `api/main.py:28` imports `communications` at module
+scope, so the cold start dies before any route is reachable. Add `twilio==9.8.0` to
+`apps/intake-web/requirements.txt` (same reason the `python-multipart` line is there).
+
+**2. Every Twilio webhook 403s behind the `/api` prefix.**
+`strip_vercel_api_prefix` (`api/main.py:115-120`) mutates `scope["path"]` before the
+route runs, so `str(request.url)` in `_verified_twilio_form` (`api/main.py:5548`) is
+`https://host/twilio/voice/incoming` — but Twilio signed
+`https://host/api/twilio/voice/incoming`, the URL the docs tell you to configure.
+Verified against the real app:
+
+```
+prod-shaped (/api prefix): 403 {"detail":"Invalid Twilio signature"}
+test-shaped (no prefix):   200 <?xml version="1.0"...
+```
+
+Inbound routing, call status, SMS status, and STOP all fail closed. The new tests can't
+catch it because they POST to `/twilio/...` directly — add a prefixed case when you fix
+it. Fix: stash the original path in the middleware (`scope["state"]`) and use it in
+`public_request_url`, or let `TWILIO_WEBHOOK_BASE_URL` carry a base *path* and prepend
+it — `api/communications.py:57` currently copies only scheme and netloc from that env var.
+
+**3. Inbound TwiML keeps going after a successful call.**
+Twilio only stops at `<Dial>` when `action` is set; `twilio_voice_incoming`
+(`api/main.py:5559`) never passes `action_url` even though `inbound_forward_twiml`
+accepts one. Actual rendered document for a fully configured org:
+
+```xml
+<Dial callerId="+1555…0000" timeout="18"><Number>+1555…0001</Number></Dial>
+<Dial callerId="+1555…0000" timeout="18"><Number>+1555…0002</Number></Dial>
+<Say>No dispatcher is available right now…</Say><Record maxLength="120" playBeep="true"/>
+```
+
+So after the dispatcher answers and hangs up, the caller is dialed at the backup number
+and then dropped into voicemail. Use one `<Dial>` with two `<Number>` children (sequential
+ring is the behavior you want anyway) plus an `action` URL. The no-numbers path also says
+the fallback twice — `response.say(fallback)` fires, then the `else` branch repeats it
+(`api/communications.py:243-249`).
+
+#### Tenancy and authorization
+
+**4. `twilio_number` is provider-settable — inbound-routing hijack.** Any `provider_admin`
+can PATCH any E.164 into `twilio_number` (`api/main.py:5410-5417`); the column is `unique`,
+so first claimer wins. `find_organization_by_twilio_number` then routes every inbound call
+for that number to the claimer's forwarding numbers, and it becomes the caller ID and
+`from_number` for their outbound masked calls — one partner can claim another's ClueXP
+number before they do. The number is an asset of ClueXP's Twilio account: assign it from an
+ops endpoint, render it read-only in provider-web.
+
+**5. `a2p_registered` is self-attested.** It is the only gate on live SMS
+(`api/main.py:5757`) and provider-web exposes it as a checkbox. ClueXP owns the 10DLC
+registration, so a partner ticking their own box bypasses the compliance gate. Ops-controlled,
+same as #4.
+
+**6. Referral jobs call the wrong company.** `_require_org_job` accepts either
+`customer_owner_org_id` or `fulfillment_org_id`, but `_start_masked_call`
+(`api/main.py:5429`) resolves settings from `fulfillment_org_id or customer_owner_org_id`.
+Org A's dispatcher pressing "Call customer" on a job fulfilled by org B gets B's
+`twilio_number` as caller ID and rings **B's** `primary_forwarding_number` as the caller
+leg. Resolve settings from the session's org, not the job's.
+
+#### Correctness
+
+**7. SMS idempotency dedupes the record, not the send.** `send_sms` runs before
+`create_sms_delivery`, so ON CONFLICT only hides duplicates. Three identical POSTs against
+the real endpoint:
+
+```
+same delivery row id across 3 calls: True
+actual Twilio sends billed: 3
+sid recorded on row: SM1 | last sid Twilio issued: SM3
+```
+
+Customer gets three texts, you're billed three times, and SM2/SM3 have no row so their
+status callbacks 404. `test_transactional_sms_is_idempotent…` asserts equal row ids and
+never asserts the provider call count, so it stays green over this — tighten the test.
+Live path: `technician_update_status` fires `technician_en_route` on every entry into that
+status, so a status bounce double-texts. Fix: look up by `request_hash` and return the
+existing row *before* calling the provider.
+
+**8. Inbound job matching can never match.** `find_active_job_by_customer_phone` compares
+`c.phone = '+1…'`, but `customers.phone` is stored verbatim from intake
+(`api/store.py:618-634` does no normalization; the upsert keys `on conflict (phone)` on the
+raw string, `api/store.py:5314-5320`). Anyone who typed `(555) 123-4567` never matches, so
+`matched_job` is effectively always false. Normalize on write and backfill, or match on a
+normalized expression with an index. **If you want the backfill, tag me — that's a data
+migration and it's mine.**
+
+**9. `business_hours_behavior` is dead.** Stored, validated, shown in the settings dropdown,
+never read by any routing code. "Voicemail after hours" does nothing today.
+
+**10. Status-callback race.** `_start_masked_call` calls Twilio before inserting the row, so
+an `initiated`/`ringing` callback that beats the insert hits
+`update_job_call_session_by_provider_sid` → None → 404 (Twilio error 11200 in the logs).
+Insert `requested` first, then dial, then update with the SID.
+
+**11. Opt-out is global, not per-partner.** `communication_opt_outs.phone_e164` is the PK and
+`twilio_sms_incoming` ignores `To`, so `organization_id` is always NULL and STOP to partner A
+silences partner B. Conservative direction, so not a compliance risk — but it's a PK-level
+decision, so make it deliberately now rather than discovering it later.
+
+**12. Blocking SDK calls in async handlers.** `client.calls.create()` / `messages.create()`
+are synchronous HTTP called straight from `async def` routes — they block the event loop for
+the full Twilio round trip, including inside the technician status-update path. Wrap in
+`run_in_threadpool` or move lifecycle SMS out of band. `get_communications_provider()` also
+builds a fresh `Client` per request, so there's no connection reuse.
+
+**13. `list_provider_call_sessions` can't use an index** — three OR'd predicates plus
+`metadata->>'organization_id'` means a seq scan and sort. Inbound rows already set
+`callee_organization_id`, so the metadata leg is redundant; drop it and index the two org
+columns.
+
+#### What's already right (don't churn it)
+
+- Signature validation is structurally correct — `_verified_twilio_form` runs first and
+  fails closed when `TWILIO_AUTH_TOKEN` is unset. Only #2 defeats it.
+- Phone redaction is clean. `_public_call_session` (`api/main.py:5339-5350`) exposes no raw
+  numbers, `masked_number` is the partner's own number, call history surfaces only redacted
+  metadata, and the 409 `call_party_unreachable` body is redacted too.
+- Call-session idempotency is correct — the `ON CONFLICT (provider, provider_call_sid) WHERE …`
+  partial-index inference matches migration 0050's index and merges metadata properly.
+- One settings row per partner is the right shape for launch, and putting multi-number /
+  branch routing in a future child table rather than more columns is the right call.
+- `_SMS_PURPOSES` allowlisting means a partner can't push arbitrary text through Twilio. Keep it.
+
+#### Open question for the human
+
+`provider_admin`-only GET/PATCH on communications settings: I'd split rather than loosen —
+forwarding numbers, ring timeout, and voicemail stay partner-editable; `twilio_number` and
+`a2p_registered` become ops-only (#4, #5). Dispatchers not being able to *read* forwarding
+numbers is strict but harmless. Confirm before you restructure the endpoint.
+
+#### Migration note (no action)
+
+`0050_twilio_communications.downgrade()` will fail on `ALTER COLUMN job_id SET NOT NULL` once
+any unmatched inbound call row exists. Fine to leave; just don't expect the downgrade to run
+after go-live.
+
+— Claude
+
 ### 2026-08-03 — Claude → Codex: push rollout is LIVE in prod — status + what's left
 
 Handoff of the thread below, which I took all the way to production this
