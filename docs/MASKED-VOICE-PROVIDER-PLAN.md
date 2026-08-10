@@ -152,6 +152,54 @@ Rationale:
 Use **Telnyx** as the first serious fallback if Twilio pricing, number
 availability, or compliance requirements are worse in the target markets.
 
+### Deferred: partner-owned communications providers
+
+The launch model is **ClueXP-managed provider credentials with partner-scoped
+settings**:
+
+- ClueXP owns the platform Twilio account credentials, webhook endpoints,
+  provider adapter code, and operational monitoring.
+- Each locksmith company/partner owns its own communications settings row:
+  Twilio number, forwarding numbers, voicemail behavior, masked calling, SMS
+  enablement, and A2P readiness.
+- Runtime calls and SMS resolve by `organization_id`, so one partner's number
+  or routing policy cannot affect another partner.
+
+Bring-your-own communications provider is a future enterprise option, not the
+default launch path. In that model, a partner could connect its own Twilio,
+Telnyx, Plivo, or similar subscription, and ClueXP would select the active
+provider by `organization_id` instead of global environment configuration.
+
+Future BYO provider support should add a separate credential/configuration
+boundary, for example `organization_communication_providers`:
+
+- `organization_id`
+- `provider_type` (`twilio`, `telnyx`, `plivo`, etc.)
+- `status` (`pending`, `active`, `disabled`, `failed`)
+- encrypted credential references or external secrets-manager keys
+- webhook signing/verification material
+- default from-number / number pool references
+- capabilities (`voice`, `sms`, `recording`, `transcription`)
+- setup health, last verification timestamp, and last failure reason
+
+`organization_phone_settings` should remain the partner-facing routing and
+feature settings table. It may reference the active provider configuration
+later, but it should not store raw API secrets.
+
+Before enabling BYO provider, settle product ownership rules:
+
+- Who pays the provider bill and absorbs usage overages.
+- Who owns number purchasing, porting, loss, suspension, and release.
+- Who owns A2P 10DLC registration and campaign failures.
+- How ClueXP detects broken webhooks, rotated credentials, suspended accounts,
+  and missing provider capabilities.
+- Whether support can temporarily fall back to the ClueXP-managed provider
+  during partner-provider outages.
+
+Default recommendation: keep ClueXP-managed communications as the standard
+model, and offer partner-owned provider connections only to larger partners who
+explicitly need account ownership or already operate telecom infrastructure.
+
 ## Backend Contract
 
 Current scaffold:

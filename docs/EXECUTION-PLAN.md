@@ -726,6 +726,10 @@ Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T
   provider phone settings, verified webhooks, inbound forwarding, call history,
   and masked outbound call audit preserve the same job/tenant authorization
   boundary. Provider plan: [`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
+- [ ] Deferred communications expansion — partner-owned Twilio/Telnyx/Plivo
+  subscriptions are a future enterprise option, separate from the launch model
+  of ClueXP-managed provider credentials plus partner-scoped phone/routing
+  settings.
 - [~] Transactional SMS — selected lifecycle/customer reminder purposes create
   idempotent delivery records and handle Twilio callbacks plus STOP/START; real
   sends require provider SMS enablement and A2P 10DLC readiness.
