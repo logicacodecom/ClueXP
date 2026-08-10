@@ -100,10 +100,17 @@ happy path has been smoke-tested. The next priority is operational readiness des
 `docs/EXECUTION-PLAN.md`: approve dispatcher acknowledgement SLA and coverage, add durable
 background alerts, and complete the pilot evidence matrix. The provider queue has configurable
 SLA/stalled indicators and opt-in browser alerts for a staffed open console. Production
-SMS/email/push and real payment authorization/capture/refund remain unimplemented;
+Production push/email and real payment authorization/capture/refund remain unimplemented;
 technician-reported collection is advisory only. The accepted real-payment direction is
 provider-owned Stripe Connect direct charges: each provider is merchant of record and ClueXP does
 not hold or settle provider funds.
+
+The first Twilio communications slice is implemented behind `COMMUNICATIONS_PROVIDER`.
+Default `noop` mode records honest `skipped_no_provider` outcomes. Twilio mode supports
+verified voice/SMS webhooks, tenant-scoped provider phone settings, inbound call forwarding,
+masked outbound calls, provider call history, transactional SMS delivery records, and
+STOP/START opt-out handling. Real SMS sends require the provider's communications settings
+to have both `sms_enabled` and `a2p_registered` enabled.
 
 Vercel production traffic should call the API through the same deployment at `/api/...`. Local development rewrites `/api/...` to `LOCAL_API_BASE_URL`, which defaults to `http://127.0.0.1:8000`.
 
@@ -124,6 +131,12 @@ Copy `.env.example` into the relevant Vercel project environment variables rathe
 5. Confirm Python functions are detected from `apps/intake-web/api/main.py`.
 6. Deploy from `main`.
 7. Smoke test on mobile: create ticket, submit intake, confirm the record persists.
+8. For Twilio communications, set `COMMUNICATIONS_PROVIDER=twilio`,
+   `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_DEFAULT_FROM_NUMBER`, and
+   `TWILIO_WEBHOOK_BASE_URL`; then assign an already-purchased Twilio number in
+   provider-web Settings. Configure Twilio voice webhooks to
+   `/api/twilio/voice/incoming` and `/api/twilio/voice/status`, and messaging
+   webhooks to `/api/twilio/sms/incoming` and `/api/twilio/sms/status`.
 
 For pilot releases, also use:
 

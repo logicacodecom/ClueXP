@@ -3,7 +3,7 @@
 import type { ServiceCategory } from "@cluexp/api-client";
 import { DEFAULT_SERVICE_CATALOG } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, SkillSelect } from "@cluexp/console-ui";
-import { Building2, Check, Copy, CreditCard, Link2, Save, TimerReset, Upload } from "lucide-react";
+import { Building2, Check, Copy, CreditCard, Link2, PhoneCall, Save, TimerReset, Upload } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
@@ -42,6 +42,18 @@ interface FinancialSettings {
   tax_rate_basis_points: DispatchSettingField;
   card_fee_basis_points: DispatchSettingField;
   card_fee_fixed_cents: DispatchSettingField;
+}
+
+interface CommunicationsSettings {
+  twilio_number: string | null;
+  primary_forwarding_number: string | null;
+  backup_forwarding_number: string | null;
+  ring_timeout_seconds: number;
+  business_hours_behavior: "always_forward" | "voicemail_after_hours";
+  voicemail_enabled: boolean;
+  sms_enabled: boolean;
+  masked_calling_enabled: boolean;
+  a2p_registered: boolean;
 }
 
 // Stored values are integers (basis points / cents) for exact money math, but the
@@ -141,6 +153,19 @@ export default function SettingsPage() {
   });
   const [financialMessage, setFinancialMessage] = useState<string | null>(null);
   const [financialBusy, setFinancialBusy] = useState(false);
+  const [communicationsInputs, setCommunicationsInputs] = useState<CommunicationsSettings>({
+    twilio_number: "",
+    primary_forwarding_number: "",
+    backup_forwarding_number: "",
+    ring_timeout_seconds: 20,
+    business_hours_behavior: "always_forward",
+    voicemail_enabled: true,
+    sms_enabled: false,
+    masked_calling_enabled: false,
+    a2p_registered: false
+  });
+  const [communicationsMessage, setCommunicationsMessage] = useState<string | null>(null);
+  const [communicationsBusy, setCommunicationsBusy] = useState(false);
 
   async function loadDispatchSettings() {
     try {
@@ -201,11 +226,34 @@ export default function SettingsPage() {
     }
   }
 
+  async function loadCommunicationsSettings() {
+    try {
+      const response = await fetch("/api/provider/settings/communications", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to load communications settings");
+      const settings = (body.settings ?? {}) as Partial<CommunicationsSettings>;
+      setCommunicationsInputs({
+        twilio_number: settings.twilio_number ?? "",
+        primary_forwarding_number: settings.primary_forwarding_number ?? "",
+        backup_forwarding_number: settings.backup_forwarding_number ?? "",
+        ring_timeout_seconds: settings.ring_timeout_seconds ?? 20,
+        business_hours_behavior: settings.business_hours_behavior === "voicemail_after_hours" ? "voicemail_after_hours" : "always_forward",
+        voicemail_enabled: settings.voicemail_enabled ?? true,
+        sms_enabled: settings.sms_enabled ?? false,
+        masked_calling_enabled: settings.masked_calling_enabled ?? false,
+        a2p_registered: settings.a2p_registered ?? false
+      });
+    } catch (cause) {
+      setCommunicationsMessage(cause instanceof Error ? cause.message : "Unable to load communications settings");
+    }
+  }
+
   useEffect(() => {
     void loadDispatchSettings();
     void loadIntakeSettings();
     void loadCapabilities();
     void loadFinancialSettings();
+    void loadCommunicationsSettings();
   }, []);
 
   useEffect(() => {
@@ -436,6 +484,47 @@ export default function SettingsPage() {
       setIntakeSettingsMessage(cause instanceof Error ? cause.message : "Unable to reset to platform default");
     } finally {
       setIntakeSettingsBusy(false);
+    }
+  }
+
+  async function saveCommunicationsSettings() {
+    setCommunicationsBusy(true);
+    setCommunicationsMessage(null);
+    try {
+      const response = await fetch("/api/provider/settings/communications", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          twilio_number: communicationsInputs.twilio_number || null,
+          primary_forwarding_number: communicationsInputs.primary_forwarding_number || null,
+          backup_forwarding_number: communicationsInputs.backup_forwarding_number || null,
+          ring_timeout_seconds: Number(communicationsInputs.ring_timeout_seconds),
+          business_hours_behavior: communicationsInputs.business_hours_behavior,
+          voicemail_enabled: communicationsInputs.voicemail_enabled,
+          sms_enabled: communicationsInputs.sms_enabled,
+          masked_calling_enabled: communicationsInputs.masked_calling_enabled,
+          a2p_registered: communicationsInputs.a2p_registered
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to save communications settings");
+      const settings = (body.settings ?? {}) as CommunicationsSettings;
+      setCommunicationsInputs({
+        twilio_number: settings.twilio_number ?? "",
+        primary_forwarding_number: settings.primary_forwarding_number ?? "",
+        backup_forwarding_number: settings.backup_forwarding_number ?? "",
+        ring_timeout_seconds: settings.ring_timeout_seconds ?? 20,
+        business_hours_behavior: settings.business_hours_behavior === "voicemail_after_hours" ? "voicemail_after_hours" : "always_forward",
+        voicemail_enabled: settings.voicemail_enabled ?? true,
+        sms_enabled: settings.sms_enabled ?? false,
+        masked_calling_enabled: settings.masked_calling_enabled ?? false,
+        a2p_registered: settings.a2p_registered ?? false
+      });
+      setCommunicationsMessage("Communications settings saved.");
+    } catch (cause) {
+      setCommunicationsMessage(cause instanceof Error ? cause.message : "Unable to save communications settings");
+    } finally {
+      setCommunicationsBusy(false);
     }
   }
 
@@ -680,6 +769,60 @@ export default function SettingsPage() {
 
             {message ? <div className="rounded-md border border-border bg-card p-3 text-sm" role="status">{message}</div> : null}
             <Button disabled={busy || !form.display_name.trim()} onClick={() => void save()}><Save className="size-4" />{busy ? "Saving…" : "Save company profile"}</Button>
+          </CardContent>
+        </Card>
+        <SettingsSection eyebrow="Communications" title="Phone and SMS">
+          Assign an existing Twilio business number, forwarding destinations, and messaging eligibility.
+        </SettingsSection>
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><PhoneCall className="size-5 text-primary" />Communications settings</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="space-y-1.5 text-sm"><span className="font-medium">Twilio business number</span>
+                <Input placeholder="+15551234567" value={communicationsInputs.twilio_number ?? ""} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, twilio_number: event.target.value })} />
+              </label>
+              <label className="space-y-1.5 text-sm"><span className="font-medium">Primary forwarding number</span>
+                <Input placeholder="+15551234567" value={communicationsInputs.primary_forwarding_number ?? ""} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, primary_forwarding_number: event.target.value })} />
+              </label>
+              <label className="space-y-1.5 text-sm"><span className="font-medium">Backup forwarding number</span>
+                <Input placeholder="+15551234567" value={communicationsInputs.backup_forwarding_number ?? ""} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, backup_forwarding_number: event.target.value })} />
+              </label>
+              <label className="space-y-1.5 text-sm"><span className="font-medium">Ring timeout seconds</span>
+                <Input type="number" min={5} max={60} value={communicationsInputs.ring_timeout_seconds} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, ring_timeout_seconds: Number(event.target.value) })} />
+              </label>
+              <label className="space-y-1.5 text-sm"><span className="font-medium">Business-hours behavior</span>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={communicationsInputs.business_hours_behavior}
+                  onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, business_hours_behavior: event.target.value === "voicemail_after_hours" ? "voicemail_after_hours" : "always_forward" })}
+                >
+                  <option value="always_forward">Always forward</option>
+                  <option value="voicemail_after_hours">Voicemail after hours</option>
+                </select>
+              </label>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              {([
+                ["voicemail_enabled", "Voicemail"],
+                ["masked_calling_enabled", "Masked calling"],
+                ["sms_enabled", "Transactional SMS"],
+                ["a2p_registered", "A2P registered"]
+              ] as const).map(([field, text]) => (
+                <label key={field} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(communicationsInputs[field])}
+                    onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, [field]: event.target.checked })}
+                  />
+                  <span>{text}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">Use a number already purchased or ported in Twilio. SMS requires A2P 10DLC registration before production sends.</p>
+            {communicationsMessage ? <div className="text-sm" role="status">{communicationsMessage}</div> : null}
+            <Button variant="outline" disabled={communicationsBusy} onClick={() => void saveCommunicationsSettings()}>
+              <Save className="size-4" />{communicationsBusy ? "Saving…" : "Save communications settings"}
+            </Button>
           </CardContent>
         </Card>
         <SettingsSection eyebrow="Service routing" title="Capabilities">

@@ -1311,6 +1311,27 @@ verified technician — organization acceptance alone never flips customer visib
 signup/onboarding are wired and deployed. Remaining items: [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md)
 §11.2. **Forward design** (team-based dispatch, org job-intake/accept screens) is designed-ahead.
 
+#### 18.3.1 Provider Communications
+
+Provider communications are tenant-scoped through the same active organization
+boundary as dispatch. Provider admins configure an already-purchased Twilio
+business number, primary/backup forwarding numbers, ring timeout, voicemail,
+masked calling, SMS, and A2P readiness in provider-web Settings. Dispatchers can
+view call history in provider-web Calls and start masked customer callbacks from
+job detail. The backend never exposes Twilio credentials or raw customer/tech
+numbers to client bundles.
+
+Public Twilio webhooks live on the intake FastAPI app:
+`/api/twilio/voice/incoming`, `/api/twilio/voice/status`,
+`/api/twilio/sms/incoming`, and `/api/twilio/sms/status`. Every webhook validates
+the Twilio signature against the public request URL before doing DB work. Inbound
+calls resolve the called Twilio number to one provider organization, attempt to
+match the caller to an active same-tenant customer/job, forward to the provider's
+configured dispatch numbers, and persist idempotent call-session records. SMS is
+transactional only; sends are idempotent by job/purpose/recipient/request hash
+and are skipped unless the provider has SMS enabled and A2P registration marked
+ready. STOP/START updates opt-out state.
+
 ### 18.4 Ops console — `ops-web`
 
 **Purpose:** ClueXP internal operations: **read-only dispatch oversight** + user/resource

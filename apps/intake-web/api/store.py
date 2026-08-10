@@ -1321,7 +1321,7 @@ class Store:
 
     async def create_job_call_session(
         self,
-        job_id: UUID,
+        job_id: UUID | None,
         *,
         caller_type: str,
         callee_type: str,
@@ -1338,6 +1338,63 @@ class Store:
         provider_status: str = "skipped_no_provider",
         metadata: dict | None = None,
     ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_job_call_session_by_provider_sid(
+        self, provider: str, provider_call_sid: str, *, status: str | None = None,
+        provider_status: str | None = None, duration_seconds: int | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_provider_call_sessions(
+        self, org_id: str, *, limit: int = 100
+    ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_organization_phone_settings(self, org_id: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def upsert_organization_phone_settings(
+        self, org_id: str, data: dict, *, updated_by: str | None
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def find_organization_by_twilio_number(self, number: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_job_call_context(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def find_active_job_by_customer_phone(
+        self, org_id: str, phone_e164: str
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def create_sms_delivery(
+        self, *, organization_id: str | None, job_id: str | None,
+        recipient_type: str, to_number: str, from_number: str | None,
+        purpose: str, request_hash: str, provider: str | None,
+        provider_message_sid: str | None, provider_status: str,
+        error_code: str | None = None, metadata: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_sms_delivery_by_provider_sid(
+        self, provider: str, provider_message_sid: str, *, provider_status: str,
+        error_code: str | None = None,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def set_sms_opt_out(
+        self, phone_e164: str, *, organization_id: str | None = None, source: str = "sms_stop"
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def clear_sms_opt_out(self, phone_e164: str) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def is_sms_opted_out(self, phone_e164: str) -> bool:  # pragma: no cover
         raise NotImplementedError
 
     async def list_job_events(self, job_id: UUID) -> list[dict]:  # pragma: no cover
@@ -3322,7 +3379,7 @@ class InMemoryStore(Store):
 
     async def create_job_call_session(
         self,
-        job_id: UUID,
+        job_id: UUID | None,
         *,
         caller_type: str,
         callee_type: str,
@@ -3340,10 +3397,17 @@ class InMemoryStore(Store):
         metadata: dict | None = None,
     ) -> dict:
         calls = self._job_call_sessions = getattr(self, "_job_call_sessions", [])
+        if provider and provider_call_sid:
+            for existing in calls:
+                if existing.get("provider") == provider and existing.get("provider_call_sid") == provider_call_sid:
+                    existing["status"] = status or existing.get("status")
+                    existing["provider_status"] = provider_status or existing.get("provider_status")
+                    existing["metadata"] = {**(existing.get("metadata") or {}), **(metadata or {})}
+                    return dict(existing)
         now = datetime.now(timezone.utc).isoformat()
         row = {
             "id": str(uuid4()),
-            "job_id": str(job_id),
+            "job_id": str(job_id) if job_id else None,
             "caller_type": caller_type,
             "caller_user_id": caller_user_id,
             "caller_technician_id": caller_technician_id,
@@ -3363,8 +3427,194 @@ class InMemoryStore(Store):
             "ended_at": None,
         }
         calls.append(row)
-        await self.log_event_raw(job_id, f"call:{caller_type}:{callee_type}:{status}:{row['id']}")
+        if job_id:
+            await self.log_event_raw(job_id, f"call:{caller_type}:{callee_type}:{status}:{row['id']}")
         return dict(row)
+
+    async def update_job_call_session_by_provider_sid(
+        self, provider: str, provider_call_sid: str, *, status: str | None = None,
+        provider_status: str | None = None, duration_seconds: int | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:
+        now = datetime.now(timezone.utc).isoformat()
+        for row in getattr(self, "_job_call_sessions", []):
+            if row.get("provider") == provider and row.get("provider_call_sid") == provider_call_sid:
+                if status:
+                    row["status"] = status
+                    if status in {"answered", "connected"}:
+                        row["connected_at"] = row.get("connected_at") or now
+                    if status in {"completed", "busy", "failed", "no_answer", "voicemail"}:
+                        row["ended_at"] = row.get("ended_at") or now
+                if provider_status:
+                    row["provider_status"] = provider_status
+                if duration_seconds is not None:
+                    row["duration_seconds"] = duration_seconds
+                row["metadata"] = {**(row.get("metadata") or {}), **(metadata or {})}
+                return dict(row)
+        return None
+
+    async def list_provider_call_sessions(self, org_id: str, *, limit: int = 100) -> list[dict]:
+        rows = [
+            dict(row)
+            for row in getattr(self, "_job_call_sessions", [])
+            if row.get("caller_organization_id") == org_id
+            or row.get("callee_organization_id") == org_id
+            or (row.get("metadata") or {}).get("organization_id") == org_id
+        ]
+        rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        return rows[:limit]
+
+    async def get_organization_phone_settings(self, org_id: str) -> dict | None:
+        return dict(getattr(self, "_organization_phone_settings", {}).get(str(org_id), {})) or None
+
+    async def upsert_organization_phone_settings(
+        self, org_id: str, data: dict, *, updated_by: str | None
+    ) -> dict:
+        settings = self._organization_phone_settings = getattr(self, "_organization_phone_settings", {})
+        current = {
+            "organization_id": str(org_id),
+            "twilio_number": None,
+            "primary_forwarding_number": None,
+            "backup_forwarding_number": None,
+            "ring_timeout_seconds": 20,
+            "business_hours_behavior": "always_forward",
+            "voicemail_enabled": True,
+            "sms_enabled": False,
+            "masked_calling_enabled": False,
+            "a2p_registered": False,
+            "updated_by": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        current.update(settings.get(str(org_id), {}))
+        current.update(data)
+        current["updated_by"] = updated_by
+        current["updated_at"] = datetime.now(timezone.utc).isoformat()
+        settings[str(org_id)] = current
+        return dict(current)
+
+    async def find_organization_by_twilio_number(self, number: str) -> dict | None:
+        for row in getattr(self, "_organization_phone_settings", {}).values():
+            if row.get("twilio_number") == number:
+                org = getattr(self, "_organizations", {}).get(str(row["organization_id"]), {})
+                return {**dict(row), "organization": dict(org)}
+        return None
+
+    async def get_job_call_context(self, job_id: UUID) -> dict | None:
+        jid = str(job_id)
+        status = getattr(self, "_job_status", {}).get(jid)
+        if status is None and job_id in self._tickets:
+            status = _enum_value(self._tickets[job_id].status)
+        if status is None:
+            return None
+        org_id = getattr(self, "_job_fulfillment_org", {}).get(jid) or getattr(self, "_job_org", {}).get(jid)
+        tech_id = getattr(self, "_job_tech", {}).get(jid)
+        tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == str(tech_id)), {})
+        detail = getattr(self, "_job_detail", {}).get(jid, {})
+        ticket = self._tickets.get(job_id)
+        if ticket:
+            detail = {**ticket.model_dump(mode="json"), **detail}
+        return {
+            "job_id": jid,
+            "status": status,
+            "customer_owner_org_id": org_id,
+            "fulfillment_org_id": org_id,
+            "fulfillment_technician_id": tech_id,
+            "customer_phone": detail.get("customer_phone"),
+            "customer_name": detail.get("customer_name"),
+            "technician_phone": tech.get("phone"),
+            "technician_name": tech.get("display_name"),
+            "organization_phone": (getattr(self, "_organizations", {}).get(str(org_id), {}) or {}).get("phone"),
+            "organization_name": (getattr(self, "_organizations", {}).get(str(org_id), {}) or {}).get("display_name"),
+        }
+
+    async def find_active_job_by_customer_phone(self, org_id: str, phone_e164: str) -> dict | None:
+        for jid, owner in getattr(self, "_job_org", {}).items():
+            if str(owner) != str(org_id):
+                continue
+            status = getattr(self, "_job_status", {}).get(jid)
+            if status not in {*ACTIVE_JOB_STATUSES, STATUS_PENDING_DISPATCH}:
+                continue
+            detail = getattr(self, "_job_detail", {}).get(jid, {})
+            if detail.get("customer_phone") == phone_e164:
+                return await self.get_job_call_context(UUID(jid))
+        return None
+
+    async def create_sms_delivery(
+        self, *, organization_id: str | None, job_id: str | None,
+        recipient_type: str, to_number: str, from_number: str | None,
+        purpose: str, request_hash: str, provider: str | None,
+        provider_message_sid: str | None, provider_status: str,
+        error_code: str | None = None, metadata: dict | None = None,
+    ) -> dict:
+        rows = self._sms_deliveries = getattr(self, "_sms_deliveries", [])
+        for row in rows:
+            if (
+                row.get("organization_id") == organization_id
+                and row.get("job_id") == job_id
+                and row.get("recipient_type") == recipient_type
+                and row.get("purpose") == purpose
+                and row.get("request_hash") == request_hash
+            ):
+                return dict(row)
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": str(uuid4()),
+            "organization_id": organization_id,
+            "job_id": job_id,
+            "recipient_type": recipient_type,
+            "to_number": to_number,
+            "from_number": from_number,
+            "purpose": purpose,
+            "provider": provider,
+            "provider_message_sid": provider_message_sid,
+            "provider_status": provider_status,
+            "error_code": error_code,
+            "request_hash": request_hash,
+            "metadata": metadata or {},
+            "created_at": now,
+            "sent_at": now if provider_message_sid else None,
+            "delivered_at": None,
+            "failed_at": now if provider_status in {"failed", "undelivered"} else None,
+        }
+        rows.append(row)
+        if job_id:
+            await self.log_event_raw(UUID(str(job_id)), f"sms:{recipient_type}:{purpose}:{provider_status}:{row['id']}")
+        return dict(row)
+
+    async def update_sms_delivery_by_provider_sid(
+        self, provider: str, provider_message_sid: str, *, provider_status: str,
+        error_code: str | None = None,
+    ) -> dict | None:
+        now = datetime.now(timezone.utc).isoformat()
+        for row in getattr(self, "_sms_deliveries", []):
+            if row.get("provider") == provider and row.get("provider_message_sid") == provider_message_sid:
+                row["provider_status"] = provider_status
+                row["error_code"] = error_code
+                if provider_status == "delivered":
+                    row["delivered_at"] = row.get("delivered_at") or now
+                if provider_status in {"failed", "undelivered"}:
+                    row["failed_at"] = row.get("failed_at") or now
+                return dict(row)
+        return None
+
+    async def set_sms_opt_out(
+        self, phone_e164: str, *, organization_id: str | None = None, source: str = "sms_stop"
+    ) -> dict:
+        rows = self._sms_opt_outs = getattr(self, "_sms_opt_outs", {})
+        row = {
+            "phone_e164": phone_e164,
+            "organization_id": organization_id,
+            "opted_out_at": datetime.now(timezone.utc).isoformat(),
+            "source": source,
+        }
+        rows[phone_e164] = row
+        return dict(row)
+
+    async def clear_sms_opt_out(self, phone_e164: str) -> None:
+        getattr(self, "_sms_opt_outs", {}).pop(phone_e164, None)
+
+    async def is_sms_opted_out(self, phone_e164: str) -> bool:
+        return phone_e164 in getattr(self, "_sms_opt_outs", {})
 
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
@@ -7252,7 +7502,7 @@ class PostgresStore(Store):
     def _call_session_row(row: tuple) -> dict:
         return {
             "id": str(row[0]),
-            "job_id": str(row[1]),
+            "job_id": str(row[1]) if row[1] else None,
             "caller_type": row[2],
             "caller_user_id": str(row[3]) if row[3] else None,
             "caller_technician_id": str(row[4]) if row[4] else None,
@@ -7302,13 +7552,19 @@ class PostgresStore(Store):
                 " provider_call_sid, masked_number, status, provider_status, metadata"
                 ") values (%s, %s, %s::uuid, %s::uuid, %s::uuid, %s, %s::uuid,"
                 " %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)"
+                " on conflict (provider, provider_call_sid)"
+                " where provider is not null and provider_call_sid is not null"
+                " do update set"
+                "  status = excluded.status,"
+                "  provider_status = excluded.provider_status,"
+                "  metadata = job_call_sessions.metadata || excluded.metadata"
                 " returning id, job_id, caller_type, caller_user_id, caller_technician_id,"
                 " caller_organization_id, callee_type, callee_user_id,"
                 " callee_technician_id, callee_organization_id, provider,"
                 " provider_call_sid, masked_number, status, provider_status, metadata,"
                 " created_at, connected_at, ended_at",
                 (
-                    str(job_id), caller_type, caller_user_id, caller_technician_id,
+                    str(job_id) if job_id else None, caller_type, caller_user_id, caller_technician_id,
                     caller_organization_id, callee_type, callee_user_id,
                     callee_technician_id, callee_organization_id, provider,
                     provider_call_sid, masked_number, status, provider_status,
@@ -7316,8 +7572,314 @@ class PostgresStore(Store):
                 ),
             )
             row = await cur.fetchone()
-        await self.log_event_raw(job_id, f"call:{caller_type}:{callee_type}:{status}:{row[0]}")
+        if job_id:
+            await self.log_event_raw(job_id, f"call:{caller_type}:{callee_type}:{status}:{row[0]}")
         return self._call_session_row(row)
+
+    async def update_job_call_session_by_provider_sid(
+        self, provider: str, provider_call_sid: str, *, status: str | None = None,
+        provider_status: str | None = None, duration_seconds: int | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update job_call_sessions set"
+                " status = coalesce(%s, status),"
+                " provider_status = coalesce(%s, provider_status),"
+                " duration_seconds = coalesce(%s, duration_seconds),"
+                " metadata = metadata || %s::jsonb,"
+                " connected_at = case when %s = any(%s) then coalesce(connected_at, now()) else connected_at end,"
+                " ended_at = case when %s = any(%s) then coalesce(ended_at, now()) else ended_at end"
+                " where provider = %s and provider_call_sid = %s"
+                " returning id, job_id, caller_type, caller_user_id, caller_technician_id,"
+                " caller_organization_id, callee_type, callee_user_id,"
+                " callee_technician_id, callee_organization_id, provider,"
+                " provider_call_sid, masked_number, status, provider_status, metadata,"
+                " created_at, connected_at, ended_at",
+                (
+                    status, provider_status, duration_seconds, Jsonb(metadata or {}),
+                    status, ["answered", "connected"], status,
+                    ["completed", "busy", "failed", "no_answer", "voicemail"],
+                    provider, provider_call_sid,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._call_session_row(row) if row else None
+
+    async def list_provider_call_sessions(self, org_id: str, *, limit: int = 100) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, job_id, caller_type, caller_user_id, caller_technician_id,"
+                " caller_organization_id, callee_type, callee_user_id,"
+                " callee_technician_id, callee_organization_id, provider,"
+                " provider_call_sid, masked_number, status, provider_status, metadata,"
+                " created_at, connected_at, ended_at"
+                " from job_call_sessions"
+                " where caller_organization_id = %s::uuid"
+                " or callee_organization_id = %s::uuid"
+                " or metadata->>'organization_id' = %s"
+                " order by created_at desc limit %s",
+                (org_id, org_id, org_id, limit),
+            )
+            rows = await cur.fetchall()
+        return [self._call_session_row(row) for row in rows]
+
+    @staticmethod
+    def _phone_settings_row(row: tuple | None) -> dict | None:
+        if not row:
+            return None
+        return {
+            "organization_id": str(row[0]),
+            "twilio_number": row[1],
+            "primary_forwarding_number": row[2],
+            "backup_forwarding_number": row[3],
+            "ring_timeout_seconds": row[4],
+            "business_hours_behavior": row[5],
+            "voicemail_enabled": row[6],
+            "sms_enabled": row[7],
+            "masked_calling_enabled": row[8],
+            "a2p_registered": row[9],
+            "updated_at": row[10].isoformat() if row[10] else None,
+            "updated_by": str(row[11]) if row[11] else None,
+        }
+
+    async def get_organization_phone_settings(self, org_id: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select organization_id, twilio_number, primary_forwarding_number,"
+                " backup_forwarding_number, ring_timeout_seconds,"
+                " business_hours_behavior, voicemail_enabled, sms_enabled,"
+                " masked_calling_enabled, a2p_registered, updated_at, updated_by"
+                " from organization_phone_settings where organization_id = %s",
+                (org_id,),
+            )
+            row = await cur.fetchone()
+        return self._phone_settings_row(row)
+
+    async def upsert_organization_phone_settings(
+        self, org_id: str, data: dict, *, updated_by: str | None
+    ) -> dict:
+        cols = [
+            "twilio_number", "primary_forwarding_number", "backup_forwarding_number",
+            "ring_timeout_seconds", "business_hours_behavior", "voicemail_enabled",
+            "sms_enabled", "masked_calling_enabled", "a2p_registered",
+        ]
+        values = {key: data.get(key) for key in cols}
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into organization_phone_settings ("
+                " organization_id, twilio_number, primary_forwarding_number,"
+                " backup_forwarding_number, ring_timeout_seconds,"
+                " business_hours_behavior, voicemail_enabled, sms_enabled,"
+                " masked_calling_enabled, a2p_registered, updated_by"
+                ") values (%s, %s, %s, %s, coalesce(%s, 20), coalesce(%s, 'always_forward'),"
+                " coalesce(%s, true), coalesce(%s, false), coalesce(%s, false), coalesce(%s, false), %s::uuid)"
+                " on conflict (organization_id) do update set"
+                " twilio_number = excluded.twilio_number,"
+                " primary_forwarding_number = excluded.primary_forwarding_number,"
+                " backup_forwarding_number = excluded.backup_forwarding_number,"
+                " ring_timeout_seconds = excluded.ring_timeout_seconds,"
+                " business_hours_behavior = excluded.business_hours_behavior,"
+                " voicemail_enabled = excluded.voicemail_enabled,"
+                " sms_enabled = excluded.sms_enabled,"
+                " masked_calling_enabled = excluded.masked_calling_enabled,"
+                " a2p_registered = excluded.a2p_registered,"
+                " updated_by = excluded.updated_by,"
+                " updated_at = now()"
+                " returning organization_id, twilio_number, primary_forwarding_number,"
+                " backup_forwarding_number, ring_timeout_seconds,"
+                " business_hours_behavior, voicemail_enabled, sms_enabled,"
+                " masked_calling_enabled, a2p_registered, updated_at, updated_by",
+                (
+                    org_id, values["twilio_number"], values["primary_forwarding_number"],
+                    values["backup_forwarding_number"], values["ring_timeout_seconds"],
+                    values["business_hours_behavior"], values["voicemail_enabled"],
+                    values["sms_enabled"], values["masked_calling_enabled"],
+                    values["a2p_registered"], updated_by,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._phone_settings_row(row) or {}
+
+    async def find_organization_by_twilio_number(self, number: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select ps.organization_id, ps.twilio_number, ps.primary_forwarding_number,"
+                " ps.backup_forwarding_number, ps.ring_timeout_seconds,"
+                " ps.business_hours_behavior, ps.voicemail_enabled, ps.sms_enabled,"
+                " ps.masked_calling_enabled, ps.a2p_registered, ps.updated_at, ps.updated_by,"
+                " o.display_name"
+                " from organization_phone_settings ps"
+                " join organizations o on o.id = ps.organization_id"
+                " where ps.twilio_number = %s",
+                (number,),
+            )
+            row = await cur.fetchone()
+        settings = self._phone_settings_row(row[:12]) if row else None
+        if not settings:
+            return None
+        return {**settings, "organization": {"id": settings["organization_id"], "display_name": row[12]}}
+
+    async def get_job_call_context(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select j.id, j.status, j.fulfillment_technician_id, j.fulfillment_org_id,"
+                " j.customer_owner_org_id, c.phone, c.name, t.phone, t.display_name,"
+                " o.phone, o.display_name"
+                " from jobs j"
+                " left join customers c on c.id = j.customer_id"
+                " left join technicians t on t.id = j.fulfillment_technician_id"
+                " left join organizations o on o.id = coalesce(j.fulfillment_org_id, j.customer_owner_org_id)"
+                " where j.id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "job_id": str(row[0]),
+            "status": row[1],
+            "fulfillment_technician_id": str(row[2]) if row[2] else None,
+            "fulfillment_org_id": str(row[3]) if row[3] else None,
+            "customer_owner_org_id": str(row[4]) if row[4] else None,
+            "customer_phone": row[5],
+            "customer_name": row[6],
+            "technician_phone": row[7],
+            "technician_name": row[8],
+            "organization_phone": row[9],
+            "organization_name": row[10],
+        }
+
+    async def find_active_job_by_customer_phone(self, org_id: str, phone_e164: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select j.id"
+                " from jobs j join customers c on c.id = j.customer_id"
+                " where (j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)"
+                " and c.phone = %s"
+                " and j.status = any(%s)"
+                " order by j.updated_at desc limit 1",
+                (org_id, org_id, phone_e164, [*ACTIVE_JOB_STATUSES, STATUS_PENDING_DISPATCH]),
+            )
+            row = await cur.fetchone()
+        return await self.get_job_call_context(row[0]) if row else None
+
+    @staticmethod
+    def _sms_delivery_row(row: tuple | None) -> dict | None:
+        if not row:
+            return None
+        return {
+            "id": str(row[0]),
+            "organization_id": str(row[1]) if row[1] else None,
+            "job_id": str(row[2]) if row[2] else None,
+            "recipient_type": row[3],
+            "to_number": row[4],
+            "from_number": row[5],
+            "purpose": row[6],
+            "provider": row[7],
+            "provider_message_sid": row[8],
+            "provider_status": row[9],
+            "error_code": row[10],
+            "request_hash": row[11],
+            "metadata": row[12] or {},
+            "created_at": row[13].isoformat() if row[13] else None,
+            "sent_at": row[14].isoformat() if row[14] else None,
+            "delivered_at": row[15].isoformat() if row[15] else None,
+            "failed_at": row[16].isoformat() if row[16] else None,
+        }
+
+    async def create_sms_delivery(
+        self, *, organization_id: str | None, job_id: str | None,
+        recipient_type: str, to_number: str, from_number: str | None,
+        purpose: str, request_hash: str, provider: str | None,
+        provider_message_sid: str | None, provider_status: str,
+        error_code: str | None = None, metadata: dict | None = None,
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into communication_sms_deliveries ("
+                " organization_id, job_id, recipient_type, to_number, from_number,"
+                " purpose, provider, provider_message_sid, provider_status,"
+                " error_code, request_hash, metadata, sent_at, failed_at"
+                ") values (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
+                " case when %s is not null then now() else null end,"
+                " case when %s = any(%s) then now() else null end)"
+                " on conflict (organization_id, job_id, recipient_type, purpose, request_hash)"
+                " do update set id = communication_sms_deliveries.id"
+                " returning id, organization_id, job_id, recipient_type, to_number,"
+                " from_number, purpose, provider, provider_message_sid,"
+                " provider_status, error_code, request_hash, metadata, created_at,"
+                " sent_at, delivered_at, failed_at",
+                (
+                    organization_id, job_id, recipient_type, to_number, from_number,
+                    purpose, provider, provider_message_sid, provider_status,
+                    error_code, request_hash, Jsonb(metadata or {}),
+                    provider_message_sid, provider_status, ["failed", "undelivered"],
+                ),
+            )
+            row = await cur.fetchone()
+        if job_id:
+            await self.log_event_raw(UUID(str(job_id)), f"sms:{recipient_type}:{purpose}:{provider_status}:{row[0]}")
+        return self._sms_delivery_row(row) or {}
+
+    async def update_sms_delivery_by_provider_sid(
+        self, provider: str, provider_message_sid: str, *, provider_status: str,
+        error_code: str | None = None,
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update communication_sms_deliveries set"
+                " provider_status = %s,"
+                " error_code = coalesce(%s, error_code),"
+                " delivered_at = case when %s = 'delivered' then coalesce(delivered_at, now()) else delivered_at end,"
+                " failed_at = case when %s = any(%s) then coalesce(failed_at, now()) else failed_at end"
+                " where provider = %s and provider_message_sid = %s"
+                " returning id, organization_id, job_id, recipient_type, to_number,"
+                " from_number, purpose, provider, provider_message_sid,"
+                " provider_status, error_code, request_hash, metadata, created_at,"
+                " sent_at, delivered_at, failed_at",
+                (provider_status, error_code, provider_status, provider_status, ["failed", "undelivered"], provider, provider_message_sid),
+            )
+            row = await cur.fetchone()
+        return self._sms_delivery_row(row)
+
+    async def set_sms_opt_out(
+        self, phone_e164: str, *, organization_id: str | None = None, source: str = "sms_stop"
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into communication_opt_outs (phone_e164, organization_id, source)"
+                " values (%s, %s::uuid, %s)"
+                " on conflict (phone_e164) do update set"
+                " organization_id = coalesce(excluded.organization_id, communication_opt_outs.organization_id),"
+                " opted_out_at = now(), source = excluded.source"
+                " returning phone_e164, organization_id, opted_out_at, source",
+                (phone_e164, organization_id, source),
+            )
+            row = await cur.fetchone()
+        return {
+            "phone_e164": row[0],
+            "organization_id": str(row[1]) if row[1] else None,
+            "opted_out_at": row[2].isoformat() if row[2] else None,
+            "source": row[3],
+        }
+
+    async def clear_sms_opt_out(self, phone_e164: str) -> None:
+        async with await self._connect() as conn:
+            await conn.execute("delete from communication_opt_outs where phone_e164 = %s", (phone_e164,))
+
+    async def is_sms_opted_out(self, phone_e164: str) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select 1 from communication_opt_outs where phone_e164 = %s",
+                (phone_e164,),
+            )
+            row = await cur.fetchone()
+        return row is not None
 
     async def record_customer_review(
         self,

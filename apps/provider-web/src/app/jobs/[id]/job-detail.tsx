@@ -13,7 +13,7 @@ import {
   PageHeader,
   StatCard,
 } from "@cluexp/console-ui";
-import { MessageSquare, RefreshCw, Send, Star } from "lucide-react";
+import { MessageSquare, PhoneCall, RefreshCw, Send, Star } from "lucide-react";
 import { ProviderActionDialog } from "../../provider-action-dialog";
 
 type PaymentReport = { amount: number; currency: string; method: string } | null;
@@ -109,6 +109,7 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
   const [busy, setBusy] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [sendingCustomerTemplate, setSendingCustomerTemplate] = useState<string | null>(null);
+  const [startingCall, setStartingCall] = useState(false);
 
   const load = useCallback(async () => {
     setState("loading");
@@ -230,6 +231,22 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
     }
   }
 
+  async function startCustomerCall() {
+    setStartingCall(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/calls/customer`, { method: "POST" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail?.message || result.detail || "Could not start masked call");
+      setMessage(result.message || (result.available ? "Masked call started." : "Masked calling is unavailable."));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start masked call");
+    } finally {
+      setStartingCall(false);
+    }
+  }
+
   useEffect(() => { void load(); }, [load]);
 
   if (state === "notfound") {
@@ -270,6 +287,10 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
             <Button variant="outline" onClick={() => void load()} disabled={state === "loading"}>
               <RefreshCw className={state === "loading" ? "animate-spin" : undefined} />
               {state === "loading" ? "Refreshing" : "Refresh"}
+            </Button>
+            <Button variant="outline" onClick={() => void startCustomerCall()} disabled={startingCall || !active}>
+              <PhoneCall className="size-4" />
+              {startingCall ? "Calling" : "Call customer"}
             </Button>
           </div>
         }

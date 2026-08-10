@@ -43,6 +43,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     { ...defaultNav[0], label: "Recovery", href: "/recovery", icon: RotateCcw, group: "Dispatch" },
     // CRM
     { ...defaultNav[0], label: "Call Intake", href: "/intake/new", icon: PhoneCall, group: "CRM" },
+    { ...defaultNav[0], label: "Calls", href: "/calls", icon: PhoneCall, group: "CRM" },
     { ...byHref("/escalations"), label: "Escalations", group: "CRM" },
     { ...byHref("/messages"), label: "Messages", group: "CRM" },
     // Workforce

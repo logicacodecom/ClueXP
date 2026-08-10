@@ -25,6 +25,14 @@ from pydantic import BaseModel, field_validator
 from api.geocode import geocode, places_autocomplete, reverse_geocode
 from api import storage
 from api.auth import create_access_token, decode_access_token
+from api.communications import (
+    get_communications_provider,
+    inbound_forward_twiml,
+    normalize_e164,
+    public_request_url,
+    redact_phone,
+    verify_twilio_signature,
+)
 from api import config
 from api.job_text_parser import MAX_INPUT_LENGTH, PARSER_VERSION, parse_job_text
 from api.service_catalog import active_skill_codes, normalize_skill_code
@@ -670,6 +678,24 @@ class ProviderFinancialSettingsUpdate(BaseModel):
     tax_rate_basis_points: int | None = None
     card_fee_basis_points: int | None = None
     card_fee_fixed_cents: int | None = None
+
+
+class ProviderPhoneSettingsUpdate(BaseModel):
+    twilio_number: str | None = None
+    primary_forwarding_number: str | None = None
+    backup_forwarding_number: str | None = None
+    ring_timeout_seconds: int | None = None
+    business_hours_behavior: str | None = None
+    voicemail_enabled: bool | None = None
+    sms_enabled: bool | None = None
+    masked_calling_enabled: bool | None = None
+    a2p_registered: bool | None = None
+
+
+class TransactionalSmsRequest(BaseModel):
+    job_id: UUID
+    purpose: str
+    recipient_type: str = "customer"
 
 
 class ProviderTechnicianAgreementUpdate(BaseModel):
@@ -3904,6 +3930,35 @@ async def update_provider_intake_settings(
     return await _resolve_intake_settings(org_id)
 
 
+@app.get("/provider/settings/communications")
+async def get_provider_communications_settings(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    return {"settings": _safe_phone_settings(await store.get_organization_phone_settings(org_id))}
+
+
+@app.patch("/provider/settings/communications")
+async def update_provider_communications_settings(
+    payload: ProviderPhoneSettingsUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin"})
+    org_id = _require_dispatch_org(session)
+    data = _validate_phone_settings_payload(payload)
+    if not data:
+        raise HTTPException(status_code=422, detail="No communications settings provided")
+    current = await store.get_organization_phone_settings(org_id) or {}
+    merged = {**current, **data}
+    saved = await store.upsert_organization_phone_settings(
+        org_id,
+        merged,
+        updated_by=session.get("user", {}).get("id"),
+    )
+    return {"settings": _safe_phone_settings(saved)}
+
+
 @app.get("/provider/users")
 async def list_provider_users(
     session: dict[str, Any] = Depends(require_session),
@@ -4556,17 +4611,13 @@ async def customer_start_technician_call(token: str) -> dict[str, Any]:
     job_id = await _require_customer_message_job(token, rate_limit=True)
     lifecycle = await store.get_job_lifecycle(job_id)
     tech_id = (lifecycle or {}).get("fulfillment_technician_id")
-    row = await store.create_job_call_session(
+    return await _start_masked_call(
         job_id,
         caller_type="customer",
         caller_user_id=None,
         callee_type="technician",
         callee_technician_id=str(tech_id) if tech_id else None,
-        status="unavailable",
-        provider_status="skipped_no_provider",
-        metadata={"reason": "voice_provider_not_configured"},
     )
-    return _call_unavailable_response(row)
 
 
 @app.post("/t/{token}/messages")
@@ -4877,6 +4928,15 @@ async def technician_update_status(
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Status changed concurrently")
+    purpose_by_status = {
+        STATUS_EN_ROUTE: "technician_en_route",
+        STATUS_COMPLETED_PENDING: "completion_awaiting_customer_confirmation",
+    }
+    if payload.status in purpose_by_status:
+        try:
+            await _send_transactional_sms(ticket_id, purpose_by_status[payload.status], "customer")
+        except Exception:
+            logger.exception("transactional_sms_lifecycle_failed", extra={"job_id": str(ticket_id), "status": payload.status})
     return {"status": updated["status"]}
 
 
@@ -5040,6 +5100,10 @@ async def verify_arrival(
             job_id,
             f"arrival:dispatcher_verified_by_tech:tech={tech['id']}:dispatcher={dispatcher_name[:80]}:reason={reason[:140]}",
         )
+        try:
+            await _send_transactional_sms(job_id, "technician_arrived", "customer")
+        except Exception:
+            logger.exception("transactional_sms_arrival_failed", extra={"job_id": str(job_id), "method": method})
         result = {"status": updated["status"], "verification_method": method}
         if cmid:
             await store.complete_technician_mutation(
@@ -5073,6 +5137,10 @@ async def verify_arrival(
     if updated is None:
         await _fail(409, "Status changed concurrently")
     await store.log_event_raw(job_id, f"arrival:pin_verified:tech={tech['id']}")
+    try:
+        await _send_transactional_sms(job_id, "technician_arrived", "customer")
+    except Exception:
+        logger.exception("transactional_sms_arrival_failed", extra={"job_id": str(job_id), "method": method})
     success = {"status": updated["status"]}
     if cmid:
         await store.complete_technician_mutation(
@@ -5288,6 +5356,428 @@ def _call_unavailable_response(row: dict[str, Any]) -> dict[str, Any]:
         "message": "Masked calling provider is not configured.",
         "call": _public_call_session(row),
     }
+
+
+_CALL_ALLOWED_STATUSES = {
+    STATUS_ASSIGNED,
+    STATUS_EN_ROUTE,
+    STATUS_ARRIVED,
+    STATUS_IN_PROGRESS,
+    STATUS_COMPLETED_PENDING,
+}
+_SMS_PURPOSES = {
+    "intake_confirmation",
+    "technician_assigned",
+    "technician_en_route",
+    "technician_arrived",
+    "completion_awaiting_customer_confirmation",
+    "tracking_link_reminder",
+    "provider_missed_call_callback_notice",
+}
+
+
+def _twilio_status_callback_url(path: str) -> str | None:
+    base = os.environ.get("TWILIO_WEBHOOK_BASE_URL", "").strip().rstrip("/")
+    return f"{base}{path}" if base else None
+
+
+def _safe_phone_settings(row: dict | None) -> dict[str, Any]:
+    row = row or {}
+    return {
+        "twilio_number": row.get("twilio_number"),
+        "primary_forwarding_number": row.get("primary_forwarding_number"),
+        "backup_forwarding_number": row.get("backup_forwarding_number"),
+        "ring_timeout_seconds": row.get("ring_timeout_seconds", 20),
+        "business_hours_behavior": row.get("business_hours_behavior", "always_forward"),
+        "voicemail_enabled": bool(row.get("voicemail_enabled", True)),
+        "sms_enabled": bool(row.get("sms_enabled", False)),
+        "masked_calling_enabled": bool(row.get("masked_calling_enabled", False)),
+        "a2p_registered": bool(row.get("a2p_registered", False)),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _validate_phone_settings_payload(payload: ProviderPhoneSettingsUpdate) -> dict[str, Any]:
+    raw = payload.model_dump(exclude_unset=True)
+    out: dict[str, Any] = {}
+    phone_fields = {"twilio_number", "primary_forwarding_number", "backup_forwarding_number"}
+    for field, value in raw.items():
+        if field in phone_fields:
+            if value is None:
+                out[field] = None
+            else:
+                normalized = normalize_e164(value)
+                if not normalized:
+                    raise HTTPException(status_code=422, detail=f"{field} must be a valid E.164-capable phone number")
+                out[field] = normalized
+        elif field == "ring_timeout_seconds":
+            if value is None:
+                out[field] = 20
+            elif int(value) < 5 or int(value) > 60:
+                raise HTTPException(status_code=422, detail="ring_timeout_seconds must be between 5 and 60")
+            else:
+                out[field] = int(value)
+        elif field == "business_hours_behavior":
+            if value not in {"always_forward", "voicemail_after_hours", None}:
+                raise HTTPException(status_code=422, detail="Invalid business_hours_behavior")
+            out[field] = value or "always_forward"
+        else:
+            out[field] = bool(value)
+    return out
+
+
+async def _start_masked_call(
+    job_id: UUID,
+    *,
+    caller_type: str,
+    callee_type: str,
+    caller_user_id: str | None = None,
+    caller_technician_id: str | None = None,
+    caller_organization_id: str | None = None,
+    callee_technician_id: str | None = None,
+    callee_organization_id: str | None = None,
+) -> dict[str, Any]:
+    context = await store.get_job_call_context(job_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if context.get("status") not in _CALL_ALLOWED_STATUSES:
+        raise HTTPException(status_code=409, detail="Calling is closed for this job.")
+    org_id = context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
+    settings = await store.get_organization_phone_settings(str(org_id)) if org_id else None
+    from_number = normalize_e164((settings or {}).get("twilio_number") or os.environ.get("TWILIO_DEFAULT_FROM_NUMBER"))
+    if not from_number:
+        result_row = await store.create_job_call_session(
+            job_id,
+            caller_type=caller_type,
+            caller_user_id=caller_user_id,
+            caller_technician_id=caller_technician_id,
+            caller_organization_id=caller_organization_id,
+            callee_type=callee_type,
+            callee_technician_id=callee_technician_id,
+            callee_organization_id=callee_organization_id,
+            status="unavailable",
+            provider_status="skipped_no_provider",
+            metadata={"reason": "missing_provider_number"},
+        )
+        return _call_unavailable_response(result_row)
+    if not (settings or {}).get("masked_calling_enabled"):
+        result_row = await store.create_job_call_session(
+            job_id,
+            caller_type=caller_type,
+            caller_user_id=caller_user_id,
+            caller_technician_id=caller_technician_id,
+            caller_organization_id=caller_organization_id,
+            callee_type=callee_type,
+            callee_technician_id=callee_technician_id,
+            callee_organization_id=callee_organization_id,
+            status="unavailable",
+            provider_status="skipped_no_provider",
+            metadata={"reason": "masked_calling_disabled"},
+        )
+        return {"available": False, "message": "Masked calling is disabled for this provider.", "call": _public_call_session(result_row)}
+    caller_number = {
+        "technician": context.get("technician_phone"),
+        "customer": context.get("customer_phone"),
+        "dispatcher": (settings or {}).get("primary_forwarding_number") or context.get("organization_phone"),
+        "provider_admin": (settings or {}).get("primary_forwarding_number") or context.get("organization_phone"),
+    }.get(caller_type)
+    callee_number = {
+        "customer": context.get("customer_phone"),
+        "technician": context.get("technician_phone"),
+        "operations": (settings or {}).get("primary_forwarding_number") or context.get("organization_phone"),
+    }.get(callee_type)
+    caller_e164 = normalize_e164(caller_number)
+    callee_e164 = normalize_e164(callee_number)
+    if not caller_e164 or not callee_e164:
+        row = await store.create_job_call_session(
+            job_id,
+            caller_type=caller_type,
+            caller_user_id=caller_user_id,
+            caller_technician_id=caller_technician_id,
+            caller_organization_id=caller_organization_id,
+            callee_type=callee_type,
+            callee_technician_id=callee_technician_id,
+            callee_organization_id=callee_organization_id,
+            status="failed",
+            provider_status="failed",
+            masked_number=from_number,
+            metadata={"reason": "call_party_unreachable"},
+        )
+        raise HTTPException(status_code=409, detail={"code": "call_party_unreachable", "message": "A verified phone number is missing for this call.", "call": _public_call_session(row)})
+    result = get_communications_provider().start_masked_call(
+        caller_number=caller_e164,
+        callee_number=callee_e164,
+        from_number=from_number,
+        status_callback_url=_twilio_status_callback_url("/api/twilio/voice/status"),
+    )
+    row = await store.create_job_call_session(
+        job_id,
+        caller_type=caller_type,
+        caller_user_id=caller_user_id,
+        caller_technician_id=caller_technician_id,
+        caller_organization_id=caller_organization_id,
+        callee_type=callee_type,
+        callee_technician_id=callee_technician_id,
+        callee_organization_id=callee_organization_id,
+        provider=result.provider,
+        provider_call_sid=result.provider_call_sid,
+        masked_number=result.masked_number,
+        status=result.status,
+        provider_status=result.provider_status,
+        metadata={**result.metadata, "caller_redacted": redact_phone(caller_e164), "callee_redacted": redact_phone(callee_e164)},
+    )
+    return {"available": result.available, "message": result.message, "call": _public_call_session(row)}
+
+
+def _twilio_call_status_to_internal(status: str | None) -> str:
+    value = (status or "").strip().lower()
+    return {
+        "queued": "requested",
+        "initiated": "initiated",
+        "ringing": "ringing",
+        "in-progress": "connected",
+        "answered": "answered",
+        "completed": "completed",
+        "busy": "busy",
+        "failed": "failed",
+        "no-answer": "no_answer",
+        "canceled": "failed",
+    }.get(value, "requested")
+
+
+async def _verified_twilio_form(request: Request) -> tuple[dict[str, Any], str]:
+    form = await request.form()
+    params = {str(k): str(v) for k, v in form.items()}
+    url = public_request_url(str(request.url), {k.lower(): v for k, v in request.headers.items()})
+    signature = request.headers.get("x-twilio-signature")
+    if not verify_twilio_signature(url, params, signature):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+    return params, url
+
+
+@app.post("/twilio/voice/incoming")
+async def twilio_voice_incoming(request: Request) -> Response:
+    params, _ = await _verified_twilio_form(request)
+    to_number = normalize_e164(params.get("To"))
+    from_number = normalize_e164(params.get("From"))
+    call_sid = params.get("CallSid")
+    if not to_number or not call_sid:
+        return Response(
+            content=inbound_forward_twiml(
+                primary_number=None,
+                backup_number=None,
+                caller_id=None,
+                timeout_seconds=20,
+                voicemail_enabled=False,
+                fallback_message="We could not route this call. Please try again later.",
+            ),
+            media_type="application/xml",
+        )
+    org = await store.find_organization_by_twilio_number(to_number)
+    if not org:
+        return Response(
+            content=inbound_forward_twiml(
+                primary_number=None,
+                backup_number=None,
+                caller_id=None,
+                timeout_seconds=20,
+                voicemail_enabled=False,
+                fallback_message="This ClueXP number is not assigned to a provider.",
+            ),
+            media_type="application/xml",
+        )
+    org_id = str(org["organization_id"])
+    matched = await store.find_active_job_by_customer_phone(org_id, from_number) if from_number else None
+    status = _twilio_call_status_to_internal(params.get("CallStatus") or "initiated")
+    await store.create_job_call_session(
+        UUID(matched["job_id"]) if matched and matched.get("job_id") else None,
+        caller_type="customer",
+        callee_type="operations",
+        callee_organization_id=org_id,
+        provider="twilio",
+        provider_call_sid=call_sid,
+        masked_number=to_number,
+        status=status,
+        provider_status=params.get("CallStatus") or "initiated",
+        metadata={
+            "direction": "inbound",
+            "organization_id": org_id,
+            "caller_redacted": redact_phone(from_number),
+            "called_number": to_number,
+            "matched_job": bool(matched),
+        },
+    )
+    return Response(
+        content=inbound_forward_twiml(
+            primary_number=org.get("primary_forwarding_number"),
+            backup_number=org.get("backup_forwarding_number"),
+            caller_id=to_number,
+            timeout_seconds=int(org.get("ring_timeout_seconds") or 20),
+            voicemail_enabled=bool(org.get("voicemail_enabled", True)),
+            fallback_message=f"{(org.get('organization') or {}).get('display_name') or 'This provider'} is unavailable right now. Please call again later.",
+        ),
+        media_type="application/xml",
+    )
+
+
+@app.post("/twilio/voice/status")
+async def twilio_voice_status(request: Request) -> dict[str, Any]:
+    params, _ = await _verified_twilio_form(request)
+    sid = params.get("CallSid")
+    if not sid:
+        raise HTTPException(status_code=422, detail="CallSid is required")
+    duration = None
+    if params.get("CallDuration"):
+        try:
+            duration = int(params["CallDuration"])
+        except ValueError:
+            duration = None
+    row = await store.update_job_call_session_by_provider_sid(
+        "twilio",
+        sid,
+        status=_twilio_call_status_to_internal(params.get("CallStatus")),
+        provider_status=params.get("CallStatus"),
+        duration_seconds=duration,
+        metadata={
+            "twilio_sequence": params.get("SequenceNumber"),
+            "twilio_error_code": params.get("ErrorCode"),
+        },
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Call session not found")
+    return {"status": "ok"}
+
+
+@app.post("/twilio/sms/status")
+async def twilio_sms_status(request: Request) -> dict[str, Any]:
+    params, _ = await _verified_twilio_form(request)
+    sid = params.get("MessageSid") or params.get("SmsSid")
+    if not sid:
+        raise HTTPException(status_code=422, detail="MessageSid is required")
+    row = await store.update_sms_delivery_by_provider_sid(
+        "twilio",
+        sid,
+        provider_status=params.get("MessageStatus") or params.get("SmsStatus") or "sent",
+        error_code=params.get("ErrorCode"),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="SMS delivery not found")
+    return {"status": "ok"}
+
+
+@app.post("/twilio/sms/incoming")
+async def twilio_sms_incoming(request: Request) -> Response:
+    params, _ = await _verified_twilio_form(request)
+    from_number = normalize_e164(params.get("From"))
+    body = (params.get("Body") or "").strip().upper()
+    if from_number and body in {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"}:
+        await store.set_sms_opt_out(from_number, source="sms_stop")
+        response = "You are unsubscribed from ClueXP transactional SMS. Reply HELP for support."
+    elif from_number and body == "START":
+        await store.clear_sms_opt_out(from_number)
+        response = "ClueXP transactional SMS is enabled again."
+    else:
+        response = "ClueXP sends service notifications only. Reply STOP to opt out."
+    return Response(content=f"<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>{response}</Message></Response>", media_type="application/xml")
+
+
+def _sms_body(purpose: str, *, provider_name: str | None, tracking_url: str | None) -> str:
+    name = provider_name or "Your service provider"
+    link = f" Track: {tracking_url}" if tracking_url else ""
+    messages = {
+        "intake_confirmation": f"{name} received your service request.{link}",
+        "technician_assigned": f"{name} assigned a technician to your request.{link}",
+        "technician_en_route": f"{name}: your technician is on the way.{link}",
+        "technician_arrived": f"{name}: your technician has arrived.",
+        "completion_awaiting_customer_confirmation": f"{name}: service is marked complete. Please confirm in your tracking page.{link}",
+        "tracking_link_reminder": f"{name}: here is your secure tracking link.{link}",
+        "provider_missed_call_callback_notice": f"{name}: we missed your call and will follow up shortly.",
+    }
+    return messages[purpose]
+
+
+async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: str = "customer") -> dict[str, Any]:
+    if purpose not in _SMS_PURPOSES:
+        raise HTTPException(status_code=422, detail=f"purpose must be one of {sorted(_SMS_PURPOSES)}")
+    if recipient_type not in {"customer", "technician"}:
+        raise HTTPException(status_code=422, detail="recipient_type must be customer or technician")
+    context = await store.get_job_call_context(job_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    org_id = context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
+    settings = await store.get_organization_phone_settings(str(org_id)) if org_id else None
+    to_number = normalize_e164(context.get("customer_phone") if recipient_type == "customer" else context.get("technician_phone"))
+    from_number = normalize_e164((settings or {}).get("twilio_number") or os.environ.get("TWILIO_DEFAULT_FROM_NUMBER"))
+    tracking_token = await store.get_tracking_token(job_id)
+    base = os.environ.get("CUSTOMER_INTAKE_BASE_URL") or os.environ.get("NEXT_PUBLIC_INTAKE_BASE_URL") or ""
+    tracking_url = f"{base.rstrip('/')}/t/{tracking_token}" if base and tracking_token else None
+    req_hash = _mutation_request_hash("transactional-sms", str(job_id), purpose, recipient_type, tracking_url or "")
+    if not to_number or not from_number:
+        row = await store.create_sms_delivery(
+            organization_id=str(org_id) if org_id else None,
+            job_id=str(job_id),
+            recipient_type=recipient_type,
+            to_number=to_number or "missing",
+            from_number=from_number,
+            purpose=purpose,
+            request_hash=req_hash,
+            provider=None,
+            provider_message_sid=None,
+            provider_status="skipped_no_provider",
+            metadata={"reason": "missing_sms_number"},
+        )
+        return {"sent": False, "delivery": {**row, "to_number": redact_phone(row.get("to_number"))}}
+    if await store.is_sms_opted_out(to_number):
+        row = await store.create_sms_delivery(
+            organization_id=str(org_id) if org_id else None,
+            job_id=str(job_id),
+            recipient_type=recipient_type,
+            to_number=to_number,
+            from_number=from_number,
+            purpose=purpose,
+            request_hash=req_hash,
+            provider=None,
+            provider_message_sid=None,
+            provider_status="skipped_no_provider",
+            metadata={"reason": "recipient_opted_out"},
+        )
+        return {"sent": False, "delivery": {**row, "to_number": redact_phone(to_number)}}
+    if not (settings or {}).get("sms_enabled") or not (settings or {}).get("a2p_registered"):
+        row = await store.create_sms_delivery(
+            organization_id=str(org_id) if org_id else None,
+            job_id=str(job_id),
+            recipient_type=recipient_type,
+            to_number=to_number,
+            from_number=from_number,
+            purpose=purpose,
+            request_hash=req_hash,
+            provider=None,
+            provider_message_sid=None,
+            provider_status="skipped_no_provider",
+            metadata={"reason": "sms_disabled_or_a2p_unregistered"},
+        )
+        return {"sent": False, "delivery": {**row, "to_number": redact_phone(to_number)}}
+    result = get_communications_provider().send_sms(
+        to_number=to_number,
+        from_number=from_number,
+        body=_sms_body(purpose, provider_name=context.get("organization_name"), tracking_url=tracking_url),
+        status_callback_url=_twilio_status_callback_url("/api/twilio/sms/status"),
+    )
+    row = await store.create_sms_delivery(
+        organization_id=str(org_id) if org_id else None,
+        job_id=str(job_id),
+        recipient_type=recipient_type,
+        to_number=to_number,
+        from_number=from_number,
+        purpose=purpose,
+        request_hash=req_hash,
+        provider=result.provider,
+        provider_message_sid=result.provider_message_sid,
+        provider_status=result.provider_status,
+        error_code=result.error_code,
+        metadata=result.metadata or {},
+    )
+    return {"sent": result.sent, "delivery": {**row, "to_number": redact_phone(to_number)}}
 
 
 @app.post("/jobs/{job_id}/report-issue")
@@ -5516,18 +6006,14 @@ async def technician_start_job_call(
         raise HTTPException(status_code=404, detail="Not found")
     lifecycle = await _require_technician_message_job(job_id, session)
     tech = session["technician"]
-    row = await store.create_job_call_session(
+    return await _start_masked_call(
         job_id,
         caller_type="technician",
         caller_user_id=str(session.get("user", {}).get("id") or tech["id"]),
         caller_technician_id=str(tech["id"]),
         callee_type=callee_type,
         callee_organization_id=lifecycle.get("fulfillment_org_id") if callee_type == "operations" else None,
-        status="unavailable",
-        provider_status="skipped_no_provider",
-        metadata={"reason": "voice_provider_not_configured"},
     )
-    return _call_unavailable_response(row)
 
 
 @app.get("/technician/jobs/history")
@@ -6276,18 +6762,63 @@ async def provider_start_technician_call(
     lifecycle = await _require_org_job(org_id, job_id)
     roles = set(session.get("roles", []))
     caller_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
-    row = await store.create_job_call_session(
+    return await _start_masked_call(
         job_id,
         caller_type=caller_type,
         caller_user_id=session.get("user", {}).get("id"),
         caller_organization_id=org_id,
         callee_type="technician",
         callee_technician_id=lifecycle.get("fulfillment_technician_id"),
-        status="unavailable",
-        provider_status="skipped_no_provider",
-        metadata={"reason": "voice_provider_not_configured"},
     )
-    return _call_unavailable_response(row)
+
+
+@app.post("/provider/jobs/{job_id}/calls/customer")
+async def provider_start_customer_call(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, job_id)
+    roles = set(session.get("roles", []))
+    caller_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
+    return await _start_masked_call(
+        job_id,
+        caller_type=caller_type,
+        caller_user_id=session.get("user", {}).get("id"),
+        caller_organization_id=org_id,
+        callee_type="customer",
+    )
+
+
+@app.get("/provider/calls")
+async def provider_call_history(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    rows = await store.list_provider_call_sessions(org_id, limit=100)
+    calls = []
+    for row in rows:
+        public = _public_call_session(row)
+        meta = row.get("metadata") or {}
+        public.update({
+            "direction": meta.get("direction") or row.get("direction"),
+            "caller_redacted": meta.get("caller_redacted"),
+            "callee_redacted": meta.get("callee_redacted"),
+            "duration_seconds": row.get("duration_seconds"),
+            "associated_job_id": row.get("job_id"),
+        })
+        calls.append(public)
+    return {"calls": calls}
+
+
+@app.post("/provider/communications/sms")
+async def provider_send_transactional_sms(
+    payload: TransactionalSmsRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    await _require_org_job(org_id, payload.job_id)
+    return await _send_transactional_sms(payload.job_id, payload.purpose, payload.recipient_type)
 
 
 @app.get("/provider/jobs/{job_id}/timeline")

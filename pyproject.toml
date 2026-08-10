@@ -8,4 +8,5 @@ dependencies = [
   "uvicorn[standard]>=0.38.0",
   "psycopg[binary]>=3.2.0",
   "python-multipart>=0.0.32",
+  "twilio==9.8.0",
 ]

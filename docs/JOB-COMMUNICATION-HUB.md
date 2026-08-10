@@ -330,10 +330,16 @@ Priority:
 
 ### Slice 6: Masked Calling
 
-- provider decision/ADR for voice provider;
-- call-session table and audit;
-- technician/customer/operations call actions;
-- no raw customer number exposure.
+- `[x]` Twilio first slice behind `COMMUNICATIONS_PROVIDER`: verified inbound
+  voice webhook, provider forwarding, call-session audit, provider call history,
+  and masked outbound calls from technician/provider/customer job surfaces.
+- `[x]` No-op provider remains the default local/test mode and returns
+  `skipped_no_provider`.
+- `[~]` Transactional SMS delivery records, Twilio status callbacks, and
+  STOP/START opt-out are implemented; production sends still require provider
+  settings `sms_enabled=true` and `a2p_registered=true`.
+- `[ ]` Browser softphone, call recording/transcription, and automatic number
+  provisioning remain out of scope.
 
 ## 8. Explicit Non-Goals For MVP
 

@@ -24,6 +24,18 @@ npm run build --workspace @cluexp/ops-web
 - `NEXT_PUBLIC_CLUEXP_API_BASE_URL` set consistently for provider, technician, and ops web proxies.
 - Google Maps server key configured only where geocoding/reverse-geocoding is expected.
 - Supabase storage URL/service key configured only server-side.
+- Twilio communications, if enabled:
+  - `COMMUNICATIONS_PROVIDER=twilio`; rollback is `COMMUNICATIONS_PROVIDER=noop`.
+  - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_DEFAULT_FROM_NUMBER`, and
+    `TWILIO_WEBHOOK_BASE_URL` set only server-side.
+  - Provider-web Settings assigns an already-purchased Twilio number plus
+    primary/backup forwarding numbers in E.164 format.
+  - Twilio voice webhooks point to `/api/twilio/voice/incoming` and
+    `/api/twilio/voice/status`.
+  - Twilio messaging webhooks point to `/api/twilio/sms/incoming` and
+    `/api/twilio/sms/status`.
+  - Transactional SMS is enabled only after A2P 10DLC registration is approved.
+  - Call recording remains disabled until consent and jurisdiction policy exist.
 
 ## Database and runtime settings
 

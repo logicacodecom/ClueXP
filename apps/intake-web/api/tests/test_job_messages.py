@@ -10,6 +10,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from starlette.testclient import TestClient
+from twilio.request_validator import RequestValidator
 
 from api.auth import create_access_token
 from api.dispatch import STATUS_ASSIGNED, STATUS_CANCELLED
@@ -60,6 +61,10 @@ def _seed_job(tid: str, org_id: str, status: str = STATUS_ASSIGNED) -> str:
     app_store._tokens = getattr(app_store, "_tokens", {})
     app_store._tokens[jid] = f"track-{jid}"
     return jid
+
+
+def _twilio_signature(url: str, params: dict[str, str], token: str = "test-token") -> str:
+    return RequestValidator(token).compute_signature(url, params)
 
 
 def test_technician_operations_message_is_visible_to_provider_and_reply_returns_to_tech():
@@ -319,3 +324,177 @@ def test_masked_call_sessions_are_scoped_and_honest_when_provider_missing():
     assert customer_call.json()["call"]["caller_type"] == "customer"
 
     assert client.post(f"/jobs/{jid}/calls/raw-phone", headers=tech_h).status_code == 404
+
+
+def test_provider_communications_settings_are_admin_scoped():
+    client = TestClient(app)
+    org = str(uuid4())
+    _, admin_h = _register_dispatcher(org, "provider_admin")
+    _, dispatcher_h = _register_dispatcher(org, "dispatcher")
+
+    payload = {
+        "twilio_number": "(555) 123-4500",
+        "primary_forwarding_number": "+15551234501",
+        "backup_forwarding_number": "+15551234502",
+        "ring_timeout_seconds": 25,
+        "voicemail_enabled": True,
+        "sms_enabled": True,
+        "masked_calling_enabled": True,
+        "a2p_registered": False,
+    }
+    denied = client.patch("/provider/settings/communications", headers=dispatcher_h, json=payload)
+    assert denied.status_code == 403
+
+    saved = client.patch("/provider/settings/communications", headers=admin_h, json=payload)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["settings"]["twilio_number"] == "+15551234500"
+    assert client.get("/provider/settings/communications", headers=dispatcher_h).status_code == 403
+    loaded = client.get("/provider/settings/communications", headers=admin_h)
+    assert loaded.status_code == 200
+    assert loaded.json()["settings"]["primary_forwarding_number"] == "+15551234501"
+
+
+def test_valid_twilio_inbound_call_is_verified_routed_and_matched(monkeypatch):
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test-token")
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org)
+    app_store._job_detail = getattr(app_store, "_job_detail", {})
+    app_store._job_detail[jid] = {"customer_phone": "+15551239999", "customer_name": "Pat Caller"}
+    app_store._organizations[org] = {"id": org, "display_name": "Metro Test", "phone": "+15551230001"}
+    app_store._organization_phone_settings = getattr(app_store, "_organization_phone_settings", {})
+    app_store._organization_phone_settings[org] = {
+        "organization_id": org,
+        "twilio_number": "+15551230000",
+        "primary_forwarding_number": "+15551230001",
+        "backup_forwarding_number": "+15551230002",
+        "ring_timeout_seconds": 18,
+        "voicemail_enabled": True,
+        "sms_enabled": False,
+        "masked_calling_enabled": False,
+        "a2p_registered": False,
+    }
+    params = {"CallSid": "CAinbound1", "From": "+15551239999", "To": "+15551230000", "CallStatus": "ringing"}
+    url = "http://testserver/twilio/voice/incoming"
+    response = client.post(
+        "/twilio/voice/incoming",
+        data=params,
+        headers={"X-Twilio-Signature": _twilio_signature(url, params)},
+    )
+    assert response.status_code == 200, response.text
+    assert "<Dial" in response.text
+    assert "+15551230001" in response.text
+    assert "+15551230002" in response.text
+    calls = getattr(app_store, "_job_call_sessions", [])
+    assert calls[-1]["provider_call_sid"] == "CAinbound1"
+    assert calls[-1]["job_id"] == jid
+    assert calls[-1]["metadata"]["matched_job"] is True
+
+
+def test_invalid_twilio_signature_is_rejected_before_work(monkeypatch):
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test-token")
+    before = len(getattr(app_store, "_job_call_sessions", []))
+    client = TestClient(app)
+    response = client.post(
+        "/twilio/voice/incoming",
+        data={"CallSid": "CAbad", "From": "+15551239999", "To": "+15551230000"},
+        headers={"X-Twilio-Signature": "bad"},
+    )
+    assert response.status_code == 403
+    assert len(getattr(app_store, "_job_call_sessions", [])) == before
+
+
+def test_masked_call_uses_injected_twilio_provider_without_exposing_private_numbers(monkeypatch):
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, tech_h = _register_tech()
+    jid = _seed_job(tid, org)
+    app_store._job_detail = getattr(app_store, "_job_detail", {})
+    app_store._job_detail[jid] = {"customer_phone": "+15551239999", "customer_name": "Pat Caller"}
+    for tech in app_store._technicians:
+        if tech["id"] == tid:
+            tech["phone"] = "+15551238888"
+    app_store._organizations[org] = {"id": org, "display_name": "Metro Test", "phone": "+15551230001"}
+    app_store._organization_phone_settings = getattr(app_store, "_organization_phone_settings", {})
+    app_store._organization_phone_settings[org] = {
+        "organization_id": org,
+        "twilio_number": "+15551230000",
+        "primary_forwarding_number": "+15551230001",
+        "ring_timeout_seconds": 20,
+        "voicemail_enabled": True,
+        "sms_enabled": False,
+        "masked_calling_enabled": True,
+        "a2p_registered": False,
+    }
+
+    class FakeProvider:
+        def start_masked_call(self, **kwargs):
+            assert kwargs["caller_number"] == "+15551238888"
+            assert kwargs["callee_number"] == "+15551239999"
+            from api.communications import VoiceStartResult
+            return VoiceStartResult(True, "twilio", "CAoutbound1", "queued", "requested", kwargs["from_number"], "Masked call session started.", {})
+
+        def send_sms(self, **kwargs):  # pragma: no cover
+            raise AssertionError("not used")
+
+    monkeypatch.setattr("api.main.get_communications_provider", lambda: FakeProvider())
+    response = client.post(f"/jobs/{jid}/calls/customer", headers=tech_h)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["available"] is True
+    assert body["call"]["provider"] == "twilio"
+    assert body["call"]["masked_number"] == "+15551230000"
+    assert "+15551239999" not in response.text
+    assert "+15551238888" not in response.text
+
+
+def test_transactional_sms_is_idempotent_and_stop_blocks_future_sends(monkeypatch):
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test-token")
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    _, provider_h = _register_dispatcher(org, "provider_admin")
+    jid = _seed_job(tid, org)
+    app_store._job_detail = getattr(app_store, "_job_detail", {})
+    app_store._job_detail[jid] = {"customer_phone": "+15551239998", "customer_name": "Sms Customer"}
+    app_store._organizations[org] = {"id": org, "display_name": "Metro Test", "phone": "+15551230001"}
+    app_store._organization_phone_settings = getattr(app_store, "_organization_phone_settings", {})
+    app_store._organization_phone_settings[org] = {
+        "organization_id": org,
+        "twilio_number": "+15551230000",
+        "primary_forwarding_number": "+15551230001",
+        "ring_timeout_seconds": 20,
+        "voicemail_enabled": True,
+        "sms_enabled": True,
+        "masked_calling_enabled": False,
+        "a2p_registered": True,
+    }
+
+    class FakeProvider:
+        calls = 0
+
+        def start_masked_call(self, **kwargs):  # pragma: no cover
+            raise AssertionError("not used")
+
+        def send_sms(self, **kwargs):
+            FakeProvider.calls += 1
+            from api.communications import SmsSendResult
+            return SmsSendResult(True, "twilio", "SMsame", "queued")
+
+    monkeypatch.setattr("api.main.get_communications_provider", lambda: FakeProvider())
+    payload = {"job_id": jid, "purpose": "tracking_link_reminder", "recipient_type": "customer"}
+    first = client.post("/provider/communications/sms", headers=provider_h, json=payload)
+    retry = client.post("/provider/communications/sms", headers=provider_h, json=payload)
+    assert first.status_code == 200, first.text
+    assert retry.status_code == 200, retry.text
+    assert first.json()["delivery"]["id"] == retry.json()["delivery"]["id"]
+
+    params = {"SmsSid": "SMstop", "From": "+15551239998", "To": "+15551230000", "Body": "STOP"}
+    url = "http://testserver/twilio/sms/incoming"
+    stop = client.post("/twilio/sms/incoming", data=params, headers={"X-Twilio-Signature": _twilio_signature(url, params)})
+    assert stop.status_code == 200
+    blocked = client.post("/provider/communications/sms", headers=provider_h, json={**payload, "purpose": "technician_en_route"})
+    assert blocked.status_code == 200
+    assert blocked.json()["sent"] is False
+    assert blocked.json()["delivery"]["metadata"]["reason"] == "recipient_opted_out"

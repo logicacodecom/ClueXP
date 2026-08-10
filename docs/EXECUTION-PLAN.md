@@ -54,7 +54,7 @@
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
-| Notifications | `[ ]` | No production SMS/email/push delivery |
+| Notifications | `[~]` | Twilio transactional SMS foundation is implemented behind provider settings/A2P gates; push/email and production monitoring remain |
 | CI | `[x]` | Local gates green — current financial verification (2026-07-16) targeted API financial/settlement batch `9 passed`; migration applied through `0034`; shared typecheck plus provider and technician production builds pass |
 
 Current production migration head: **`0034_settlement_periods`** (applied 2026-07-16; verified live via Alembic `current`). This includes `0029` service catalog, `0030` organization capabilities, `0031` financial closeout settings and item type catalog, `0032` job closeout reports, `0033` technician agreements, and `0034` settlement periods. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; live route smoke after commit `8bcbdb2` confirmed the new protected financial endpoints are deployed/auth-gated and read-only authenticated API smoke passed for provider financial settings, provider settlements, settlement periods, and technician settlements.
@@ -722,9 +722,13 @@ Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T
   within the web threat model; native encrypted storage), retry/failure, unread sync, delivery/read
   acknowledgement, quick replies, privacy-safe push, release/reassignment permissions, and
   completion/dispute-window retention. _(Contract: `SYSTEM-DESIGN.md` §18.2.1; ties to §5 comms.)_
-- [ ] Voice/masked call — after messaging, once a comms provider is selected; launch from the same
-  job communication surface and preserve the same job/tenant authorization boundary. Provider
-  plan and recommendation: [`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
+- [x] Voice/masked call first slice — Twilio provider abstraction, no-op fallback,
+  provider phone settings, verified webhooks, inbound forwarding, call history,
+  and masked outbound call audit preserve the same job/tenant authorization
+  boundary. Provider plan: [`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
+- [~] Transactional SMS — selected lifecycle/customer reminder purposes create
+  idempotent delivery records and handle Twilio callbacks plus STOP/START; real
+  sends require provider SMS enablement and A2P 10DLC readiness.
 - [ ] Production push/sound/alarm delivery strategy with APNs/FCM acknowledgement monitoring,
   privacy-safe lock-screen copy and polling fallback; native background GPS. _(§5/§8.)_
 - [ ] Activity pagination/date range as volume grows; keep "collected" separate from

@@ -2,6 +2,16 @@
 
 Last reviewed: 2026-08-02
 
+Implementation update: 2026-08-09
+
+The first Twilio production slice is now implemented behind
+`COMMUNICATIONS_PROVIDER=noop|twilio`. It adds a provider-neutral
+communications adapter, no-op local/test mode, Twilio Programmable Voice
+outbound masked calls, verified Twilio voice/SMS webhooks, tenant-scoped phone
+settings, inbound call forwarding, provider call history, and transactional SMS
+delivery records. It does not buy/release numbers, record calls, transcribe
+calls, or provide an in-browser softphone.
+
 ## Goal
 
 Add job-scoped masked calling for ClueXP without exposing raw customer,
@@ -217,7 +227,7 @@ client-visible response fields unless safe.
 
 Common:
 
-- `VOICE_PROVIDER=twilio|telnyx|none`
+- `COMMUNICATIONS_PROVIDER=noop|twilio`
 - `VOICE_WEBHOOK_SECRET`
 - `VOICE_DEFAULT_COUNTRY=US`
 - `VOICE_CALL_TTL_MINUTES=120`
@@ -227,6 +237,10 @@ Twilio:
 
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
+- `TWILIO_API_KEY_SID`
+- `TWILIO_API_KEY_SECRET`
+- `TWILIO_DEFAULT_FROM_NUMBER`
+- `TWILIO_WEBHOOK_BASE_URL`
 - `TWILIO_VOICE_APP_SID` or webhook URLs
 - `TWILIO_PROXY_NUMBER_POOL`
 - `TWILIO_STATUS_CALLBACK_SECRET` if separate from common webhook secret
@@ -239,6 +253,17 @@ Telnyx:
 - `TELNYX_WEBHOOK_PUBLIC_KEY` or configured signature verification secret
 
 Never commit provider credentials.
+
+Webhook URLs:
+
+- Voice incoming: `/api/twilio/voice/incoming`
+- Voice status callback: `/api/twilio/voice/status`
+- SMS incoming/STOP/START: `/api/twilio/sms/incoming`
+- SMS delivery status: `/api/twilio/sms/status`
+
+Provider admins assign an already-purchased or ported Twilio number in
+provider-web Settings. Automatic number purchasing/release is intentionally out
+of scope for this slice.
 
 ## Implementation Steps
 

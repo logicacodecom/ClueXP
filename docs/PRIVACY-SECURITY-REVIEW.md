@@ -10,6 +10,7 @@ Status: checklist for pilot readiness. Do not paste real customer data, tokens, 
 | Intake photos | Stored as private job media and exposed through signed URLs | Signed URLs must be short-lived and role-scoped through API reads. Do not put raw storage paths in customer/provider UI. |
 | Customer address | Released to provider dispatch and assigned technician after accepted workflow state | Do not show exact address in anonymous/public capacity views. |
 | Technician location | Used for dispatch freshness, ETA, and distance display | Show freshness/age honestly. Do not fabricate live tracking when the last server fix is stale. |
+| Phone numbers and Twilio identifiers | E.164 phone numbers are stored server-side for routing; provider UI receives masked/redacted call-party values and provider-safe SIDs/status. | Never put raw customer/technician numbers in URLs, client logs, analytics, docs, or unauthorized API responses. |
 | Collection/closeout records | Recorded by ClueXP; payment remains outside ClueXP | UI must say records are not payment processing or payout determination. |
 | Ownership proof | Deferred | If implemented later, store as private verification media; default to optional and minimize technician exposure. |
 
@@ -28,6 +29,9 @@ Status: checklist for pilot readiness. Do not paste real customer data, tokens, 
 - Confirm Vercel environment variables do not expose secrets to browser bundles.
 - Confirm `ARRIVAL_PIN_SECRET` is set in production.
 - Confirm `CUSTOMER_INTAKE_BASE_URL` or `NEXT_PUBLIC_INTAKE_BASE_URL` points to the production intake origin.
+- If Twilio is enabled, confirm every Twilio webhook validates signatures using the public Vercel URL and submitted parameters before DB work.
+- Confirm call recording/transcription is disabled until consent and jurisdiction policy are approved.
+- Confirm transactional SMS sends are gated by provider SMS enablement and A2P 10DLC readiness; STOP/START opt-out is tested.
 - Confirm dispatch/tech UI labels distinguish estimate, ETA, collection record, approval, and real payment.
 
 ## Future ownership-proof design guardrails
