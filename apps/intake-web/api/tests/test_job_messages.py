@@ -333,21 +333,22 @@ def test_provider_communications_settings_are_admin_scoped():
     _, dispatcher_h = _register_dispatcher(org, "dispatcher")
 
     payload = {
-        "twilio_number": "(555) 123-4500",
         "primary_forwarding_number": "+15551234501",
         "backup_forwarding_number": "+15551234502",
         "ring_timeout_seconds": 25,
         "voicemail_enabled": True,
         "sms_enabled": True,
         "masked_calling_enabled": True,
-        "a2p_registered": False,
     }
     denied = client.patch("/provider/settings/communications", headers=dispatcher_h, json=payload)
     assert denied.status_code == 403
 
+    ops_owned = client.patch("/provider/settings/communications", headers=admin_h, json={"twilio_number": "(555) 123-4500"})
+    assert ops_owned.status_code == 403
+
     saved = client.patch("/provider/settings/communications", headers=admin_h, json=payload)
     assert saved.status_code == 200, saved.text
-    assert saved.json()["settings"]["twilio_number"] == "+15551234500"
+    assert saved.json()["settings"]["twilio_number"] is None
     assert client.get("/provider/settings/communications", headers=dispatcher_h).status_code == 403
     loaded = client.get("/provider/settings/communications", headers=admin_h)
     assert loaded.status_code == 200
@@ -361,7 +362,7 @@ def test_valid_twilio_inbound_call_is_verified_routed_and_matched(monkeypatch):
     tid, _ = _register_tech()
     jid = _seed_job(tid, org)
     app_store._job_detail = getattr(app_store, "_job_detail", {})
-    app_store._job_detail[jid] = {"customer_phone": "+15551239999", "customer_name": "Pat Caller"}
+    app_store._job_detail[jid] = {"customer_phone": "(555) 123-9999", "customer_name": "Pat Caller"}
     app_store._organizations[org] = {"id": org, "display_name": "Metro Test", "phone": "+15551230001"}
     app_store._organization_phone_settings = getattr(app_store, "_organization_phone_settings", {})
     app_store._organization_phone_settings[org] = {
@@ -376,9 +377,9 @@ def test_valid_twilio_inbound_call_is_verified_routed_and_matched(monkeypatch):
         "a2p_registered": False,
     }
     params = {"CallSid": "CAinbound1", "From": "+15551239999", "To": "+15551230000", "CallStatus": "ringing"}
-    url = "http://testserver/twilio/voice/incoming"
+    url = "http://testserver/api/twilio/voice/incoming"
     response = client.post(
-        "/twilio/voice/incoming",
+        "/api/twilio/voice/incoming",
         data=params,
         headers={"X-Twilio-Signature": _twilio_signature(url, params)},
     )
@@ -489,6 +490,7 @@ def test_transactional_sms_is_idempotent_and_stop_blocks_future_sends(monkeypatc
     assert first.status_code == 200, first.text
     assert retry.status_code == 200, retry.text
     assert first.json()["delivery"]["id"] == retry.json()["delivery"]["id"]
+    assert FakeProvider.calls == 1
 
     params = {"SmsSid": "SMstop", "From": "+15551239998", "To": "+15551230000", "Body": "STOP"}
     url = "http://testserver/twilio/sms/incoming"
@@ -498,3 +500,4 @@ def test_transactional_sms_is_idempotent_and_stop_blocks_future_sends(monkeypatc
     assert blocked.status_code == 200
     assert blocked.json()["sent"] is False
     assert blocked.json()["delivery"]["metadata"]["reason"] == "recipient_opted_out"
+    assert FakeProvider.calls == 1

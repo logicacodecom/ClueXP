@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from api.geocode import geocode, places_autocomplete, reverse_geocode
 from api import storage
@@ -115,6 +116,7 @@ app.add_middleware(
 @app.middleware("http")
 async def strip_vercel_api_prefix(request, call_next):
     """Let the same FastAPI routes work locally and behind Vercel's /api path."""
+    request.scope.setdefault("state", {})["original_path"] = request.scope["path"]
     if request.scope["path"].startswith("/api/"):
         request.scope["path"] = request.scope["path"][4:]
     return await call_next(request)
@@ -5378,7 +5380,11 @@ _SMS_PURPOSES = {
 
 def _twilio_status_callback_url(path: str) -> str | None:
     base = os.environ.get("TWILIO_WEBHOOK_BASE_URL", "").strip().rstrip("/")
-    return f"{base}{path}" if base else None
+    if not base:
+        return None
+    if base.endswith("/api") and path.startswith("/api/"):
+        path = path[4:]
+    return f"{base}{path}"
 
 
 def _safe_phone_settings(row: dict | None) -> dict[str, Any]:
@@ -5400,7 +5406,14 @@ def _safe_phone_settings(row: dict | None) -> dict[str, Any]:
 def _validate_phone_settings_payload(payload: ProviderPhoneSettingsUpdate) -> dict[str, Any]:
     raw = payload.model_dump(exclude_unset=True)
     out: dict[str, Any] = {}
-    phone_fields = {"twilio_number", "primary_forwarding_number", "backup_forwarding_number"}
+    ops_only_fields = {"twilio_number", "a2p_registered"}
+    requested_ops_fields = sorted(field for field in ops_only_fields if field in raw)
+    if requested_ops_fields:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{', '.join(requested_ops_fields)} can only be managed by ClueXP ops.",
+        )
+    phone_fields = {"primary_forwarding_number", "backup_forwarding_number"}
     for field, value in raw.items():
         if field in phone_fields:
             if value is None:
@@ -5442,7 +5455,7 @@ async def _start_masked_call(
         raise HTTPException(status_code=404, detail="Job not found")
     if context.get("status") not in _CALL_ALLOWED_STATUSES:
         raise HTTPException(status_code=409, detail="Calling is closed for this job.")
-    org_id = context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
+    org_id = caller_organization_id or callee_organization_id or context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
     settings = await store.get_organization_phone_settings(str(org_id)) if org_id else None
     from_number = normalize_e164((settings or {}).get("twilio_number") or os.environ.get("TWILIO_DEFAULT_FROM_NUMBER"))
     if not from_number:
@@ -5504,12 +5517,6 @@ async def _start_masked_call(
             metadata={"reason": "call_party_unreachable"},
         )
         raise HTTPException(status_code=409, detail={"code": "call_party_unreachable", "message": "A verified phone number is missing for this call.", "call": _public_call_session(row)})
-    result = get_communications_provider().start_masked_call(
-        caller_number=caller_e164,
-        callee_number=callee_e164,
-        from_number=from_number,
-        status_callback_url=_twilio_status_callback_url("/api/twilio/voice/status"),
-    )
     row = await store.create_job_call_session(
         job_id,
         caller_type=caller_type,
@@ -5519,13 +5526,30 @@ async def _start_masked_call(
         callee_type=callee_type,
         callee_technician_id=callee_technician_id,
         callee_organization_id=callee_organization_id,
+        provider=None,
+        provider_call_sid=None,
+        masked_number=None,
+        status="requested",
+        provider_status="queued",
+        metadata={"caller_redacted": redact_phone(caller_e164), "callee_redacted": redact_phone(callee_e164)},
+    )
+    result = await run_in_threadpool(
+        get_communications_provider().start_masked_call,
+        caller_number=caller_e164,
+        callee_number=callee_e164,
+        from_number=from_number,
+        status_callback_url=_twilio_status_callback_url("/api/twilio/voice/status"),
+    )
+    updated = await store.update_job_call_session(
+        row["id"],
         provider=result.provider,
         provider_call_sid=result.provider_call_sid,
         masked_number=result.masked_number,
         status=result.status,
         provider_status=result.provider_status,
-        metadata={**result.metadata, "caller_redacted": redact_phone(caller_e164), "callee_redacted": redact_phone(callee_e164)},
+        metadata=result.metadata,
     )
+    row = updated or row
     return {"available": result.available, "message": result.message, "call": _public_call_session(row)}
 
 
@@ -5548,7 +5572,12 @@ def _twilio_call_status_to_internal(status: str | None) -> str:
 async def _verified_twilio_form(request: Request) -> tuple[dict[str, Any], str]:
     form = await request.form()
     params = {str(k): str(v) for k, v in form.items()}
-    url = public_request_url(str(request.url), {k.lower(): v for k, v in request.headers.items()})
+    original_path = getattr(request.state, "original_path", None)
+    url = public_request_url(
+        str(request.url),
+        {k.lower(): v for k, v in request.headers.items()},
+        original_path=original_path,
+    )
     signature = request.headers.get("x-twilio-signature")
     if not verify_twilio_signature(url, params, signature):
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
@@ -5615,6 +5644,30 @@ async def twilio_voice_incoming(request: Request) -> Response:
             timeout_seconds=int(org.get("ring_timeout_seconds") or 20),
             voicemail_enabled=bool(org.get("voicemail_enabled", True)),
             fallback_message=f"{(org.get('organization') or {}).get('display_name') or 'This provider'} is unavailable right now. Please call again later.",
+            action_url=_twilio_status_callback_url("/api/twilio/voice/after-dial"),
+        ),
+        media_type="application/xml",
+    )
+
+
+@app.post("/twilio/voice/after-dial")
+async def twilio_voice_after_dial(request: Request) -> Response:
+    params, _ = await _verified_twilio_form(request)
+    status = (params.get("DialCallStatus") or "").strip().lower()
+    if status == "completed":
+        return Response(content="<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>", media_type="application/xml")
+    to_number = normalize_e164(params.get("To"))
+    org = await store.find_organization_by_twilio_number(to_number) if to_number else None
+    name = ((org or {}).get("organization") or {}).get("display_name") or "This provider"
+    voicemail_enabled = bool((org or {}).get("voicemail_enabled", True))
+    return Response(
+        content=inbound_forward_twiml(
+            primary_number=None,
+            backup_number=None,
+            caller_id=to_number,
+            timeout_seconds=int((org or {}).get("ring_timeout_seconds") or 20),
+            voicemail_enabled=voicemail_enabled,
+            fallback_message=f"{name} is unavailable right now. Please call again later.",
         ),
         media_type="application/xml",
     )
@@ -5669,9 +5722,12 @@ async def twilio_sms_status(request: Request) -> dict[str, Any]:
 async def twilio_sms_incoming(request: Request) -> Response:
     params, _ = await _verified_twilio_form(request)
     from_number = normalize_e164(params.get("From"))
+    to_number = normalize_e164(params.get("To"))
+    org = await store.find_organization_by_twilio_number(to_number) if to_number else None
+    org_id = str(org["organization_id"]) if org else None
     body = (params.get("Body") or "").strip().upper()
     if from_number and body in {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"}:
-        await store.set_sms_opt_out(from_number, source="sms_stop")
+        await store.set_sms_opt_out(from_number, organization_id=org_id, source="sms_stop")
         response = "You are unsubscribed from ClueXP transactional SMS. Reply HELP for support."
     elif from_number and body == "START":
         await store.clear_sms_opt_out(from_number)
@@ -5712,9 +5768,19 @@ async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: st
     base = os.environ.get("CUSTOMER_INTAKE_BASE_URL") or os.environ.get("NEXT_PUBLIC_INTAKE_BASE_URL") or ""
     tracking_url = f"{base.rstrip('/')}/t/{tracking_token}" if base and tracking_token else None
     req_hash = _mutation_request_hash("transactional-sms", str(job_id), purpose, recipient_type, tracking_url or "")
+    org_id_str = str(org_id) if org_id else None
+    existing = await store.get_sms_delivery_by_request(
+        organization_id=org_id_str,
+        job_id=str(job_id),
+        recipient_type=recipient_type,
+        purpose=purpose,
+        request_hash=req_hash,
+    )
+    if existing:
+        return {"sent": bool(existing.get("provider_message_sid")), "delivery": {**existing, "to_number": redact_phone(existing.get("to_number"))}}
     if not to_number or not from_number:
         row = await store.create_sms_delivery(
-            organization_id=str(org_id) if org_id else None,
+            organization_id=org_id_str,
             job_id=str(job_id),
             recipient_type=recipient_type,
             to_number=to_number or "missing",
@@ -5729,7 +5795,7 @@ async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: st
         return {"sent": False, "delivery": {**row, "to_number": redact_phone(row.get("to_number"))}}
     if await store.is_sms_opted_out(to_number):
         row = await store.create_sms_delivery(
-            organization_id=str(org_id) if org_id else None,
+            organization_id=org_id_str,
             job_id=str(job_id),
             recipient_type=recipient_type,
             to_number=to_number,
@@ -5744,7 +5810,7 @@ async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: st
         return {"sent": False, "delivery": {**row, "to_number": redact_phone(to_number)}}
     if not (settings or {}).get("sms_enabled") or not (settings or {}).get("a2p_registered"):
         row = await store.create_sms_delivery(
-            organization_id=str(org_id) if org_id else None,
+            organization_id=org_id_str,
             job_id=str(job_id),
             recipient_type=recipient_type,
             to_number=to_number,
@@ -5757,14 +5823,15 @@ async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: st
             metadata={"reason": "sms_disabled_or_a2p_unregistered"},
         )
         return {"sent": False, "delivery": {**row, "to_number": redact_phone(to_number)}}
-    result = get_communications_provider().send_sms(
+    result = await run_in_threadpool(
+        get_communications_provider().send_sms,
         to_number=to_number,
         from_number=from_number,
         body=_sms_body(purpose, provider_name=context.get("organization_name"), tracking_url=tracking_url),
         status_callback_url=_twilio_status_callback_url("/api/twilio/sms/status"),
     )
     row = await store.create_sms_delivery(
-        organization_id=str(org_id) if org_id else None,
+        organization_id=org_id_str,
         job_id=str(job_id),
         recipient_type=recipient_type,
         to_number=to_number,

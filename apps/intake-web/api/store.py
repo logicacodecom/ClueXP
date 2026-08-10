@@ -26,6 +26,7 @@ from api.auth import (
     hash_refresh_token,
     verify_password,
 )
+from api.communications import normalize_e164
 from api.dispatch import (
     ACTIVE_JOB_STATUSES,
     CARD_PAYMENT_METHODS,
@@ -1347,6 +1348,14 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def update_job_call_session(
+        self, session_id: str, *, provider: str | None = None,
+        provider_call_sid: str | None = None, masked_number: str | None = None,
+        status: str | None = None, provider_status: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def list_provider_call_sessions(
         self, org_id: str, *, limit: int = 100
     ) -> list[dict]:  # pragma: no cover
@@ -1378,6 +1387,12 @@ class Store:
         provider_message_sid: str | None, provider_status: str,
         error_code: str | None = None, metadata: dict | None = None,
     ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_sms_delivery_by_request(
+        self, *, organization_id: str | None, job_id: str | None,
+        recipient_type: str, purpose: str, request_hash: str,
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def update_sms_delivery_by_provider_sid(
@@ -3453,13 +3468,40 @@ class InMemoryStore(Store):
                 return dict(row)
         return None
 
+    async def update_job_call_session(
+        self, session_id: str, *, provider: str | None = None,
+        provider_call_sid: str | None = None, masked_number: str | None = None,
+        status: str | None = None, provider_status: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:
+        now = datetime.now(timezone.utc).isoformat()
+        for row in getattr(self, "_job_call_sessions", []):
+            if row.get("id") != str(session_id):
+                continue
+            if provider is not None:
+                row["provider"] = provider
+            if provider_call_sid is not None:
+                row["provider_call_sid"] = provider_call_sid
+            if masked_number is not None:
+                row["masked_number"] = masked_number
+            if status:
+                row["status"] = status
+                if status in {"answered", "connected"}:
+                    row["connected_at"] = row.get("connected_at") or now
+                if status in {"completed", "busy", "failed", "no_answer", "voicemail"}:
+                    row["ended_at"] = row.get("ended_at") or now
+            if provider_status:
+                row["provider_status"] = provider_status
+            row["metadata"] = {**(row.get("metadata") or {}), **(metadata or {})}
+            return dict(row)
+        return None
+
     async def list_provider_call_sessions(self, org_id: str, *, limit: int = 100) -> list[dict]:
         rows = [
             dict(row)
             for row in getattr(self, "_job_call_sessions", [])
             if row.get("caller_organization_id") == org_id
             or row.get("callee_organization_id") == org_id
-            or (row.get("metadata") or {}).get("organization_id") == org_id
         ]
         rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
         return rows[:limit]
@@ -3535,8 +3577,23 @@ class InMemoryStore(Store):
             if status not in {*ACTIVE_JOB_STATUSES, STATUS_PENDING_DISPATCH}:
                 continue
             detail = getattr(self, "_job_detail", {}).get(jid, {})
-            if detail.get("customer_phone") == phone_e164:
+            if normalize_e164(detail.get("customer_phone")) == phone_e164:
                 return await self.get_job_call_context(UUID(jid))
+        return None
+
+    async def get_sms_delivery_by_request(
+        self, *, organization_id: str | None, job_id: str | None,
+        recipient_type: str, purpose: str, request_hash: str,
+    ) -> dict | None:
+        for row in getattr(self, "_sms_deliveries", []):
+            if (
+                row.get("organization_id") == organization_id
+                and row.get("job_id") == job_id
+                and row.get("recipient_type") == recipient_type
+                and row.get("purpose") == purpose
+                and row.get("request_hash") == request_hash
+            ):
+                return dict(row)
         return None
 
     async def create_sms_delivery(
@@ -7608,6 +7665,42 @@ class PostgresStore(Store):
             row = await cur.fetchone()
         return self._call_session_row(row) if row else None
 
+    async def update_job_call_session(
+        self, session_id: str, *, provider: str | None = None,
+        provider_call_sid: str | None = None, masked_number: str | None = None,
+        status: str | None = None, provider_status: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update job_call_sessions set"
+                " provider = coalesce(%s, provider),"
+                " provider_call_sid = coalesce(%s, provider_call_sid),"
+                " masked_number = coalesce(%s, masked_number),"
+                " status = coalesce(%s, status),"
+                " provider_status = coalesce(%s, provider_status),"
+                " metadata = metadata || %s::jsonb,"
+                " connected_at = case when %s = any(%s) then coalesce(connected_at, now()) else connected_at end,"
+                " ended_at = case when %s = any(%s) then coalesce(ended_at, now()) else ended_at end"
+                " where id = %s"
+                " returning id, job_id, caller_type, caller_user_id, caller_technician_id,"
+                " caller_organization_id, callee_type, callee_user_id,"
+                " callee_technician_id, callee_organization_id, provider,"
+                " provider_call_sid, masked_number, status, provider_status, metadata,"
+                " created_at, connected_at, ended_at",
+                (
+                    provider, provider_call_sid, masked_number, status,
+                    provider_status, Jsonb(metadata or {}),
+                    status, ["answered", "connected"], status,
+                    ["completed", "busy", "failed", "no_answer", "voicemail"],
+                    session_id,
+                ),
+            )
+            row = await cur.fetchone()
+        return self._call_session_row(row) if row else None
+
     async def list_provider_call_sessions(self, org_id: str, *, limit: int = 100) -> list[dict]:
         async with await self._connect() as conn:
             cur = await conn.execute(
@@ -7619,9 +7712,8 @@ class PostgresStore(Store):
                 " from job_call_sessions"
                 " where caller_organization_id = %s::uuid"
                 " or callee_organization_id = %s::uuid"
-                " or metadata->>'organization_id' = %s"
                 " order by created_at desc limit %s",
-                (org_id, org_id, org_id, limit),
+                (org_id, org_id, limit),
             )
             rows = await cur.fetchall()
         return [self._call_session_row(row) for row in rows]
@@ -7758,10 +7850,17 @@ class PostgresStore(Store):
                 "select j.id"
                 " from jobs j join customers c on c.id = j.customer_id"
                 " where (j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)"
-                " and c.phone = %s"
+                " and (c.phone = %s or"
+                "   case"
+                "     when regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g') ~ '^1\\d{10}$'"
+                "       then '+' || regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g')"
+                "     when regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g') ~ '^\\d{10}$'"
+                "       then '+1' || regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g')"
+                "     else null"
+                "   end = %s)"
                 " and j.status = any(%s)"
                 " order by j.updated_at desc limit 1",
-                (org_id, org_id, phone_e164, [*ACTIVE_JOB_STATUSES, STATUS_PENDING_DISPATCH]),
+                (org_id, org_id, phone_e164, phone_e164, [*ACTIVE_JOB_STATUSES, STATUS_PENDING_DISPATCH]),
             )
             row = await cur.fetchone()
         return await self.get_job_call_context(row[0]) if row else None
@@ -7825,6 +7924,27 @@ class PostgresStore(Store):
         if job_id:
             await self.log_event_raw(UUID(str(job_id)), f"sms:{recipient_type}:{purpose}:{provider_status}:{row[0]}")
         return self._sms_delivery_row(row) or {}
+
+    async def get_sms_delivery_by_request(
+        self, *, organization_id: str | None, job_id: str | None,
+        recipient_type: str, purpose: str, request_hash: str,
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, organization_id, job_id, recipient_type, to_number,"
+                " from_number, purpose, provider, provider_message_sid,"
+                " provider_status, error_code, request_hash, metadata, created_at,"
+                " sent_at, delivered_at, failed_at"
+                " from communication_sms_deliveries"
+                " where organization_id is not distinct from %s::uuid"
+                " and job_id is not distinct from %s::uuid"
+                " and recipient_type = %s"
+                " and purpose = %s"
+                " and request_hash = %s",
+                (organization_id, job_id, recipient_type, purpose, request_hash),
+            )
+            row = await cur.fetchone()
+        return self._sms_delivery_row(row) if row else None
 
     async def update_sms_delivery_by_provider_sid(
         self, provider: str, provider_message_sid: str, *, provider_status: str,

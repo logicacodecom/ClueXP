@@ -44,9 +44,11 @@ def redact_phone(value: str | None) -> str | None:
     return f"{phone[:3]}***{phone[-2:]}"
 
 
-def public_request_url(raw_url: str, headers: dict[str, str]) -> str:
+def public_request_url(raw_url: str, headers: dict[str, str], *, original_path: str | None = None) -> str:
     """Reconstruct the exact public URL Twilio signed behind Vercel/proxies."""
     split = urlsplit(raw_url)
+    if original_path:
+        split = split._replace(path=original_path)
     proto = headers.get("x-forwarded-proto")
     host = headers.get("x-forwarded-host") or headers.get("host")
     if proto or host:
@@ -54,7 +56,11 @@ def public_request_url(raw_url: str, headers: dict[str, str]) -> str:
     base = os.environ.get("TWILIO_WEBHOOK_BASE_URL", "").strip().rstrip("/")
     if base:
         base_split = urlsplit(base)
-        split = split._replace(scheme=base_split.scheme, netloc=base_split.netloc)
+        base_path = base_split.path.rstrip("/")
+        path = split.path
+        if base_path and not path.startswith(base_path + "/") and path != base_path:
+            path = f"{base_path}{path if path.startswith('/') else '/' + path}"
+        split = split._replace(scheme=base_split.scheme, netloc=base_split.netloc, path=path)
     return urlunsplit(split)
 
 
@@ -227,24 +233,22 @@ def inbound_forward_twiml(
     action_url: str | None = None,
 ) -> str:
     response = VoiceResponse()
-    if primary_number:
+    numbers = [number for number in (primary_number, backup_number) if number]
+    if numbers:
         dial = Dial(
             caller_id=caller_id,
             timeout=max(5, min(timeout_seconds, 60)),
             action=action_url,
             method="POST" if action_url else None,
         )
-        dial.number(primary_number)
+        for number in numbers:
+            dial.number(number)
         response.append(dial)
-    if backup_number:
-        dial = Dial(caller_id=caller_id, timeout=max(5, min(timeout_seconds, 60)))
-        dial.number(backup_number)
-        response.append(dial)
-    if not primary_number and not backup_number:
-        response.say(fallback_message)
-    if voicemail_enabled:
+    if numbers and voicemail_enabled:
         response.say("No dispatcher is available right now. Please leave a message after the tone.")
         response.record(max_length=120, play_beep=True)
-    else:
+    elif not numbers:
         response.say(fallback_message)
+        if voicemail_enabled:
+            response.record(max_length=120, play_beep=True)
     return str(response)

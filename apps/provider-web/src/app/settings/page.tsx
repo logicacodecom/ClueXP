@@ -495,15 +495,13 @@ export default function SettingsPage() {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          twilio_number: communicationsInputs.twilio_number || null,
           primary_forwarding_number: communicationsInputs.primary_forwarding_number || null,
           backup_forwarding_number: communicationsInputs.backup_forwarding_number || null,
           ring_timeout_seconds: Number(communicationsInputs.ring_timeout_seconds),
           business_hours_behavior: communicationsInputs.business_hours_behavior,
           voicemail_enabled: communicationsInputs.voicemail_enabled,
           sms_enabled: communicationsInputs.sms_enabled,
-          masked_calling_enabled: communicationsInputs.masked_calling_enabled,
-          a2p_registered: communicationsInputs.a2p_registered
+          masked_calling_enabled: communicationsInputs.masked_calling_enabled
         })
       });
       const body = await response.json().catch(() => ({}));
@@ -779,7 +777,7 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-3">
               <label className="space-y-1.5 text-sm"><span className="font-medium">Twilio business number</span>
-                <Input placeholder="+15551234567" value={communicationsInputs.twilio_number ?? ""} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, twilio_number: event.target.value })} />
+                <Input readOnly placeholder="Assigned by ClueXP ops" value={communicationsInputs.twilio_number ?? ""} />
               </label>
               <label className="space-y-1.5 text-sm"><span className="font-medium">Primary forwarding number</span>
                 <Input placeholder="+15551234567" value={communicationsInputs.primary_forwarding_number ?? ""} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, primary_forwarding_number: event.target.value })} />
@@ -790,23 +788,12 @@ export default function SettingsPage() {
               <label className="space-y-1.5 text-sm"><span className="font-medium">Ring timeout seconds</span>
                 <Input type="number" min={5} max={60} value={communicationsInputs.ring_timeout_seconds} onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, ring_timeout_seconds: Number(event.target.value) })} />
               </label>
-              <label className="space-y-1.5 text-sm"><span className="font-medium">Business-hours behavior</span>
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={communicationsInputs.business_hours_behavior}
-                  onChange={(event) => setCommunicationsInputs({ ...communicationsInputs, business_hours_behavior: event.target.value === "voicemail_after_hours" ? "voicemail_after_hours" : "always_forward" })}
-                >
-                  <option value="always_forward">Always forward</option>
-                  <option value="voicemail_after_hours">Voicemail after hours</option>
-                </select>
-              </label>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
               {([
                 ["voicemail_enabled", "Voicemail"],
                 ["masked_calling_enabled", "Masked calling"],
-                ["sms_enabled", "Transactional SMS"],
-                ["a2p_registered", "A2P registered"]
+                ["sms_enabled", "Transactional SMS"]
               ] as const).map(([field, text]) => (
                 <label key={field} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
                   <input
@@ -817,8 +804,12 @@ export default function SettingsPage() {
                   <span>{text}</span>
                 </label>
               ))}
+              <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
+                <input type="checkbox" checked={Boolean(communicationsInputs.a2p_registered)} readOnly />
+                <span>A2P registered</span>
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">Use a number already purchased or ported in Twilio. SMS requires A2P 10DLC registration before production sends.</p>
+            <p className="text-xs text-muted-foreground">Twilio number assignment and A2P 10DLC readiness are managed by ClueXP ops before production sends.</p>
             {communicationsMessage ? <div className="text-sm" role="status">{communicationsMessage}</div> : null}
             <Button variant="outline" disabled={communicationsBusy} onClick={() => void saveCommunicationsSettings()}>
               <Save className="size-4" />{communicationsBusy ? "Saving…" : "Save communications settings"}
