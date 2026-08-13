@@ -251,6 +251,7 @@ function waitingMinutes(createdAt: string | null, now: number): number | null {
 
 function queueRisk(job: OpsJob, now: number): QueueRisk {
   if (job.status === "scheduled_requested") return "normal";
+  if (job.status === "scheduled_confirmed") return "normal";
   if (job.urgency === "critical" && !job.offer_active) return "critical";
   if (job.offer_active) return "normal";
   const waiting = waitingMinutes(job.created_at, now);
@@ -346,6 +347,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [confirmingSchedule, setConfirmingSchedule] = useState<string | null>(null);
+  const [activatingSchedule, setActivatingSchedule] = useState<string | null>(null);
   const [requestingPartner, setRequestingPartner] = useState<string | null>(null);
   const [acceptingPartner, setAcceptingPartner] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("unsupported");
@@ -440,6 +442,21 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
       setError(err instanceof Error ? err.message : "Could not confirm the scheduled window");
     } finally {
       setConfirmingSchedule(null);
+    }
+  }, [apiPrefix, fetchQueue]);
+
+  const activateSchedule = useCallback(async (jobId: string) => {
+    setActivatingSchedule(jobId);
+    setError(null);
+    try {
+      const res = await fetch(`${apiPrefix}/queue/${jobId}/activate-schedule`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `${res.status}`);
+      await fetchQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not activate the scheduled appointment");
+    } finally {
+      setActivatingSchedule(null);
     }
   }, [apiPrefix, fetchQueue]);
 
@@ -545,6 +562,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                 const label = riskLabel(risk);
                 const detail = jobDetailSummary(job.detail);
                 const scheduled = job.status === "scheduled_requested";
+                const scheduledConfirmed = job.status === "scheduled_confirmed";
                 const partnerRequested = job.status === "partner_requested";
                 const incomingPartner = partnerRequested && job.viewer_relationship === "fulfillment_partner";
                 const appointmentWindow = formatAppointmentWindow(job.detail);
@@ -555,7 +573,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                   <div
                     className={cn(
                       "cursor-pointer rounded-md border p-3 transition-colors hover:border-primary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      scheduled || partnerRequested ? "border-info/40 bg-info/5" : risk === "normal" ? "border-border" : "border-destructive/35 bg-destructive/5",
+                      scheduled || scheduledConfirmed || partnerRequested ? "border-info/40 bg-info/5" : risk === "normal" ? "border-border" : "border-destructive/35 bg-destructive/5",
                     )}
                     key={job.id}
                     onClick={open}
@@ -569,6 +587,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                         <div className="truncate font-medium">{job.address ?? "—"}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                           {scheduled ? <Badge variant="info"><CalendarClock className="size-3" /> Scheduled request</Badge> : null}
+                          {scheduledConfirmed ? <Badge variant="success"><CalendarClock className="size-3" /> Confirmed schedule</Badge> : null}
                           {partnerRequested ? <Badge variant="info"><Network className="size-3" /> {incomingPartner ? "Partner request" : "Partner requested"}</Badge> : null}
                           <Badge variant={job.urgency === "critical" ? "critical" : job.urgency === "high" ? "warn" : "outline"}>{job.urgency ?? "—"}</Badge>
                           <span className="tabular-nums">Waiting {ageLabel(job.created_at)}</span>
@@ -581,6 +600,8 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                         {label ? <Badge variant={risk === "ack_breached" ? "warn" : "danger"}>{label}</Badge> : null}
                         {scheduled
                           ? <Badge variant="outline">Needs confirmation</Badge>
+                          : scheduledConfirmed
+                          ? <Badge variant="outline">Waiting to activate</Badge>
                           : partnerRequested
                           ? <Badge variant="outline">{incomingPartner ? "Needs acceptance" : "Awaiting partner"}</Badge>
                           : job.offer_active
@@ -641,7 +662,16 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                           {confirmingSchedule === job.id ? "Confirming" : "Confirm window"}
                         </Button>
                       ) : null}
-                      <Button onClick={open} size="sm" variant="outline">{mode === "org" ? scheduled || partnerRequested ? "Review" : "Assign" : "View"}</Button>
+                      {mode === "org" && scheduledConfirmed ? (
+                        <Button
+                          disabled={activatingSchedule === job.id}
+                          onClick={() => void activateSchedule(job.id)}
+                          size="sm"
+                        >
+                          {activatingSchedule === job.id ? "Activating" : "Activate"}
+                        </Button>
+                      ) : null}
+                      <Button onClick={open} size="sm" variant="outline">{mode === "org" ? scheduled || scheduledConfirmed || partnerRequested ? "Review" : "Assign" : "View"}</Button>
                       {mode === "org" ? <QueueCancelAction address={job.address} jobId={job.id} onDone={fetchQueue} /> : null}
                     </div>
                   </div>
@@ -825,6 +855,10 @@ function fullAddress(form: typeof initialProviderRequestForm) {
     form.street2.trim(),
     [form.city.trim(), form.state.trim(), form.zip.trim()].filter(Boolean).join(" "),
   ].filter(Boolean).join(", ");
+}
+
+function scheduledDateTime(form: typeof initialProviderRequestForm) {
+  return form.scheduled_date && form.scheduled_time ? `${form.scheduled_date}T${form.scheduled_time}:00` : null;
 }
 
 type ParsedField<T> = { value: T; confidence: "high" | "medium" | "low"; source: string; rawMatch?: string };
@@ -1088,6 +1122,8 @@ export function ProviderNewRequest() {
           access_type: form.access_type,
           situation: form.situation,
           urgency: form.urgency,
+          scheduled_start: form.urgency === "scheduled" ? scheduledDateTime(form) : null,
+          scheduled_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York",
           notes,
         })
       });
@@ -1608,6 +1644,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
   const activeOffer = job?.offer_active ? job : null;
   const selectedJobDetail = jobDetailSummary(job?.detail);
   const scheduled = job?.status === "scheduled_requested";
+  const scheduledConfirmed = job?.status === "scheduled_confirmed";
   const partnerRequested = job?.status === "partner_requested";
   const appointmentWindow = formatAppointmentWindow(job?.detail);
 
@@ -1630,6 +1667,11 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
         <div className="mb-4 rounded-md border border-info/35 bg-info/10 p-3 text-sm text-info">
           Confirm the requested appointment window from the queue before sending a technician offer.
           {appointmentWindow ? <span className="ml-1 font-medium text-foreground">{appointmentWindow}</span> : null}
+        </div>
+      ) : null}
+      {scheduledConfirmed ? (
+        <div className="mb-4 rounded-md border border-info/35 bg-info/10 p-3 text-sm text-info">
+          This appointment is confirmed for later. Activate it from the queue before sending a technician offer.
         </div>
       ) : null}
       {partnerRequested ? (
@@ -1674,7 +1716,7 @@ export function TechnicianAssignment({ jobId, mode }: { jobId?: string; mode: Co
                     {canAssign ? (
                       <Button
                         size="sm"
-                        disabled={assigning === tech.id || Boolean(activeOffer) || scheduled || partnerRequested}
+                        disabled={assigning === tech.id || Boolean(activeOffer) || scheduled || scheduledConfirmed || partnerRequested}
                         onClick={() => {
                           if (isFlagged(tech)) { setOverrideFor(tech.id); setOverrideReason(""); }
                           else { void assign(tech.id); }

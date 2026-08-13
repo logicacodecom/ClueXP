@@ -53,6 +53,7 @@ from api.dispatch import (
     STATUS_NO_SHOW,
     STATUS_PARTNER_REQUESTED,
     STATUS_PENDING_DISPATCH,
+    STATUS_SCHEDULED_CONFIRMED,
     STATUS_SCHEDULED_REQUESTED,
     can_customer_cancel,
     can_report_collection,
@@ -78,6 +79,7 @@ from api.schema import (
     PaymentMethod,
     Photo,
     PriceQuote,
+    ServiceAppointment,
     Situation,
     TechnicianAssignment,
     Ticket,
@@ -225,6 +227,9 @@ class ManualIntakeRequest(BaseModel):
     access_type: str = "home"
     situation: str = "locked_out"
     urgency: str = "urgent"
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    scheduled_timezone: str | None = None
     notes: str | None = None
 
     @field_validator("notes")
@@ -2983,12 +2988,39 @@ async def create_provider_request(
         location=location,
         additional_details=payload.notes,
     )
+    if ticket.urgency == Urgency.SCHEDULED:
+        if payload.scheduled_start is None:
+            raise HTTPException(status_code=409, detail="Scheduled start is required")
+        requested_end = payload.scheduled_end or (payload.scheduled_start + timedelta(hours=1))
+        if requested_end <= payload.scheduled_start:
+            raise HTTPException(status_code=409, detail="Scheduled end must be after scheduled start")
+        ticket.service_appointment = ServiceAppointment(
+            requested_start=payload.scheduled_start,
+            requested_end=requested_end,
+            timezone=(payload.scheduled_timezone or "America/New_York"),
+            status="requested",
+            partner_dispatch_allowed=True,
+        )
     origin = _manual_origin(session, payload)
     await save(ticket, origin)
     # Provider call-center intake is already inside the dispatch surface. Once
-    # the authenticated dispatcher creates it, it should appear in the provider
-    # queue immediately for assignment.
-    await store.set_job_status(ticket.ticket_id, "pending_dispatch")
+    # the authenticated dispatcher creates it, immediate jobs appear in the
+    # provider queue for assignment. Scheduled jobs wait for confirmation and
+    # activation before any technician offer is created.
+    if ticket.urgency == Urgency.SCHEDULED:
+        await store.set_job_status(ticket.ticket_id, STATUS_SCHEDULED_REQUESTED)
+        await _record_customer_system_message(
+            ticket.ticket_id,
+            body=(
+                "Your appointment request was recorded for "
+                f"{_format_appointment_window(ticket.service_appointment)}. "
+                "The provider will confirm the window before assigning a technician."
+            ),
+            event="schedule_requested",
+            organization_id=origin.get("origin_org_id"),
+        )
+    else:
+        await store.set_job_status(ticket.ticket_id, "pending_dispatch")
     source = payload.source_channel or "manual"
     await log_transition(ticket, f"manual_intake_created:{source}")
     return await envelope(ticket)
@@ -3168,6 +3200,15 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
         ticket.service_appointment.status = "requested"
         await save(ticket)
         await store.set_job_status(ticket_id, STATUS_SCHEDULED_REQUESTED)
+        await _record_customer_system_message(
+            ticket_id,
+            body=(
+                "Your appointment request was received for "
+                f"{_format_appointment_window(ticket.service_appointment)}. "
+                "The provider will confirm the window before assigning a technician."
+            ),
+            event="schedule_requested",
+        )
     token = await store.get_tracking_token(ticket_id)
     if not token:
         # Legacy path only: status column tracks ticket lifecycle. On the cutover
@@ -3270,6 +3311,17 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     auto_closed = await store.auto_close_pending(config.AUTO_CLOSE_WINDOW_SECONDS)
     stale_hours = await runtime_settings.resolve(store, "technician_stale_hours")
     signed_off = await store.reap_stale_technicians(stale_hours=int(stale_hours))
+    activated_scheduled = await store.activate_due_scheduled_jobs()
+    for row in activated_scheduled:
+        try:
+            await _record_customer_system_message(
+                UUID(str(row["id"])),
+                body="Your scheduled appointment is now being dispatched. The provider is selecting an available technician.",
+                event="schedule_activated",
+                organization_id=row.get("fulfillment_org_id") or row.get("customer_owner_org_id"),
+            )
+        except Exception:
+            logger.exception("scheduled_activation_customer_message_failed", extra={"job_id": row.get("id")})
     # Push delivery event 2: resolve outstanding provider receipts and retire
     # permanently dead device tokens. No-op without a configured provider.
     try:
@@ -3280,6 +3332,7 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     return {
         "expired_offers": expired,
         "auto_closed": auto_closed,
+        "activated_scheduled": len(activated_scheduled),
         "signed_off_technicians": len(signed_off),
         "push_receipts": receipts,
     }
@@ -3295,6 +3348,11 @@ class ConfirmSchedulePayload(BaseModel):
 
 
 class PartnerDispatchRequestPayload(BaseModel):
+    partner_org_id: UUID
+    note: str | None = None
+
+
+class OrganizationPartnershipRequestPayload(BaseModel):
     partner_org_id: UUID
     note: str | None = None
 
@@ -4336,6 +4394,41 @@ async def provider_list_partner_targets(
     return await store.list_partner_dispatch_targets(org_id)
 
 
+@app.post("/provider/partners")
+async def provider_request_partnership(
+    payload: OrganizationPartnershipRequestPayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    if str(payload.partner_org_id) == str(org_id):
+        raise HTTPException(status_code=422, detail="Choose a different partner organization")
+    result = await store.request_organization_partnership(
+        org_id,
+        str(payload.partner_org_id),
+        requested_by=session.get("user", {}).get("id"),
+        note=(payload.note or "").strip()[:280] or None,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Partner organization not found or inactive")
+    return result
+
+
+@app.post("/provider/partners/{requester_org_id}/accept")
+async def provider_accept_partnership(
+    requester_org_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    result = await store.accept_organization_partnership(
+        str(requester_org_id),
+        org_id,
+        approved_by=session.get("user", {}).get("id"),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Partnership request not found")
+    return result
+
+
 @app.post("/provider/queue/{job_id}/confirm-schedule")
 async def provider_confirm_schedule(
     job_id: UUID,
@@ -4359,7 +4452,7 @@ async def provider_confirm_schedule(
     ticket.service_appointment.status = "confirmed_unassigned"
     await save(ticket)
     updated = await store.set_job_status(
-        job_id, STATUS_PENDING_DISPATCH, expected_current=STATUS_SCHEDULED_REQUESTED
+        job_id, STATUS_SCHEDULED_CONFIRMED, expected_current=STATUS_SCHEDULED_REQUESTED
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Schedule confirmation conflicted; refresh the queue.")
@@ -4368,7 +4461,44 @@ async def provider_confirm_schedule(
     await log_transition(ticket, f"schedule_confirmed:by={actor_id}:org={org_id}")
     if note.strip():
         await store.log_event_raw(job_id, f"schedule_note:{note.strip()[:180]}")
-    return {"confirmed": True, "job_id": str(job_id), "status": STATUS_PENDING_DISPATCH}
+    await _record_customer_system_message(
+        job_id,
+        body=(
+            "The provider confirmed your appointment window for "
+            f"{_format_appointment_window(ticket.service_appointment)}. "
+            "A technician will be assigned when the job is activated for dispatch."
+        ),
+        event="schedule_confirmed",
+        organization_id=org_id,
+    )
+    return {"confirmed": True, "job_id": str(job_id), "status": STATUS_SCHEDULED_CONFIRMED}
+
+
+@app.post("/provider/queue/{job_id}/activate-schedule")
+async def provider_activate_schedule(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    jobs = await store.get_ops_queue(org_id=org_id)
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    if job.get("status") != STATUS_SCHEDULED_CONFIRMED:
+        raise HTTPException(status_code=409, detail="Job is not a confirmed scheduled appointment")
+    updated = await store.set_job_status(
+        job_id, STATUS_PENDING_DISPATCH, expected_current=STATUS_SCHEDULED_CONFIRMED
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Schedule activation conflicted; refresh the queue.")
+    await store.log_event_raw(job_id, f"scheduled_activated:manual:by={session.get('user', {}).get('id')}")
+    await _record_customer_system_message(
+        job_id,
+        body="Your scheduled appointment is now being dispatched. The provider is selecting an available technician.",
+        event="schedule_activated",
+        organization_id=org_id,
+    )
+    return {"activated": True, "job_id": str(job_id), "status": STATUS_PENDING_DISPATCH}
 
 
 @app.post("/provider/queue/{job_id}/partner-request")
@@ -4396,6 +4526,12 @@ async def provider_request_partner_dispatch(
     )
     if result is None:
         raise HTTPException(status_code=409, detail="Partner request could not be created")
+    await _record_customer_system_message(
+        job_id,
+        body="The provider requested help from an approved partner company for this job. Your original provider still owns the customer relationship.",
+        event="partner_dispatch_requested",
+        organization_id=org_id,
+    )
     return result
 
 
@@ -4419,6 +4555,12 @@ async def provider_accept_partner_dispatch(
     if updated is None:
         raise HTTPException(status_code=409, detail="Partner request changed; refresh the queue")
     await store.log_event_raw(job_id, f"partner_dispatch_accepted:partner={org_id}:by={session.get('user', {}).get('id')}")
+    await _record_customer_system_message(
+        job_id,
+        body="An approved partner company accepted the dispatch request. Technician assignment can now continue.",
+        event="partner_dispatch_accepted",
+        organization_id=org_id,
+    )
     return {"accepted": True, "job_id": str(job_id), "status": STATUS_PENDING_DISPATCH}
 
 
@@ -4438,6 +4580,8 @@ async def provider_assign(
         raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
     if job.get("status") == STATUS_SCHEDULED_REQUESTED:
         raise HTTPException(status_code=409, detail="Confirm the appointment window before assigning a technician")
+    if job.get("status") == STATUS_SCHEDULED_CONFIRMED:
+        raise HTTPException(status_code=409, detail="Activate the scheduled appointment before assigning a technician")
     if job.get("status") == STATUS_PARTNER_REQUESTED:
         raise HTTPException(status_code=409, detail="Partner must accept the dispatch request before assigning a technician")
     if job.get("offer_active"):
@@ -5402,6 +5546,55 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": row.get("created_at"),
         "delivery_state": "sent",
     }
+
+
+def _format_dt_for_customer(value: datetime) -> str:
+    hour = value.hour % 12 or 12
+    suffix = "AM" if value.hour < 12 else "PM"
+    return f"{value:%b} {value.day}, {value.year} {hour}:{value.minute:02d} {suffix}"
+
+
+def _format_time_for_customer(value: datetime) -> str:
+    hour = value.hour % 12 or 12
+    suffix = "AM" if value.hour < 12 else "PM"
+    return f"{hour}:{value.minute:02d} {suffix}"
+
+
+def _format_appointment_window(appointment: ServiceAppointment | None) -> str:
+    if appointment is None or appointment.requested_start is None:
+        return "the requested appointment window"
+    start = appointment.requested_start
+    end = appointment.requested_end
+    tz = appointment.timezone or "local time"
+    if end is not None:
+        if start.date() == end.date():
+            return f"{_format_dt_for_customer(start)}–{_format_time_for_customer(end)} {tz}"
+        return f"{_format_dt_for_customer(start)}–{_format_dt_for_customer(end)} {tz}"
+    return f"{_format_dt_for_customer(start)} {tz}"
+
+
+async def _record_customer_system_message(
+    job_id: UUID,
+    *,
+    body: str,
+    event: str,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
+    """Add a customer-visible breadcrumb to the secure job thread.
+
+    This is not an SMS sender. New transactional SMS purposes need separate
+    compliance/product review; the secure customer thread can still explain
+    what changed on the job.
+    """
+    return await store.create_job_message(
+        job_id,
+        channel="customer",
+        sender_type="system",
+        sender_user_id=None,
+        sender_organization_id=organization_id,
+        body=body[:2000],
+        metadata={"event": event},
+    )
 
 
 async def _notify_technician_message(job_id: UUID, row: dict[str, Any]) -> None:

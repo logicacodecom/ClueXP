@@ -41,6 +41,7 @@ from api.dispatch import (
     STATUS_IN_PROGRESS,
     STATUS_PARTNER_REQUESTED,
     STATUS_PENDING_DISPATCH,
+    STATUS_SCHEDULED_CONFIRMED,
     STATUS_SCHEDULED_REQUESTED,
     STATUS_TIMESTAMP_COLUMN,
     HISTORY_STATUSES,
@@ -790,10 +791,24 @@ class Store:
     async def list_partner_dispatch_targets(self, origin_org_id: str) -> list[dict]:  # pragma: no cover
         return []
 
+    async def request_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, requested_by: str | None = None,
+        note: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def accept_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, approved_by: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def request_partner_dispatch(
         self, job_id: UUID, *, origin_org_id: str, partner_org_id: str, note: str | None = None
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
+
+    async def activate_due_scheduled_jobs(self, *, horizon_minutes: int = 90) -> list[dict]:  # pragma: no cover
+        return []
 
     async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:  # pragma: no cover
         return None
@@ -1700,6 +1715,15 @@ class InMemoryStore(Store):
         self._job_situation[jid] = ticket.situation.value if ticket.situation else None
         self._job_urgency[jid] = ticket.urgency.value if ticket.urgency else None
         self._job_created_at[jid] = ticket.created_at.isoformat() if ticket.created_at else None
+        detail = ticket.model_dump(mode="json")
+        customer_name = origin.get("customer_name")
+        customer_phone = origin.get("customer_phone")
+        if customer_name:
+            detail["customer_name"] = customer_name
+        if customer_phone:
+            detail["customer_phone"] = customer_phone
+        self._job_detail = getattr(self, "_job_detail", {})
+        self._job_detail[jid] = detail
 
     async def get_operational_id(self, job_id: UUID) -> str | None:
         return getattr(self, "_job_operational_id", {}).get(str(job_id))
@@ -2657,7 +2681,7 @@ class InMemoryStore(Store):
         job_loc = getattr(self, "_job_loc", {})
         result = []
         for jid, status in statuses.items():
-            if status not in {STATUS_SCHEDULED_REQUESTED, STATUS_PARTNER_REQUESTED, STATUS_PENDING_DISPATCH}:
+            if status not in {STATUS_SCHEDULED_REQUESTED, STATUS_SCHEDULED_CONFIRMED, STATUS_PARTNER_REQUESTED, STATUS_PENDING_DISPATCH}:
                 continue
             owner_org = job_org.get(jid)
             fulfillment_org = getattr(self, "_job_fulfillment_org", {}).get(jid)
@@ -3155,7 +3179,7 @@ class InMemoryStore(Store):
         job_timestamps = getattr(self, "_job_timestamps", {})
         offers = getattr(self, "_offers", {})
         recoverable = {
-            STATUS_SCHEDULED_REQUESTED, STATUS_PARTNER_REQUESTED, STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED,
+            STATUS_SCHEDULED_REQUESTED, STATUS_SCHEDULED_CONFIRMED, STATUS_PARTNER_REQUESTED, STATUS_PENDING_DISPATCH, STATUS_ASSIGNED, STATUS_EN_ROUTE, STATUS_ARRIVED,
             STATUS_IN_PROGRESS, STATUS_COMPLETED_PENDING, STATUS_DISPUTED,
         }
         out = []
@@ -4207,10 +4231,59 @@ class InMemoryStore(Store):
         ]
 
     async def list_partner_dispatch_targets(self, origin_org_id: str) -> list[dict]:
+        partnerships = getattr(self, "_organization_partnerships", {})
+        approved_ids = {
+            b if a == str(origin_org_id) else a
+            for (a, b), row in partnerships.items()
+            if row.get("status") == "active" and str(origin_org_id) in {a, b}
+        }
         return [
             row for row in await self.list_organizations("active")
-            if str(row.get("id")) != str(origin_org_id)
+            if str(row.get("id")) in approved_ids
         ]
+
+    async def request_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, requested_by: str | None = None,
+        note: str | None = None
+    ) -> dict | None:
+        if str(requester_org_id) == str(partner_org_id):
+            return None
+        orgs = getattr(self, "_organizations", {})
+        if str(requester_org_id) not in orgs or str(partner_org_id) not in orgs:
+            return None
+        key = tuple(sorted((str(requester_org_id), str(partner_org_id))))
+        partnerships = self._organization_partnerships = getattr(self, "_organization_partnerships", {})
+        row = partnerships.get(key, {})
+        row.update({
+            "id": row.get("id") or str(uuid4()),
+            "requester_org_id": str(requester_org_id),
+            "partner_org_id": str(partner_org_id),
+            "status": row.get("status") if row.get("status") == "active" else "requested",
+            "note": note,
+            "requested_by": requested_by,
+            "approved_by": row.get("approved_by"),
+            "requested_at": row.get("requested_at") or datetime.now(timezone.utc).isoformat(),
+            "approved_at": row.get("approved_at"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        partnerships[key] = row
+        return dict(row)
+
+    async def accept_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, approved_by: str | None = None
+    ) -> dict | None:
+        key = tuple(sorted((str(requester_org_id), str(partner_org_id))))
+        partnerships = self._organization_partnerships = getattr(self, "_organization_partnerships", {})
+        row = partnerships.get(key)
+        if row is None:
+            return None
+        if str(row.get("partner_org_id")) != str(partner_org_id):
+            return None
+        row["status"] = "active"
+        row["approved_by"] = approved_by
+        row["approved_at"] = datetime.now(timezone.utc).isoformat()
+        row["updated_at"] = row["approved_at"]
+        return dict(row)
 
     async def request_partner_dispatch(
         self, job_id: UUID, *, origin_org_id: str, partner_org_id: str, note: str | None = None
@@ -4218,7 +4291,7 @@ class InMemoryStore(Store):
         jid = str(job_id)
         status = getattr(self, "_job_status", {}).get(jid)
         owner = getattr(self, "_job_org", {}).get(jid)
-        if owner != str(origin_org_id) or status not in {STATUS_SCHEDULED_REQUESTED, STATUS_PENDING_DISPATCH}:
+        if owner != str(origin_org_id) or status not in {STATUS_SCHEDULED_REQUESTED, STATUS_SCHEDULED_CONFIRMED, STATUS_PENDING_DISPATCH}:
             return None
         if not any(str(row.get("id")) == str(partner_org_id) for row in await self.list_partner_dispatch_targets(origin_org_id)):
             return None
@@ -4236,6 +4309,31 @@ class InMemoryStore(Store):
         }
         await self.log_event_raw(job_id, f"partner_dispatch_requested:partner={partner_org_id}:note={(note or '')[:120]}")
         return {"id": jid, "status": STATUS_PARTNER_REQUESTED, "partner_org_id": str(partner_org_id)}
+
+    async def activate_due_scheduled_jobs(self, *, horizon_minutes: int = 90) -> list[dict]:
+        statuses = getattr(self, "_job_status", {})
+        due_by = datetime.now(timezone.utc) + timedelta(minutes=horizon_minutes)
+        activated = []
+        for jid, status in list(statuses.items()):
+            if status != STATUS_SCHEDULED_CONFIRMED:
+                continue
+            ticket = self._tickets.get(UUID(jid))
+            start = ticket.service_appointment.requested_start if ticket and ticket.service_appointment else None
+            if start is None:
+                continue
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if start > due_by:
+                continue
+            statuses[jid] = STATUS_PENDING_DISPATCH
+            detail = getattr(self, "_job_detail", {}).get(jid, {})
+            if isinstance(detail.get("service_appointment"), dict):
+                detail["service_appointment"]["status"] = "activation_due"
+            if ticket and ticket.service_appointment:
+                ticket.service_appointment.status = "activation_due"
+            await self.log_event_raw(UUID(jid), "scheduled_activated")
+            activated.append({"id": jid, "status": STATUS_PENDING_DISPATCH})
+        return activated
 
     async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:
         return None
@@ -4745,6 +4843,33 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_governance_events_actor"
                 " on governance_events (actor_id, created_at desc)"
+            )
+            await conn.execute(
+                "create table if not exists organization_partnerships ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  requester_org_id uuid not null references organizations(id) on delete cascade,"
+                "  partner_org_id uuid not null references organizations(id) on delete cascade,"
+                "  status text not null default 'requested'"
+                "    check (status in ('requested','active','suspended','rejected','ended')),"
+                "  note text,"
+                "  requested_by uuid,"
+                "  approved_by uuid,"
+                "  requested_at timestamptz not null default now(),"
+                "  approved_at timestamptz,"
+                "  updated_at timestamptz not null default now(),"
+                "  check (requester_org_id <> partner_org_id)"
+                ")"
+            )
+            await conn.execute(
+                "create unique index if not exists uq_organization_partnership_pair"
+                " on organization_partnerships ("
+                "  least(requester_org_id, partner_org_id),"
+                "  greatest(requester_org_id, partner_org_id)"
+                " )"
+            )
+            await conn.execute(
+                "create index if not exists idx_organization_partnerships_lookup"
+                " on organization_partnerships (status, requester_org_id, partner_org_id)"
             )
             # Runtime operational settings (migration 0023). Resilience guard so the
             # API boots + seeds even if the migration is behind. Never holds secrets
@@ -5491,7 +5616,7 @@ class PostgresStore(Store):
                 # enters the fulfillment ladder only set_job_status may advance it.
                 "  status = CASE"
                 "    WHEN jobs.status = ANY(ARRAY["
-                "      'scheduled_requested','partner_requested','pending_dispatch','assigned','en_route','arrived','in_progress',"
+                "      'scheduled_requested','scheduled_confirmed','partner_requested','pending_dispatch','assigned','en_route','arrived','in_progress',"
                 "      'completed_pending_customer','completed_confirmed',"
                 "      'completed_auto_closed','disputed','cancelled','no_show'])"
                 "    THEN jobs.status ELSE excluded.status END,"
@@ -6575,7 +6700,7 @@ class PostgresStore(Store):
                 (
                     str(org_id) if org_id is not None else None,
                     str(org_id) if org_id is not None else None,
-                    ["scheduled_requested", "partner_requested", "pending_dispatch"],
+                    ["scheduled_requested", "scheduled_confirmed", "partner_requested", "pending_dispatch"],
                     *params,
                 ),
             )
@@ -7285,7 +7410,7 @@ class PostgresStore(Store):
         """The company's active/recoverable jobs (owned or fulfilled) with assigned
         technician and active-offer state — backs the provider recovery workspace."""
         recoverable = [
-            STATUS_SCHEDULED_REQUESTED, STATUS_PARTNER_REQUESTED, "pending_dispatch", "assigned", "en_route", "arrived", "in_progress",
+            STATUS_SCHEDULED_REQUESTED, STATUS_SCHEDULED_CONFIRMED, STATUS_PARTNER_REQUESTED, "pending_dispatch", "assigned", "en_route", "arrived", "in_progress",
             "completed_pending_customer", "disputed",
         ]
         async with await self._connect() as conn:
@@ -9074,10 +9199,110 @@ class PostgresStore(Store):
         ]
 
     async def list_partner_dispatch_targets(self, origin_org_id: str) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select o.id, o.display_name, o.legal_name, o.slug, o.organization_type,"
+                " o.status, o.subscription_status, o.phone, o.email, o.created_at,"
+                " (select count(*) from user_organization_memberships m where m.organization_id = o.id),"
+                " (select count(*) from organization_technicians ot"
+                "  where ot.organization_id = o.id and ot.ended_at is null)"
+                " from organization_partnerships p"
+                " join organizations o on o.id = case"
+                "   when p.requester_org_id = %s then p.partner_org_id"
+                "   else p.requester_org_id end"
+                " where p.status = 'active'"
+                " and (p.requester_org_id = %s or p.partner_org_id = %s)"
+                " and o.status = 'active'"
+                " order by o.display_name",
+                (str(origin_org_id), str(origin_org_id), str(origin_org_id)),
+            )
+            rows = await cur.fetchall()
         return [
-            row for row in await self.list_organizations("active")
-            if str(row.get("id")) != str(origin_org_id)
+            {
+                "id": str(r[0]), "display_name": r[1], "legal_name": r[2], "slug": r[3],
+                "organization_type": r[4], "status": r[5], "subscription_status": r[6],
+                "phone": r[7], "email": r[8], "created_at": r[9].isoformat() if r[9] else None,
+                "member_count": r[10], "technician_count": r[11],
+            }
+            for r in rows
         ]
+
+    async def request_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, requested_by: str | None = None,
+        note: str | None = None
+    ) -> dict | None:
+        if str(requester_org_id) == str(partner_org_id):
+            return None
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from organizations"
+                " where id = any(%s) and status = 'active'",
+                ([str(requester_org_id), str(partner_org_id)],),
+            )
+            count_row = await cur.fetchone()
+            if not count_row or count_row[0] != 2:
+                return None
+            cur = await conn.execute(
+                "insert into organization_partnerships ("
+                " requester_org_id, partner_org_id, status, note, requested_by"
+                ") values (%s, %s, 'requested', %s, %s)"
+                " on conflict ((least(requester_org_id, partner_org_id)), (greatest(requester_org_id, partner_org_id)))"
+                " do update set"
+                "  requester_org_id = excluded.requester_org_id,"
+                "  partner_org_id = excluded.partner_org_id,"
+                "  status = case when organization_partnerships.status = 'active'"
+                "    then 'active' else 'requested' end,"
+                "  note = excluded.note,"
+                "  requested_by = excluded.requested_by,"
+                "  updated_at = now()"
+                " returning id, requester_org_id, partner_org_id, status, note,"
+                " requested_by, approved_by, requested_at, approved_at, updated_at",
+                (str(requester_org_id), str(partner_org_id), note, requested_by),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "requester_org_id": str(row[1]),
+            "partner_org_id": str(row[2]),
+            "status": row[3],
+            "note": row[4],
+            "requested_by": str(row[5]) if row[5] else None,
+            "approved_by": str(row[6]) if row[6] else None,
+            "requested_at": row[7].isoformat() if row[7] else None,
+            "approved_at": row[8].isoformat() if row[8] else None,
+            "updated_at": row[9].isoformat() if row[9] else None,
+        }
+
+    async def accept_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, approved_by: str | None = None
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organization_partnerships set"
+                " status = 'active', approved_by = %s, approved_at = coalesce(approved_at, now()),"
+                " updated_at = now()"
+                " where requester_org_id = %s and partner_org_id = %s and status = 'requested'"
+                " returning id, requester_org_id, partner_org_id, status, note,"
+                " requested_by, approved_by, requested_at, approved_at, updated_at",
+                (approved_by, str(requester_org_id), str(partner_org_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "requester_org_id": str(row[1]),
+            "partner_org_id": str(row[2]),
+            "status": row[3],
+            "note": row[4],
+            "requested_by": str(row[5]) if row[5] else None,
+            "approved_by": str(row[6]) if row[6] else None,
+            "requested_at": row[7].isoformat() if row[7] else None,
+            "approved_at": row[8].isoformat() if row[8] else None,
+            "updated_at": row[9].isoformat() if row[9] else None,
+        }
 
     async def request_partner_dispatch(
         self, job_id: UUID, *, origin_org_id: str, partner_org_id: str, note: str | None = None
@@ -9114,7 +9339,7 @@ class PostgresStore(Store):
                     }),
                     str(job_id),
                     str(origin_org_id),
-                    [STATUS_SCHEDULED_REQUESTED, STATUS_PENDING_DISPATCH],
+                    [STATUS_SCHEDULED_REQUESTED, STATUS_SCHEDULED_CONFIRMED, STATUS_PENDING_DISPATCH],
                 ),
             )
             row = await cur.fetchone()
@@ -9127,6 +9352,30 @@ class PostgresStore(Store):
             )
         await self.log_event_raw(job_id, f"partner_dispatch_requested:partner={partner_org_id}:note={(note or '')[:120]}")
         return {"id": str(row[0]), "status": row[1], "partner_org_id": str(partner_org_id)}
+
+    async def activate_due_scheduled_jobs(self, *, horizon_minutes: int = 90) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update jobs set"
+                " status = %s,"
+                " detail = jsonb_set("
+                "   coalesce(detail, '{}'::jsonb),"
+                "   '{service_appointment,status}',"
+                "   '\"activation_due\"'::jsonb,"
+                "   true"
+                " ),"
+                " lifecycle_version = lifecycle_version + 1,"
+                " updated_at = now()"
+                " where status = %s"
+                " and nullif(detail #>> '{service_appointment,requested_start}', '')::timestamptz"
+                "   <= now() + (%s::text || ' minutes')::interval"
+                " returning id, status",
+                (STATUS_PENDING_DISPATCH, STATUS_SCHEDULED_CONFIRMED, horizon_minutes),
+            )
+            rows = await cur.fetchall()
+        for row in rows:
+            await self.log_event_raw(row[0], "scheduled_activated")
+        return [{"id": str(row[0]), "status": row[1]} for row in rows]
 
     async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:
         oid = str(organization_id)

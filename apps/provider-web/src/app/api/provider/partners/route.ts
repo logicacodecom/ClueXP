@@ -12,3 +12,16 @@ export const GET = withApiErrors(async function GET(request: NextRequest) {
   });
   return NextResponse.json(await jsonOrText(response), { status: response.status });
 });
+
+export const POST = withApiErrors(async function POST(request: NextRequest) {
+  const token = request.cookies.get("cluexp_access_token")?.value;
+  if (!token) return NextResponse.json({ detail: "Not authenticated" }, { status: 401 });
+  const body = await request.json().catch(() => ({}));
+  const response = await fetch(`${apiBase}/api/provider/partners`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  return NextResponse.json(await jsonOrText(response), { status: response.status });
+});

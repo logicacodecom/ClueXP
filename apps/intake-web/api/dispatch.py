@@ -187,6 +187,7 @@ def is_terminal(state: str, *, attempts: int, max_attempts: int, timed_out: bool
 # working; only cutover jobs walk this ladder. Compare via the helpers below —
 # never string-match status ad-hoc.
 STATUS_SCHEDULED_REQUESTED = "scheduled_requested"
+STATUS_SCHEDULED_CONFIRMED = "scheduled_confirmed"
 STATUS_PARTNER_REQUESTED = "partner_requested"
 STATUS_PENDING_DISPATCH = "pending_dispatch"
 STATUS_ASSIGNED = "assigned"
