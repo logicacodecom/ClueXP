@@ -192,11 +192,29 @@ button {
   gap: 10px;
 }
 
+.mode-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.mode-choice {
+  align-items: flex-start;
+}
+
 .field {
   width: 100%;
   min-height: 54px;
   padding: 14px 12px;
   font-size: 18px;
+}
+
+.field-label {
+  display: grid;
+  gap: 8px;
+  color: var(--primary-soft);
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 textarea.field {
@@ -317,6 +335,18 @@ textarea.field {
   padding: 18px;
 }
 
+.dispatch-note {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  color: var(--primary);
+}
+
+.dispatch-note .fine {
+  margin: 0;
+}
+
 .status-orbit {
   display: grid;
   width: 56px;
@@ -428,6 +458,12 @@ textarea.field {
   .main {
     padding-top: 32px;
     padding-bottom: calc(128px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 420px) {
+  .row {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -21,7 +21,9 @@ from api.dispatch import (
     STATUS_COMPLETED_PENDING,
     STATUS_EN_ROUTE,
     STATUS_IN_PROGRESS,
+    STATUS_PARTNER_REQUESTED,
     STATUS_PENDING_DISPATCH,
+    STATUS_SCHEDULED_REQUESTED,
     can_technician_transition,
     customer_actions,
     eta_range_from_km,
@@ -1131,6 +1133,32 @@ def _seed_org_tech(app_store, org_id, tid):
     })
 
 
+def _seed_scheduled_provider_job(app_store, org_id, jid):
+    from datetime import datetime, timedelta, timezone
+    from api.schema import ServiceAppointment, Ticket, Urgency
+
+    start = datetime.now(timezone.utc) + timedelta(days=1)
+    ticket = Ticket(
+        ticket_id=UUID(jid),
+        urgency=Urgency.SCHEDULED,
+        service_appointment=ServiceAppointment(
+            requested_start=start,
+            requested_end=start + timedelta(hours=2),
+            timezone="America/New_York",
+            partner_dispatch_allowed=True,
+        ),
+    )
+    app_store._tickets[UUID(jid)] = ticket
+    app_store._job_status = getattr(app_store, "_job_status", {})
+    app_store._job_status[jid] = STATUS_SCHEDULED_REQUESTED
+    app_store._job_org = getattr(app_store, "_job_org", {})
+    app_store._job_org[jid] = org_id
+    app_store._job_urgency = getattr(app_store, "_job_urgency", {})
+    app_store._job_urgency[jid] = "scheduled"
+    app_store._job_detail = getattr(app_store, "_job_detail", {})
+    app_store._job_detail[jid] = ticket.model_dump(mode="json")
+
+
 def test_provider_queue_scoped_to_org():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -1148,6 +1176,127 @@ def test_provider_queue_scoped_to_org():
     assert resp.status_code == 200
     ids = [j["id"] for j in resp.json()]
     assert job_a in ids and job_b not in ids, "dispatcher must see only their own org's jobs"
+
+
+def test_provider_queue_includes_scheduled_requested_jobs():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid = str(uuid4())
+    _seed_scheduled_provider_job(app_store, org, jid)
+
+    resp = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200, resp.text
+    row = next(j for j in resp.json() if j["id"] == jid)
+    assert row["status"] == STATUS_SCHEDULED_REQUESTED
+    assert row["urgency"] == "scheduled"
+    assert row["detail"]["service_appointment"]["partner_dispatch_allowed"] is True
+
+
+def test_provider_confirm_schedule_moves_to_pending_dispatch():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid = str(uuid4())
+    _seed_scheduled_provider_job(app_store, org, jid)
+
+    resp = client.post(
+        f"/provider/queue/{jid}/confirm-schedule",
+        json={"note": "customer confirmed by phone"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    assert app_store._tickets[UUID(jid)].service_appointment.status == "confirmed_unassigned"
+
+
+def test_provider_cannot_assign_scheduled_before_confirmation():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_scheduled_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
+
+    resp = client.post(
+        f"/provider/queue/{jid}/assign",
+        json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 409
+    assert "Confirm the appointment window" in resp.json()["detail"]
+
+
+def test_provider_partner_request_masks_until_acceptance():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    jid = str(uuid4())
+    _seed_provider_job(app_store, org_a, jid)
+    app_store._organizations[org_b] = {
+        "id": org_b,
+        "display_name": "Partner Locksmith",
+        "status": "active",
+    }
+    app_store._job_detail = getattr(app_store, "_job_detail", {})
+    app_store._job_detail[jid] = {
+        "customer_name": "Private Customer",
+        "customer_phone": "+15551234567",
+        "identity": {"authority_role": "owner"},
+        "additional_details": "Use side entrance",
+    }
+
+    req = client_a.post(
+        f"/provider/queue/{jid}/partner-request",
+        json={"partner_org_id": org_b, "note": "Please cover this window"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert req.status_code == 200, req.text
+    assert app_store._job_status[jid] == STATUS_PARTNER_REQUESTED
+    assert app_store._job_fulfillment_org[jid] == org_b
+
+    incoming = client_b.get("/provider/queue", headers={"Authorization": f"Bearer {token_b}"})
+    assert incoming.status_code == 200
+    row = next(j for j in incoming.json() if j["id"] == jid)
+    assert row["viewer_relationship"] == "fulfillment_partner"
+    assert "customer_name" not in row["detail"]
+    assert "customer_phone" not in row["detail"]
+    assert "identity" not in row["detail"]
+    assert row["detail"]["additional_details"] == "Use side entrance"
+
+
+def test_partner_must_accept_before_assigning_technician():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_provider_job(app_store, org_a, jid)
+    _seed_org_tech(app_store, org_b, tid)
+    app_store._organizations[org_b] = {
+        "id": org_b,
+        "display_name": "Partner Locksmith",
+        "status": "active",
+    }
+    assert client_a.post(
+        f"/provider/queue/{jid}/partner-request",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    ).status_code == 200
+
+    blocked = client_b.post(
+        f"/provider/queue/{jid}/assign",
+        json={"technician_id": tid},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert blocked.status_code == 409
+    assert "Partner must accept" in blocked.json()["detail"]
+
+    accepted = client_b.post(
+        f"/provider/queue/{jid}/partner-accept",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
 
 
 def test_provider_manual_request_enters_dispatch_queue(monkeypatch):

@@ -1,6 +1,6 @@
 "use client";
 
-import { Car, Clock3, Home, LoaderCircle, MapPin, Phone, Store, UserRound } from "lucide-react";
+import { CalendarClock, Car, Clock3, Home, LoaderCircle, MapPin, Network, Phone, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -10,12 +10,14 @@ type Screen =
   | "opener"
   | "situation"
   | "location"
+  | "schedule"
   | "details"
   | "additional"
   | "photos"
   | "identity"
   | "price"
   | "commit"
+  | "scheduled"
   | "matching"
   | "assigned"
   | "tracking"
@@ -28,6 +30,7 @@ const intakeSteps: Partial<Record<Screen, number>> = {
   opener: 1,
   situation: 2,
   location: 3,
+  schedule: 3,
   details: 4,
   additional: 4,
   photos: 4,
@@ -40,7 +43,8 @@ const intakeSteps: Partial<Record<Screen, number>> = {
 const PREV_SCREEN: Partial<Record<Screen, Screen>> = {
   situation: "opener",
   location: "situation",
-  details: "location",
+  schedule: "location",
+  details: "schedule",
   additional: "details",
   photos: "additional",
   identity: "photos",
@@ -65,6 +69,7 @@ const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
 
 type DispatchState = "waiting" | "matched" | "no_eligible" | "expired_retry" | "error";
+type ServiceMode = "now" | "scheduled";
 
 interface DispatchAssignment {
   customer_owner: string | null;
@@ -157,6 +162,33 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 function money(value?: number | null, currency = "USD") {
   if (value == null) return "";
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
+}
+
+function toDatetimeLocalValue(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function defaultScheduleWindow() {
+  const start = new Date();
+  start.setDate(start.getDate() + 1);
+  start.setHours(10, 0, 0, 0);
+  const end = new Date(start);
+  end.setHours(start.getHours() + 2);
+  return {
+    start: toDatetimeLocalValue(start),
+    end: toDatetimeLocalValue(end)
+  };
+}
+
+function formatAppointmentWindow(start?: string | null, end?: string | null) {
+  if (!start) return "Requested window pending";
+  const startDate = new Date(start);
+  const endDate = end ? new Date(end) : null;
+  const day = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(startDate);
+  const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(startDate);
+  const endTime = endDate ? new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(endDate) : null;
+  return endTime ? `${day}, ${time} - ${endTime}` : `${day}, ${time}`;
 }
 
 function TopBar({ organizationName }: { organizationName?: string }) {
@@ -263,6 +295,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [dispatchStatus, setDispatchStatus] = useState<DispatchStatus | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
   const [showEstimate, setShowEstimate] = useState(true);
+  const [serviceMode, setServiceMode] = useState<ServiceMode>("now");
+  const [scheduleWindow] = useState(defaultScheduleWindow);
   const [form, setForm] = useState({
     address: "",
     make: "",
@@ -273,6 +307,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     notes: "",
     name: "",
     phone: "",
+    scheduleStart: scheduleWindow.start,
+    scheduleEnd: scheduleWindow.end,
   });
   const [authorityRole, setAuthorityRole] = useState<string | null>(null);
 
@@ -294,6 +330,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   function sync(envelope: TicketEnvelope) {
     setTicket(envelope.ticket);
     setGuards(envelope.guards);
+    if (envelope.ticket.urgency === "scheduled") setServiceMode("scheduled");
   }
 
   // Hard reset back to a clean intake: clears the persisted session and all
@@ -305,6 +342,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     setDispatchStatus(null);
     setArrivalCode("");
     setError(null);
+    setServiceMode("now");
     setScreen("opener");
   }
 
@@ -681,7 +719,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               onClick={() =>
                 run(async () => {
                   await shareGpsLocation();
-                  setScreen("details");
+                  setScreen("schedule");
                 })
               }
             >
@@ -730,11 +768,109 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                       safety_flag: { present: value !== "none", type: value, advised_emergency_services: value !== "none" }
                     });
                     if (value !== "none") await handoff("safety");
-                    else setScreen("details");
+                    else setScreen("schedule");
                   })
                 }
               />
             </div>
+          </div>
+        </>
+      );
+    }
+
+    if (screen === "schedule") {
+      const scheduleReady =
+        serviceMode === "now" ||
+        (Boolean(form.scheduleStart) && Boolean(form.scheduleEnd) && new Date(form.scheduleEnd) > new Date(form.scheduleStart));
+      return (
+        <>
+          <AgentMessage support="Immediate requests go to live dispatch. Later jobs are requested first, then confirmed by the provider or a trusted partner.">
+            When do you need service?
+          </AgentMessage>
+          <div className="stack">
+            <div className="mode-grid" role="radiogroup" aria-label="Service timing">
+              <button
+                className={`choice mode-choice ${serviceMode === "now" ? "active" : ""}`}
+                type="button"
+                role="radio"
+                aria-checked={serviceMode === "now"}
+                onClick={() => setServiceMode("now")}
+              >
+                <span style={{ color: "var(--text)", display: "inline-flex", gap: 10, alignItems: "center" }}>
+                  <Clock3 size={22} /> As soon as possible
+                </span>
+                <span>Live dispatch</span>
+              </button>
+              <button
+                className={`choice mode-choice ${serviceMode === "scheduled" ? "active" : ""}`}
+                type="button"
+                role="radio"
+                aria-checked={serviceMode === "scheduled"}
+                onClick={() => setServiceMode("scheduled")}
+              >
+                <span style={{ color: "var(--text)", display: "inline-flex", gap: 10, alignItems: "center" }}>
+                  <CalendarClock size={22} /> Schedule for later
+                </span>
+                <span>Requested window</span>
+              </button>
+            </div>
+            {serviceMode === "scheduled" ? (
+              <div className="panel">
+                <p className="panel-title">Requested appointment window</p>
+                <div className="row">
+                  <label className="field-label">
+                    Start
+                    <input
+                      className="field"
+                      type="datetime-local"
+                      value={form.scheduleStart}
+                      onChange={(event) => setForm({ ...form, scheduleStart: event.target.value })}
+                    />
+                  </label>
+                  <label className="field-label">
+                    End
+                    <input
+                      className="field"
+                      type="datetime-local"
+                      value={form.scheduleEnd}
+                      onChange={(event) => setForm({ ...form, scheduleEnd: event.target.value })}
+                    />
+                  </label>
+                </div>
+                <div className="dispatch-note">
+                  <Network size={18} aria-hidden="true" />
+                  <p className="fine">
+                    Your provider may confirm this with their own roster or send a private partner offer. Your details stay masked until an approved fulfillment team accepts.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || !scheduleReady}
+              onClick={() =>
+                run(async () => {
+                  if (serviceMode === "scheduled") {
+                    await patch({
+                      urgency: "scheduled",
+                      service_appointment: {
+                        requested_start: new Date(form.scheduleStart).toISOString(),
+                        requested_end: new Date(form.scheduleEnd).toISOString(),
+                        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York",
+                        status: "requested",
+                        partner_dispatch_allowed: true
+                      }
+                    });
+                  } else {
+                    await patch({ urgency: "urgent", service_appointment: null });
+                  }
+                  setScreen("details");
+                })
+              }
+            >
+              Continue
+            </button>
           </div>
         </>
       );
@@ -1008,11 +1144,33 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     }
 
     if (screen === "commit") {
+      const scheduled = ticket?.urgency === "scheduled";
+      const requestedWindow = ticket?.service_appointment;
       return (
         <>
-          <AgentMessage support="This commits your request and matches a specialist. Technician details appear only after the backend assigns someone.">
-            Ready to request help?
+          <AgentMessage
+            support={
+              scheduled
+                ? "This sends your requested window to the provider. A dispatcher confirms capacity before a technician is reserved."
+                : "This commits your request and matches a specialist. Technician details appear only after the backend assigns someone."
+            }
+          >
+            {scheduled ? "Ready to request this appointment?" : "Ready to request help?"}
           </AgentMessage>
+          {scheduled ? (
+            <div className="panel">
+              <p className="panel-title">Requested window</p>
+              <div className="big-number">
+                {formatAppointmentWindow(requestedWindow?.requested_start, requestedWindow?.requested_end)}
+              </div>
+              <div className="dispatch-note">
+                <Network size={18} aria-hidden="true" />
+                <p className="fine">
+                  Partner dispatch is allowed for this request, but only through approved provider-to-provider routing.
+                </p>
+              </div>
+            </div>
+          ) : null}
           <button
             className="primary"
             type="button"
@@ -1021,6 +1179,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 const current = await ensureTicket();
                 const committed = await api<CutoverTicketEnvelope>(`/tickets/${current.ticket_id}/commit`, { method: "POST" });
                 sync(committed);
+                if (scheduled) {
+                  setScreen("scheduled");
+                  return;
+                }
                 if (committed.tracking_path) {
                   router.push(committed.tracking_path);
                   return;
@@ -1031,8 +1193,44 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               })
             }
           >
-            Confirm request
+            {scheduled ? "Request appointment" : "Confirm request"}
           </button>
+        </>
+      );
+    }
+
+    if (screen === "scheduled") {
+      const requestedWindow = ticket?.service_appointment;
+      return (
+        <>
+          <AgentMessage support="The provider will confirm the exact appointment or offer nearby alternatives if the requested window is full.">
+            Appointment request received.
+          </AgentMessage>
+          <div className="stack">
+            <div className="dispatch-status" aria-live="polite">
+              <div className="status-orbit" aria-hidden="true">
+                <CalendarClock size={26} />
+              </div>
+              <div>
+                <p className="panel-title">Requested window</p>
+                <div className="big-number">
+                  {formatAppointmentWindow(requestedWindow?.requested_start, requestedWindow?.requested_end)}
+                </div>
+                <p className="fine">
+                  This is requested, not yet confirmed. You will get confirmation before a technician is reserved.
+                </p>
+              </div>
+            </div>
+            <div className="panel">
+              <p className="panel-title">Partner dispatch</p>
+              <p className="fine">
+                If your provider uses a partner, the partner first sees a masked job offer. Customer details appear only after the provider-approved team accepts and assigns a technician.
+              </p>
+            </div>
+            <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+              <Phone size={18} aria-hidden="true" /> Call dispatch
+            </a>
+          </div>
         </>
       );
     }

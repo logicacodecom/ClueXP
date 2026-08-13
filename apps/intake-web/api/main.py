@@ -51,7 +51,9 @@ from api.dispatch import (
     STATUS_EN_ROUTE,
     STATUS_IN_PROGRESS,
     STATUS_NO_SHOW,
+    STATUS_PARTNER_REQUESTED,
     STATUS_PENDING_DISPATCH,
+    STATUS_SCHEDULED_REQUESTED,
     can_customer_cancel,
     can_report_collection,
     can_technician_transition,
@@ -1009,7 +1011,10 @@ CLIENT_FIELDS = frozenset(
         "automotive",
         "property",
         "identity",
+        "customer_name",
+        "customer_phone",
         "additional_details",
+        "service_appointment",
         "channel",
     }
 )
@@ -3157,6 +3162,12 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
         raise HTTPException(status_code=409, detail="Price acceptance required")
     if not estimate_required and not terms_accepted:
         raise HTTPException(status_code=409, detail="Request terms acceptance required")
+    if ticket.urgency == Urgency.SCHEDULED:
+        if ticket.service_appointment is None or ticket.service_appointment.requested_start is None:
+            raise HTTPException(status_code=409, detail="Requested appointment window required")
+        ticket.service_appointment.status = "requested"
+        await save(ticket)
+        await store.set_job_status(ticket_id, STATUS_SCHEDULED_REQUESTED)
     token = await store.get_tracking_token(ticket_id)
     if not token:
         # Legacy path only: status column tracks ticket lifecycle. On the cutover
@@ -3277,6 +3288,15 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
 class OpsAssignPayload(BaseModel):
     technician_id: UUID
     override_reason: str | None = None
+
+
+class ConfirmSchedulePayload(BaseModel):
+    note: str | None = None
+
+
+class PartnerDispatchRequestPayload(BaseModel):
+    partner_org_id: UUID
+    note: str | None = None
 
 
 class DeclineOfferPayload(BaseModel):
@@ -4308,6 +4328,100 @@ async def provider_get_candidates(
     }
 
 
+@app.get("/provider/partners")
+async def provider_list_partner_targets(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    org_id = _require_dispatch_org(session)
+    return await store.list_partner_dispatch_targets(org_id)
+
+
+@app.post("/provider/queue/{job_id}/confirm-schedule")
+async def provider_confirm_schedule(
+    job_id: UUID,
+    payload: ConfirmSchedulePayload | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Provider confirms a customer-requested appointment window.
+    This makes the job eligible for the normal technician-offer flow, but still
+    does not assign a named technician or expose technician identity.
+    """
+    org_id = _require_dispatch_org(session)
+    jobs = await store.get_ops_queue(org_id=org_id)
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    if job.get("status") != STATUS_SCHEDULED_REQUESTED:
+        raise HTTPException(status_code=409, detail="Job is not awaiting schedule confirmation")
+    ticket = await require_ticket(job_id)
+    if ticket.service_appointment is None or ticket.service_appointment.requested_start is None:
+        raise HTTPException(status_code=409, detail="Requested appointment window required")
+    ticket.service_appointment.status = "confirmed_unassigned"
+    await save(ticket)
+    updated = await store.set_job_status(
+        job_id, STATUS_PENDING_DISPATCH, expected_current=STATUS_SCHEDULED_REQUESTED
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Schedule confirmation conflicted; refresh the queue.")
+    actor_id = session.get("user", {}).get("id")
+    note = (payload.note if payload else None) or ""
+    await log_transition(ticket, f"schedule_confirmed:by={actor_id}:org={org_id}")
+    if note.strip():
+        await store.log_event_raw(job_id, f"schedule_note:{note.strip()[:180]}")
+    return {"confirmed": True, "job_id": str(job_id), "status": STATUS_PENDING_DISPATCH}
+
+
+@app.post("/provider/queue/{job_id}/partner-request")
+async def provider_request_partner_dispatch(
+    job_id: UUID,
+    payload: PartnerDispatchRequestPayload,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    jobs = await store.get_ops_queue(org_id=org_id)
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    if str(payload.partner_org_id) == str(org_id):
+        raise HTTPException(status_code=422, detail="Choose a different partner organization")
+    if job.get("offer_active"):
+        raise HTTPException(status_code=409, detail="Recall or wait for the active technician offer before requesting a partner")
+    if job.get("status") == STATUS_PARTNER_REQUESTED:
+        raise HTTPException(status_code=409, detail="Partner dispatch has already been requested")
+    result = await store.request_partner_dispatch(
+        job_id,
+        origin_org_id=org_id,
+        partner_org_id=str(payload.partner_org_id),
+        note=(payload.note or "").strip()[:280] or None,
+    )
+    if result is None:
+        raise HTTPException(status_code=409, detail="Partner request could not be created")
+    return result
+
+
+@app.post("/provider/queue/{job_id}/partner-accept")
+async def provider_accept_partner_dispatch(
+    job_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    jobs = await store.get_ops_queue(org_id=org_id)
+    job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    if job.get("status") != STATUS_PARTNER_REQUESTED:
+        raise HTTPException(status_code=409, detail="Job is not awaiting partner acceptance")
+    if str(job.get("fulfillment_org_id") or "") != str(org_id):
+        raise HTTPException(status_code=403, detail="Only the requested partner can accept this dispatch request")
+    updated = await store.set_job_status(
+        job_id, STATUS_PENDING_DISPATCH, expected_current=STATUS_PARTNER_REQUESTED
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Partner request changed; refresh the queue")
+    await store.log_event_raw(job_id, f"partner_dispatch_accepted:partner={org_id}:by={session.get('user', {}).get('id')}")
+    return {"accepted": True, "job_id": str(job_id), "status": STATUS_PENDING_DISPATCH}
+
+
 @app.post("/provider/queue/{job_id}/assign")
 async def provider_assign(
     job_id: UUID,
@@ -4322,6 +4436,10 @@ async def provider_assign(
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
+    if job.get("status") == STATUS_SCHEDULED_REQUESTED:
+        raise HTTPException(status_code=409, detail="Confirm the appointment window before assigning a technician")
+    if job.get("status") == STATUS_PARTNER_REQUESTED:
+        raise HTTPException(status_code=409, detail="Partner must accept the dispatch request before assigning a technician")
     if job.get("offer_active"):
         raise HTTPException(
             status_code=409,

@@ -9,6 +9,7 @@ The project is documented by four canonical docs (plus a pilot runbook):
 - [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) — tech stack, database + storage, infrastructure, and the four subsystem specs (intake / technician / partner / ops). **Architecture source of truth.**
 - [`docs/TECHNICIAN-APP-REDESIGN.md`](docs/TECHNICIAN-APP-REDESIGN.md) — approved active-job-first technician experience, native/PWA boundaries, development workstreams, testing, and rollout gates.
 - [`docs/EXECUTION-PLAN.md`](docs/EXECUTION-PLAN.md) — product backlog, releases, sprints, tasks, and **Canonical Status**.
+- [`docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md`](docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md) — proposed customer booking, technician scheduling, and approved-partner overflow MVP.
 - [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) — the UI Guide (visual tokens, components); `docs/design-ref/` holds reference assets only.
 - [`docs/HANDOFF.md`](docs/HANDOFF.md) — the multi-agent communication channel.
 - Architecture decisions (why/rejected alternatives) live in `SYSTEM-DESIGN.md` §20 · [`docs/PILOT-OPERATIONS.md`](docs/PILOT-OPERATIONS.md) — pilot gates, cutover, matrix, rollback.

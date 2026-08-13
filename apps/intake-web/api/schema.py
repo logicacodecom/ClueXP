@@ -193,6 +193,18 @@ class PriceQuote(BaseModel):
     accepted_at: Optional[datetime] = None
 
 
+class ServiceAppointment(BaseModel):
+    """Customer-requested appointment window for non-immediate work.
+    This is not a technician assignment. The provider must confirm capacity
+    before this becomes a real reservation.
+    """
+    requested_start: Optional[datetime] = None
+    requested_end: Optional[datetime] = None
+    timezone: str = "America/New_York"
+    status: str = "requested"  # requested | confirmed_unassigned | technician_reserved
+    partner_dispatch_allowed: bool = True
+
+
 class TechnicianAssignment(BaseModel):
     """First populated when TrustState transitions to MATCHED.
     Until then this object must be None — the UI relies on this to know
@@ -260,6 +272,7 @@ class Ticket(BaseModel):
     # ─── Addendum sections 11–15 ─────────────────────────────────────────────
     additional_details: Optional[str] = None     # free-text, optional
     photos: list[Photo] = Field(default_factory=list)
+    service_appointment: Optional[ServiceAppointment] = None
     payment_method: Optional[PaymentMethod] = None
     cancellation_policy: Optional[CancellationPolicy] = None
     price_quote: Optional[PriceQuote] = None

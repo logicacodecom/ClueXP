@@ -88,6 +88,14 @@ export interface SafetyFlag {
   advised_emergency_services?: boolean;
 }
 
+export interface ServiceAppointment {
+  requested_start?: string;
+  requested_end?: string;
+  timezone?: string;
+  status?: string;
+  partner_dispatch_allowed?: boolean;
+}
+
 export interface TechnicianAssignment {
   technician_id: string;
   display_name: string;
@@ -118,6 +126,7 @@ export interface Ticket {
   customer_phone?: string | null;
   additional_details?: string | null;
   photos?: Photo[];
+  service_appointment?: ServiceAppointment | null;
   payment_method?: PaymentMethod | null;
   cancellation_policy?: CancellationPolicy | null;
   price_quote?: PriceQuote | null;

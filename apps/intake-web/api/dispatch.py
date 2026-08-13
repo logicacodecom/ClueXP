@@ -186,6 +186,8 @@ def is_terminal(state: str, *, attempts: int, max_attempts: int, timed_out: bool
 # The domain is app-enforced (no DB check) so legacy intake-status values keep
 # working; only cutover jobs walk this ladder. Compare via the helpers below —
 # never string-match status ad-hoc.
+STATUS_SCHEDULED_REQUESTED = "scheduled_requested"
+STATUS_PARTNER_REQUESTED = "partner_requested"
 STATUS_PENDING_DISPATCH = "pending_dispatch"
 STATUS_ASSIGNED = "assigned"
 STATUS_EN_ROUTE = "en_route"
