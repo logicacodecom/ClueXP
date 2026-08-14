@@ -4394,6 +4394,14 @@ async def provider_list_partner_targets(
     return await store.list_partner_dispatch_targets(org_id)
 
 
+@app.get("/provider/partnerships")
+async def provider_list_partnerships(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    return await store.list_organization_partnerships(org_id)
+
+
 @app.post("/provider/partners")
 async def provider_request_partnership(
     payload: OrganizationPartnershipRequestPayload,

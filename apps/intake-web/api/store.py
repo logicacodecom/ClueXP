@@ -791,6 +791,9 @@ class Store:
     async def list_partner_dispatch_targets(self, origin_org_id: str) -> list[dict]:  # pragma: no cover
         return []
 
+    async def list_organization_partnerships(self, organization_id: str) -> dict:  # pragma: no cover
+        return {"active": [], "incoming": [], "outgoing": [], "available": []}
+
     async def request_organization_partnership(
         self, requester_org_id: str, partner_org_id: str, *, requested_by: str | None = None,
         note: str | None = None
@@ -4241,6 +4244,35 @@ class InMemoryStore(Store):
             row for row in await self.list_organizations("active")
             if str(row.get("id")) in approved_ids
         ]
+
+    async def list_organization_partnerships(self, organization_id: str) -> dict:
+        org_id = str(organization_id)
+        orgs = {str(row.get("id")): row for row in await self.list_organizations("active")}
+        active: list[dict] = []
+        incoming: list[dict] = []
+        outgoing: list[dict] = []
+        related_ids: set[str] = {org_id}
+        for row in getattr(self, "_organization_partnerships", {}).values():
+            requester = str(row.get("requester_org_id"))
+            partner = str(row.get("partner_org_id"))
+            if org_id not in {requester, partner}:
+                continue
+            other_id = partner if requester == org_id else requester
+            other = orgs.get(other_id) or {"id": other_id, "display_name": "Unknown organization"}
+            item = {**dict(row), "organization": other, "direction": "outgoing" if requester == org_id else "incoming"}
+            related_ids.add(other_id)
+            if row.get("status") == "active":
+                active.append(item)
+            elif row.get("status") == "requested" and requester == org_id:
+                outgoing.append(item)
+            elif row.get("status") == "requested" and partner == org_id:
+                incoming.append(item)
+        return {
+            "active": active,
+            "incoming": incoming,
+            "outgoing": outgoing,
+            "available": [row for oid, row in orgs.items() if oid not in related_ids],
+        }
 
     async def request_organization_partnership(
         self, requester_org_id: str, partner_org_id: str, *, requested_by: str | None = None,
@@ -9226,6 +9258,89 @@ class PostgresStore(Store):
             }
             for r in rows
         ]
+
+    async def list_organization_partnerships(self, organization_id: str) -> dict:
+        org_id = str(organization_id)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select p.id, p.requester_org_id, p.partner_org_id, p.status, p.note,"
+                " p.requested_by, p.approved_by, p.requested_at, p.approved_at, p.updated_at,"
+                " o.id, o.display_name, o.legal_name, o.slug, o.organization_type,"
+                " o.status, o.subscription_status, o.phone, o.email, o.created_at,"
+                " (select count(*) from user_organization_memberships m where m.organization_id = o.id),"
+                " (select count(*) from organization_technicians ot"
+                "  where ot.organization_id = o.id and ot.ended_at is null)"
+                " from organization_partnerships p"
+                " join organizations o on o.id = case"
+                "   when p.requester_org_id = %s then p.partner_org_id"
+                "   else p.requester_org_id end"
+                " where p.requester_org_id = %s or p.partner_org_id = %s"
+                " order by p.updated_at desc",
+                (org_id, org_id, org_id),
+            )
+            rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select o.id, o.display_name, o.legal_name, o.slug, o.organization_type,"
+                " o.status, o.subscription_status, o.phone, o.email, o.created_at,"
+                " (select count(*) from user_organization_memberships m where m.organization_id = o.id),"
+                " (select count(*) from organization_technicians ot"
+                "  where ot.organization_id = o.id and ot.ended_at is null)"
+                " from organizations o"
+                " where o.status = 'active' and o.id <> %s"
+                " and not exists ("
+                "   select 1 from organization_partnerships p"
+                "   where p.status in ('requested', 'active')"
+                "   and least(p.requester_org_id, p.partner_org_id) = least(o.id, %s::uuid)"
+                "   and greatest(p.requester_org_id, p.partner_org_id) = greatest(o.id, %s::uuid)"
+                " )"
+                " order by o.display_name",
+                (org_id, org_id, org_id),
+            )
+            available_rows = await cur.fetchall()
+
+        def org_from(row: tuple, offset: int) -> dict:
+            return {
+                "id": str(row[offset]), "display_name": row[offset + 1], "legal_name": row[offset + 2],
+                "slug": row[offset + 3], "organization_type": row[offset + 4], "status": row[offset + 5],
+                "subscription_status": row[offset + 6], "phone": row[offset + 7], "email": row[offset + 8],
+                "created_at": row[offset + 9].isoformat() if row[offset + 9] else None,
+                "member_count": row[offset + 10], "technician_count": row[offset + 11],
+            }
+
+        def partnership_from(row: tuple) -> dict:
+            requester = str(row[1])
+            return {
+                "id": str(row[0]),
+                "requester_org_id": requester,
+                "partner_org_id": str(row[2]),
+                "status": row[3],
+                "note": row[4],
+                "requested_by": str(row[5]) if row[5] else None,
+                "approved_by": str(row[6]) if row[6] else None,
+                "requested_at": row[7].isoformat() if row[7] else None,
+                "approved_at": row[8].isoformat() if row[8] else None,
+                "updated_at": row[9].isoformat() if row[9] else None,
+                "organization": org_from(row, 10),
+                "direction": "outgoing" if requester == org_id else "incoming",
+            }
+
+        active: list[dict] = []
+        incoming: list[dict] = []
+        outgoing: list[dict] = []
+        for row in rows:
+            item = partnership_from(row)
+            if item["status"] == "active":
+                active.append(item)
+            elif item["status"] == "requested" and item["direction"] == "incoming":
+                incoming.append(item)
+            elif item["status"] == "requested" and item["direction"] == "outgoing":
+                outgoing.append(item)
+        return {
+            "active": active,
+            "incoming": incoming,
+            "outgoing": outgoing,
+            "available": [org_from(row, 0) for row in available_rows],
+        }
 
     async def request_organization_partnership(
         self, requester_org_id: str, partner_org_id: str, *, requested_by: str | None = None,

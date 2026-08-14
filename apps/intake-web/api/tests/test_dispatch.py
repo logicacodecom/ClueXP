@@ -1403,6 +1403,53 @@ def test_unapproved_partner_dispatch_is_blocked():
     assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
 
 
+def test_provider_partnerships_lists_incoming_outgoing_active_and_available():
+    org_a, org_b, org_c = str(uuid4()), str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    app_store._organizations[org_b] = {
+        "id": org_b,
+        "display_name": "Beta Partner",
+        "status": "active",
+    }
+    app_store._organizations[org_c] = {
+        "id": org_c,
+        "display_name": "Charlie Available",
+        "status": "active",
+    }
+
+    outgoing = client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b, "note": "night coverage"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert outgoing.status_code == 200, outgoing.text
+
+    ledger_a = client_a.get("/provider/partnerships", headers={"Authorization": f"Bearer {token_a}"})
+    assert ledger_a.status_code == 200, ledger_a.text
+    body_a = ledger_a.json()
+    assert [row["organization"]["id"] for row in body_a["outgoing"]] == [org_b]
+    available_ids = {row["id"] for row in body_a["available"]}
+    assert org_c in available_ids
+    assert org_b not in available_ids
+
+    ledger_b = client_b.get("/provider/partnerships", headers={"Authorization": f"Bearer {token_b}"})
+    assert ledger_b.status_code == 200, ledger_b.text
+    body_b = ledger_b.json()
+    assert [row["organization"]["id"] for row in body_b["incoming"]] == [org_a]
+
+    accepted = client_b.post(
+        f"/provider/partners/{org_a}/accept",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    active = client_a.get("/provider/partnerships", headers={"Authorization": f"Bearer {token_a}"}).json()
+    assert [row["organization"]["id"] for row in active["active"]] == [org_b]
+    assert active["incoming"] == []
+    assert active["outgoing"] == []
+
+
 def test_provider_manual_request_enters_dispatch_queue(monkeypatch):
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

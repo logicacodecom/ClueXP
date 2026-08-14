@@ -3,7 +3,7 @@
 import type { ServiceCategory } from "@cluexp/api-client";
 import { DEFAULT_SERVICE_CATALOG } from "@cluexp/api-client";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, SkillSelect } from "@cluexp/console-ui";
-import { Building2, Check, Copy, CreditCard, Link2, PhoneCall, Save, TimerReset, Upload } from "lucide-react";
+import { Building2, Check, Copy, CreditCard, Handshake, Link2, PhoneCall, Save, TimerReset, Upload } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "../frame";
@@ -54,6 +54,35 @@ interface CommunicationsSettings {
   sms_enabled: boolean;
   masked_calling_enabled: boolean;
   a2p_registered: boolean;
+}
+
+interface PartnerOrganization {
+  id: string;
+  display_name?: string | null;
+  legal_name?: string | null;
+  slug?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  technician_count?: number;
+}
+
+interface Partnership {
+  id: string;
+  requester_org_id: string;
+  partner_org_id: string;
+  status: "requested" | "active" | "suspended" | "rejected" | "ended";
+  note?: string | null;
+  requested_at?: string | null;
+  approved_at?: string | null;
+  direction: "incoming" | "outgoing";
+  organization: PartnerOrganization;
+}
+
+interface PartnershipLedger {
+  active: Partnership[];
+  incoming: Partnership[];
+  outgoing: Partnership[];
+  available: PartnerOrganization[];
 }
 
 // Stored values are integers (basis points / cents) for exact money math, but the
@@ -107,6 +136,18 @@ function SettingsSection({ eyebrow, title, children }: { eyebrow: string; title:
       {children ? <p className="mt-1 text-sm text-muted-foreground">{children}</p> : null}
     </div>
   );
+}
+
+function partnerName(org: PartnerOrganization) {
+  return org.display_name || org.legal_name || "Unnamed organization";
+}
+
+function partnerSubline(org: PartnerOrganization) {
+  return [
+    org.slug ? `/${org.slug}` : null,
+    typeof org.technician_count === "number" ? `${org.technician_count} tech${org.technician_count === 1 ? "" : "s"}` : null,
+    org.phone || org.email || null,
+  ].filter(Boolean).join(" · ");
 }
 
 export default function SettingsPage() {
@@ -166,6 +207,11 @@ export default function SettingsPage() {
   });
   const [communicationsMessage, setCommunicationsMessage] = useState<string | null>(null);
   const [communicationsBusy, setCommunicationsBusy] = useState(false);
+  const [partnerships, setPartnerships] = useState<PartnershipLedger>({ active: [], incoming: [], outgoing: [], available: [] });
+  const [selectedPartnerOrgId, setSelectedPartnerOrgId] = useState("");
+  const [partnerNote, setPartnerNote] = useState("");
+  const [partnershipMessage, setPartnershipMessage] = useState<string | null>(null);
+  const [partnershipBusy, setPartnershipBusy] = useState(false);
 
   async function loadDispatchSettings() {
     try {
@@ -248,12 +294,31 @@ export default function SettingsPage() {
     }
   }
 
+  async function loadPartnerships() {
+    try {
+      const response = await fetch("/api/provider/partnerships", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to load partner network");
+      const ledger = {
+        active: Array.isArray(body.active) ? body.active : [],
+        incoming: Array.isArray(body.incoming) ? body.incoming : [],
+        outgoing: Array.isArray(body.outgoing) ? body.outgoing : [],
+        available: Array.isArray(body.available) ? body.available : [],
+      } satisfies PartnershipLedger;
+      setPartnerships(ledger);
+      setSelectedPartnerOrgId((current) => current || ledger.available[0]?.id || "");
+    } catch (cause) {
+      setPartnershipMessage(cause instanceof Error ? cause.message : "Unable to load partner network");
+    }
+  }
+
   useEffect(() => {
     void loadDispatchSettings();
     void loadIntakeSettings();
     void loadCapabilities();
     void loadFinancialSettings();
     void loadCommunicationsSettings();
+    void loadPartnerships();
   }, []);
 
   useEffect(() => {
@@ -544,6 +609,48 @@ export default function SettingsPage() {
       setCapabilityMessage(cause instanceof Error ? cause.message : "Unable to save service capabilities");
     } finally {
       setCapabilityBusy(false);
+    }
+  }
+
+  async function requestPartnership() {
+    if (!selectedPartnerOrgId) return;
+    setPartnershipBusy(true);
+    setPartnershipMessage(null);
+    try {
+      const response = await fetch("/api/provider/partners", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          partner_org_id: selectedPartnerOrgId,
+          note: partnerNote.trim() || null,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to request partnership");
+      setPartnerNote("");
+      setSelectedPartnerOrgId("");
+      setPartnershipMessage("Partnership request sent.");
+      await loadPartnerships();
+    } catch (cause) {
+      setPartnershipMessage(cause instanceof Error ? cause.message : "Unable to request partnership");
+    } finally {
+      setPartnershipBusy(false);
+    }
+  }
+
+  async function acceptPartnership(requesterOrgId: string) {
+    setPartnershipBusy(true);
+    setPartnershipMessage(null);
+    try {
+      const response = await fetch(`/api/provider/partners/${requesterOrgId}/accept`, { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to approve partnership");
+      setPartnershipMessage("Partnership approved. They can now receive partner dispatch requests.");
+      await loadPartnerships();
+    } catch (cause) {
+      setPartnershipMessage(cause instanceof Error ? cause.message : "Unable to approve partnership");
+    } finally {
+      setPartnershipBusy(false);
     }
   }
 
@@ -1001,6 +1108,132 @@ export default function SettingsPage() {
             >
               <Save className="size-4" />{dispatchBusy ? "Saving…" : "Save dispatch settings"}
             </Button>
+          </CardContent>
+        </Card>
+        <SettingsSection eyebrow="Partner dispatch" title="Approved partner network">
+          Companies must approve each other before jobs can be handed off for partner dispatch.
+        </SettingsSection>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Handshake className="size-5 text-primary" />Partner network</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-md border border-border bg-secondary/30 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Approved</div>
+                <div className="mt-1 text-2xl font-semibold">{partnerships.active.length}</div>
+              </div>
+              <div className="rounded-md border border-border bg-secondary/30 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Need approval</div>
+                <div className="mt-1 text-2xl font-semibold">{partnerships.incoming.length}</div>
+              </div>
+              <div className="rounded-md border border-border bg-secondary/30 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requested</div>
+                <div className="mt-1 text-2xl font-semibold">{partnerships.outgoing.length}</div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
+              <div className="space-y-3">
+                <div>
+                  <div className="text-sm font-semibold">Approved partners</div>
+                  <p className="text-xs text-muted-foreground">These companies can be selected from the provider queue for partner dispatch.</p>
+                </div>
+                {partnerships.active.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-border bg-secondary/30 p-3 text-sm text-muted-foreground">No approved partners yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {partnerships.active.map((item) => (
+                      <li className="rounded-md border border-border p-3" key={item.id}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-medium">{partnerName(item.organization)}</div>
+                            <div className="text-xs text-muted-foreground">{partnerSubline(item.organization) || "Active provider company"}</div>
+                          </div>
+                          <Badge variant="info">Approved</Badge>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <div className="text-sm font-semibold">Request a partner</div>
+                  <p className="text-xs text-muted-foreground">Send a relationship request before dispatching work to another company.</p>
+                </div>
+                {partnerships.available.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-border bg-secondary/30 p-3 text-sm text-muted-foreground">No available companies to invite right now.</p>
+                ) : (
+                  <div className="space-y-3">
+                    <select
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={selectedPartnerOrgId}
+                      onChange={(event) => setSelectedPartnerOrgId(event.target.value)}
+                    >
+                      {partnerships.available.map((org) => (
+                        <option key={org.id} value={org.id}>{partnerName(org)}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      maxLength={280}
+                      placeholder="Optional note, e.g. after-hours overflow in north Tampa."
+                      value={partnerNote}
+                      onChange={(event) => setPartnerNote(event.target.value)}
+                    />
+                    <Button disabled={partnershipBusy || !selectedPartnerOrgId} onClick={() => void requestPartnership()} variant="outline">
+                      Request partnership
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-3">
+                <div className="text-sm font-semibold">Incoming requests</div>
+                {partnerships.incoming.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-border bg-secondary/30 p-3 text-sm text-muted-foreground">No partner requests waiting for approval.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {partnerships.incoming.map((item) => (
+                      <li className="rounded-md border border-border p-3" key={item.id}>
+                        <div className="font-medium">{partnerName(item.organization)}</div>
+                        <div className="text-xs text-muted-foreground">{partnerSubline(item.organization) || "Provider company"}</div>
+                        {item.note ? <p className="mt-2 text-sm">{item.note}</p> : null}
+                        <Button className="mt-3" disabled={partnershipBusy} onClick={() => void acceptPartnership(item.requester_org_id)} size="sm">
+                          Approve partnership
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="space-y-3">
+                <div className="text-sm font-semibold">Outgoing requests</div>
+                {partnerships.outgoing.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-border bg-secondary/30 p-3 text-sm text-muted-foreground">No outgoing partner requests.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {partnerships.outgoing.map((item) => (
+                      <li className="rounded-md border border-border p-3" key={item.id}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-medium">{partnerName(item.organization)}</div>
+                            <div className="text-xs text-muted-foreground">{partnerSubline(item.organization) || "Provider company"}</div>
+                          </div>
+                          <Badge variant="outline">Awaiting approval</Badge>
+                        </div>
+                        {item.note ? <p className="mt-2 text-sm">{item.note}</p> : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+            {partnershipMessage ? <div className="text-sm" role="status">{partnershipMessage}</div> : null}
           </CardContent>
         </Card>
       </div>
