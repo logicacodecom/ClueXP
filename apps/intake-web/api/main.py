@@ -4469,6 +4469,38 @@ async def provider_accept_partnership(
     return result
 
 
+@app.post("/provider/partners/{requester_org_id}/reject")
+async def provider_reject_partnership(
+    requester_org_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    result = await store.reject_organization_partnership(
+        str(requester_org_id),
+        org_id,
+        rejected_by=session.get("user", {}).get("id"),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Partnership request not found")
+    return result
+
+
+@app.post("/provider/partners/{other_org_id}/end")
+async def provider_end_partnership(
+    other_org_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    result = await store.end_organization_partnership(
+        org_id,
+        str(other_org_id),
+        ended_by=session.get("user", {}).get("id"),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Partnership not found")
+    return result
+
+
 @app.post("/provider/queue/{job_id}/confirm-schedule")
 async def provider_confirm_schedule(
     job_id: UUID,

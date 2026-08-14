@@ -805,6 +805,16 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def reject_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, rejected_by: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def end_organization_partnership(
+        self, organization_id: str, other_org_id: str, *, ended_by: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def request_partner_dispatch(
         self, job_id: UUID, *, origin_org_id: str, partner_org_id: str, note: str | None = None
     ) -> dict | None:  # pragma: no cover
@@ -4363,12 +4373,14 @@ class InMemoryStore(Store):
             other_id = partner if requester == org_id else requester
             other = orgs.get(other_id) or {"id": other_id, "display_name": "Unknown organization"}
             item = {**dict(row), "organization": other, "direction": "outgoing" if requester == org_id else "incoming"}
-            related_ids.add(other_id)
             if row.get("status") == "active":
+                related_ids.add(other_id)
                 active.append(item)
             elif row.get("status") == "requested" and requester == org_id:
+                related_ids.add(other_id)
                 outgoing.append(item)
             elif row.get("status") == "requested" and partner == org_id:
+                related_ids.add(other_id)
                 incoming.append(item)
         return {
             "active": active,
@@ -4418,6 +4430,38 @@ class InMemoryStore(Store):
         row["approved_by"] = approved_by
         row["approved_at"] = datetime.now(timezone.utc).isoformat()
         row["updated_at"] = row["approved_at"]
+        return dict(row)
+
+    async def reject_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, rejected_by: str | None = None
+    ) -> dict | None:
+        key = tuple(sorted((str(requester_org_id), str(partner_org_id))))
+        partnerships = self._organization_partnerships = getattr(self, "_organization_partnerships", {})
+        row = partnerships.get(key)
+        if row is None or row.get("status") != "requested":
+            return None
+        if str(row.get("partner_org_id")) != str(partner_org_id):
+            return None
+        row["status"] = "rejected"
+        row["approved_by"] = rejected_by
+        row["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return dict(row)
+
+    async def end_organization_partnership(
+        self, organization_id: str, other_org_id: str, *, ended_by: str | None = None
+    ) -> dict | None:
+        key = tuple(sorted((str(organization_id), str(other_org_id))))
+        partnerships = self._organization_partnerships = getattr(self, "_organization_partnerships", {})
+        row = partnerships.get(key)
+        if row is None or row.get("status") not in {"requested", "active"}:
+            return None
+        if str(organization_id) not in {str(row.get("requester_org_id")), str(row.get("partner_org_id"))}:
+            return None
+        was_active = row.get("status") == "active"
+        row["status"] = "ended"
+        if not was_active:
+            row["approved_by"] = ended_by
+        row["updated_at"] = datetime.now(timezone.utc).isoformat()
         return dict(row)
 
     async def request_partner_dispatch(
@@ -9679,6 +9723,72 @@ class PostgresStore(Store):
                 " returning id, requester_org_id, partner_org_id, status, note,"
                 " requested_by, approved_by, requested_at, approved_at, updated_at",
                 (approved_by, str(requester_org_id), str(partner_org_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "requester_org_id": str(row[1]),
+            "partner_org_id": str(row[2]),
+            "status": row[3],
+            "note": row[4],
+            "requested_by": str(row[5]) if row[5] else None,
+            "approved_by": str(row[6]) if row[6] else None,
+            "requested_at": row[7].isoformat() if row[7] else None,
+            "approved_at": row[8].isoformat() if row[8] else None,
+            "updated_at": row[9].isoformat() if row[9] else None,
+        }
+
+    async def reject_organization_partnership(
+        self, requester_org_id: str, partner_org_id: str, *, rejected_by: str | None = None
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organization_partnerships set"
+                " status = 'rejected', approved_by = %s, updated_at = now()"
+                " where requester_org_id = %s and partner_org_id = %s and status = 'requested'"
+                " returning id, requester_org_id, partner_org_id, status, note,"
+                " requested_by, approved_by, requested_at, approved_at, updated_at",
+                (rejected_by, str(requester_org_id), str(partner_org_id)),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "requester_org_id": str(row[1]),
+            "partner_org_id": str(row[2]),
+            "status": row[3],
+            "note": row[4],
+            "requested_by": str(row[5]) if row[5] else None,
+            "approved_by": str(row[6]) if row[6] else None,
+            "requested_at": row[7].isoformat() if row[7] else None,
+            "approved_at": row[8].isoformat() if row[8] else None,
+            "updated_at": row[9].isoformat() if row[9] else None,
+        }
+
+    async def end_organization_partnership(
+        self, organization_id: str, other_org_id: str, *, ended_by: str | None = None
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organization_partnerships set"
+                " status = 'ended',"
+                " approved_by = case when status = 'requested' then %s else approved_by end,"
+                " updated_at = now()"
+                " where status in ('requested', 'active')"
+                " and least(requester_org_id, partner_org_id) = least(%s::uuid, %s::uuid)"
+                " and greatest(requester_org_id, partner_org_id) = greatest(%s::uuid, %s::uuid)"
+                " returning id, requester_org_id, partner_org_id, status, note,"
+                " requested_by, approved_by, requested_at, approved_at, updated_at",
+                (
+                    ended_by,
+                    str(organization_id),
+                    str(other_org_id),
+                    str(organization_id),
+                    str(other_org_id),
+                ),
             )
             row = await cur.fetchone()
         if row is None:

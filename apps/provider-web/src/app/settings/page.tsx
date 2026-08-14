@@ -654,6 +654,38 @@ export default function SettingsPage() {
     }
   }
 
+  async function rejectPartnership(requesterOrgId: string) {
+    setPartnershipBusy(true);
+    setPartnershipMessage(null);
+    try {
+      const response = await fetch(`/api/provider/partners/${requesterOrgId}/reject`, { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to reject partnership");
+      setPartnershipMessage("Partnership request rejected.");
+      await loadPartnerships();
+    } catch (cause) {
+      setPartnershipMessage(cause instanceof Error ? cause.message : "Unable to reject partnership");
+    } finally {
+      setPartnershipBusy(false);
+    }
+  }
+
+  async function endPartnership(otherOrgId: string, message = "Partnership ended.") {
+    setPartnershipBusy(true);
+    setPartnershipMessage(null);
+    try {
+      const response = await fetch(`/api/provider/partners/${otherOrgId}/end`, { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "Unable to end partnership");
+      setPartnershipMessage(message);
+      await loadPartnerships();
+    } catch (cause) {
+      setPartnershipMessage(cause instanceof Error ? cause.message : "Unable to end partnership");
+    } finally {
+      setPartnershipBusy(false);
+    }
+  }
+
   async function saveFinancialSettings() {
     setFinancialBusy(true);
     setFinancialMessage(null);
@@ -1152,6 +1184,15 @@ export default function SettingsPage() {
                           </div>
                           <Badge variant="info">Approved</Badge>
                         </div>
+                        <Button
+                          className="mt-3"
+                          disabled={partnershipBusy}
+                          onClick={() => void endPartnership(item.organization.id)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          End partnership
+                        </Button>
                       </li>
                     ))}
                   </ul>
@@ -1203,9 +1244,14 @@ export default function SettingsPage() {
                         <div className="font-medium">{partnerName(item.organization)}</div>
                         <div className="text-xs text-muted-foreground">{partnerSubline(item.organization) || "Provider company"}</div>
                         {item.note ? <p className="mt-2 text-sm">{item.note}</p> : null}
-                        <Button className="mt-3" disabled={partnershipBusy} onClick={() => void acceptPartnership(item.requester_org_id)} size="sm">
-                          Approve partnership
-                        </Button>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Button disabled={partnershipBusy} onClick={() => void acceptPartnership(item.requester_org_id)} size="sm">
+                            Approve partnership
+                          </Button>
+                          <Button disabled={partnershipBusy} onClick={() => void rejectPartnership(item.requester_org_id)} size="sm" variant="outline">
+                            Reject
+                          </Button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1227,6 +1273,15 @@ export default function SettingsPage() {
                           <Badge variant="outline">Awaiting approval</Badge>
                         </div>
                         {item.note ? <p className="mt-2 text-sm">{item.note}</p> : null}
+                        <Button
+                          className="mt-3"
+                          disabled={partnershipBusy}
+                          onClick={() => void endPartnership(item.organization.id, "Partnership request withdrawn.")}
+                          size="sm"
+                          variant="outline"
+                        >
+                          Withdraw request
+                        </Button>
                       </li>
                     ))}
                   </ul>

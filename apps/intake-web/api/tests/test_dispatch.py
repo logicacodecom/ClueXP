@@ -1568,6 +1568,97 @@ def test_provider_partnerships_lists_incoming_outgoing_active_and_available():
     assert active["outgoing"] == []
 
 
+def test_provider_can_reject_and_reinvite_partnership():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    app_store._organizations[org_b] = {
+        "id": org_b,
+        "display_name": "Beta Partner",
+        "status": "active",
+    }
+
+    requested = client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b, "note": "overflow coverage"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert requested.status_code == 200, requested.text
+
+    rejected = client_b.post(
+        f"/provider/partners/{org_a}/reject",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected"
+
+    ledger_a = client_a.get("/provider/partnerships", headers={"Authorization": f"Bearer {token_a}"}).json()
+    assert ledger_a["outgoing"] == []
+    assert org_b in {row["id"] for row in ledger_a["available"]}
+
+    requested_again = client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b, "note": "retry with new terms"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert requested_again.status_code == 200, requested_again.text
+    assert requested_again.json()["status"] == "requested"
+
+
+def test_provider_can_end_active_or_outgoing_partnership():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    job_id = str(uuid4())
+    _seed_provider_job(app_store, org_a, job_id)
+    app_store._organizations[org_b] = {
+        "id": org_b,
+        "display_name": "Beta Partner",
+        "status": "active",
+    }
+
+    assert client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    ).status_code == 200
+    assert client_b.post(
+        f"/provider/partners/{org_a}/accept",
+        headers={"Authorization": f"Bearer {token_b}"},
+    ).status_code == 200
+
+    ended = client_a.post(
+        f"/provider/partners/{org_b}/end",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert ended.status_code == 200, ended.text
+    assert ended.json()["status"] == "ended"
+    assert client_a.get("/provider/partners", headers={"Authorization": f"Bearer {token_a}"}).json() == []
+
+    blocked = client_a.post(
+        f"/provider/queue/{job_id}/partner-request",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert blocked.status_code == 409
+
+    requested = client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert requested.status_code == 200, requested.text
+    withdrawn = client_a.post(
+        f"/provider/partners/{org_b}/end",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert withdrawn.status_code == 200, withdrawn.text
+    assert withdrawn.json()["status"] == "ended"
+    ledger_a = client_a.get("/provider/partnerships", headers={"Authorization": f"Bearer {token_a}"}).json()
+    assert ledger_a["outgoing"] == []
+    assert org_b in {row["id"] for row in ledger_a["available"]}
+
+
 def test_provider_manual_request_enters_dispatch_queue(monkeypatch):
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
