@@ -705,6 +705,47 @@ class TransactionalSmsRequest(BaseModel):
     job_id: UUID
     purpose: str
     recipient_type: str = "customer"
+    client_message_id: str | None = None
+
+
+class ProviderCrmCustomerUpdate(BaseModel):
+    email: str | None = None
+    newsletter_status: str | None = None
+    warranty_days: int | None = None
+    callback_at: datetime | None = None
+    follow_up_at: datetime | None = None
+    last_contacted_at: datetime | None = None
+    notes: str | None = None
+
+    @field_validator("newsletter_status")
+    @classmethod
+    def validate_newsletter_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"unknown", "subscribed", "unsubscribed"}:
+            raise ValueError("newsletter_status must be unknown, subscribed, or unsubscribed")
+        return value
+
+    @field_validator("warranty_days")
+    @classmethod
+    def validate_warranty_days(cls, value: int | None) -> int | None:
+        if value is not None and not 0 <= value <= 3650:
+            raise ValueError("warranty_days must be between 0 and 3650")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        value = value.strip().lower() if value else None
+        if value and (len(value) > 254 or not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", value)):
+            raise ValueError("Enter a valid email address")
+        return value
+
+    @field_validator("notes")
+    @classmethod
+    def validate_notes(cls, value: str | None) -> str | None:
+        value = value.strip() if value else None
+        if value and len(value) > 4000:
+            raise ValueError("notes must be 4000 characters or fewer")
+        return value
 
 
 class ProviderTechnicianAgreementUpdate(BaseModel):
@@ -5874,6 +5915,14 @@ _CALL_ALLOWED_STATUSES = {
     STATUS_IN_PROGRESS,
     STATUS_COMPLETED_PENDING,
 }
+_PROVIDER_CUSTOMER_CALL_ALLOWED_STATUSES = {
+    *_CALL_ALLOWED_STATUSES,
+    STATUS_COMPLETED_CONFIRMED,
+    STATUS_COMPLETED_AUTO_CLOSED,
+    STATUS_DISPUTED,
+    STATUS_CANCELLED,
+    STATUS_NO_SHOW,
+}
 _SMS_PURPOSES = {
     "intake_confirmation",
     "technician_assigned",
@@ -5882,6 +5931,9 @@ _SMS_PURPOSES = {
     "completion_awaiting_customer_confirmation",
     "tracking_link_reminder",
     "provider_missed_call_callback_notice",
+    "crm_callback_confirmation",
+    "crm_service_follow_up",
+    "crm_warranty_reminder",
 }
 
 
@@ -5956,11 +6008,12 @@ async def _start_masked_call(
     caller_organization_id: str | None = None,
     callee_technician_id: str | None = None,
     callee_organization_id: str | None = None,
+    allowed_statuses: set[str] | None = None,
 ) -> dict[str, Any]:
     context = await store.get_job_call_context(job_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if context.get("status") not in _CALL_ALLOWED_STATUSES:
+    if context.get("status") not in (allowed_statuses or _CALL_ALLOWED_STATUSES):
         raise HTTPException(status_code=409, detail="Calling is closed for this job.")
     org_id = caller_organization_id or callee_organization_id or context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
     settings = await store.get_organization_phone_settings(str(org_id)) if org_id else None
@@ -6255,11 +6308,21 @@ def _sms_body(purpose: str, *, provider_name: str | None, tracking_url: str | No
         "completion_awaiting_customer_confirmation": f"{name}: service is marked complete. Please confirm in your tracking page.{link}",
         "tracking_link_reminder": f"{name}: here is your secure tracking link.{link}",
         "provider_missed_call_callback_notice": f"{name}: we missed your call and will follow up shortly.",
+        "crm_callback_confirmation": f"{name}: your callback request is scheduled. We will contact you as planned. Reply STOP to opt out.",
+        "crm_service_follow_up": f"{name}: checking in after your recent service. If you still need help, please call our office. Reply STOP to opt out.",
+        "crm_warranty_reminder": f"{name}: your recent service may still be covered by warranty. Please call our office if you need help. Reply STOP to opt out.",
     }
     return messages[purpose]
 
 
-async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: str = "customer") -> dict[str, Any]:
+async def _send_transactional_sms(
+    job_id: UUID,
+    purpose: str,
+    recipient_type: str = "customer",
+    *,
+    organization_id: str | None = None,
+    client_message_id: str | None = None,
+) -> dict[str, Any]:
     if purpose not in _SMS_PURPOSES:
         raise HTTPException(status_code=422, detail=f"purpose must be one of {sorted(_SMS_PURPOSES)}")
     if recipient_type not in {"customer", "technician"}:
@@ -6267,14 +6330,17 @@ async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: st
     context = await store.get_job_call_context(job_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    org_id = context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
+    org_id = organization_id or context.get("fulfillment_org_id") or context.get("customer_owner_org_id")
     settings = await store.get_organization_phone_settings(str(org_id)) if org_id else None
     to_number = normalize_e164(context.get("customer_phone") if recipient_type == "customer" else context.get("technician_phone"))
     from_number = normalize_e164((settings or {}).get("twilio_number") or os.environ.get("TWILIO_DEFAULT_FROM_NUMBER"))
     tracking_token = await store.get_tracking_token(job_id)
     base = os.environ.get("CUSTOMER_INTAKE_BASE_URL") or os.environ.get("NEXT_PUBLIC_INTAKE_BASE_URL") or ""
     tracking_url = f"{base.rstrip('/')}/t/{tracking_token}" if base and tracking_token else None
-    req_hash = _mutation_request_hash("transactional-sms", str(job_id), purpose, recipient_type, tracking_url or "")
+    req_hash = _mutation_request_hash(
+        "transactional-sms", str(job_id), purpose, recipient_type,
+        tracking_url or "", client_message_id or "",
+    )
     org_id_str = str(org_id) if org_id else None
     existing = await store.get_sms_delivery_by_request(
         organization_id=org_id_str,
@@ -6351,6 +6417,12 @@ async def _send_transactional_sms(job_id: UUID, purpose: str, recipient_type: st
         error_code=result.error_code,
         metadata=result.metadata or {},
     )
+    if result.sent and recipient_type == "customer" and org_id_str and context.get("customer_id"):
+        await store.update_provider_crm_customer(
+            org_id_str,
+            UUID(str(context["customer_id"])),
+            {"last_contacted_at": datetime.now(timezone.utc)},
+        )
     return {"sent": result.sent, "delivery": {**row, "to_number": redact_phone(to_number)}}
 
 
@@ -6682,6 +6754,35 @@ async def provider_job_history(
     the technician's collection and the customer's payment. Tenant-scoped."""
     org_id = _require_dispatch_org(session)
     return await store.get_provider_job_history(org_id)
+
+
+@app.get("/provider/crm/customers")
+async def provider_crm_customers(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    """Customer relationships derived from this organization's jobs, enriched with
+    organization-private follow-up, warranty, consent, and notes fields."""
+    org_id = _require_dispatch_org(session)
+    return await store.list_provider_crm_customers(org_id)
+
+
+@app.patch("/provider/crm/customers/{customer_id}")
+async def provider_crm_customer_update(
+    customer_id: UUID,
+    payload: ProviderCrmCustomerUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    data = payload.model_dump(exclude_unset=True)
+    customer = await store.update_provider_crm_customer(
+        org_id,
+        customer_id,
+        data,
+        updated_by=session.get("user", {}).get("id"),
+    )
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found in your organization")
+    return customer
 
 
 def _csv_escape(value: Any) -> str:
@@ -7355,13 +7456,24 @@ async def provider_start_customer_call(
     await _require_org_job(org_id, job_id)
     roles = set(session.get("roles", []))
     caller_type = "provider_admin" if "provider_admin" in roles else "dispatcher"
-    return await _start_masked_call(
+    result = await _start_masked_call(
         job_id,
         caller_type=caller_type,
         caller_user_id=session.get("user", {}).get("id"),
         caller_organization_id=org_id,
         callee_type="customer",
+        allowed_statuses=_PROVIDER_CUSTOMER_CALL_ALLOWED_STATUSES,
     )
+    if result.get("available"):
+        context = await store.get_job_call_context(job_id)
+        if context and context.get("customer_id"):
+            await store.update_provider_crm_customer(
+                org_id,
+                UUID(str(context["customer_id"])),
+                {"last_contacted_at": datetime.now(timezone.utc)},
+                updated_by=session.get("user", {}).get("id"),
+            )
+    return result
 
 
 @app.get("/provider/calls")
@@ -7392,7 +7504,14 @@ async def provider_send_transactional_sms(
 ) -> dict[str, Any]:
     org_id = _require_dispatch_org(session)
     await _require_org_job(org_id, payload.job_id)
-    return await _send_transactional_sms(payload.job_id, payload.purpose, payload.recipient_type)
+    client_message_id = _validated_client_message_id(payload.client_message_id)
+    return await _send_transactional_sms(
+        payload.job_id,
+        payload.purpose,
+        payload.recipient_type,
+        organization_id=org_id,
+        client_message_id=client_message_id,
+    )
 
 
 @app.get("/provider/jobs/{job_id}/timeline")

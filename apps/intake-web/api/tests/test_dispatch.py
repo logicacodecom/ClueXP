@@ -3457,6 +3457,44 @@ def test_provider_job_history_scoped_and_enriched():
     assert rows[0]["payments"]["technician"]["method"] == "check"
 
 
+def test_provider_crm_customers_are_job_derived_and_org_scoped():
+    org = str(uuid4())
+    other_org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    own_job, foreign_job = str(uuid4()), str(uuid4())
+    app_store._job_org = {own_job: org, foreign_job: other_org}
+    app_store._job_status = {
+        own_job: STATUS_COMPLETED_CONFIRMED,
+        foreign_job: STATUS_COMPLETED_CONFIRMED,
+    }
+    app_store._job_detail = {
+        own_job: {"customer_name": "Jamie Rivera", "customer_phone": "+15550140101"},
+        foreign_job: {"customer_name": "Private Customer", "customer_phone": "+15550140202"},
+    }
+    app_store._job_situation = {own_job: "locksmith.residential_lockout"}
+    app_store._job_address = {own_job: "10 Market Street"}
+
+    response = client.get("/provider/crm/customers", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    assert [row["name"] for row in response.json()] == ["Jamie Rivera"]
+
+    customer_id = response.json()[0]["id"]
+    updated = client.patch(
+        f"/provider/crm/customers/{customer_id}",
+        json={
+            "email": "Jamie@Example.com",
+            "newsletter_status": "subscribed",
+            "warranty_days": 90,
+            "notes": "Prefers afternoon calls.",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["email"] == "jamie@example.com"
+    assert updated.json()["newsletter_status"] == "subscribed"
+    assert updated.json()["warranty_days"] == 90
+
+
 def test_history_includes_completed_pending_customer():
     """A job the technician just finished (completed_pending_customer, before the
     customer confirms) must already appear in the provider history."""

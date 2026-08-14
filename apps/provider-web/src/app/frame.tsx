@@ -3,7 +3,7 @@
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import type { NavItem } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { CheckCircle2, Layers, LineChart, PhoneCall, Radar, Receipt, RotateCcw, Users as UsersIcon, Wallet } from "lucide-react";
+import { CheckCircle2, ContactRound, Layers, LineChart, PhoneCall, Radar, Receipt, RotateCcw, Users as UsersIcon, Wallet } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -42,6 +42,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     { ...defaultNav[0], label: "Jobs Completed", href: "/completed", icon: CheckCircle2, group: "Dispatch" },
     { ...defaultNav[0], label: "Recovery", href: "/recovery", icon: RotateCcw, group: "Dispatch" },
     // CRM
+    { ...defaultNav[0], label: "Customers", href: "/crm", icon: ContactRound, group: "CRM" },
     { ...defaultNav[0], label: "Call Intake", href: "/intake/new", icon: PhoneCall, group: "CRM" },
     { ...defaultNav[0], label: "Calls", href: "/calls", icon: PhoneCall, group: "CRM" },
     { ...byHref("/escalations"), label: "Escalations", group: "CRM" },

@@ -18,7 +18,7 @@ import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from api.auth import (
     generate_refresh_token,
@@ -1509,6 +1509,14 @@ class Store:
     async def get_provider_job_history(
         self, org_id: str, *, limit: int = 100, offset: int = 0
     ) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_provider_crm_customers(self, org_id: str) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def update_provider_crm_customer(
+        self, org_id: str, customer_id: UUID, data: dict, *, updated_by: str | None = None
+    ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
     async def get_provider_financial_overview(
@@ -3634,8 +3642,10 @@ class InMemoryStore(Store):
         ticket = self._tickets.get(job_id)
         if ticket:
             detail = {**ticket.model_dump(mode="json"), **detail}
+        customer_identity = str(detail.get("customer_phone") or "").strip() or f"job:{jid}"
         return {
             "job_id": jid,
+            "customer_id": str(uuid5(NAMESPACE_URL, f"cluexp-customer:{customer_identity}")),
             "status": status,
             "customer_owner_org_id": org_id,
             "fulfillment_org_id": org_id,
@@ -4007,6 +4017,77 @@ class InMemoryStore(Store):
                 "finished_at": self._resolve_job_finished_at(jid, closeout),
             })
         return out[offset:offset + limit]
+
+    async def list_provider_crm_customers(self, org_id: str) -> list[dict]:
+        grouped: dict[str, dict] = {}
+        profiles = getattr(self, "_provider_customer_profiles", {})
+        for jid, detail in getattr(self, "_job_detail", {}).items():
+            if str(getattr(self, "_job_org", {}).get(jid)) != str(org_id):
+                continue
+            phone = str(detail.get("customer_phone") or "").strip()
+            name = str(detail.get("customer_name") or "").strip()
+            identity = phone or f"job:{jid}"
+            customer_id = str(uuid5(NAMESPACE_URL, f"cluexp-customer:{identity}"))
+            row = grouped.setdefault(customer_id, {
+                "id": customer_id,
+                "name": name or "Customer",
+                "phone": phone or None,
+                "email": None,
+                "newsletter_status": "unknown",
+                "warranty_days": 30,
+                "callback_at": None,
+                "follow_up_at": None,
+                "last_contacted_at": None,
+                "notes": None,
+                "sms_opted_out": bool(normalize_e164(phone) and normalize_e164(phone) in getattr(self, "_sms_opt_outs", {})),
+                "jobs": [],
+            })
+            profile = profiles.get((str(org_id), customer_id), {})
+            row.update(profile)
+            deliveries = [
+                delivery for delivery in getattr(self, "_sms_deliveries", [])
+                if delivery.get("job_id") == jid
+                and delivery.get("recipient_type") == "customer"
+                and str(delivery.get("organization_id")) == str(org_id)
+            ]
+            deliveries.sort(key=lambda delivery: delivery.get("created_at") or "", reverse=True)
+            latest_sms = deliveries[0] if deliveries else None
+            row["jobs"].append({
+                "id": jid,
+                "operational_id": getattr(self, "_job_operational_id", {}).get(jid),
+                "status": getattr(self, "_job_status", {}).get(jid, "draft"),
+                "situation": getattr(self, "_job_situation", {}).get(jid),
+                "address": getattr(self, "_job_address", {}).get(jid),
+                "created_at": getattr(self, "_job_created_at", {}).get(jid),
+                "finished_at": self._resolve_job_finished_at(jid, await self.get_job_closeout(UUID(jid))),
+                "last_sms": ({
+                    "purpose": latest_sms.get("purpose"),
+                    "provider_status": latest_sms.get("provider_status"),
+                    "created_at": latest_sms.get("created_at"),
+                    "sent_at": latest_sms.get("sent_at"),
+                    "delivered_at": latest_sms.get("delivered_at"),
+                    "failed_at": latest_sms.get("failed_at"),
+                    "error_code": latest_sms.get("error_code"),
+                } if latest_sms else None),
+            })
+        for row in grouped.values():
+            row["jobs"].sort(key=lambda job: job.get("finished_at") or job.get("created_at") or "", reverse=True)
+        return sorted(grouped.values(), key=lambda row: row["jobs"][0].get("finished_at") or row["jobs"][0].get("created_at") or "", reverse=True)
+
+    async def update_provider_crm_customer(
+        self, org_id: str, customer_id: UUID, data: dict, *, updated_by: str | None = None
+    ) -> dict | None:
+        rows = await self.list_provider_crm_customers(org_id)
+        if not any(row["id"] == str(customer_id) for row in rows):
+            return None
+        profiles = self._provider_customer_profiles = getattr(self, "_provider_customer_profiles", {})
+        key = (str(org_id), str(customer_id))
+        current = profiles.get(key, {})
+        current.update(data)
+        current["updated_at"] = datetime.now(timezone.utc).isoformat()
+        current["updated_by"] = updated_by
+        profiles[key] = current
+        return next(row for row in await self.list_provider_crm_customers(org_id) if row["id"] == str(customer_id))
 
     async def _all_provider_job_history(self, org_id: str) -> list[dict]:
         """Every job in the org's history, unbounded (a dict scan -- no page cap to fall afoul of)."""
@@ -8382,7 +8463,7 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select j.id, j.status, j.fulfillment_technician_id, j.fulfillment_org_id,"
                 " j.customer_owner_org_id, c.phone, c.name, t.phone, t.display_name,"
-                " o.phone, o.display_name"
+                " o.phone, o.display_name, j.customer_id"
                 " from jobs j"
                 " left join customers c on c.id = j.customer_id"
                 " left join technicians t on t.id = j.fulfillment_technician_id"
@@ -8395,6 +8476,7 @@ class PostgresStore(Store):
             return None
         return {
             "job_id": str(row[0]),
+            "customer_id": str(row[11]) if row[11] else None,
             "status": row[1],
             "fulfillment_technician_id": str(row[2]) if row[2] else None,
             "fulfillment_org_id": str(row[3]) if row[3] else None,
@@ -8902,6 +8984,107 @@ class PostgresStore(Store):
         return await self._job_history(
             "(j.customer_owner_org_id = %s or j.fulfillment_org_id = %s)",
             (str(org_id), str(org_id)), limit, offset=offset,
+        )
+
+    async def list_provider_crm_customers(self, org_id: str) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select c.id, c.name, c.phone, p.email, p.newsletter_status,"
+                " p.warranty_days, p.callback_at, p.follow_up_at, p.last_contacted_at, p.notes,"
+                " exists(select 1 from communication_opt_outs co where co.phone_e164 = c.phone or co.phone_e164 ="
+                "   case"
+                "     when regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g') ~ '^1\\d{10}$'"
+                "       then '+' || regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g')"
+                "     when regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g') ~ '^\\d{10}$'"
+                "       then '+1' || regexp_replace(coalesce(c.phone, ''), '\\D', '', 'g')"
+                "     else null"
+                "   end),"
+                " j.id, j.operational_id, j.status, j.situation, j.address, j.created_at,"
+                " coalesce(j.confirmed_at, j.closed_at, j.cancelled_at, j.disputed_at, j.updated_at),"
+                " sms.purpose, sms.provider_status, sms.created_at, sms.sent_at,"
+                " sms.delivered_at, sms.failed_at, sms.error_code"
+                " from customers c"
+                " join jobs j on j.customer_id = c.id"
+                " left join provider_customer_profiles p"
+                "   on p.customer_id = c.id and p.organization_id = %s"
+                " left join lateral ("
+                "   select purpose, provider_status, created_at, sent_at, delivered_at, failed_at, error_code"
+                "   from communication_sms_deliveries"
+                "   where job_id = j.id and organization_id = %s and recipient_type = 'customer'"
+                "   order by created_at desc limit 1"
+                " ) sms on true"
+                " where j.customer_owner_org_id = %s or j.fulfillment_org_id = %s"
+                " order by 18 desc nulls last, j.created_at desc",
+                (str(org_id), str(org_id), str(org_id), str(org_id)),
+            )
+            rows = await cur.fetchall()
+        customers: dict[str, dict] = {}
+        for r in rows:
+            customer_id = str(r[0])
+            customer = customers.setdefault(customer_id, {
+                "id": customer_id,
+                "name": r[1] or "Customer",
+                "phone": r[2],
+                "email": r[3],
+                "newsletter_status": r[4] or "unknown",
+                "warranty_days": r[5] if r[5] is not None else 30,
+                "callback_at": r[6].isoformat() if r[6] else None,
+                "follow_up_at": r[7].isoformat() if r[7] else None,
+                "last_contacted_at": r[8].isoformat() if r[8] else None,
+                "notes": r[9],
+                "sms_opted_out": bool(r[10]),
+                "jobs": [],
+            })
+            customer["jobs"].append({
+                "id": str(r[11]),
+                "operational_id": r[12],
+                "status": r[13],
+                "situation": r[14],
+                "address": r[15],
+                "created_at": r[16].isoformat() if r[16] else None,
+                "finished_at": r[17].isoformat() if r[17] else None,
+                "last_sms": ({
+                    "purpose": r[18],
+                    "provider_status": r[19],
+                    "created_at": r[20].isoformat() if r[20] else None,
+                    "sent_at": r[21].isoformat() if r[21] else None,
+                    "delivered_at": r[22].isoformat() if r[22] else None,
+                    "failed_at": r[23].isoformat() if r[23] else None,
+                    "error_code": r[24],
+                } if r[18] else None),
+            })
+        return list(customers.values())
+
+    async def update_provider_crm_customer(
+        self, org_id: str, customer_id: UUID, data: dict, *, updated_by: str | None = None
+    ) -> dict | None:
+        allowed = {
+            "email", "newsletter_status", "warranty_days", "callback_at",
+            "follow_up_at", "last_contacted_at", "notes",
+        }
+        values = {key: value for key, value in data.items() if key in allowed}
+        async with await self._connect() as conn:
+            owned = await (await conn.execute(
+                "select 1 from jobs where customer_id = %s"
+                " and (customer_owner_org_id = %s or fulfillment_org_id = %s) limit 1",
+                (str(customer_id), str(org_id), str(org_id)),
+            )).fetchone()
+            if not owned:
+                return None
+            if values:
+                columns = list(values)
+                insert_columns = ", ".join(["organization_id", "customer_id", *columns, "updated_by"])
+                placeholders = ", ".join(["%s"] * (len(columns) + 3))
+                updates = ", ".join(f"{column} = excluded.{column}" for column in columns)
+                await conn.execute(
+                    f"insert into provider_customer_profiles ({insert_columns}) values ({placeholders}) "
+                    f"on conflict (organization_id, customer_id) do update set {updates}, "
+                    "updated_by = excluded.updated_by, updated_at = now()",
+                    (str(org_id), str(customer_id), *(values[column] for column in columns), updated_by),
+                )
+        return next(
+            (row for row in await self.list_provider_crm_customers(org_id) if row["id"] == str(customer_id)),
+            None,
         )
 
     _FINANCIAL_OVERVIEW_PAGE_SIZE = 1000

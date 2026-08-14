@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 from twilio.request_validator import RequestValidator
 
 from api.auth import create_access_token
-from api.dispatch import STATUS_ASSIGNED, STATUS_CANCELLED
+from api.dispatch import STATUS_ASSIGNED, STATUS_CANCELLED, STATUS_COMPLETED_CONFIRMED
 from api.main import app, store as app_store
 
 
@@ -450,6 +450,49 @@ def test_masked_call_uses_injected_twilio_provider_without_exposing_private_numb
     assert "+15551238888" not in response.text
 
 
+def test_provider_crm_can_start_masked_call_for_completed_service(monkeypatch):
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    _, provider_h = _register_dispatcher(org, "provider_admin")
+    jid = _seed_job(tid, org, STATUS_COMPLETED_CONFIRMED)
+    app_store._job_detail = getattr(app_store, "_job_detail", {})
+    app_store._job_detail[jid] = {"customer_phone": "+15551237777", "customer_name": "CRM Call Customer"}
+    app_store._organizations[org] = {"id": org, "display_name": "Metro Test", "phone": "+15551230001"}
+    app_store._organization_phone_settings = getattr(app_store, "_organization_phone_settings", {})
+    app_store._organization_phone_settings[org] = {
+        "organization_id": org,
+        "twilio_number": "+15551230000",
+        "primary_forwarding_number": "+15551230001",
+        "ring_timeout_seconds": 20,
+        "voicemail_enabled": True,
+        "sms_enabled": False,
+        "masked_calling_enabled": True,
+        "a2p_registered": False,
+    }
+
+    class FakeProvider:
+        def start_masked_call(self, **kwargs):
+            assert kwargs["caller_number"] == "+15551230001"
+            assert kwargs["callee_number"] == "+15551237777"
+            from api.communications import VoiceStartResult
+            return VoiceStartResult(True, "twilio", "CAcrmcompleted", "queued", "requested", kwargs["from_number"], "Masked call session started.", {})
+
+        def send_sms(self, **kwargs):  # pragma: no cover
+            raise AssertionError("not used")
+
+    monkeypatch.setattr("api.main.get_communications_provider", lambda: FakeProvider())
+    response = client.post(f"/provider/jobs/{jid}/calls/customer", headers=provider_h)
+    assert response.status_code == 200, response.text
+    assert response.json()["available"] is True
+    assert response.json()["call"]["provider"] == "twilio"
+    assert "+15551237777" not in response.text
+    assert "+15551230001" not in response.text
+    crm = client.get("/provider/crm/customers", headers=provider_h)
+    assert crm.status_code == 200, crm.text
+    assert next(row for row in crm.json() if row["phone"] == "+15551237777")["last_contacted_at"] is not None
+
+
 def test_transactional_sms_is_idempotent_and_stop_blocks_future_sends(monkeypatch):
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test-token")
     client = TestClient(app)
@@ -492,6 +535,22 @@ def test_transactional_sms_is_idempotent_and_stop_blocks_future_sends(monkeypatc
     assert first.json()["delivery"]["id"] == retry.json()["delivery"]["id"]
     assert FakeProvider.calls == 1
 
+    crm_payload = {
+        "job_id": jid,
+        "purpose": "crm_service_follow_up",
+        "recipient_type": "customer",
+        "client_message_id": "crm-test-follow-up-1",
+    }
+    follow_up = client.post("/provider/communications/sms", headers=provider_h, json=crm_payload)
+    follow_up_retry = client.post("/provider/communications/sms", headers=provider_h, json=crm_payload)
+    assert follow_up.status_code == 200, follow_up.text
+    assert follow_up.json()["sent"] is True
+    assert follow_up.json()["delivery"]["id"] == follow_up_retry.json()["delivery"]["id"]
+    assert FakeProvider.calls == 2
+    crm = client.get("/provider/crm/customers", headers=provider_h)
+    assert crm.status_code == 200, crm.text
+    assert next(row for row in crm.json() if row["phone"] == "+15551239998")["last_contacted_at"] is not None
+
     params = {"SmsSid": "SMstop", "From": "+15551239998", "To": "+15551230000", "Body": "STOP"}
     url = "http://testserver/twilio/sms/incoming"
     stop = client.post("/twilio/sms/incoming", data=params, headers={"X-Twilio-Signature": _twilio_signature(url, params)})
@@ -500,4 +559,4 @@ def test_transactional_sms_is_idempotent_and_stop_blocks_future_sends(monkeypatc
     assert blocked.status_code == 200
     assert blocked.json()["sent"] is False
     assert blocked.json()["delivery"]["metadata"]["reason"] == "recipient_opted_out"
-    assert FakeProvider.calls == 1
+    assert FakeProvider.calls == 2
