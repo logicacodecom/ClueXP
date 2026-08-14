@@ -142,6 +142,12 @@ function toDateTimeLocal(value?: string | null): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function dateTimeLocalToIso(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
 function formatWindow(value: ServiceAppointmentView | null, locale: string): string {
   if (!value?.requested_start) return locale === "es" ? "Ventana pendiente" : "Window pending";
   const start = new Date(value.requested_start);
@@ -832,13 +838,20 @@ export default function TokenTrackingPage() {
   const handleReschedule = async () => {
     setBusy(true);
     setError(null);
+    const requestedStart = dateTimeLocalToIso(rescheduleStart);
+    const requestedEnd = rescheduleEnd ? dateTimeLocalToIso(rescheduleEnd) : null;
+    if (!requestedStart || (rescheduleEnd && !requestedEnd)) {
+      setError(locale === "es" ? "Ingrese una fecha y hora válidas" : "Enter a valid date and time");
+      setBusy(false);
+      return;
+    }
     try {
       const response = await fetch(`/api/t/${token}/reschedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          requested_start: rescheduleStart,
-          requested_end: rescheduleEnd || null,
+          requested_start: requestedStart,
+          requested_end: requestedEnd,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York",
           reason: rescheduleReason.trim() || null,
         })

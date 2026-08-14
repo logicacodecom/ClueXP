@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -1067,7 +1068,6 @@ CLIENT_FIELDS = frozenset(
         "customer_name",
         "customer_phone",
         "additional_details",
-        "service_appointment",
         "channel",
     }
 )
@@ -1076,6 +1076,14 @@ CLIENT_FIELDS = frozenset(
 CLIENT_ACCEPTANCE_ONLY = {
     "price_quote": frozenset({"accepted_by_customer", "accepted_at"}),
     "cancellation_policy": frozenset({"accepted_by_customer", "accepted_at"}),
+}
+CLIENT_NESTED_FIELDS = {
+    "service_appointment": frozenset({
+        "requested_start",
+        "requested_end",
+        "timezone",
+        "partner_dispatch_allowed",
+    }),
 }
 
 
@@ -1086,6 +1094,13 @@ def sanitize_client_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     for key, value in (payload or {}).items():
         if key in CLIENT_FIELDS:
             clean[key] = value
+        elif key in CLIENT_NESTED_FIELDS:
+            if value is None:
+                clean[key] = None
+            elif isinstance(value, dict):
+                allowed = {k: v for k, v in value.items() if k in CLIENT_NESTED_FIELDS[key]}
+                if allowed:
+                    clean[key] = allowed
         elif key in CLIENT_ACCEPTANCE_ONLY and isinstance(value, dict):
             allowed = {k: v for k, v in value.items() if k in CLIENT_ACCEPTANCE_ONLY[key]}
             if allowed:
@@ -3361,12 +3376,24 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     signed_off = await store.reap_stale_technicians(stale_hours=int(stale_hours))
     activated_scheduled = await store.activate_due_scheduled_jobs()
     for row in activated_scheduled:
+        org_id = row.get("fulfillment_org_id") or row.get("customer_owner_org_id")
+        try:
+            await _offer_activated_scheduled_reservation(
+                job_id=UUID(str(row["id"])),
+                job=None,
+                reservation=row.get("reservation"),
+                org_id=str(org_id) if org_id else None,
+                session={"user": {"id": "system:dispatch-sweep"}},
+                source="auto",
+            )
+        except Exception:
+            logger.exception("scheduled_activation_reserved_offer_failed", extra={"job_id": row.get("id")})
         try:
             await _record_customer_system_message(
                 UUID(str(row["id"])),
                 body="Your scheduled appointment is now being dispatched. The provider is selecting an available technician.",
                 event="schedule_activated",
-                organization_id=row.get("fulfillment_org_id") or row.get("customer_owner_org_id"),
+                organization_id=org_id,
             )
         except Exception:
             logger.exception("scheduled_activation_customer_message_failed", extra={"job_id": row.get("id")})
@@ -3524,7 +3551,6 @@ def _scheduled_reservation_candidates(candidates: list[dict[str, Any]]) -> list[
     return [
         candidate for candidate in candidates
         if candidate.get("is_available")
-        and candidate.get("is_online")
         and not candidate.get("is_busy")
         and candidate.get("skills_match")
         and candidate.get("within_service_area")
@@ -3676,6 +3702,69 @@ async def _send_targeted_offer(
         "technician_id": str(technician_id),
         "expires_at": expires_at.isoformat(),
     }
+
+
+async def _offer_activated_scheduled_reservation(
+    *,
+    job_id: UUID,
+    job: dict[str, Any] | None,
+    reservation: dict[str, Any] | None,
+    org_id: str | None,
+    session: dict[str, Any],
+    source: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Convert a legacy/accepted held reservation through the normal offer path.
+
+    Both manual and cron activation use this helper so scheduled jobs cannot skip
+    the technician offer. New window confirmations remain unassigned until a real
+    future-reservation offer/acceptance flow is implemented.
+    """
+    if not reservation or not reservation.get("technician_id"):
+        return None, None
+    if not org_id:
+        await store.release_job_reservation(
+            job_id,
+            status="released",
+            reason=f"scheduled appointment {source}-activated without an owning organization",
+        )
+        return None, "missing_dispatch_organization"
+    if job is None:
+        rows = await store.get_ops_queue(org_id=org_id)
+        job = next((row for row in rows if str(row.get("id")) == str(job_id)), None)
+    technician_id = UUID(str(reservation["technician_id"]))
+    tech = await store.get_ops_technician(technician_id, org_id=org_id)
+    offer: dict[str, Any] | None = None
+    error: str | None = None
+    if job is None:
+        error = "activated_job_unavailable"
+    elif tech is None:
+        error = "reserved_technician_unavailable"
+    else:
+        try:
+            offer = await _send_targeted_offer(
+                job=job,
+                job_id=job_id,
+                technician_id=technician_id,
+                tech=tech,
+                override_reason=None,
+                session=session,
+                audit_prefix=f"scheduled_reserved_{source}_activation",
+                dispatch_org_id=org_id,
+            )
+        except HTTPException as exc:
+            error = str(exc.detail)
+    await store.release_job_reservation(
+        job_id,
+        status="converted" if offer else "released",
+        reason=(
+            f"scheduled appointment {source}-activated with reserved technician offer"
+            if offer
+            else f"scheduled appointment {source}-activated without reserved offer: {error or 'unavailable'}"
+        ),
+    )
+    if error:
+        await store.log_event_raw(job_id, f"scheduled_reserved_offer_fallback:{error[:160]}")
+    return offer, error
 
 
 @app.get("/ops/queue")
@@ -4548,9 +4637,10 @@ async def provider_confirm_schedule(
     payload: ConfirmSchedulePayload | None = None,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    """Provider confirms a customer-requested appointment window.
-    This makes the job eligible for the normal technician-offer flow, but still
-    does not assign a named technician or expose technician identity.
+    """Confirm the requested window without silently holding a technician.
+
+    A named future reservation requires a technician offer/acceptance flow.
+    Until that exists, the honest state is confirmed and unassigned.
     """
     org_id = _require_dispatch_org(session)
     jobs = await store.get_ops_queue(org_id=org_id)
@@ -4565,25 +4655,10 @@ async def provider_confirm_schedule(
     requested_end = ticket.service_appointment.requested_end or (
         ticket.service_appointment.requested_start + timedelta(hours=1)
     )
-    techs = await store.list_all_technicians_for_ops(org_id=org_id)
-    candidates = _scheduled_reservation_candidates(
-        await _enriched_candidates(job, techs, org_id)
-    )
-    reservation = await store.reserve_scheduled_technician(
-        job_id,
-        org_id=org_id,
-        candidates=candidates,
-        reserved_start=ticket.service_appointment.requested_start,
-        reserved_end=requested_end,
-        created_by=session.get("user", {}).get("id"),
-        note=(payload.note if payload else None),
-    )
-    if reservation is None:
-        raise HTTPException(status_code=409, detail="No eligible technician capacity is available for that appointment window")
-    ticket.service_appointment.status = "technician_reserved"
+    ticket.service_appointment.status = "confirmed_unassigned"
     ticket.service_appointment.requested_end = requested_end
-    ticket.service_appointment.reservation_id = reservation.get("id")
-    ticket.service_appointment.reserved_technician_id = reservation.get("technician_id")
+    ticket.service_appointment.reservation_id = None
+    ticket.service_appointment.reserved_technician_id = None
     await save(ticket)
     updated = await store.set_job_status(
         job_id, STATUS_SCHEDULED_CONFIRMED, expected_current=STATUS_SCHEDULED_REQUESTED
@@ -4626,39 +4701,15 @@ async def provider_activate_schedule(
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Schedule activation conflicted; refresh the queue.")
-    reserved_offer: dict[str, Any] | None = None
-    reserved_offer_error: str | None = None
-    if reservation and reservation.get("technician_id"):
-        technician_id = UUID(str(reservation["technician_id"]))
-        tech = await store.get_ops_technician(technician_id, org_id=org_id)
-        if tech is None:
-            reserved_offer_error = "reserved_technician_unavailable"
-        else:
-            try:
-                reserved_offer = await _send_targeted_offer(
-                    job=job,
-                    job_id=job_id,
-                    technician_id=technician_id,
-                    tech=tech,
-                    override_reason=None,
-                    session=session,
-                    audit_prefix="scheduled_reserved_activation",
-                    dispatch_org_id=org_id,
-                )
-            except HTTPException as exc:
-                reserved_offer_error = str(exc.detail)
-    await store.release_job_reservation(
-        job_id,
-        status="converted" if reserved_offer else "released",
-        reason=(
-            "scheduled appointment activated with reserved technician offer"
-            if reserved_offer else
-            f"scheduled appointment activated without reserved offer: {reserved_offer_error or 'no reservation'}"
-        ),
+    reserved_offer, reserved_offer_error = await _offer_activated_scheduled_reservation(
+        job_id=job_id,
+        job=job,
+        reservation=reservation,
+        org_id=org_id,
+        session=session,
+        source="manual",
     )
     await store.log_event_raw(job_id, f"scheduled_activated:manual:by={session.get('user', {}).get('id')}")
-    if reserved_offer_error:
-        await store.log_event_raw(job_id, f"scheduled_reserved_offer_fallback:{reserved_offer_error[:160]}")
     await _record_customer_system_message(
         job_id,
         body="Your scheduled appointment is now being dispatched. The provider is selecting an available technician.",
@@ -4691,6 +4742,21 @@ async def provider_request_partner_dispatch(
         raise HTTPException(status_code=409, detail="Recall or wait for the active technician offer before requesting a partner")
     if job.get("status") == STATUS_PARTNER_REQUESTED:
         raise HTTPException(status_code=409, detail="Partner dispatch has already been requested")
+    ticket = await store.get(job_id)
+    appointment = ticket.service_appointment if ticket else None
+    detail_appointment = (job.get("detail") or {}).get("service_appointment")
+    partner_dispatch_allowed = (
+        appointment.partner_dispatch_allowed
+        if appointment is not None
+        else detail_appointment.get("partner_dispatch_allowed")
+        if isinstance(detail_appointment, dict)
+        else False
+    )
+    if partner_dispatch_allowed is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="Customer consent is required before requesting partner dispatch",
+        )
     result = await store.request_partner_dispatch(
         job_id,
         origin_org_id=org_id,
@@ -5785,6 +5851,16 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _appointment_local_datetime(value: datetime, timezone_name: str | None) -> datetime:
+    try:
+        target_timezone = ZoneInfo(timezone_name or "UTC")
+    except ZoneInfoNotFoundError:
+        target_timezone = timezone.utc
+    if value.tzinfo is None:
+        return value.replace(tzinfo=target_timezone)
+    return value.astimezone(target_timezone)
+
+
 def _format_dt_for_customer(value: datetime) -> str:
     hour = value.hour % 12 or 12
     suffix = "AM" if value.hour < 12 else "PM"
@@ -5800,9 +5876,13 @@ def _format_time_for_customer(value: datetime) -> str:
 def _format_appointment_window(appointment: ServiceAppointment | None) -> str:
     if appointment is None or appointment.requested_start is None:
         return "the requested appointment window"
-    start = appointment.requested_start
-    end = appointment.requested_end
     tz = appointment.timezone or "local time"
+    start = _appointment_local_datetime(appointment.requested_start, appointment.timezone)
+    end = (
+        _appointment_local_datetime(appointment.requested_end, appointment.timezone)
+        if appointment.requested_end is not None
+        else None
+    )
     if end is not None:
         if start.date() == end.date():
             return f"{_format_dt_for_customer(start)}–{_format_time_for_customer(end)} {tz}"
@@ -7240,7 +7320,13 @@ async def provider_cancel_job(
     assigned technician's access and supersedes any active offer."""
     return await _provider_recover(
         job_id=job_id, payload=payload, session=session, target_status=STATUS_CANCELLED,
-        expected_statuses=[STATUS_PENDING_DISPATCH, *_ASSIGNED_LADDER],
+        expected_statuses=[
+            STATUS_SCHEDULED_REQUESTED,
+            STATUS_SCHEDULED_CONFIRMED,
+            STATUS_PARTNER_REQUESTED,
+            STATUS_PENDING_DISPATCH,
+            *_ASSIGNED_LADDER,
+        ],
         audit_label="provider_cancel",
     )
 

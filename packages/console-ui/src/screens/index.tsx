@@ -310,7 +310,7 @@ function formatAppointmentWindow(detail?: Record<string, unknown>): string | nul
 }
 
 function partnerDispatchAllowed(detail?: Record<string, unknown>): boolean {
-  return appointmentDetail(detail)?.partner_dispatch_allowed !== false;
+  return appointmentDetail(detail)?.partner_dispatch_allowed === true;
 }
 
 function hasTechnicianReservation(detail?: Record<string, unknown>): boolean {
@@ -865,7 +865,9 @@ function fullAddress(form: typeof initialProviderRequestForm) {
 }
 
 function scheduledDateTime(form: typeof initialProviderRequestForm) {
-  return form.scheduled_date && form.scheduled_time ? `${form.scheduled_date}T${form.scheduled_time}:00` : null;
+  if (!form.scheduled_date || !form.scheduled_time) return null;
+  const localDateTime = new Date(`${form.scheduled_date}T${form.scheduled_time}:00`);
+  return Number.isFinite(localDateTime.getTime()) ? localDateTime.toISOString() : null;
 }
 
 type ParsedField<T> = { value: T; confidence: "high" | "medium" | "low"; source: string; rawMatch?: string };

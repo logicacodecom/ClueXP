@@ -69,6 +69,14 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 DEMO_PASSWORD = os.environ.get("DEMO_SEED_PASSWORD", "123456")
 
 
+def _utc_aware(value: datetime) -> datetime:
+    """Normalize persisted/comparison datetimes so naive legacy values cannot
+    crash comparisons against timezone-aware appointment windows."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _default_agreement(organization_id: str, technician_id: str) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -3306,6 +3314,12 @@ class InMemoryStore(Store):
         for o in getattr(self, "_offers", {}).values():
             if o.get("job_id") == jid and o.get("status") == "offered":
                 o["status"] = "superseded"
+        if target_status == STATUS_CANCELLED:
+            await self.release_job_reservation(
+                job_id,
+                status="cancelled",
+                reason="job cancelled",
+            )
         await self.log_event_raw(job_id, f"{audit_label}:{(reason or '')[:200]}")
         return {"id": jid, "status": target_status}
 
@@ -3797,6 +3811,8 @@ class InMemoryStore(Store):
         created_by: str | None = None,
         note: str | None = None,
     ) -> dict | None:
+        reserved_start = _utc_aware(reserved_start)
+        reserved_end = _utc_aware(reserved_end)
         if reserved_end <= reserved_start:
             return None
         jid = str(job_id)
@@ -3809,8 +3825,8 @@ class InMemoryStore(Store):
             tech_id = str(candidate.get("id"))
             conflict = any(
                 row.get("technician_id") == tech_id
-                and datetime.fromisoformat(str(row["reserved_start"]).replace("Z", "+00:00")) < reserved_end
-                and datetime.fromisoformat(str(row["reserved_end"]).replace("Z", "+00:00")) > reserved_start
+                and _utc_aware(datetime.fromisoformat(str(row["reserved_start"]).replace("Z", "+00:00"))) < reserved_end
+                and _utc_aware(datetime.fromisoformat(str(row["reserved_end"]).replace("Z", "+00:00"))) > reserved_start
                 for row in held
             )
             if conflict:
@@ -3861,6 +3877,12 @@ class InMemoryStore(Store):
                 if isinstance(appointment, dict):
                     appointment.pop("reserved_technician_id", None)
                     appointment.pop("reservation_id", None)
+                ticket = getattr(self, "_tickets", {}).get(UUID(jid))
+                if ticket and ticket.service_appointment:
+                    ticket.service_appointment.reserved_technician_id = None
+                    ticket.service_appointment.reservation_id = None
+                    if ticket.service_appointment.status == "technician_reserved":
+                        ticket.service_appointment.status = "confirmed_unassigned"
                 await self.log_event_raw(job_id, f"technician_reservation_{status}:{row['technician_id']}")
                 return dict(row)
         return None
@@ -4022,7 +4044,10 @@ class InMemoryStore(Store):
         grouped: dict[str, dict] = {}
         profiles = getattr(self, "_provider_customer_profiles", {})
         for jid, detail in getattr(self, "_job_detail", {}).items():
-            if str(getattr(self, "_job_org", {}).get(jid)) != str(org_id):
+            if str(org_id) not in {
+                str(getattr(self, "_job_org", {}).get(jid)),
+                str(getattr(self, "_job_fulfillment_org", {}).get(jid)),
+            }:
                 continue
             phone = str(detail.get("customer_phone") or "").strip()
             name = str(detail.get("customer_name") or "").strip()
@@ -4477,7 +4502,10 @@ class InMemoryStore(Store):
         if str(requester_org_id) == str(partner_org_id):
             return None
         orgs = getattr(self, "_organizations", {})
-        if str(requester_org_id) not in orgs or str(partner_org_id) not in orgs:
+        if any(
+            str(orgs.get(org_id, {}).get("status")) != "active"
+            for org_id in (str(requester_org_id), str(partner_org_id))
+        ):
             return None
         key = tuple(sorted((str(requester_org_id), str(partner_org_id))))
         partnerships = self._organization_partnerships = getattr(self, "_organization_partnerships", {})
@@ -4567,6 +4595,11 @@ class InMemoryStore(Store):
             "partner_org_id": str(partner_org_id),
             "note": note,
         }
+        await self.release_job_reservation(
+            job_id,
+            status="released",
+            reason="origin reservation released for partner dispatch",
+        )
         await self.log_event_raw(job_id, f"partner_dispatch_requested:partner={partner_org_id}:note={(note or '')[:120]}")
         return {"id": jid, "status": STATUS_PARTNER_REQUESTED, "partner_org_id": str(partner_org_id)}
 
@@ -4585,17 +4618,21 @@ class InMemoryStore(Store):
                 start = start.replace(tzinfo=timezone.utc)
             if start > due_by:
                 continue
+            reservation = await self.get_job_reservation(UUID(jid))
             statuses[jid] = STATUS_PENDING_DISPATCH
             detail = getattr(self, "_job_detail", {}).get(jid, {})
             if isinstance(detail.get("service_appointment"), dict):
                 detail["service_appointment"]["status"] = "activation_due"
             if ticket and ticket.service_appointment:
                 ticket.service_appointment.status = "activation_due"
-            await self.release_job_reservation(
-                UUID(jid), status="converted", reason="scheduled appointment auto-activated"
-            )
             await self.log_event_raw(UUID(jid), "scheduled_activated")
-            activated.append({"id": jid, "status": STATUS_PENDING_DISPATCH})
+            activated.append({
+                "id": jid,
+                "status": STATUS_PENDING_DISPATCH,
+                "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
+                "fulfillment_org_id": getattr(self, "_job_fulfillment_org", {}).get(jid),
+                "reservation": reservation,
+            })
         return activated
 
     async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:
@@ -7662,12 +7699,22 @@ class PostgresStore(Store):
     ) -> dict | None:
         from psycopg.types.json import Jsonb
 
+        reserved_start = _utc_aware(reserved_start)
+        reserved_end = _utc_aware(reserved_end)
         if reserved_end <= reserved_start:
             return None
         candidate_ids = [str(candidate.get("id")) for candidate in candidates if candidate.get("id")]
         if not candidate_ids:
             return None
         async with await self._connect() as conn:
+            # Serialize reservation decisions per technician in a stable order.
+            # Without these row locks, two transactions can both pass the
+            # overlap NOT EXISTS check under READ COMMITTED and double-book.
+            await conn.execute(
+                "select id from technicians where id = any(%s::uuid[])"
+                " order by id for update",
+                (candidate_ids,),
+            )
             existing = await (
                 await conn.execute(
                     "select id, job_id, technician_id, organization_id, status,"
@@ -7951,6 +7998,20 @@ class PostgresStore(Store):
                 " where job_id = %s and status = 'offered'",
                 (str(job_id),),
             )
+            if target_status == STATUS_CANCELLED:
+                await conn.execute(
+                    "update technician_reservations set status = 'cancelled',"
+                    " note = concat_ws(E'\\n', nullif(note, ''), 'job cancelled'),"
+                    " updated_at = now() where job_id = %s and status = 'held'",
+                    (str(job_id),),
+                )
+                await conn.execute(
+                    "update jobs set detail = coalesce(detail, '{}'::jsonb)"
+                    " #- '{service_appointment,reservation_id}'"
+                    " #- '{service_appointment,reserved_technician_id}'"
+                    " where id = %s",
+                    (str(job_id),),
+                )
         await self.log_event_raw(job_id, f"{audit_label}:{(reason or '')[:200]}")
         return {"id": str(row[0]), "status": row[1]}
 
@@ -10035,6 +10096,20 @@ class PostgresStore(Store):
                 " where job_id = %s and status = 'offered'",
                 (str(job_id),),
             )
+            await conn.execute(
+                "update technician_reservations set status = 'released',"
+                " note = concat_ws(E'\\n', nullif(note, ''),"
+                "   'origin reservation released for partner dispatch'),"
+                " updated_at = now() where job_id = %s and status = 'held'",
+                (str(job_id),),
+            )
+            await conn.execute(
+                "update jobs set detail = coalesce(detail, '{}'::jsonb)"
+                " #- '{service_appointment,reservation_id}'"
+                " #- '{service_appointment,reserved_technician_id}'"
+                " where id = %s",
+                (str(job_id),),
+            )
         await self.log_event_raw(job_id, f"partner_dispatch_requested:partner={partner_org_id}:note={(note or '')[:120]}")
         return {"id": str(row[0]), "status": row[1], "partner_org_id": str(partner_org_id)}
 
@@ -10054,21 +10129,31 @@ class PostgresStore(Store):
                 " where status = %s"
                 " and nullif(detail #>> '{service_appointment,requested_start}', '')::timestamptz"
                 "   <= now() + (%s::text || ' minutes')::interval"
-                " returning id, status",
+                " returning id, status, customer_owner_org_id, fulfillment_org_id",
                 (STATUS_PENDING_DISPATCH, STATUS_SCHEDULED_CONFIRMED, horizon_minutes),
             )
             rows = await cur.fetchall()
+            activated: list[dict] = []
             for row in rows:
-                await conn.execute(
-                    "update technician_reservations set status = 'converted',"
-                    " note = concat_ws(E'\\n', nullif(note, ''), 'scheduled appointment auto-activated'),"
-                    " updated_at = now()"
-                    " where job_id = %s and status = 'held'",
-                    (str(row[0]),),
-                )
+                reservation_row = await (
+                    await conn.execute(
+                        "select id, job_id, technician_id, organization_id, status,"
+                        " reserved_start, reserved_end, note, created_by, created_at, updated_at"
+                        " from technician_reservations"
+                        " where job_id = %s and status = 'held'",
+                        (str(row[0]),),
+                    )
+                ).fetchone()
+                activated.append({
+                    "id": str(row[0]),
+                    "status": row[1],
+                    "customer_owner_org_id": str(row[2]) if row[2] else None,
+                    "fulfillment_org_id": str(row[3]) if row[3] else None,
+                    "reservation": self._reservation_row(reservation_row) if reservation_row else None,
+                })
         for row in rows:
             await self.log_event_raw(row[0], "scheduled_activated")
-        return [{"id": str(row[0]), "status": row[1]} for row in rows]
+        return activated
 
     async def get_organization_admin_detail(self, organization_id: UUID) -> dict | None:
         oid = str(organization_id)

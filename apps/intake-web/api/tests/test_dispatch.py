@@ -1170,6 +1170,77 @@ def _seed_scheduled_provider_job(app_store, org_id, jid):
     app_store._job_detail[jid] = ticket.model_dump(mode="json")
 
 
+def _hold_scheduled_reservation(app_store, org_id, jid, tid):
+    ticket = app_store._tickets[UUID(jid)]
+    appointment = ticket.service_appointment
+    reservation = asyncio.run(app_store.reserve_scheduled_technician(
+        UUID(jid),
+        org_id=org_id,
+        candidates=[{"id": tid}],
+        reserved_start=appointment.requested_start,
+        reserved_end=appointment.requested_end,
+        created_by=None,
+        note="legacy accepted reservation",
+    ))
+    assert reservation is not None
+    appointment.status = "technician_reserved"
+    appointment.reservation_id = reservation["id"]
+    appointment.reserved_technician_id = tid
+    return reservation
+
+
+def _allow_partner_dispatch(app_store, jid):
+    from api.schema import ServiceAppointment, Ticket
+
+    ticket = app_store._tickets.get(UUID(jid)) or Ticket(ticket_id=UUID(jid))
+    ticket.service_appointment = ServiceAppointment(partner_dispatch_allowed=True)
+    app_store._tickets[UUID(jid)] = ticket
+    detail = app_store._job_detail = getattr(app_store, "_job_detail", {})
+    detail.setdefault(jid, {})["service_appointment"] = {
+        "partner_dispatch_allowed": True,
+        "status": "requested",
+    }
+
+
+def test_public_ticket_patch_cannot_forge_scheduled_dispatch_state():
+    from datetime import datetime, timedelta, timezone
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+    from api.schema import ServiceAppointment, Ticket
+
+    jid = uuid4()
+    original_start = datetime.now(timezone.utc) + timedelta(days=2)
+    app_store._tickets[jid] = Ticket(
+        ticket_id=jid,
+        service_appointment=ServiceAppointment(
+            requested_start=original_start,
+            status="requested",
+            partner_dispatch_allowed=False,
+        ),
+    )
+    changed_start = original_start + timedelta(hours=1)
+    response = TestClient(app).patch(
+        f"/tickets/{jid}",
+        json={
+            "service_appointment": {
+                "requested_start": changed_start.isoformat(),
+                "status": "technician_reserved",
+                "reservation_id": "forged-reservation",
+                "reserved_technician_id": str(uuid4()),
+                "partner_dispatch_allowed": True,
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    appointment = app_store._tickets[jid].service_appointment
+    assert appointment.requested_start == changed_start
+    assert appointment.partner_dispatch_allowed is True
+    assert appointment.status == "requested"
+    assert appointment.reservation_id is None
+    assert appointment.reserved_technician_id is None
+
+
 def test_provider_queue_scoped_to_org():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
@@ -1219,8 +1290,11 @@ def test_provider_confirm_schedule_moves_to_confirmed_queue():
 
     assert resp.status_code == 200, resp.text
     assert app_store._job_status[jid] == STATUS_SCHEDULED_CONFIRMED
-    assert app_store._tickets[UUID(jid)].service_appointment.status == "technician_reserved"
-    assert app_store._tickets[UUID(jid)].service_appointment.reserved_technician_id == tid
+    appointment = app_store._tickets[UUID(jid)].service_appointment
+    assert appointment.status == "confirmed_unassigned"
+    assert appointment.reserved_technician_id is None
+    assert appointment.reservation_id is None
+    assert not getattr(app_store, "_technician_reservations", {})
     customer_messages = [
         row for row in app_store._job_messages[jid]
         if row["channel"] == "customer" and row["metadata"].get("event") == "schedule_confirmed"
@@ -1228,7 +1302,7 @@ def test_provider_confirm_schedule_moves_to_confirmed_queue():
     assert customer_messages
 
 
-def test_provider_confirm_schedule_requires_reservable_capacity():
+def test_provider_confirm_schedule_does_not_silently_reserve_capacity():
     org = str(uuid4())
     client, app_store, token = _client_for_dispatcher(org)
     jid = str(uuid4())
@@ -1240,12 +1314,13 @@ def test_provider_confirm_schedule_requires_reservable_capacity():
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert resp.status_code == 409
-    assert "No eligible technician capacity" in resp.json()["detail"]
-    assert app_store._job_status[jid] == STATUS_SCHEDULED_REQUESTED
+    assert resp.status_code == 200
+    assert app_store._job_status[jid] == STATUS_SCHEDULED_CONFIRMED
+    assert app_store._tickets[UUID(jid)].service_appointment.status == "confirmed_unassigned"
+    assert not getattr(app_store, "_technician_reservations", {})
 
 
-def test_provider_confirm_schedule_blocks_overlapping_technician_reservation():
+def test_provider_confirming_overlapping_windows_does_not_hold_a_technician():
     org = str(uuid4())
     client, app_store, token = _client_for_dispatcher(org)
     tid = str(uuid4())
@@ -1260,15 +1335,58 @@ def test_provider_confirm_schedule_blocks_overlapping_technician_reservation():
         headers={"Authorization": f"Bearer {token}"},
     ).status_code == 200
 
-    blocked = client.post(
+    second_response = client.post(
         f"/provider/queue/{second}/confirm-schedule",
         json={},
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert blocked.status_code == 409
-    assert "No eligible technician capacity" in blocked.json()["detail"]
-    assert app_store._job_status[second] == STATUS_SCHEDULED_REQUESTED
+    assert second_response.status_code == 200
+    assert app_store._job_status[second] == STATUS_SCHEDULED_CONFIRMED
+    assert not getattr(app_store, "_technician_reservations", {})
+
+
+def test_future_reservation_candidates_do_not_require_a_live_gps_heartbeat():
+    from api.main import _scheduled_reservation_candidates
+
+    candidate = {
+        "id": str(uuid4()),
+        "is_available": True,
+        "is_online": False,
+        "is_busy": False,
+        "skills_match": True,
+        "within_service_area": True,
+    }
+    assert _scheduled_reservation_candidates([candidate]) == [candidate]
+
+
+def test_in_memory_reservation_normalizes_naive_legacy_datetimes():
+    from datetime import datetime, timedelta, timezone
+    from api.main import store as app_store
+
+    org, tid = str(uuid4()), str(uuid4())
+    first, second = uuid4(), uuid4()
+    start = datetime.now(timezone.utc) + timedelta(days=3)
+    app_store._technician_reservations = {
+        str(uuid4()): {
+            "id": str(uuid4()),
+            "job_id": str(first),
+            "technician_id": tid,
+            "organization_id": org,
+            "status": "held",
+            "reserved_start": start.replace(tzinfo=None).isoformat(),
+            "reserved_end": (start + timedelta(hours=2)).replace(tzinfo=None).isoformat(),
+        },
+    }
+
+    result = asyncio.run(app_store.reserve_scheduled_technician(
+        second,
+        org_id=org,
+        candidates=[{"id": tid}],
+        reserved_start=start + timedelta(minutes=30),
+        reserved_end=start + timedelta(hours=1),
+    ))
+    assert result is None
 
 
 def test_customer_tracking_masks_scheduled_reservation_identity():
@@ -1287,6 +1405,7 @@ def test_customer_tracking_masks_scheduled_reservation_identity():
         json={},
         headers={"Authorization": f"Bearer {token}"},
     ).status_code == 200
+    _hold_scheduled_reservation(app_store, org, jid, tid)
 
     tracking = TestClient(app).get(f"/t/{tracking_token}")
 
@@ -1308,6 +1427,7 @@ def test_provider_activate_confirmed_schedule_moves_to_dispatch():
         json={},
         headers={"Authorization": f"Bearer {token}"},
     ).status_code == 200
+    _hold_scheduled_reservation(app_store, org, jid, tid)
 
     resp = client.post(
         f"/provider/queue/{jid}/activate-schedule",
@@ -1322,7 +1442,7 @@ def test_provider_activate_confirmed_schedule_moves_to_dispatch():
         offer["job_id"] == jid and offer["technician_id"] == tid and offer["status"] == "offered"
         for offer in app_store._offers.values()
     )
-    assert app_store._tickets[UUID(jid)].service_appointment.reserved_technician_id == tid
+    assert app_store._tickets[UUID(jid)].service_appointment.reserved_technician_id is None
     assert any(
         row["job_id"] == jid and row["technician_id"] == tid and row["status"] == "converted"
         for row in app_store._technician_reservations.values()
@@ -1345,6 +1465,7 @@ def test_provider_activate_schedule_falls_back_when_reserved_tech_unavailable():
         json={},
         headers={"Authorization": f"Bearer {token}"},
     ).status_code == 200
+    _hold_scheduled_reservation(app_store, org, jid, tid)
     for tech in app_store._technicians:
         if tech["id"] == tid:
             tech["status"] = "suspended"
@@ -1358,10 +1479,69 @@ def test_provider_activate_schedule_falls_back_when_reserved_tech_unavailable():
     assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
     assert resp.json()["reserved_offer"] is None
     assert resp.json()["reserved_offer_error"] == "reserved_technician_unavailable"
-    assert not getattr(app_store, "_offers", {})
+    assert not any(
+        offer.get("job_id") == jid for offer in getattr(app_store, "_offers", {}).values()
+    )
     assert any(
         row["job_id"] == jid and row["technician_id"] == tid and row["status"] == "released"
         for row in app_store._technician_reservations.values()
+    )
+
+
+def test_cron_activation_offers_existing_reserved_technician():
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from api.main import app, store as app_store
+    import api.main as main_module
+
+    org = str(uuid4())
+    client, _, token = _client_for_dispatcher(org)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_scheduled_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
+    assert client.post(
+        f"/provider/queue/{jid}/confirm-schedule",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    ).status_code == 200
+    appointment = app_store._tickets[UUID(jid)].service_appointment
+    appointment.requested_start = datetime.now(timezone.utc) + timedelta(minutes=30)
+    appointment.requested_end = appointment.requested_start + timedelta(hours=1)
+    _hold_scheduled_reservation(app_store, org, jid, tid)
+
+    secret = "scheduled-cron-test-secret"
+    with patch.object(main_module.config, "CRON_SECRET", secret):
+        response = client.post(
+            "/cron/dispatch-sweep",
+            headers={"Authorization": f"Bearer {secret}"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    assert any(
+        offer.get("job_id") == jid
+        and offer.get("technician_id") == tid
+        and offer.get("status") == "offered"
+        for offer in app_store._offers.values()
+    )
+    assert any(
+        row.get("job_id") == jid and row.get("status") == "converted"
+        for row in app_store._technician_reservations.values()
+    )
+
+
+def test_customer_appointment_message_converts_utc_to_named_timezone():
+    from datetime import datetime, timezone
+    from api.main import _format_appointment_window
+    from api.schema import ServiceAppointment
+
+    appointment = ServiceAppointment(
+        requested_start=datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc),
+        requested_end=datetime(2026, 8, 18, 15, 30, tzinfo=timezone.utc),
+        timezone="America/New_York",
+    )
+    assert _format_appointment_window(appointment) == (
+        "Aug 18, 2026 10:00 AM–11:30 AM America/New_York"
     )
 
 
@@ -1406,6 +1586,7 @@ def test_provider_partner_request_masks_until_acceptance():
     client_b, _, token_b = _client_for_dispatcher(org_b)
     jid = str(uuid4())
     _seed_provider_job(app_store, org_a, jid)
+    _allow_partner_dispatch(app_store, jid)
     app_store._organizations[org_b] = {
         "id": org_b,
         "display_name": "Partner Locksmith",
@@ -1459,6 +1640,7 @@ def test_partner_must_accept_before_assigning_technician():
     client_b, _, token_b = _client_for_dispatcher(org_b)
     jid, tid = str(uuid4()), str(uuid4())
     _seed_provider_job(app_store, org_a, jid)
+    _allow_partner_dispatch(app_store, jid)
     _seed_org_tech(app_store, org_b, tid)
     app_store._organizations[org_b] = {
         "id": org_b,
@@ -1505,6 +1687,7 @@ def test_unapproved_partner_dispatch_is_blocked():
     client_a, app_store, token_a = _client_for_dispatcher(org_a)
     jid = str(uuid4())
     _seed_provider_job(app_store, org_a, jid)
+    _allow_partner_dispatch(app_store, jid)
     app_store._organizations[org_b] = {
         "id": org_b,
         "display_name": "Unapproved Partner",
@@ -1519,6 +1702,68 @@ def test_unapproved_partner_dispatch_is_blocked():
 
     assert resp.status_code == 409
     assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+
+
+def test_partner_dispatch_requires_explicit_customer_consent():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    jid = str(uuid4())
+    _seed_scheduled_provider_job(app_store, org_a, jid)
+    appointment = app_store._tickets[UUID(jid)].service_appointment
+    appointment.partner_dispatch_allowed = False
+    app_store._job_detail[jid]["service_appointment"]["partner_dispatch_allowed"] = False
+    assert client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    ).status_code == 200
+    assert client_b.post(
+        f"/provider/partners/{org_a}/accept",
+        headers={"Authorization": f"Bearer {token_b}"},
+    ).status_code == 200
+
+    response = client_a.post(
+        f"/provider/queue/{jid}/partner-request",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert response.status_code == 409
+    assert "Customer consent" in response.json()["detail"]
+    assert app_store._job_status[jid] == STATUS_SCHEDULED_REQUESTED
+
+
+def test_partner_handoff_releases_origin_technician_reservation():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    client_b, _, token_b = _client_for_dispatcher(org_b)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_scheduled_provider_job(app_store, org_a, jid)
+    _seed_org_tech(app_store, org_a, tid)
+    _hold_scheduled_reservation(app_store, org_a, jid, tid)
+    assert client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    ).status_code == 200
+    assert client_b.post(
+        f"/provider/partners/{org_a}/accept",
+        headers={"Authorization": f"Bearer {token_b}"},
+    ).status_code == 200
+
+    response = client_a.post(
+        f"/provider/queue/{jid}/partner-request",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert response.status_code == 200, response.text
+    assert any(
+        row.get("job_id") == jid and row.get("status") == "released"
+        for row in app_store._technician_reservations.values()
+    )
+    appointment_detail = app_store._job_detail[jid]["service_appointment"]
+    assert "reservation_id" not in appointment_detail
+    assert "reserved_technician_id" not in appointment_detail
 
 
 def test_provider_partnerships_lists_incoming_outgoing_active_and_available():
@@ -1568,6 +1813,23 @@ def test_provider_partnerships_lists_incoming_outgoing_active_and_available():
     assert active["outgoing"] == []
 
 
+def test_in_memory_partnership_rejects_suspended_organization():
+    org_a, org_b = str(uuid4()), str(uuid4())
+    client_a, app_store, token_a = _client_for_dispatcher(org_a)
+    app_store._organizations[org_b] = {
+        "id": org_b,
+        "display_name": "Suspended Partner",
+        "status": "suspended",
+    }
+
+    response = client_a.post(
+        "/provider/partners",
+        json={"partner_org_id": org_b},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert response.status_code == 404
+
+
 def test_provider_can_reject_and_reinvite_partnership():
     org_a, org_b = str(uuid4()), str(uuid4())
     client_a, app_store, token_a = _client_for_dispatcher(org_a)
@@ -1611,6 +1873,7 @@ def test_provider_can_end_active_or_outgoing_partnership():
     client_b, _, token_b = _client_for_dispatcher(org_b)
     job_id = str(uuid4())
     _seed_provider_job(app_store, org_a, job_id)
+    _allow_partner_dispatch(app_store, job_id)
     app_store._organizations[org_b] = {
         "id": org_b,
         "display_name": "Beta Partner",
@@ -3461,14 +3724,21 @@ def test_provider_crm_customers_are_job_derived_and_org_scoped():
     org = str(uuid4())
     other_org = str(uuid4())
     client, app_store, token = _client_for_dispatcher(org)
-    own_job, foreign_job = str(uuid4()), str(uuid4())
-    app_store._job_org = {own_job: org, foreign_job: other_org}
+    own_job, fulfilled_job, foreign_job = str(uuid4()), str(uuid4()), str(uuid4())
+    app_store._job_org = {
+        own_job: org,
+        fulfilled_job: other_org,
+        foreign_job: other_org,
+    }
+    app_store._job_fulfillment_org = {fulfilled_job: org}
     app_store._job_status = {
         own_job: STATUS_COMPLETED_CONFIRMED,
+        fulfilled_job: STATUS_COMPLETED_CONFIRMED,
         foreign_job: STATUS_COMPLETED_CONFIRMED,
     }
     app_store._job_detail = {
         own_job: {"customer_name": "Jamie Rivera", "customer_phone": "+15550140101"},
+        fulfilled_job: {"customer_name": "Fulfilled Customer", "customer_phone": "+15550140303"},
         foreign_job: {"customer_name": "Private Customer", "customer_phone": "+15550140202"},
     }
     app_store._job_situation = {own_job: "locksmith.residential_lockout"}
@@ -3476,9 +3746,9 @@ def test_provider_crm_customers_are_job_derived_and_org_scoped():
 
     response = client.get("/provider/crm/customers", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200, response.text
-    assert [row["name"] for row in response.json()] == ["Jamie Rivera"]
+    assert {row["name"] for row in response.json()} == {"Jamie Rivera", "Fulfilled Customer"}
 
-    customer_id = response.json()[0]["id"]
+    customer_id = next(row["id"] for row in response.json() if row["name"] == "Jamie Rivera")
     updated = client.patch(
         f"/provider/crm/customers/{customer_id}",
         json={
@@ -3493,6 +3763,16 @@ def test_provider_crm_customers_are_job_derived_and_org_scoped():
     assert updated.json()["email"] == "jamie@example.com"
     assert updated.json()["newsletter_status"] == "subscribed"
     assert updated.json()["warranty_days"] == 90
+
+    fulfilled_customer_id = next(
+        row["id"] for row in response.json() if row["name"] == "Fulfilled Customer"
+    )
+    fulfilled_update = client.patch(
+        f"/provider/crm/customers/{fulfilled_customer_id}",
+        json={"notes": "Visible to the fulfilling provider."},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert fulfilled_update.status_code == 200, fulfilled_update.text
 
 
 def test_history_includes_completed_pending_customer():
@@ -3533,6 +3813,46 @@ def test_customer_cancel_requires_reason():
     assert ok.status_code == 200, ok.text
     assert app_store._job_status[jid] == "cancelled"
     assert any("customer_cancel:Found my spare key" in e for e in app_store.events)
+
+
+def test_provider_can_cancel_all_pre_completion_scheduling_states():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    statuses = [
+        STATUS_SCHEDULED_REQUESTED,
+        STATUS_SCHEDULED_CONFIRMED,
+        STATUS_PARTNER_REQUESTED,
+    ]
+    job_ids: list[str] = []
+    for status in statuses:
+        jid = str(uuid4())
+        _seed_scheduled_provider_job(app_store, org, jid)
+        app_store._job_status[jid] = status
+        job_ids.append(jid)
+
+    for jid in job_ids:
+        response = client.post(
+            f"/provider/jobs/{jid}/cancel",
+            json={"reason": "Customer requested cancellation"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200, response.text
+        assert app_store._job_status[jid] == "cancelled"
+
+
+def test_customer_can_cancel_partner_requested_job():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    jid, tracking_token = str(uuid4()), "track-" + uuid4().hex
+    app_store._job_status[jid] = STATUS_PARTNER_REQUESTED
+    app_store._tokens[jid] = tracking_token
+    response = TestClient(app).post(
+        f"/t/{tracking_token}/cancel",
+        json={"reason": "No longer need service"},
+    )
+    assert response.status_code == 200, response.text
+    assert app_store._job_status[jid] == "cancelled"
 
 
 def test_customer_reschedule_resets_confirmed_schedule_to_requested():
@@ -6471,11 +6791,11 @@ def test_admin_org_and_tech_directories_require_platform_admin():
     _seed_platform_admin(app_store, admin_uid)
     admin_token = create_access_token({"sub": admin_uid, "id": admin_uid, "roles": ["platform_admin"]})
     H = {"Authorization": f"Bearer {admin_token}"}
-    # In-memory store has no organizations/technicians table (Postgres-only
-    # directory, matching the existing list_pending_registrations convention);
-    # the point here is the permission gate + graceful empty response.
-    assert client.get("/admin/organizations", headers=H).json() == {"organizations": []}
-    assert client.get("/admin/technicians", headers=H).json() == {"technicians": []}
+    organizations = client.get("/admin/organizations", headers=H).json()["organizations"]
+    technicians = client.get("/admin/technicians", headers=H).json()["technicians"]
+    assert isinstance(organizations, list)
+    assert isinstance(technicians, list)
+    assert any(row["id"] == org for row in organizations)
     assert client.get(f"/admin/organizations/{org}", headers=H).status_code == 404
     assert client.get(f"/admin/technicians/{uuid4()}", headers=H).status_code == 404
 

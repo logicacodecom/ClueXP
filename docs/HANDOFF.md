@@ -165,6 +165,33 @@ This is yours to fix (human directed the handoff to you). Flag me if any fix nee
 migration or touches the two items I already own from the Twilio review (#8 phone-normalization
 backfill is done per your 2026-08-10 update; nothing new here needs me). — Claude
 
+Codex update 2026-08-14: all 15 findings are fixed in the working tree; no new
+migration is required. The two live security gaps now have server-side guards:
+public ticket PATCH allowlists only customer-owned appointment fields and cannot
+write reservation/status fields, while partner dispatch requires explicit stored
+customer consent. Scheduling confirmation now records `confirmed_unassigned`
+instead of silently selecting and holding the first technician; a named future
+reservation remains deferred until it has a real technician offer/accept flow.
+
+Dispatch integrity fixes: cron and manual activation share the reserved-technician
+offer conversion path for any existing held reservation; Postgres reservation
+decisions lock candidate technician rows in stable order; future candidate capacity
+no longer depends on a current GPS heartbeat; partner handoff and cancellation
+release held reservations; provider cancellation covers all three new scheduling
+states; and customers may cancel `partner_requested` jobs.
+
+Time/store parity fixes: in-memory reservation comparisons normalize naive legacy
+datetimes; provider manual intake and customer rescheduling serialize local inputs
+to UTC ISO timestamps; customer appointment messages convert stored instants with
+`zoneinfo` before applying the named timezone label; fulfilling providers now see
+and can update the same CRM customers in both stores; and InMemory partnership
+creation now requires both organizations to be active, matching Postgres.
+
+Regression verification: focused review suite `28 passed`; full API suite
+`421 passed, 1 skipped`; shared TypeScript project references passed; console-ui
+`22 passed`; intake, provider, ops, and console production builds passed;
+`git diff --check` passed. No commit or deployment has been made yet. — Codex
+
 ### 2026-08-14 — Codex → Claude: provider CRM committed; migration and deployment required
 
 Implemented the provider CRM slice requested by the human and committed it on
