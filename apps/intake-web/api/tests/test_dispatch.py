@@ -1316,6 +1316,12 @@ def test_provider_activate_confirmed_schedule_moves_to_dispatch():
 
     assert resp.status_code == 200, resp.text
     assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    assert resp.json()["reserved_offer"]["technician_id"] == tid
+    assert resp.json()["reserved_offer_error"] is None
+    assert any(
+        offer["job_id"] == jid and offer["technician_id"] == tid and offer["status"] == "offered"
+        for offer in app_store._offers.values()
+    )
     assert app_store._tickets[UUID(jid)].service_appointment.reserved_technician_id == tid
     assert any(
         row["job_id"] == jid and row["technician_id"] == tid and row["status"] == "converted"
@@ -1326,6 +1332,37 @@ def test_provider_activate_confirmed_schedule_moves_to_dispatch():
         if row["channel"] == "customer" and row["metadata"].get("event") == "schedule_activated"
     ]
     assert customer_messages
+
+
+def test_provider_activate_schedule_falls_back_when_reserved_tech_unavailable():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_scheduled_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
+    assert client.post(
+        f"/provider/queue/{jid}/confirm-schedule",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    ).status_code == 200
+    for tech in app_store._technicians:
+        if tech["id"] == tid:
+            tech["status"] = "suspended"
+
+    resp = client.post(
+        f"/provider/queue/{jid}/activate-schedule",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    assert resp.json()["reserved_offer"] is None
+    assert resp.json()["reserved_offer_error"] == "reserved_technician_unavailable"
+    assert not getattr(app_store, "_offers", {})
+    assert any(
+        row["job_id"] == jid and row["technician_id"] == tid and row["status"] == "released"
+        for row in app_store._technician_reservations.values()
+    )
 
 
 def test_provider_cannot_assign_confirmed_schedule_before_activation():

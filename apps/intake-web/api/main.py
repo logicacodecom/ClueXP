@@ -4547,22 +4547,58 @@ async def provider_activate_schedule(
         raise HTTPException(status_code=404, detail="Job not found in your dispatch queue")
     if job.get("status") != STATUS_SCHEDULED_CONFIRMED:
         raise HTTPException(status_code=409, detail="Job is not a confirmed scheduled appointment")
+    reservation = await store.get_job_reservation(job_id)
     updated = await store.set_job_status(
         job_id, STATUS_PENDING_DISPATCH, expected_current=STATUS_SCHEDULED_CONFIRMED
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Schedule activation conflicted; refresh the queue.")
+    reserved_offer: dict[str, Any] | None = None
+    reserved_offer_error: str | None = None
+    if reservation and reservation.get("technician_id"):
+        technician_id = UUID(str(reservation["technician_id"]))
+        tech = await store.get_ops_technician(technician_id, org_id=org_id)
+        if tech is None:
+            reserved_offer_error = "reserved_technician_unavailable"
+        else:
+            try:
+                reserved_offer = await _send_targeted_offer(
+                    job=job,
+                    job_id=job_id,
+                    technician_id=technician_id,
+                    tech=tech,
+                    override_reason=None,
+                    session=session,
+                    audit_prefix="scheduled_reserved_activation",
+                    dispatch_org_id=org_id,
+                )
+            except HTTPException as exc:
+                reserved_offer_error = str(exc.detail)
     await store.release_job_reservation(
-        job_id, status="converted", reason="scheduled appointment activated"
+        job_id,
+        status="converted" if reserved_offer else "released",
+        reason=(
+            "scheduled appointment activated with reserved technician offer"
+            if reserved_offer else
+            f"scheduled appointment activated without reserved offer: {reserved_offer_error or 'no reservation'}"
+        ),
     )
     await store.log_event_raw(job_id, f"scheduled_activated:manual:by={session.get('user', {}).get('id')}")
+    if reserved_offer_error:
+        await store.log_event_raw(job_id, f"scheduled_reserved_offer_fallback:{reserved_offer_error[:160]}")
     await _record_customer_system_message(
         job_id,
         body="Your scheduled appointment is now being dispatched. The provider is selecting an available technician.",
         event="schedule_activated",
         organization_id=org_id,
     )
-    return {"activated": True, "job_id": str(job_id), "status": STATUS_PENDING_DISPATCH}
+    return {
+        "activated": True,
+        "job_id": str(job_id),
+        "status": STATUS_PENDING_DISPATCH,
+        "reserved_offer": reserved_offer,
+        "reserved_offer_error": reserved_offer_error,
+    }
 
 
 @app.post("/provider/queue/{job_id}/partner-request")
