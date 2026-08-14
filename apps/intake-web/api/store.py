@@ -3023,6 +3023,7 @@ class InMemoryStore(Store):
         dest = getattr(self, "_job_loc", {}).get(jid)
         payment = getattr(self, "_payments", {}).get((jid, "technician"))
         closeout = await self.get_job_closeout(UUID(jid))
+        detail = getattr(self, "_job_detail", {}).get(jid, {})
         # Blind tracking: remove dispatch internals
         return {
             "state": state,
@@ -3034,6 +3035,7 @@ class InMemoryStore(Store):
             "destination": ({"lat": dest[0], "lng": dest[1]} if (may_show_live_tracking(status) and dest) else None),
             "payment": ({"amount": payment["amount"], "currency": payment.get("currency", "USD"), "method": payment["method"]} if payment else None),
             "closeout": closeout,
+            "service_appointment": detail.get("service_appointment") if isinstance(detail, dict) else None,
         }
 
     # --- fulfillment cutover (Sprint 3) — minimal in-memory backing for tests ---
@@ -6414,14 +6416,15 @@ class PostgresStore(Store):
             cur = await conn.execute(
                 "select fulfillment_technician_id, fulfillment_org_id, customer_owner_org_id,"
                 " status, dispatch_attempts, lat, lng,"
-                " extract(epoch from (now() - created_at))::int"
+                " extract(epoch from (now() - created_at))::int,"
+                " detail"
                 " from jobs where id = %s",
                 (str(ticket_id),),
             )
             job = await cur.fetchone()
             if not job:
                 return None
-            tech_id, org_id, owner_org_id, job_status, attempts, lat, lng, age = job
+            tech_id, org_id, owner_org_id, job_status, attempts, lat, lng, age, detail = job
             attempts = attempts or 0
             cur = await conn.execute(
                 "select"
@@ -6485,6 +6488,10 @@ class PostgresStore(Store):
             ),
             "payment": payment,
             "closeout": closeout,
+            "service_appointment": (
+                detail.get("service_appointment")
+                if isinstance(detail, dict) else None
+            ),
         }
 
     async def _safe_assignment(

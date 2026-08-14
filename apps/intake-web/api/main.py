@@ -939,6 +939,13 @@ class CancelRequest(BaseModel):
     reason: str | None = None
 
 
+class RescheduleRequest(BaseModel):
+    requested_start: datetime
+    requested_end: datetime | None = None
+    timezone: str | None = None
+    reason: str | None = None
+
+
 class DisputeRequest(BaseModel):
     reason: str | None = None
 
@@ -5153,6 +5160,63 @@ async def cancel_by_token(token: str, payload: CancelRequest) -> dict[str, Any]:
     if updated is None:
         raise HTTPException(status_code=409, detail="Status changed concurrently")
     return {"status": updated["status"]}
+
+
+@app.post("/t/{token}/reschedule")
+async def reschedule_by_token(token: str, payload: RescheduleRequest) -> dict[str, Any]:
+    """Customer requests a new window for a scheduled job before dispatch.
+    If the provider already confirmed the prior window, the job returns to
+    scheduled_requested so capacity must be confirmed again.
+    """
+    await latency()
+    job_id = await _require_token_job(token)
+    lifecycle = await store.get_job_lifecycle(job_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    current_status = lifecycle.get("status")
+    if current_status not in {STATUS_SCHEDULED_REQUESTED, STATUS_SCHEDULED_CONFIRMED}:
+        raise HTTPException(status_code=409, detail="Only scheduled jobs awaiting dispatch can be rescheduled")
+    requested_end = payload.requested_end or (payload.requested_start + timedelta(hours=1))
+    if requested_end <= payload.requested_start:
+        raise HTTPException(status_code=422, detail="requested_end must be after requested_start")
+    ticket = await require_ticket(job_id)
+    if ticket.urgency != Urgency.SCHEDULED:
+        raise HTTPException(status_code=409, detail="Job is not a scheduled appointment")
+    ticket.service_appointment = ServiceAppointment(
+        requested_start=payload.requested_start,
+        requested_end=requested_end,
+        timezone=(payload.timezone or (ticket.service_appointment.timezone if ticket.service_appointment else None) or "America/New_York"),
+        status="requested",
+        partner_dispatch_allowed=(
+            ticket.service_appointment.partner_dispatch_allowed
+            if ticket.service_appointment is not None else True
+        ),
+    )
+    await save(ticket)
+    if current_status != STATUS_SCHEDULED_REQUESTED:
+        updated = await store.set_job_status(
+            job_id, STATUS_SCHEDULED_REQUESTED, expected_current=current_status
+        )
+        if updated is None:
+            raise HTTPException(status_code=409, detail="Status changed concurrently")
+    reason = (payload.reason or "").strip()
+    await log_transition(ticket, f"schedule_reschedule_requested:from={current_status}")
+    if reason:
+        await store.log_event_raw(job_id, f"schedule_reschedule_reason:{reason[:180]}")
+    await _record_customer_system_message(
+        job_id,
+        body=(
+            "A new appointment window was requested for "
+            f"{_format_appointment_window(ticket.service_appointment)}. "
+            "The provider will confirm the updated window before assigning a technician."
+        ),
+        event="schedule_reschedule_requested",
+        organization_id=lifecycle.get("customer_owner_org_id"),
+    )
+    return {
+        "status": STATUS_SCHEDULED_REQUESTED,
+        "service_appointment": ticket.service_appointment.model_dump(mode="json"),
+    }
 
 
 @app.patch("/tickets/{ticket_id}/status")

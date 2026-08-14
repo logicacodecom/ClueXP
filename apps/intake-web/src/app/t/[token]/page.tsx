@@ -81,6 +81,7 @@ interface TrackingResponse {
   destination: { lat: number; lng: number } | null;
   payment: PaymentView | null;
   closeout: CloseoutView | null;
+  service_appointment?: ServiceAppointmentView | null;
   guards: TicketGuards;
   customer_actions: {
     can_cancel: boolean;
@@ -90,6 +91,14 @@ interface TrackingResponse {
   };
   terminal: boolean;
   dispatch_phone?: string | null;
+}
+
+interface ServiceAppointmentView {
+  requested_start?: string | null;
+  requested_end?: string | null;
+  timezone?: string | null;
+  status?: string | null;
+  partner_dispatch_allowed?: boolean;
 }
 
 interface JobMessage {
@@ -123,6 +132,31 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(body.detail || `Request failed: ${res.status}`);
   }
   return res.json();
+}
+
+function toDateTimeLocal(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatWindow(value: ServiceAppointmentView | null, locale: string): string {
+  if (!value?.requested_start) return locale === "es" ? "Ventana pendiente" : "Window pending";
+  const start = new Date(value.requested_start);
+  const end = value.requested_end ? new Date(value.requested_end) : null;
+  const language = locale === "es" ? "es-US" : "en-US";
+  const startText = start.toLocaleString(language, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const endText = end && !Number.isNaN(end.getTime())
+    ? end.toLocaleTimeString(language, { hour: "numeric", minute: "2-digit" })
+    : null;
+  return `${startText}${endText ? ` – ${endText}` : ""}${value.timezone ? ` ${value.timezone}` : ""}`;
 }
 
 const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
@@ -325,12 +359,18 @@ export default function TokenTrackingPage() {
   const { locale } = useLocale();
 
   const [screen, setScreen] = useState<Screen>("loading");
+  const [currentStatus, setCurrentStatus] = useState<string | null>(null);
   const [assignment, setAssignment] = useState<DispatchAssignment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [customerActions, setCustomerActions] = useState<CustomerActions>(emptyCustomerActions);
   const [cancelReasonOpen, setCancelReasonOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [serviceAppointment, setServiceAppointment] = useState<ServiceAppointmentView | null>(null);
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [rescheduleStart, setRescheduleStart] = useState("");
+  const [rescheduleEnd, setRescheduleEnd] = useState("");
+  const [rescheduleReason, setRescheduleReason] = useState("");
   const [reviewData, setReviewData] = useState<ReviewData>({
     rating: null,
     tags: [],
@@ -488,10 +528,12 @@ export default function TokenTrackingPage() {
       }
       
       const data = await response.json();
+      setCurrentStatus(data.status ?? null);
       setAssignment(data.assignment);
       setDestination(data.destination ?? null);
       setPayment(data.payment ?? null);
       setCloseout(data.closeout ?? null);
+      setServiceAppointment(data.service_appointment ?? null);
       setCustomerActions(data.customer_actions ?? emptyCustomerActions);
       setDispatchPhone(data.dispatch_phone ?? null);
 
@@ -780,6 +822,50 @@ export default function TokenTrackingPage() {
     }
   };
 
+  const openReschedule = () => {
+    setRescheduleStart(toDateTimeLocal(serviceAppointment?.requested_start));
+    setRescheduleEnd(toDateTimeLocal(serviceAppointment?.requested_end));
+    setRescheduleReason("");
+    setRescheduleOpen(true);
+  };
+
+  const handleReschedule = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/t/${token}/reschedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requested_start: rescheduleStart,
+          requested_end: rescheduleEnd || null,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York",
+          reason: rescheduleReason.trim() || null,
+        })
+      });
+      if (response.status === 409) {
+        setError(locale === "es" ? "El estado ha cambiado, actualizando..." : "Status changed, refreshing...");
+        setTimeout(() => void loadTracking(), 1000);
+        return;
+      }
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? (locale === "es" ? "No se pudo cambiar la cita" : "Could not request a new appointment time"));
+        return;
+      }
+      const data = await response.json();
+      setServiceAppointment(data.service_appointment ?? null);
+      setRescheduleOpen(false);
+      setRescheduleReason("");
+      await loadTracking();
+      await loadMessages();
+    } catch {
+      setError(locale === "es" ? "Error de red, intente de nuevo" : "Network error, please try again");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleGetArrivalPin = async () => {
     setBusy(true);
     try {
@@ -866,6 +952,83 @@ export default function TokenTrackingPage() {
     );
   };
 
+  const renderScheduleControl = () => {
+    if (!serviceAppointment || !["scheduled_requested", "scheduled_confirmed"].includes(currentStatus || "")) return null;
+    const startValid = Boolean(rescheduleStart);
+    const endValid = !rescheduleEnd || new Date(rescheduleEnd) > new Date(rescheduleStart);
+    return (
+      <div className="panel">
+        <p className="panel-title">
+          {locale === "es" ? "Cita solicitada" : "Requested appointment"}
+        </p>
+        <div className="big-number" style={{ fontSize: "1.35rem" }}>
+          {formatWindow(serviceAppointment, locale)}
+        </div>
+        <p className="fine">
+          {currentStatus === "scheduled_confirmed"
+            ? (locale === "es"
+              ? "El proveedor confirmó esta ventana. Si solicita otra hora, deberá confirmarse nuevamente."
+              : "The provider confirmed this window. If you request a different time, it will need confirmation again.")
+            : (locale === "es"
+              ? "Esta ventana aún espera confirmación del proveedor."
+              : "This window is still waiting for provider confirmation.")}
+        </p>
+        {rescheduleOpen ? (
+          <div className="stack" style={{ marginTop: "1rem" }}>
+            <label className="fine" htmlFor="reschedule-start">
+              {locale === "es" ? "Nueva hora inicial" : "New start time"}
+            </label>
+            <input
+              id="reschedule-start"
+              className="field"
+              type="datetime-local"
+              value={rescheduleStart}
+              onChange={(event) => setRescheduleStart(event.target.value)}
+            />
+            <label className="fine" htmlFor="reschedule-end">
+              {locale === "es" ? "Nueva hora final" : "New end time"}
+            </label>
+            <input
+              id="reschedule-end"
+              className="field"
+              type="datetime-local"
+              value={rescheduleEnd}
+              onChange={(event) => setRescheduleEnd(event.target.value)}
+            />
+            <textarea
+              className="field"
+              placeholder={locale === "es" ? "Motivo opcional" : "Optional reason"}
+              value={rescheduleReason}
+              onChange={(event) => setRescheduleReason(event.target.value)}
+            />
+            <div className="row">
+              <button className="ghost" type="button" onClick={() => setRescheduleOpen(false)}>
+                {locale === "es" ? "Mantener hora actual" : "Keep current time"}
+              </button>
+              <button
+                className="primary"
+                type="button"
+                disabled={!startValid || !endValid || busy}
+                onClick={() => void handleReschedule()}
+              >
+                {locale === "es" ? "Solicitar cambio" : "Request new time"}
+              </button>
+            </div>
+            {!endValid ? (
+              <p className="fine" role="alert">
+                {locale === "es" ? "La hora final debe ser posterior a la inicial." : "End time must be after start time."}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <button className="ghost" type="button" onClick={openReschedule}>
+            {locale === "es" ? "Solicitar otra hora" : "Request a different time"}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   if (screen === "loading") {
     return (
       <div className="shell">
@@ -937,6 +1100,7 @@ export default function TokenTrackingPage() {
             >
               {localeText.waiting.action}
             </button>
+            {renderScheduleControl()}
             {renderCancelControl()}
             <a
               className="ghost"

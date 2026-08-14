@@ -315,6 +315,8 @@ def can_customer_cancel(status: str | None) -> bool:
     if status is None:
         return False
     return status in {
+        STATUS_SCHEDULED_REQUESTED,
+        STATUS_SCHEDULED_CONFIRMED,
         STATUS_PENDING_DISPATCH,
         STATUS_ASSIGNED,
         STATUS_EN_ROUTE,

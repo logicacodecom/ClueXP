@@ -3288,6 +3288,40 @@ def test_customer_cancel_requires_reason():
     assert any("customer_cancel:Found my spare key" in e for e in app_store.events)
 
 
+def test_customer_reschedule_resets_confirmed_schedule_to_requested():
+    from starlette.testclient import TestClient
+    from api.main import app, store as app_store
+
+    org, jid, token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    _seed_scheduled_provider_job(app_store, org, jid)
+    app_store._job_status[jid] = STATUS_SCHEDULED_CONFIRMED
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = token
+    client = TestClient(app)
+
+    resp = client.post(
+        f"/t/{token}/reschedule",
+        json={
+            "requested_start": "2026-08-18T09:30:00",
+            "requested_end": "2026-08-18T11:00:00",
+            "timezone": "America/New_York",
+            "reason": "Morning works better",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == STATUS_SCHEDULED_REQUESTED
+    assert app_store._job_status[jid] == STATUS_SCHEDULED_REQUESTED
+    appointment = app_store._tickets[UUID(jid)].service_appointment
+    assert appointment.status == "requested"
+    assert appointment.requested_start.isoformat().startswith("2026-08-18T09:30:00")
+    assert any("schedule_reschedule_reason:Morning works better" in e for e in app_store.events)
+    assert any(
+        row["metadata"].get("event") == "schedule_reschedule_requested"
+        for row in app_store._job_messages[jid]
+    )
+
+
 def test_customer_live_location_gated_to_fulfillment():
     """The customer sees the technician's live location + destination only while the
     job is en_route/arrived/in_progress — never before (privacy gate)."""
