@@ -203,6 +203,8 @@ class ServiceAppointment(BaseModel):
     timezone: str = "America/New_York"
     status: str = "requested"  # requested | confirmed_unassigned | technician_reserved
     partner_dispatch_allowed: bool = True
+    reservation_id: Optional[str] = None
+    reserved_technician_id: Optional[str] = None
 
 
 class TechnicianAssignment(BaseModel):

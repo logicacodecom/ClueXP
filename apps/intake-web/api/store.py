@@ -1263,6 +1263,27 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def reserve_scheduled_technician(
+        self,
+        job_id: UUID,
+        *,
+        org_id: str,
+        candidates: list[dict],
+        reserved_start: datetime,
+        reserved_end: datetime,
+        created_by: str | None = None,
+        note: str | None = None,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_job_reservation(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        return None
+
+    async def release_job_reservation(
+        self, job_id: UUID, *, status: str = "released", reason: str | None = None
+    ) -> dict | None:  # pragma: no cover
+        return None
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -3745,6 +3766,85 @@ class InMemoryStore(Store):
         offers[rec["id"]] = rec
         return rec
 
+    async def reserve_scheduled_technician(
+        self,
+        job_id: UUID,
+        *,
+        org_id: str,
+        candidates: list[dict],
+        reserved_start: datetime,
+        reserved_end: datetime,
+        created_by: str | None = None,
+        note: str | None = None,
+    ) -> dict | None:
+        if reserved_end <= reserved_start:
+            return None
+        jid = str(job_id)
+        reservations = self._technician_reservations = getattr(self, "_technician_reservations", {})
+        for existing in reservations.values():
+            if existing.get("job_id") == jid and existing.get("status") == "held":
+                return dict(existing)
+        held = [row for row in reservations.values() if row.get("status") == "held"]
+        for candidate in candidates:
+            tech_id = str(candidate.get("id"))
+            conflict = any(
+                row.get("technician_id") == tech_id
+                and datetime.fromisoformat(str(row["reserved_start"]).replace("Z", "+00:00")) < reserved_end
+                and datetime.fromisoformat(str(row["reserved_end"]).replace("Z", "+00:00")) > reserved_start
+                for row in held
+            )
+            if conflict:
+                continue
+            rec = {
+                "id": str(uuid4()),
+                "job_id": jid,
+                "technician_id": tech_id,
+                "organization_id": str(org_id),
+                "status": "held",
+                "reserved_start": reserved_start.isoformat(),
+                "reserved_end": reserved_end.isoformat(),
+                "note": note,
+                "created_by": created_by,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            reservations[rec["id"]] = rec
+            detail = getattr(self, "_job_detail", {}).setdefault(jid, {})
+            appointment = detail.setdefault("service_appointment", {})
+            if isinstance(appointment, dict):
+                appointment["reserved_technician_id"] = tech_id
+                appointment["reservation_id"] = rec["id"]
+                appointment["status"] = "technician_reserved"
+            await self.log_event_raw(job_id, f"technician_reserved:{tech_id}")
+            return dict(rec)
+        return None
+
+    async def get_job_reservation(self, job_id: UUID) -> dict | None:
+        jid = str(job_id)
+        for row in getattr(self, "_technician_reservations", {}).values():
+            if row.get("job_id") == jid and row.get("status") == "held":
+                return dict(row)
+        return None
+
+    async def release_job_reservation(
+        self, job_id: UUID, *, status: str = "released", reason: str | None = None
+    ) -> dict | None:
+        jid = str(job_id)
+        for row in getattr(self, "_technician_reservations", {}).values():
+            if row.get("job_id") == jid and row.get("status") == "held":
+                row["status"] = status
+                row["updated_at"] = datetime.now(timezone.utc).isoformat()
+                if reason:
+                    row["note"] = f"{row.get('note') or ''}\n{reason}".strip()
+                detail = getattr(self, "_job_detail", {}).get(jid, {})
+                appointment = detail.get("service_appointment") if isinstance(detail, dict) else None
+                if isinstance(appointment, dict):
+                    appointment.pop("reserved_technician_id", None)
+                    appointment.pop("reservation_id", None)
+                await self.log_event_raw(job_id, f"technician_reservation_{status}:{row['technician_id']}")
+                return dict(row)
+        return None
+
     def _stamp_job_timestamps(self, jid: str, columns: set[str]) -> None:
         """Coalesce-set lifecycle timestamp columns (first write wins, mirroring
         Postgres's `coalesce(col, now())`) and always bump updated_at (mirroring
@@ -3796,6 +3896,7 @@ class InMemoryStore(Store):
         for o in getattr(self, "_offers", {}).values():
             if o.get("job_id") == jid and o.get("status") == "offered":
                 o["status"] = "superseded"
+        await self.release_job_reservation(job_id, status="cancelled", reason=reason)
         await self.log_event_raw(
             job_id, f"customer_cancel:{reason[:200]}" if reason else "customer_cancel"
         )
@@ -4365,6 +4466,9 @@ class InMemoryStore(Store):
                 detail["service_appointment"]["status"] = "activation_due"
             if ticket and ticket.service_appointment:
                 ticket.service_appointment.status = "activation_due"
+            await self.release_job_reservation(
+                UUID(jid), status="converted", reason="scheduled appointment auto-activated"
+            )
             await self.log_event_raw(UUID(jid), "scheduled_activated")
             activated.append({"id": jid, "status": STATUS_PENDING_DISPATCH})
         return activated
@@ -4904,6 +5008,33 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_organization_partnerships_lookup"
                 " on organization_partnerships (status, requester_org_id, partner_org_id)"
+            )
+            await conn.execute(
+                "create table if not exists technician_reservations ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  job_id uuid not null references jobs(id) on delete cascade,"
+                "  technician_id uuid not null references technicians(id) on delete cascade,"
+                "  organization_id uuid references organizations(id) on delete set null,"
+                "  status text not null default 'held'"
+                "    check (status in ('held','released','converted','cancelled')),"
+                "  reserved_start timestamptz not null,"
+                "  reserved_end timestamptz not null,"
+                "  note text,"
+                "  created_by uuid,"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  check (reserved_end > reserved_start)"
+                ")"
+            )
+            await conn.execute(
+                "create unique index if not exists idx_technician_reservations_one_active_job"
+                " on technician_reservations (job_id)"
+                " where status = 'held'"
+            )
+            await conn.execute(
+                "create index if not exists idx_technician_reservations_active_overlap"
+                " on technician_reservations (technician_id, reserved_start, reserved_end)"
+                " where status = 'held'"
             )
             # Runtime operational settings (migration 0023). Resilience guard so the
             # API boots + seeds even if the migration is behind. Never holds secrets
@@ -7377,6 +7508,137 @@ class PostgresStore(Store):
                 return {"error_code": "concurrent_offer"}
             raise
 
+    @staticmethod
+    def _reservation_row(row: tuple) -> dict:
+        return {
+            "id": str(row[0]),
+            "job_id": str(row[1]),
+            "technician_id": str(row[2]),
+            "organization_id": str(row[3]) if row[3] else None,
+            "status": row[4],
+            "reserved_start": row[5].isoformat() if row[5] else None,
+            "reserved_end": row[6].isoformat() if row[6] else None,
+            "note": row[7],
+            "created_by": str(row[8]) if row[8] else None,
+            "created_at": row[9].isoformat() if row[9] else None,
+            "updated_at": row[10].isoformat() if row[10] else None,
+        }
+
+    async def reserve_scheduled_technician(
+        self,
+        job_id: UUID,
+        *,
+        org_id: str,
+        candidates: list[dict],
+        reserved_start: datetime,
+        reserved_end: datetime,
+        created_by: str | None = None,
+        note: str | None = None,
+    ) -> dict | None:
+        from psycopg.types.json import Jsonb
+
+        if reserved_end <= reserved_start:
+            return None
+        candidate_ids = [str(candidate.get("id")) for candidate in candidates if candidate.get("id")]
+        if not candidate_ids:
+            return None
+        async with await self._connect() as conn:
+            existing = await (
+                await conn.execute(
+                    "select id, job_id, technician_id, organization_id, status,"
+                    " reserved_start, reserved_end, note, created_by, created_at, updated_at"
+                    " from technician_reservations"
+                    " where job_id = %s and status = 'held'",
+                    (str(job_id),),
+                )
+            ).fetchone()
+            if existing:
+                return self._reservation_row(existing)
+            cur = await conn.execute(
+                "with ranked as ("
+                "  select tech_id::uuid, ordinality"
+                "  from unnest(%s::uuid[]) with ordinality as c(tech_id, ordinality)"
+                "), available as ("
+                "  select r.tech_id from ranked r"
+                "  where not exists ("
+                "    select 1 from technician_reservations tr"
+                "    where tr.technician_id = r.tech_id"
+                "    and tr.status = 'held'"
+                "    and tr.reserved_start < %s"
+                "    and tr.reserved_end > %s"
+                "  )"
+                "  order by r.ordinality limit 1"
+                "), inserted as ("
+                "  insert into technician_reservations ("
+                "    job_id, technician_id, organization_id, reserved_start, reserved_end, note, created_by"
+                "  )"
+                "  select %s, tech_id, %s, %s, %s, %s, %s from available"
+                "  returning id, job_id, technician_id, organization_id, status,"
+                "   reserved_start, reserved_end, note, created_by, created_at, updated_at"
+                ")"
+                "select * from inserted",
+                (
+                    candidate_ids, reserved_end, reserved_start, str(job_id), str(org_id),
+                    reserved_start, reserved_end, note, created_by,
+                ),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            await conn.execute(
+                "update jobs set detail = jsonb_set("
+                " jsonb_set(coalesce(detail, '{}'::jsonb),"
+                "  '{service_appointment,reservation_id}', %s::jsonb, true),"
+                " '{service_appointment,reserved_technician_id}', %s::jsonb, true),"
+                " updated_at = now() where id = %s",
+                (Jsonb(str(row[0])), Jsonb(str(row[2])), str(job_id)),
+            )
+        await self.log_event_raw(job_id, f"technician_reserved:{row[2]}")
+        return self._reservation_row(row)
+
+    async def get_job_reservation(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, job_id, technician_id, organization_id, status,"
+                " reserved_start, reserved_end, note, created_by, created_at, updated_at"
+                " from technician_reservations"
+                " where job_id = %s and status = 'held'",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        return self._reservation_row(row) if row else None
+
+    async def release_job_reservation(
+        self, job_id: UUID, *, status: str = "released", reason: str | None = None
+    ) -> dict | None:
+        if status not in {"released", "converted", "cancelled"}:
+            status = "released"
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update technician_reservations set"
+                " status = %s,"
+                " note = case when %s::text is null then note"
+                "  else concat_ws(E'\\n', nullif(note, ''), %s::text) end,"
+                " updated_at = now()"
+                " where job_id = %s and status = 'held'"
+                " returning id, job_id, technician_id, organization_id, status,"
+                " reserved_start, reserved_end, note, created_by, created_at, updated_at",
+                (status, reason, reason, str(job_id)),
+            )
+            row = await cur.fetchone()
+            if row:
+                await conn.execute(
+                    "update jobs set detail = coalesce(detail, '{}'::jsonb)"
+                    " #- '{service_appointment,reservation_id}'"
+                    " #- '{service_appointment,reserved_technician_id}',"
+                    " updated_at = now() where id = %s",
+                    (str(job_id),),
+                )
+        if not row:
+            return None
+        await self.log_event_raw(job_id, f"technician_reservation_{status}:{row[2]}")
+        return self._reservation_row(row)
+
     async def set_job_status(
         self,
         job_id: UUID,
@@ -7438,6 +7700,14 @@ class PostgresStore(Store):
                 "update dispatch_offers set status = 'superseded', responded_at = now()"
                 " where job_id = %s and status = 'offered'",
                 (str(job_id),),
+            )
+            await conn.execute(
+                "update technician_reservations set status = 'cancelled',"
+                " note = case when %s::text is null then note"
+                "  else concat_ws(E'\\n', nullif(note, ''), %s::text) end,"
+                " updated_at = now()"
+                " where job_id = %s and status = 'held'",
+                (reason, reason, str(job_id)),
             )
         await self.log_event_raw(
             job_id,
@@ -9495,6 +9765,14 @@ class PostgresStore(Store):
                 (STATUS_PENDING_DISPATCH, STATUS_SCHEDULED_CONFIRMED, horizon_minutes),
             )
             rows = await cur.fetchall()
+            for row in rows:
+                await conn.execute(
+                    "update technician_reservations set status = 'converted',"
+                    " note = concat_ws(E'\\n', nullif(note, ''), 'scheduled appointment auto-activated'),"
+                    " updated_at = now()"
+                    " where job_id = %s and status = 'held'",
+                    (str(row[0]),),
+                )
         for row in rows:
             await self.log_event_raw(row[0], "scheduled_activated")
         return [{"id": str(row[0]), "status": row[1]} for row in rows]

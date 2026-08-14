@@ -94,6 +94,8 @@ export interface ServiceAppointment {
   timezone?: string;
   status?: string;
   partner_dispatch_allowed?: boolean;
+  reservation_id?: string | null;
+  reserved_technician_id?: string | null;
 }
 
 export interface TechnicianAssignment {

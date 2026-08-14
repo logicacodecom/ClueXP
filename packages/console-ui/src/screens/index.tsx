@@ -313,6 +313,11 @@ function partnerDispatchAllowed(detail?: Record<string, unknown>): boolean {
   return appointmentDetail(detail)?.partner_dispatch_allowed !== false;
 }
 
+function hasTechnicianReservation(detail?: Record<string, unknown>): boolean {
+  const appointment = appointmentDetail(detail);
+  return typeof appointment?.reservation_id === "string" || typeof appointment?.reserved_technician_id === "string";
+}
+
 /** Row-level "Cancel request" for the provider dispatch queue. Wires to the
  * existing tenant-scoped POST /provider/jobs/{id}/cancel — the same endpoint
  * /recovery uses — which cancels any pre-completion state (pending_dispatch
@@ -567,6 +572,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                 const incomingPartner = partnerRequested && job.viewer_relationship === "fulfillment_partner";
                 const appointmentWindow = formatAppointmentWindow(job.detail);
                 const partnerAllowed = partnerDispatchAllowed(job.detail);
+                const reservedCapacity = hasTechnicianReservation(job.detail);
                 const selectedPartner = partnerSelection[job.id] ?? partners[0]?.id ?? "";
                 const open = () => router.push(`/queue/${job.id}`);
                 return (
@@ -613,6 +619,7 @@ export function LiveQueue({ mode }: { mode: ConsoleMode }) {
                       <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-info/25 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
                         <CalendarClock className="size-4 text-info" />
                         <span className="font-medium text-foreground">{appointmentWindow}</span>
+                        {reservedCapacity ? <Badge variant="success">Capacity reserved</Badge> : null}
                         {partnerAllowed ? <Badge variant="outline"><Network className="size-3" /> Partner dispatch allowed</Badge> : null}
                       </div>
                     ) : null}

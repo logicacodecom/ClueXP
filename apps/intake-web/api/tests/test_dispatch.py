@@ -1113,6 +1113,8 @@ def _seed_dispatcher(app_store, uid, org_id):
         "display_name": "Acme",
         "status": "active",
     }
+    app_store._organization_capabilities = getattr(app_store, "_organization_capabilities", {})
+    app_store._organization_capabilities[str(org_id)] = {"home_lockout"}
     app_store.users[uid] = {
         "id": uid, "email": f"disp_{uid[:8]}@cluexp.test", "phone": None,
         "display_name": "Dispatcher", "password_hash": "",
@@ -1132,9 +1134,11 @@ def _seed_org_tech(app_store, org_id, tid):
     app_store._technicians = getattr(app_store, "_technicians", [])
     app_store._technicians.append({
         "id": tid, "status": "active", "vetting_status": "verified",
-        "display_name": "Org Tech", "skills": [], "rating": 4.5,
-        "current_lat": None, "current_lng": None,
-        "service_area_center_lat": None, "service_area_center_lng": None,
+        "display_name": "Org Tech", "skills": ["home_lockout"], "rating": 4.5,
+        "is_available": True,
+        "current_lat": 40.0, "current_lng": -73.0,
+        "service_area_center_lat": 40.0, "service_area_center_lng": -73.0,
+        "service_area_radius_km": 50,
         "location_updated_at": datetime.now(timezone.utc).isoformat(),
         "primary_organization_id": org_id,
     })
@@ -1203,8 +1207,9 @@ def test_provider_queue_includes_scheduled_requested_jobs():
 def test_provider_confirm_schedule_moves_to_confirmed_queue():
     org = str(uuid4())
     client, app_store, token = _client_for_dispatcher(org)
-    jid = str(uuid4())
+    jid, tid = str(uuid4()), str(uuid4())
     _seed_scheduled_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
 
     resp = client.post(
         f"/provider/queue/{jid}/confirm-schedule",
@@ -1214,7 +1219,8 @@ def test_provider_confirm_schedule_moves_to_confirmed_queue():
 
     assert resp.status_code == 200, resp.text
     assert app_store._job_status[jid] == STATUS_SCHEDULED_CONFIRMED
-    assert app_store._tickets[UUID(jid)].service_appointment.status == "confirmed_unassigned"
+    assert app_store._tickets[UUID(jid)].service_appointment.status == "technician_reserved"
+    assert app_store._tickets[UUID(jid)].service_appointment.reserved_technician_id == tid
     customer_messages = [
         row for row in app_store._job_messages[jid]
         if row["channel"] == "customer" and row["metadata"].get("event") == "schedule_confirmed"
@@ -1222,11 +1228,81 @@ def test_provider_confirm_schedule_moves_to_confirmed_queue():
     assert customer_messages
 
 
-def test_provider_activate_confirmed_schedule_moves_to_dispatch():
+def test_provider_confirm_schedule_requires_reservable_capacity():
     org = str(uuid4())
     client, app_store, token = _client_for_dispatcher(org)
     jid = str(uuid4())
     _seed_scheduled_provider_job(app_store, org, jid)
+
+    resp = client.post(
+        f"/provider/queue/{jid}/confirm-schedule",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 409
+    assert "No eligible technician capacity" in resp.json()["detail"]
+    assert app_store._job_status[jid] == STATUS_SCHEDULED_REQUESTED
+
+
+def test_provider_confirm_schedule_blocks_overlapping_technician_reservation():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    tid = str(uuid4())
+    first, second = str(uuid4()), str(uuid4())
+    _seed_org_tech(app_store, org, tid)
+    _seed_scheduled_provider_job(app_store, org, first)
+    _seed_scheduled_provider_job(app_store, org, second)
+
+    assert client.post(
+        f"/provider/queue/{first}/confirm-schedule",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    ).status_code == 200
+
+    blocked = client.post(
+        f"/provider/queue/{second}/confirm-schedule",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert blocked.status_code == 409
+    assert "No eligible technician capacity" in blocked.json()["detail"]
+    assert app_store._job_status[second] == STATUS_SCHEDULED_REQUESTED
+
+
+def test_customer_tracking_masks_scheduled_reservation_identity():
+    from starlette.testclient import TestClient
+    from api.main import app
+
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, tid, tracking_token = str(uuid4()), str(uuid4()), "track-" + uuid4().hex
+    _seed_scheduled_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[jid] = tracking_token
+    assert client.post(
+        f"/provider/queue/{jid}/confirm-schedule",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    ).status_code == 200
+
+    tracking = TestClient(app).get(f"/t/{tracking_token}")
+
+    assert tracking.status_code == 200, tracking.text
+    appointment = tracking.json()["service_appointment"]
+    assert appointment["status"] == "confirmed_unassigned"
+    assert "reserved_technician_id" not in appointment
+    assert "reservation_id" not in appointment
+
+
+def test_provider_activate_confirmed_schedule_moves_to_dispatch():
+    org = str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    jid, tid = str(uuid4()), str(uuid4())
+    _seed_scheduled_provider_job(app_store, org, jid)
+    _seed_org_tech(app_store, org, tid)
     assert client.post(
         f"/provider/queue/{jid}/confirm-schedule",
         json={},
@@ -1240,6 +1316,11 @@ def test_provider_activate_confirmed_schedule_moves_to_dispatch():
 
     assert resp.status_code == 200, resp.text
     assert app_store._job_status[jid] == STATUS_PENDING_DISPATCH
+    assert app_store._tickets[UUID(jid)].service_appointment.reserved_technician_id == tid
+    assert any(
+        row["job_id"] == jid and row["technician_id"] == tid and row["status"] == "converted"
+        for row in app_store._technician_reservations.values()
+    )
     customer_messages = [
         row for row in app_store._job_messages[jid]
         if row["channel"] == "customer" and row["metadata"].get("event") == "schedule_activated"

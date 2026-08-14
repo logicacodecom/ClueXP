@@ -3419,6 +3419,8 @@ async def _enriched_candidates(
         own_active_job = active_job if _job_belongs_to_org(active_job or {}, viewer_org_id) else None
         skills = tech.get("skills") or []
         technician_supports_skill = (skill_needed in skills or access_type in skills) if skill_needed else True
+        radius = tech.get("service_area_radius_km")
+        within_service_area = dist is None or radius is None or radius <= 0 or dist <= float(radius)
         enriched.append({
             "id": tech["id"],
             "display_name": tech.get("display_name"),
@@ -3432,8 +3434,10 @@ async def _enriched_candidates(
             "distance_mi": round(dist * 0.621371, 2) if dist is not None else None,
             "eta_min": eta_min,
             "eta_max": eta_max,
+            "is_available": bool(tech.get("is_available")),
             "is_online": is_online,
             "is_busy": active_job is not None,
+            "within_service_area": within_service_area,
             "rating": tech.get("rating"),
             "active_job": {
                 "id": own_active_job["id"],
@@ -3447,6 +3451,7 @@ async def _enriched_candidates(
             "current_lng": tech.get("current_lng"),
             "service_area_center_lat": tech.get("service_area_center_lat"),
             "service_area_center_lng": tech.get("service_area_center_lng"),
+            "service_area_radius_km": radius,
         })
     enriched.sort(key=lambda c: (
         c["dist_km"] is None,
@@ -3474,6 +3479,17 @@ async def _attach_queue_photo_urls(rows: list[dict[str, Any]]) -> list[dict[str,
     return rows
 
 
+def _scheduled_reservation_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        candidate for candidate in candidates
+        if candidate.get("is_available")
+        and candidate.get("is_online")
+        and not candidate.get("is_busy")
+        and candidate.get("skills_match")
+        and candidate.get("within_service_area")
+    ]
+
+
 async def _signed_photo_urls(paths: list[Any]) -> list[str]:
     urls: list[str] = []
     for path in paths:
@@ -3487,6 +3503,15 @@ async def _signed_photo_urls(paths: list[Any]) -> list[str]:
         except RuntimeError:
             pass
     return urls
+
+
+def _mask_customer_service_appointment(payload: dict[str, Any]) -> None:
+    appointment = payload.get("service_appointment")
+    if isinstance(appointment, dict):
+        appointment.pop("reserved_technician_id", None)
+        appointment.pop("reservation_id", None)
+        if appointment.get("status") == "technician_reserved":
+            appointment["status"] = "confirmed_unassigned"
 
 
 def _closeout_collection_items(closeout: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -4464,7 +4489,28 @@ async def provider_confirm_schedule(
     ticket = await require_ticket(job_id)
     if ticket.service_appointment is None or ticket.service_appointment.requested_start is None:
         raise HTTPException(status_code=409, detail="Requested appointment window required")
-    ticket.service_appointment.status = "confirmed_unassigned"
+    requested_end = ticket.service_appointment.requested_end or (
+        ticket.service_appointment.requested_start + timedelta(hours=1)
+    )
+    techs = await store.list_all_technicians_for_ops(org_id=org_id)
+    candidates = _scheduled_reservation_candidates(
+        await _enriched_candidates(job, techs, org_id)
+    )
+    reservation = await store.reserve_scheduled_technician(
+        job_id,
+        org_id=org_id,
+        candidates=candidates,
+        reserved_start=ticket.service_appointment.requested_start,
+        reserved_end=requested_end,
+        created_by=session.get("user", {}).get("id"),
+        note=(payload.note if payload else None),
+    )
+    if reservation is None:
+        raise HTTPException(status_code=409, detail="No eligible technician capacity is available for that appointment window")
+    ticket.service_appointment.status = "technician_reserved"
+    ticket.service_appointment.requested_end = requested_end
+    ticket.service_appointment.reservation_id = reservation.get("id")
+    ticket.service_appointment.reserved_technician_id = reservation.get("technician_id")
     await save(ticket)
     updated = await store.set_job_status(
         job_id, STATUS_SCHEDULED_CONFIRMED, expected_current=STATUS_SCHEDULED_REQUESTED
@@ -4506,6 +4552,9 @@ async def provider_activate_schedule(
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Schedule activation conflicted; refresh the queue.")
+    await store.release_job_reservation(
+        job_id, status="converted", reason="scheduled appointment activated"
+    )
     await store.log_event_raw(job_id, f"scheduled_activated:manual:by={session.get('user', {}).get('id')}")
     await _record_customer_system_message(
         job_id,
@@ -4767,6 +4816,7 @@ async def tracking(ticket_id: UUID) -> dict[str, Any]:
         return {"state": "error", "terminal": False, "assignment": None}
     if status is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    _mask_customer_service_appointment(status)
     return status
 
 
@@ -4798,6 +4848,7 @@ async def tracking_by_token(token: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Not found")
     for _f in ("attempts", "max_attempts", "offers_pending", "offer_expires_at"):
         status.pop(_f, None)
+    _mask_customer_service_appointment(status)
     # Guard booleans the tracking UI consumes instead of re-deriving visibility
     # itself (SPEC §"Guard helpers"). Derived from the operational status so both
     # store backends and legacy jobs carry the same contract — the page reads
@@ -5182,6 +5233,11 @@ async def reschedule_by_token(token: str, payload: RescheduleRequest) -> dict[st
     ticket = await require_ticket(job_id)
     if ticket.urgency != Urgency.SCHEDULED:
         raise HTTPException(status_code=409, detail="Job is not a scheduled appointment")
+    await store.release_job_reservation(
+        job_id,
+        status="released",
+        reason="customer requested a new appointment window",
+    )
     ticket.service_appointment = ServiceAppointment(
         requested_start=payload.requested_start,
         requested_end=requested_end,
