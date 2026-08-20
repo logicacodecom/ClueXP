@@ -5072,3 +5072,41 @@ Remaining known product limitation: provider `/messages` is still a client-side 
 first 40 active/recent jobs. It is acceptable as the first dispatcher inbox surface, but a production
 large-book inbox should become a backend endpoint sorted by unread/help/latest-message state so older
 help requests cannot fall outside the client-side scan window.
+
+---
+
+### 2026-08-20 — Codex: provider messages now surfaces durable customer-help alerts (landed in `d109eb1`)
+
+Continued the messaging product slice by wiring Claude's new provider alert contract into
+provider-web without changing the backend schema or alert semantics.
+
+Commit status: this increment is included in `d109eb1 feat(messaging): durable alert escalation
+platform + dispatcher inbox`, along with the messaging product slice and Claude's alert platform
+work. The remaining dirty worktree items after that commit are unrelated native/package/output
+files plus this handoff update.
+
+Implemented:
+- Added provider-web proxy routes for `GET /api/provider/alerts?status=open`,
+  `POST /api/provider/alerts/{alertId}/ack`, and
+  `POST /api/provider/alerts/{alertId}/resolve`.
+- Provider `/messages` now loads open alerts alongside jobs/history/threads and renders an
+  `Open customer help alerts` strip for `customer_help_request` alerts.
+- The strip links directly to the job, supports acknowledge/resolve actions, and keeps the
+  existing inbox behavior that thread scanning does not mark messages read.
+- Help-request stat now counts durable `customer_help_request` alerts as well as scanned thread
+  markers, so alerts outside the first-40 thread scan still show up.
+
+Verification:
+- `npx tsc --noEmit -p apps/provider-web/tsconfig.json` passed.
+- `npm run build --workspace @cluexp/provider-web` passed with
+  `NODE_OPTIONS=--max-old-space-size=8192`; build output includes the three new alert proxy routes.
+- `uv run pytest apps/intake-web/api/tests/test_alerts.py apps/intake-web/api/tests/test_job_messages.py -q`
+  -> `25 passed, 1 warning` (warning is the existing Pydantic `datetime.utcnow()` deprecation).
+- `git diff --check` on touched provider/alert/message files passed.
+
+Files added/changed by this increment:
+- `apps/provider-web/src/app/api/provider/alerts/route.ts`
+- `apps/provider-web/src/app/api/provider/alerts/[alertId]/ack/route.ts`
+- `apps/provider-web/src/app/api/provider/alerts/[alertId]/resolve/route.ts`
+- `apps/provider-web/src/app/messages/page.tsx`
+- `docs/HANDOFF.md`
