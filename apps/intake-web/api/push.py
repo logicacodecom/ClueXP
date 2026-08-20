@@ -283,6 +283,22 @@ async def _send_one(
         outcome = _transport_failure(exc)
     if outcome.get("error_code") == DEVICE_DEAD_ERROR:
         await _deactivate_device(store, technician_id, device["id"])
+        # Alert (0054): DeviceNotRegistered is a permanent, non-retryable
+        # failure (the token itself is dead, deactivated above) -- worth
+        # surfacing to the dispatcher. Transient statuses (queued/timeout/
+        # rate-limited) are NOT alerted here; poll_push_receipts's normal
+        # retry on the next sweep covers those. Best-effort/job-scoped only.
+        if job_id is not None:
+            try:
+                lifecycle = await store.get_job_lifecycle(job_id)
+                org_id = (lifecycle or {}).get("fulfillment_org_id") or (lifecycle or {}).get("customer_owner_org_id")
+                if org_id:
+                    await store.create_alert(
+                        str(org_id), alert_type="delivery_failure", severity="warning", job_id=job_id,
+                        payload={"channel": "push", "alert_class": alert_class, "error_code": outcome.get("error_code")},
+                    )
+            except Exception:
+                pass
     try:
         updated = await store.record_push_delivery(
             UUID(record["id"]), status=outcome.get("status", "failed"),

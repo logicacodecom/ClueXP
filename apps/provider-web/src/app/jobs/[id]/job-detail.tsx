@@ -13,7 +13,7 @@ import {
   PageHeader,
   StatCard,
 } from "@cluexp/console-ui";
-import { MessageSquare, PhoneCall, RefreshCw, Send, Star } from "lucide-react";
+import { CircleHelp, MessageSquare, PhoneCall, RefreshCw, Send, Star } from "lucide-react";
 import { ProviderActionDialog } from "../../provider-action-dialog";
 
 type PaymentReport = { amount: number; currency: string; method: string } | null;
@@ -111,17 +111,39 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
   const [sendingCustomerTemplate, setSendingCustomerTemplate] = useState<string | null>(null);
   const [startingCall, setStartingCall] = useState(false);
 
+  const loadMessageThreads = useCallback(async () => {
+    const [messagesRes, customerMessagesRes] = await Promise.all([
+      fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=operations`, { cache: "no-store" }),
+      fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=customer`, { cache: "no-store" }),
+    ]);
+    const operationsThread = messagesRes.ok ? ((await messagesRes.json()) as MessageThreadResponse) : {};
+    const customerThread = customerMessagesRes.ok ? ((await customerMessagesRes.json()) as MessageThreadResponse) : {};
+    setMessages(operationsThread.messages ?? []);
+    setCustomerMessages(customerThread.messages ?? []);
+    setOperationsUnread(operationsThread.unread_count ?? 0);
+    setCustomerUnread(customerThread.unread_count ?? 0);
+    if ((operationsThread.unread_count ?? 0) > 0) {
+      void fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages/read?channel=operations`, { method: "POST" })
+        .then(() => setOperationsUnread(0))
+        .catch(() => undefined);
+    }
+    if ((customerThread.unread_count ?? 0) > 0) {
+      void fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages/read?channel=customer`, { method: "POST" })
+        .then(() => setCustomerUnread(0))
+        .catch(() => undefined);
+    }
+  }, [jobId]);
+
   const load = useCallback(async () => {
     setState("loading");
     setError(null);
     try {
-      const [jobsRes, histRes, tlRes, notesRes, messagesRes, customerMessagesRes] = await Promise.all([
+      const [jobsRes, histRes, tlRes, notesRes] = await Promise.all([
         fetch("/api/provider/jobs", { cache: "no-store" }),
         fetch("/api/provider/jobs/history", { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/timeline`, { cache: "no-store" }),
         fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/notes`, { cache: "no-store" }),
-        fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=operations`, { cache: "no-store" }),
-        fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages?channel=customer`, { cache: "no-store" }),
+        loadMessageThreads(),
       ]);
       // The timeline endpoint is tenant-gated: a 404 means the job is not this org's.
       if (tlRes.status === 404) { setState("notfound"); return; }
@@ -131,28 +153,12 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
       setHistory(historyJobs.find((j) => j.id === jobId) ?? null);
       setTimeline(tlRes.ok ? ((await tlRes.json()) as TimelineEvent[]) : []);
       setNotes(notesRes.ok ? ((await notesRes.json()) as Note[]) : []);
-      const operationsThread = messagesRes.ok ? ((await messagesRes.json()) as MessageThreadResponse) : {};
-      const customerThread = customerMessagesRes.ok ? ((await customerMessagesRes.json()) as MessageThreadResponse) : {};
-      setMessages(operationsThread.messages ?? []);
-      setCustomerMessages(customerThread.messages ?? []);
-      setOperationsUnread(operationsThread.unread_count ?? 0);
-      setCustomerUnread(customerThread.unread_count ?? 0);
-      if ((operationsThread.unread_count ?? 0) > 0) {
-        void fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages/read?channel=operations`, { method: "POST" })
-          .then(() => setOperationsUnread(0))
-          .catch(() => undefined);
-      }
-      if ((customerThread.unread_count ?? 0) > 0) {
-        void fetch(`/api/provider/jobs/${encodeURIComponent(jobId)}/messages/read?channel=customer`, { method: "POST" })
-          .then(() => setCustomerUnread(0))
-          .catch(() => undefined);
-      }
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load the job");
       setState("error");
     }
-  }, [jobId]);
+  }, [jobId, loadMessageThreads]);
 
   async function confirmReceipt(reason: string) {
     setBusy(true);
@@ -248,6 +254,18 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
   }
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const refreshVisibleThreads = () => {
+      if (document.visibilityState === "visible") void loadMessageThreads();
+    };
+    const interval = window.setInterval(refreshVisibleThreads, 15_000);
+    document.addEventListener("visibilitychange", refreshVisibleThreads);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshVisibleThreads);
+    };
+  }, [loadMessageThreads]);
 
   if (state === "notfound") {
     return (
@@ -378,8 +396,8 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
         <Card>
           <CardHeader>
             <div>
-              <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Customer messages</CardTitle>
-              <CardDescription>Customer-visible template thread. Operations and internal notes are hidden from customers.</CardDescription>
+              <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Customer &amp; dispatch messages</CardTitle>
+              <CardDescription>Customer-visible template thread, including customer help requests. Internal notes stay hidden.</CardDescription>
             </div>
             <div className="flex gap-2">
               {customerUnread > 0 ? <Badge variant="info">{customerUnread} unread</Badge> : null}
@@ -395,10 +413,14 @@ export function JobDetailView({ jobId, kicker = "Job detail" }: { jobId: string;
               <ul className="max-h-80 space-y-3 overflow-y-auto pr-1">
                 {customerMessages.map((item) => {
                   const fromProvider = item.sender_type === "provider_admin" || item.sender_type === "dispatcher";
+                  const isCustomerHelpRequest = item.sender_type === "customer" && item.template_code === "need_more_details";
                   return (
-                    <li key={item.id} className={`rounded-md border p-3 ${fromProvider ? "border-primary/35 bg-primary/10" : "border-border bg-secondary/20"}`}>
+                    <li key={item.id} className={`rounded-md border p-3 ${isCustomerHelpRequest ? "border-warn/50 bg-warn/10" : fromProvider ? "border-primary/35 bg-primary/10" : "border-border bg-secondary/20"}`}>
                       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <span className="font-semibold text-foreground">{messageAuthor(item.sender_type)}</span>
+                        <span className="flex items-center gap-2 font-semibold text-foreground">
+                          {messageAuthor(item.sender_type)}
+                          {isCustomerHelpRequest ? <Badge variant="warn"><CircleHelp className="size-3" />Dispatch help requested</Badge> : null}
+                        </span>
                         <span>{item.created_at ? new Date(item.created_at).toLocaleString() : ""}</span>
                       </div>
                       <p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.body || customerTemplateLabel(item.template_code)}</p>

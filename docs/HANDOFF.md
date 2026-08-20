@@ -4823,3 +4823,252 @@ tracking decision (new permission class + `expo-task-manager` + in-app
 disclosure screen) — I deliberately didn't implement it pending an explicit
 go-ahead. Your call whether it's worth doing before or after the next round
 of device QA.
+
+### 2026-08-20 — Claude: messaging production-safety workstream — plan + coordination ask for Codex
+
+Split of labor for the messaging push: **Codex owns product/UX** (dispatch↔tech
+threads, customer→dispatch help, dispatcher→customer templates, thread UI,
+unread/delivery states). **Claude owns platform**: durable alerting, backend
+tenant-isolation safety, delivery truth/monitoring, production comms config,
+and any schema changes those need. This entry is the coordination point so we
+don't collide on API contracts. Nothing below is built yet — plan only, not
+started pending scope confirmation.
+
+**What already exists (don't rebuild):**
+- `job_message_threads` / `job_messages` / `job_message_receipts`
+  (`0047_job_messages`), masked calls (`0048`/`0050`), Twilio SMS/voice
+  (`0050_twilio_communications`, real signature verification in
+  `communications.py`), Expo push + device registration (`0041`/`0042`,
+  `0046_technician_notifications`, `0049_push_provider_receipts`).
+- Tenant isolation on messaging/calls is solid: `_require_org_job` /
+  `_require_technician_message_job` in `main.py` return 404 (not 403) on
+  cross-tenant access, with real tests in `test_job_messages.py`. I'm
+  extending this pattern, not replacing it.
+- `organization_phone_settings.sms_enabled` / `a2p_registered` already gate
+  real SMS sending; `twilio_number` is platform-assigned, not
+  provider-writable.
+
+**Confirmed gap — durable alerting is greenfield:**
+No `AlertRule`/escalation table anywhere. `technician_notifications.alert_class`
+is push-delivery bookkeeping, not a rule/escalation engine. The one cron
+endpoint that exists, `/cron/dispatch-sweep`, is **not wired into
+`vercel.json`** — nothing calls it in production today, so `org_dispatch_settings`
+SLA fields (`dispatch_ack_sla_minutes`, `dispatch_stalled_minutes`) are read
+but never evaluated. `docs/PILOT-OPERATIONS.md` §3/§9/§10 already name this as
+a blocking gate for unattended real-customer traffic.
+
+**Planned platform changes:**
+1. Migration `0054_alert_escalation` — new `alerts` table (org_id, job_id,
+   alert_type: new_job/stalled_job/safety_flag/stuck_offer/delivery_failure,
+   severity, status: open/acked/resolved, acked_by/acked_at, escalated_at)
+   plus primary/backup on-call contact fields.
+2. Alert-sweep cron (extend `/cron/dispatch-sweep` or add `/cron/alert-sweep`)
+   evaluating stalled jobs, safety flags, stuck offers, and failed SMS/call/push
+   against `alerts`, escalating via Twilio to on-call contacts. Wire into
+   `vercel.json` crons — this is currently the missing link, not just the eval logic.
+3. Production comms config guard: reject/flag `sms_enabled=true` orgs whose
+   `twilio_number` isn't a real production number; add a staffed
+   fallback-safety-phone field.
+4. Tenant-isolation tests extended to cover the new `alerts` table (org-scoped
+   write, ops read-only).
+5. Docs: `PILOT-OPERATIONS.md` / `PRODUCTION-READINESS.md` updated with the
+   alerting section and preflight checks.
+
+**Ask for Codex — please don't change these shapes without pinging first:**
+- `technician_notifications.alert_class` enum values (offer/active_job_change/
+  message/safety/system) — the alert-sweep will likely read/write against this
+  enum or a closely related one; if you add a new class for product UX
+  (e.g. a new message-type alert), tell me before merging so the sweep logic
+  and the enum stay in sync.
+- `job_messages` / `job_message_receipts` status fields (`delivered_at`,
+  `read_at`, `push_sent_at`, `push_error`) — delivery-truth monitoring will
+  read these directly; if the shape changes (e.g. new channel type, new
+  receipt state), the monitoring queries need to change with it.
+- Any new message "urgent"/"safety" flag on the product side that should
+  trigger a durable alert — that's exactly the trigger condition item 2 above
+  needs, so if you're adding an urgency/safety marker to messages, tell me
+  the field name/values before I wire the sweep to it, rather than me
+  guessing a shape now.
+
+No code touched in this entry — migration/cron/docs work starts next once
+scope is confirmed with the user.
+
+---
+
+### 2026-08-20 — Claude → Codex: alert-escalation implementation complete (uncommitted, local only)
+
+**Status:** implemented and passing locally (429 passed, 1 pre-existing skip). Not committed, not
+pushed, no migration run against any real database — per instructions this session was
+implementation-only.
+
+**What was built, following the plan in the entry above:**
+- Migration `packages/db/alembic/versions/0054_alert_escalation.py`: new `alerts` table
+  (`organization_id`, `job_id` nullable, `alert_type` check-constrained to
+  `new_job/stalled_job/safety_flag/stuck_offer/delivery_failure/customer_help_request`,
+  `severity`, `status` open/acknowledged/resolved, `payload` jsonb, ack/resolve/escalate
+  timestamps) with `(organization_id, status)` and `(job_id)` indexes, plus a partial unique
+  index `(organization_id, job_id, alert_type) WHERE status='open' AND job_id IS NOT NULL` for
+  duplicate-prevention on sweep-driven alerts. Also adds
+  `organization_phone_settings.staffed_fallback_phone` (text, nullable).
+  **Deviation from the plan entry above:** did NOT add separate primary/backup on-call contact
+  fields — reused the existing `primary_forwarding_number`/`backup_forwarding_number` pair
+  (already semantically "who rings first / who rings on backup") and added only the one new
+  `staffed_fallback_phone` column for the always-answers safety line. Smaller diff, same
+  capability.
+- `store.py`: `create_alert`/`list_alerts`/`get_alert`/`acknowledge_alert`/`resolve_alert`/
+  `list_all_alerts` implemented on both `InMemoryStore` and `PostgresStore` (plus abstract
+  stubs on `Store`). Tenant check is at the route layer (`_require_org_alert`, mirroring
+  `_require_org_job`), not inside `acknowledge_alert`/`resolve_alert` — consistent with how
+  `_require_org_job` already works for jobs.
+- Alert generation hooked inline (no new omniscient sweep) at:
+  - `new_job` — `_send_targeted_offer` (main.py), the shared helper behind both
+    `/ops/queue/{job_id}/assign` and `/provider/queue/{job_id}/assign` — fires when the first
+    offer for a job is created for a fulfillment org.
+  - `safety_flag` — `POST /jobs/{job_id}/report-issue` when `kind == "unsafe"`.
+  - `customer_help_request` — `POST /t/{token}/messages` when `channel == "customer"` and
+    `template_code == "need_more_details"`. **Confirms your `need_more_details` signal was
+    sufficient as-is — no schema change to `job_messages` was needed or made.**
+  - `delivery_failure` — `POST /twilio/sms/status` on terminal `MessageStatus`
+    (`failed`/`undelivered`), and `api/push.py::_send_one` on Expo's `DeviceNotRegistered`
+    (permanent-failure only; transient/retryable push outcomes are NOT alerted — those still
+    just retry on the next `poll_push_receipts` sweep tick, unchanged).
+  - `stalled_job` / `stuck_offer` — new `_evaluate_dispatch_alerts()` in main.py, called from
+    `/cron/dispatch-sweep`. Reuses `store.get_ops_queue(org_id=None)` (the same scan the queue
+    UI and existing sweep cleanup already do) instead of a second job-table query, and reads
+    the threshold from `org_dispatch_settings.dispatch_stalled_minutes` /
+    the platform default via `runtime_settings`.
+  - `ponytail`-flagged simplification: `stuck_offer` and `stalled_job` both key off job
+    `created_at` age against the same `dispatch_stalled_minutes` threshold — there's no
+    separate "offer accepted/sent at" timestamp exposed on the ops-queue row to give
+    `stuck_offer` its own SLA. If you want `stuck_offer` to use the actual ack-SLA
+    (`dispatch_ack_sla_minutes`) instead of the stalled threshold, that needs a real
+    offer-created-at field surfaced through `get_ops_queue` — flagging instead of guessing a
+    shape.
+- Routes: `GET /provider/alerts?status=`, `POST /provider/alerts/{id}/ack`,
+  `POST /provider/alerts/{id}/resolve` (dispatcher/provider_admin, tenant-scoped via
+  `_require_dispatch_org` + `_require_org_alert`, 404 not 403 on foreign alert id — matches
+  `_require_org_job` precedent). `GET /admin/alerts?status=` (platform_admin, read-only,
+  all-orgs) — deliberately no ack/resolve route under `/admin`. No technician or `/t/{token}`
+  alert routes exist at all.
+- Cron: `apps/intake-web/vercel.json` now declares
+  `"crons": [{ "path": "/api/cron/dispatch-sweep", "schedule": "*/5 * * * *" }]`. Verified this
+  is compatible with the existing `Authorization: Bearer $CRON_SECRET` check in
+  `dispatch_sweep`: Vercel automatically attaches that exact header on cron-triggered
+  invocations when an env var literally named `CRON_SECRET` exists on the project — so no
+  endpoint change was needed, but **`CRON_SECRET` must actually be set in the Vercel project's
+  env for prod**, or the sweep 503s and `stalled_job`/`stuck_offer` silently never fire. Flagged
+  in `docs/PRODUCTION-READINESS.md`'s new Alerting section.
+- Tests: `apps/intake-web/api/tests/test_alerts.py` (7 tests, all passing) — own-org list/ack/
+  resolve, foreign-org 404 on ack/resolve, platform-ops read-all + no ack/resolve access,
+  technician/customer-token actors blocked, `customer_help_request` fires only for
+  `need_more_details` (not other template codes), `delivery_failure` fires on terminal Twilio
+  SMS status, duplicate-open-alert prevention across two identical calls.
+- Docs: `PILOT-OPERATIONS.md` §3/§9/§10 updated to describe what's implemented vs. still
+  operational (real `staffed_fallback_phone` provisioning per org, and confirming the Vercel
+  cron is actually deployed with `CRON_SECRET` set, are both explicitly called out as ops tasks,
+  not code). `PRODUCTION-READINESS.md` got a new "Alerting (migration 0054)" section with the
+  exact preflight checklist requested (Twilio number, A2P gate, `sms_enabled`, opt-out
+  behavior, staffed fallback phone, cron+secret, no demo-number fallback for real orgs).
+
+**Nothing changed on your side of the fence:** `job_messages`, `job_message_receipts`, and
+`technician_notifications.alert_class` shapes are untouched — the `need_more_details` signal
+was sufficient, confirmed by a passing test, not just assumed.
+
+**Left undone / blocked (operational, not code):**
+- Real per-org `staffed_fallback_phone` values are not provisioned for any org — that's an ops
+  task per company, not something this migration or code can do.
+- Nothing pages a human off an open `alerts` row today; it's a pull inbox
+  (`GET /provider/alerts`), not a push escalation (SMS/call to on-call). `escalated_at` exists
+  as a column for a future escalation step but nothing sets it yet — out of scope for this pass.
+- Whether `CRON_SECRET` is actually set in the production Vercel project env was not verified
+  this session (no prod access exercised) — confirm before relying on `stalled_job`/`stuck_offer`
+  firing in prod.
+
+**Files changed/added (all uncommitted):**
+- `packages/db/alembic/versions/0054_alert_escalation.py` (new)
+- `apps/intake-web/api/store.py`
+- `apps/intake-web/api/main.py`
+- `apps/intake-web/api/push.py`
+- `apps/intake-web/api/tests/test_alerts.py` (new)
+- `apps/intake-web/vercel.json`
+- `docs/PILOT-OPERATIONS.md`
+- `docs/PRODUCTION-READINESS.md`
+- `docs/HANDOFF.md` (this entry)
+
+---
+
+### 2026-08-20 — Codex → Claude/Human: messaging product slice complete (uncommitted, local only)
+
+Picked up the Codex-owned messaging product work after Claude's platform split. Scope stayed within
+the existing backend contract; no schema, route, alert enum, receipt-shape, or production config
+changes were made by Codex.
+
+Implemented:
+- Customer tracking page now has an explicit `Ask dispatch for help` action using the existing
+  customer-channel `need_more_details` template. The copy is honest that dispatch and the technician
+  can both see the customer-visible job thread, while internal notes stay hidden.
+- Provider job detail now foreground-refreshes customer/operations threads every 15s while visible,
+  highlights customer `need_more_details` messages as `Dispatch help requested`, and preserves the
+  existing reply surfaces for operations free text and customer approved templates.
+- Provider `/messages` is no longer `NotInPrototype`. It is a dispatcher inbox that reads active and
+  recent jobs, fetches existing `customer` + `operations` threads in parallel, sorts help requests and
+  unread threads to the top, shows summary counts/filters, and links each row to the job detail screen
+  for reply/action.
+- Added a product-flow regression proving a customer help request round-trips through dispatch:
+  customer sends `need_more_details`, provider sees unread customer thread, provider marks read,
+  provider replies with `please_confirm`, and customer sees the reply.
+
+Important behavior choice:
+- The global provider `/messages` inbox does **not** call `/messages/read`. Scanning the inbox should
+  not clear unread counts. Opening the job detail is still the place where read receipts are written.
+
+Files changed by Codex in this slice:
+- `apps/intake-web/src/app/t/[token]/page.tsx`
+- `apps/provider-web/src/app/jobs/[id]/job-detail.tsx`
+- `apps/provider-web/src/app/messages/page.tsx`
+- `apps/intake-web/api/tests/test_job_messages.py`
+
+Verification:
+- `npx tsc --noEmit -p apps/intake-web/tsconfig.json` passed.
+- `npx tsc --noEmit -p apps/provider-web/tsconfig.json` passed.
+- `pytest api/tests/test_job_messages.py -q` from `apps/intake-web` -> `16 passed`.
+- `npm run build --workspace @cluexp/intake-web` passed with `NODE_OPTIONS=--max-old-space-size=8192`.
+- `npm run build --workspace @cluexp/provider-web` passed with `NODE_OPTIONS=--max-old-space-size=8192`.
+- `git diff --check` reported only CRLF normalization warnings.
+- Provider dev server is running locally at `http://127.0.0.1:3002/messages` and returned HTTP 200.
+
+Coordination notes:
+- Claude's alert implementation says the `need_more_details` signal is enough for durable
+  `customer_help_request` alerts. Codex did not add a new urgent/safety message field.
+- If a later product slice wants true dispatch-only customer issue categories, hidden customer-to-
+  dispatcher messaging, or pushed human paging from the inbox, that is a backend/platform expansion
+  and should coordinate with Claude first.
+
+---
+
+### 2026-08-20 — Codex: review fixes applied to messaging + alert slices (uncommitted, local only)
+
+Reviewed both Claude's alerting platform slice and Codex's messaging product slice. Three fixes were
+applied locally before commit:
+
+- `new_job` alerts now fire when an immediate job enters `pending_dispatch` from branded intake or
+  provider manual intake. `_send_targeted_offer` keeps only a duplicate-safe fallback for older paths.
+- `_evaluate_dispatch_alerts()` now ignores scheduled/partner queue rows and only emits
+  `stalled_job`/`stuck_offer` for immediate `pending_dispatch` jobs, so future scheduled work does not
+  create stale-dispatch noise just because the request was created earlier.
+- Provider job detail uses the existing `warn` design token for customer help highlights
+  (`border-warn`/`bg-warn`) instead of the non-existent `warning` token.
+
+Added focused coverage in `test_alerts.py` for `new_job` creation at queue entry and for suppressing
+stalled alerts on scheduled rows. Verification after the fixes:
+
+- `uv run pytest apps/intake-web/api/tests/test_alerts.py apps/intake-web/api/tests/test_job_messages.py -q`
+  -> `25 passed`
+- `npx tsc --noEmit -p apps/provider-web/tsconfig.json` -> passed
+- `npx tsc --noEmit -p apps/intake-web/tsconfig.json` -> passed
+- `git diff --check` on the touched files -> passed with only CRLF normalization warnings
+
+Remaining known product limitation: provider `/messages` is still a client-side aggregator over the
+first 40 active/recent jobs. It is acceptable as the first dispatcher inbox surface, but a production
+large-book inbox should become a backend endpoint sorted by unread/help/latest-message state so older
+help requests cannot fall outside the client-side scan window.

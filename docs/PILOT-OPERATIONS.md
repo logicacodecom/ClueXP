@@ -89,9 +89,13 @@ Do not enable a company channel for real customers until all of these are true:
 - Primary and backup dispatchers are assigned for the complete pilot window; the staffed coverage
   window, acknowledgement target, stalled-job escalation threshold and after-hours fallback are
   recorded in the private evidence log.
-- The new/stalled/safety-job alert path has been tested. Manual polling is acceptable only for a
-  time-boxed, continuously staffed internal pilot; do not enable unattended real-customer traffic
-  without production alert delivery and escalation.
+- The new/stalled/safety-job alert path has been tested. As of migration `0054_alert_escalation`,
+  `alerts` is a real table and `GET/POST /provider/alerts*` is a real dispatcher inbox (see §9) —
+  but the cron that generates the time-threshold alert types (`stalled_job`, `stuck_offer`) only
+  fires if `CRON_SECRET` is set in the production secret manager AND the Vercel cron in
+  `apps/intake-web/vercel.json` is actually deployed and firing. Confirm both before treating
+  alerting as unattended-ready; manual polling is still the fallback for a time-boxed, continuously
+  staffed internal pilot.
 - Rollback owners have access to Vercel and the production database.
 - Privacy/security review is complete: see [`PRIVACY-SECURITY-REVIEW.md`](PRIVACY-SECURITY-REVIEW.md).
 - Production readiness checklist is complete: see [`PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md).
@@ -392,7 +396,8 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 | Area | Status |
 |---|---|
 | Real payment | None — demo charge/finalize routes are removed (`410`) |
-| SMS / email / push | Twilio transactional SMS and Expo push foundations exist; provider configuration, monitoring, alert ownership, and native device acceptance still block unattended real-customer widening. Managed email/newsletters are not built. |
+| SMS / email / push | Twilio transactional SMS and Expo push foundations exist; provider configuration, monitoring, and native device acceptance still block unattended real-customer widening. Managed email/newsletters are not built. |
+| Dispatcher alert inbox | Implemented (migration `0054`): `alerts` table, `GET/POST /provider/alerts*` (dispatcher/provider_admin, tenant-scoped), read-only `GET /admin/alerts` for platform ops. `new_job`, `safety_flag`, `customer_help_request`, and `delivery_failure` fire inline off their existing mutation paths; `stalled_job`/`stuck_offer` are evaluated in `/cron/dispatch-sweep`. **Operational, not code, gaps remain:** per-org `staffed_fallback_phone` is not provisioned for any real org yet, nothing pages a human off an `alerts` row (it is a pull inbox, not a push escalation), and the sweep only actually runs if the Vercel cron is deployed with `CRON_SECRET` set. |
 | Job messaging / masked call | Job messaging, delivery records, masked calls, and CRM calls are implemented; production configuration, monitoring, and deployed browser acceptance remain. Attachments and managed campaign/email messaging are not built. |
 | Live map / ETA | Coarse, clearly-labelled estimate (no continuous tracking) |
 | Technician GPS | Foreground/manual — PWA must be open |

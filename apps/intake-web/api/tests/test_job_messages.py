@@ -295,6 +295,56 @@ def test_customer_read_receipts_are_channel_scoped():
     assert client.get(f"/t/{token}/messages").json()["unread_count"] == 0
 
 
+def test_customer_help_request_round_trips_through_dispatch():
+    """Product flow: tracking customer asks dispatch for help, dispatch reads it,
+    replies with an approved customer template, and the customer sees that reply."""
+    client = TestClient(app)
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    _, provider_h = _register_dispatcher(org)
+    jid = _seed_job(tid, org)
+    token = app_store._tokens[jid]
+
+    requested = client.post(
+        f"/t/{token}/messages",
+        json={
+            "channel": "customer",
+            "template_code": "need_more_details",
+            "client_message_id": "customer_help_request_123",
+        },
+    )
+    assert requested.status_code == 200, requested.text
+    assert requested.json()["message"]["sender_type"] == "customer"
+
+    dispatch_thread = client.get(
+        f"/provider/jobs/{jid}/messages?channel=customer", headers=provider_h)
+    assert dispatch_thread.status_code == 200, dispatch_thread.text
+    assert dispatch_thread.json()["unread_count"] == 1
+    assert dispatch_thread.json()["messages"][-1]["template_code"] == "need_more_details"
+
+    marked = client.post(
+        f"/provider/jobs/{jid}/messages/read?channel=customer", headers=provider_h)
+    assert marked.status_code == 200, marked.text
+    assert marked.json()["read_count"] == 1
+
+    replied = client.post(
+        f"/provider/jobs/{jid}/messages",
+        headers=provider_h,
+        json={
+            "channel": "customer",
+            "template_code": "please_confirm",
+            "client_message_id": "dispatch_help_reply_123",
+        },
+    )
+    assert replied.status_code == 200, replied.text
+    assert replied.json()["message"]["sender_type"] == "dispatcher"
+
+    customer_thread = client.get(f"/t/{token}/messages")
+    assert customer_thread.status_code == 200, customer_thread.text
+    assert customer_thread.json()["unread_count"] == 1
+    assert customer_thread.json()["messages"][-1]["template_code"] == "please_confirm"
+
+
 def test_masked_call_sessions_are_scoped_and_honest_when_provider_missing():
     client = TestClient(app)
     org_a, org_b = str(uuid4()), str(uuid4())

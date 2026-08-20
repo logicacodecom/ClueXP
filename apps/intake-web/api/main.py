@@ -2981,6 +2981,29 @@ async def channel_info(slug: str) -> dict[str, Any]:
     }
 
 
+async def _create_alert_best_effort(
+    organization_id: str | None,
+    *,
+    alert_type: str,
+    severity: str,
+    job_id: UUID,
+    payload: dict[str, Any] | None = None,
+    log_name: str = "alert_create_failed",
+) -> None:
+    if not organization_id:
+        return
+    try:
+        await store.create_alert(
+            str(organization_id),
+            alert_type=alert_type,
+            severity=severity,
+            job_id=job_id,
+            payload=payload or {},
+        )
+    except Exception:
+        logger.exception(log_name, extra={"job_id": str(job_id), "alert_type": alert_type})
+
+
 @app.post("/tickets", response_model=TicketEnvelope)
 async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
@@ -3013,6 +3036,14 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
         # here — the company's dispatcher assigns via POST /provider/queue/{id}/assign.
         await store.set_job_status(ticket.ticket_id, "pending_dispatch")
         await log_transition(ticket, "dispatch_cutover")
+        await _create_alert_best_effort(
+            origin.get("customer_owner_org_id") or origin.get("origin_org_id"),
+            alert_type="new_job",
+            severity="info",
+            job_id=ticket.ticket_id,
+            payload={"source": "branded_intake"},
+            log_name="alert_new_job_failed",
+        )
         token = await store.get_tracking_token(ticket.ticket_id)
         if token:
             env.tracking_token = token
@@ -3084,6 +3115,14 @@ async def create_provider_request(
         )
     else:
         await store.set_job_status(ticket.ticket_id, "pending_dispatch")
+        await _create_alert_best_effort(
+            origin.get("origin_org_id") or origin.get("customer_owner_org_id"),
+            alert_type="new_job",
+            severity="info",
+            job_id=ticket.ticket_id,
+            payload={"source": payload.source_channel or "manual"},
+            log_name="alert_new_job_failed",
+        )
     source = payload.source_channel or "manual"
     await log_transition(ticket, f"manual_intake_created:{source}")
     return await envelope(ticket)
@@ -3356,6 +3395,61 @@ async def create_offers(ticket_id: UUID) -> None:
     )
 
 
+async def _evaluate_dispatch_alerts() -> dict[str, int]:
+    """Alert (0054): stalled_job / stuck_offer are threshold-based, so they need
+    the sweep (unlike new_job/safety_flag/customer_help_request/delivery_failure,
+    which fire inline at their own mutation). Reuses the dispatch queue's own
+    scan (get_ops_queue) instead of a second job-table query.
+
+    ponytail: no separate offer-age field to key stuck_offer off of, so both
+    checks use the job's created_at age against the same org-configured
+    stalled_minutes threshold. Upgrade to a real offer-accepted-at timestamp
+    if stuck_offer needs its own SLA distinct from stalled_job.
+    """
+    counts = {"stalled_job": 0, "stuck_offer": 0}
+    jobs = await store.get_ops_queue(org_id=None)
+    now_dt = datetime.now(tz=timezone.utc)
+    settings_cache: dict[str, int] = {}
+    for job in jobs:
+        # Scheduled/partner rows also appear in the provider queue, but their
+        # age is not a dispatch-stall signal. Alert only on immediate jobs that
+        # are actually waiting in the dispatch ladder.
+        if job.get("status") != "pending_dispatch":
+            continue
+        org_id = job.get("fulfillment_org_id") or job.get("customer_owner_org_id")
+        if not org_id:
+            continue
+        org_id = str(org_id)
+        created_at = job.get("created_at")
+        if not created_at:
+            continue
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_minutes = (now_dt - created_at).total_seconds() / 60
+        if org_id not in settings_cache:
+            override = await store.get_organization_setting(org_id, "dispatch_stalled_minutes")
+            platform_default = await runtime_settings.resolve(store, "dispatch_stalled_minutes")
+            settings_cache[org_id] = int(override["value"]) if override else int(platform_default)
+        threshold = settings_cache[org_id]
+        if age_minutes < threshold:
+            continue
+        alert_type = "stuck_offer" if job.get("offer_active") else "stalled_job"
+        try:
+            await store.create_alert(
+                org_id, alert_type=alert_type, severity="warning", job_id=UUID(str(job["id"])),
+                payload={"age_minutes": int(age_minutes), "status": job.get("status")},
+            )
+            counts[alert_type] += 1
+        except Exception:
+            logger.exception("alert_dispatch_sweep_failed", extra={"job_id": job.get("id"), "alert_type": alert_type})
+    return counts
+
+
 @app.api_route("/cron/dispatch-sweep", methods=["GET", "POST"])
 async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     """Cleanup-only sweep — no re-dispatch. Secret-protected via
@@ -3404,12 +3498,18 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     except Exception:
         logger.exception("push_receipt_sweep_failed")
         receipts = {"checked": 0, "delivered": 0, "failed": 0, "devices_deactivated": 0}
+    try:
+        alert_counts = await _evaluate_dispatch_alerts()
+    except Exception:
+        logger.exception("dispatch_alert_sweep_failed")
+        alert_counts = {"stalled_job": 0, "stuck_offer": 0}
     return {
         "expired_offers": expired,
         "auto_closed": auto_closed,
         "activated_scheduled": len(activated_scheduled),
         "signed_off_technicians": len(signed_off),
         "push_receipts": receipts,
+        "alerts": alert_counts,
     }
 
 
@@ -3680,6 +3780,18 @@ async def _send_targeted_offer(
     if override_reason:
         audit += f":override={override_reason[:100]}"
     await store.log_event_raw(job_id, audit)
+    # Alert (0054): new_job is created when a job first enters pending_dispatch.
+    # This duplicate-safe fallback covers older/manual paths that might have
+    # sent an offer before the queue-entry alert existed.
+    if dispatch_org_id:
+        await _create_alert_best_effort(
+            dispatch_org_id,
+            alert_type="new_job",
+            severity="info",
+            job_id=job_id,
+            payload={"offer_id": offer.get("id"), "source": "offer_fallback"},
+            log_name="alert_new_job_failed",
+        )
     # Best-effort: a new offer is exactly ADR-0001 §6's "critical alert" class.
     # Never let a push failure block a real offer — notify_technician already
     # swallows per-device send errors; this guards the store call itself too.
@@ -5154,6 +5266,17 @@ async def customer_send_job_message(token: str, payload: JobMessageRequest) -> d
             "message": "This client_message_id was already used with a different message.",
         })
     await _notify_technician_message(job_id, row)
+    if template_code == "need_more_details":
+        lifecycle = await store.get_job_lifecycle(job_id)
+        org_id = (lifecycle or {}).get("fulfillment_org_id") or (lifecycle or {}).get("customer_owner_org_id")
+        await _create_alert_best_effort(
+            str(org_id) if org_id else None,
+            alert_type="customer_help_request",
+            severity="warning",
+            job_id=job_id,
+            payload={"template_code": template_code},
+            log_name="alert_customer_help_request_failed",
+        )
     return {"message": _public_message(row)}
 
 
@@ -6355,6 +6478,15 @@ async def twilio_sms_status(request: Request) -> dict[str, Any]:
     )
     if not row:
         raise HTTPException(status_code=404, detail="SMS delivery not found")
+    if row.get("provider_status") in {"failed", "undelivered"} and row.get("organization_id"):
+        try:
+            await store.create_alert(
+                str(row["organization_id"]), alert_type="delivery_failure", severity="warning",
+                job_id=row.get("job_id"),
+                payload={"channel": "sms", "purpose": row.get("purpose"), "error_code": row.get("error_code")},
+            )
+        except Exception:
+            logger.exception("alert_delivery_failure_failed", extra={"provider_message_sid": sid})
     return {"status": "ok"}
 
 
@@ -6556,6 +6688,16 @@ async def report_issue(
                 "message": "A mutation with this client_mutation_id is still being processed.",
             })
     await store.log_event_raw(job_id, f"tech_issue:{kind}:by={tech['id']}:{reason}")
+    if kind == "unsafe":
+        org_id = lifecycle.get("fulfillment_org_id") or lifecycle.get("customer_owner_org_id")
+        if org_id:
+            try:
+                await store.create_alert(
+                    str(org_id), alert_type="safety_flag", severity="critical", job_id=job_id,
+                    payload={"kind": kind},
+                )
+            except Exception:
+                logger.exception("alert_safety_flag_failed", extra={"job_id": str(job_id)})
     result = {"reported": True, "kind": kind}
     if cmid:
         await store.complete_technician_mutation(
@@ -6814,6 +6956,65 @@ async def _require_org_job(org_id: str, job_id: UUID) -> dict[str, Any]:
     if org_id not in owned:
         raise HTTPException(status_code=404, detail="Job not found in your organization")
     return lifecycle
+
+
+# --- alerts (0054): dispatcher/provider_admin escalation inbox ---
+
+@app.get("/provider/alerts")
+async def provider_list_alerts(
+    status: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """The company's own alert inbox, optionally filtered by status. Scoped to
+    session.active_organization_id — no cross-tenant leak vector by construction."""
+    org_id = _require_dispatch_org(session)
+    if status is not None and status not in {"open", "acknowledged", "resolved"}:
+        raise HTTPException(status_code=422, detail="status must be one of open, acknowledged, resolved")
+    return {"alerts": await store.list_alerts(org_id, status=status)}
+
+
+async def _require_org_alert(org_id: str, alert_id: UUID) -> dict[str, Any]:
+    """Matches _require_org_job precedent: 404 (not 403) on a foreign or
+    missing alert, no cross-tenant existence leak."""
+    alert = await store.get_alert(alert_id)
+    if alert is None or str(alert.get("organization_id")) != str(org_id):
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return alert
+
+
+@app.post("/provider/alerts/{alert_id}/ack")
+async def provider_ack_alert(
+    alert_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    await _require_org_alert(org_id, alert_id)
+    actor_id = session.get("user", {}).get("id")
+    updated = await store.acknowledge_alert(alert_id, actor_id)
+    return {"alert": updated}
+
+
+@app.post("/provider/alerts/{alert_id}/resolve")
+async def provider_resolve_alert(
+    alert_id: UUID, session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    org_id = _require_dispatch_org(session)
+    await _require_org_alert(org_id, alert_id)
+    updated = await store.resolve_alert(alert_id)
+    return {"alert": updated}
+
+
+@app.get("/admin/alerts")
+async def admin_list_alerts(
+    status: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Platform ops: read-only view of alerts across every organization. No
+    ack/resolve capability here — ops observes, the owning company's own
+    dispatcher/provider_admin acts on their alerts."""
+    require_any_role(session, {"platform_admin"})
+    if status is not None and status not in {"open", "acknowledged", "resolved"}:
+        raise HTTPException(status_code=422, detail="status must be one of open, acknowledged, resolved")
+    return {"alerts": await store.list_all_alerts(status=status)}
 
 
 @app.get("/provider/jobs")

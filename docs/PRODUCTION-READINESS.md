@@ -56,6 +56,35 @@ npm run build --workspace @cluexp/ops-web
 - Recovery owners know how to cancel, release, no-show, recall, and resolve jobs.
 - Rollback owner has Vercel and database access.
 
+## Alerting (migration 0054)
+
+Before enabling real customer traffic for a company whose dispatcher relies on the alert inbox
+(`GET /provider/alerts`) instead of manual polling, confirm:
+
+- Real Twilio number set on `organization_phone_settings.twilio_number` for the org — a
+  demo/fake fallback number must never be active for an org taking real traffic.
+- A2P registration gate: `a2p_registered = true` before `sms_enabled = true`; sending on an
+  unregistered number risks carrier filtering, which would show up as false `delivery_failure`
+  alert noise rather than a real product signal.
+- `sms_enabled` correctness matches what the org actually pays for/has agreed to.
+- Opt-out behavior verified: a `STOP` reply is honored (`communication_opt_outs`) and does not
+  itself generate a `delivery_failure` alert (it is a deliberate customer choice, not a failure).
+- `staffed_fallback_phone` (added on `organization_phone_settings` in `0054`) is configured for
+  the org if `critical`-severity alerts (currently `safety_flag`) are expected to reach a human
+  outside the dispatcher inbox — provisioning the actual number is an operational task per org,
+  not something migration `0054` or this code does for you.
+- Cron wired with correct secret handling: `apps/intake-web/vercel.json` declares
+  `{ "path": "/api/cron/dispatch-sweep", "schedule": "*/5 * * * *" }`, and `CRON_SECRET` is set
+  in the Vercel project's environment variables. Vercel automatically sends
+  `Authorization: Bearer $CRON_SECRET` on cron-triggered invocations of a route when an env var
+  named exactly `CRON_SECRET` exists in the project — which is what `/cron/dispatch-sweep`
+  already checks via `hmac.compare_digest`. If `CRON_SECRET` is unset, the sweep returns `503`
+  and `stalled_job`/`stuck_offer` alerts silently never fire — confirm a real cron invocation
+  returns `200` with an `"alerts"` count in the response body, don't just trust the cron entry
+  exists.
+- No demo/fake number fallback for any org taking real traffic — `TWILIO_DEFAULT_FROM_NUMBER`
+  should only ever be hit for orgs that are explicitly still in the internal/synthetic pilot.
+
 ## Release gate
 
 Do not enable real customer traffic until:

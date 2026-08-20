@@ -751,6 +751,28 @@ class Store:
     async def delete_organization_setting(self, organization_id: str, key: str) -> None:  # pragma: no cover
         return None
 
+    # --- alerts (0054) ---
+    async def create_alert(
+        self, organization_id: str, alert_type: str, severity: str,
+        job_id: UUID | str | None = None, payload: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_alerts(self, organization_id: str, status: str | None = None) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def get_alert(self, alert_id: UUID | str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def acknowledge_alert(self, alert_id: UUID | str, user_id: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def resolve_alert(self, alert_id: UUID | str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def list_all_alerts(self, status: str | None = None) -> list[dict]:  # pragma: no cover
+        return []
+
     async def record_media(
         self,
         *,
@@ -5043,6 +5065,81 @@ class InMemoryStore(Store):
 
     async def delete_organization_setting(self, organization_id: str, key: str) -> None:
         self._organization_settings.pop((str(organization_id), key), None)
+
+    # --- alerts (0054) ---
+
+    async def create_alert(
+        self, organization_id: str, alert_type: str, severity: str,
+        job_id: UUID | str | None = None, payload: dict | None = None,
+    ) -> dict:
+        alerts = getattr(self, "_alerts", None)
+        if alerts is None:
+            alerts = self._alerts = {}
+        job_id_str = str(job_id) if job_id is not None else None
+        # Duplicate-prevention: skip creating a new OPEN alert for the same
+        # (org, job, type) that already has one open. Simple check-then-skip,
+        # not a DB constraint here — matches the Postgres partial unique index.
+        for row in alerts.values():
+            if (
+                row["organization_id"] == str(organization_id)
+                and row["job_id"] == job_id_str
+                and row["alert_type"] == alert_type
+                and row["status"] == "open"
+            ):
+                return dict(row)
+        rec = {
+            "id": str(uuid4()),
+            "organization_id": str(organization_id),
+            "job_id": job_id_str,
+            "alert_type": alert_type,
+            "severity": severity,
+            "status": "open",
+            "payload": payload or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "acknowledged_by": None,
+            "acknowledged_at": None,
+            "resolved_at": None,
+            "escalated_at": None,
+        }
+        alerts[rec["id"]] = rec
+        return dict(rec)
+
+    async def list_alerts(self, organization_id: str, status: str | None = None) -> list[dict]:
+        rows = [
+            dict(row) for row in getattr(self, "_alerts", {}).values()
+            if row["organization_id"] == str(organization_id)
+            and (status is None or row["status"] == status)
+        ]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+
+    async def get_alert(self, alert_id: UUID | str) -> dict | None:
+        row = getattr(self, "_alerts", {}).get(str(alert_id))
+        return dict(row) if row is not None else None
+
+    async def acknowledge_alert(self, alert_id: UUID | str, user_id: str) -> dict | None:
+        row = getattr(self, "_alerts", {}).get(str(alert_id))
+        if row is None:
+            return None
+        row["status"] = "acknowledged"
+        row["acknowledged_by"] = user_id
+        row["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
+        return dict(row)
+
+    async def resolve_alert(self, alert_id: UUID | str) -> dict | None:
+        row = getattr(self, "_alerts", {}).get(str(alert_id))
+        if row is None:
+            return None
+        row["status"] = "resolved"
+        row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        return dict(row)
+
+    async def list_all_alerts(self, status: str | None = None) -> list[dict]:
+        """Platform-ops read-only view across every organization."""
+        rows = [
+            dict(row) for row in getattr(self, "_alerts", {}).values()
+            if status is None or row["status"] == status
+        ]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)
 
 
 # Namespace for pg_advisory_xact_lock(namespace, hashtext(key)) two-int4-arg
@@ -12691,6 +12788,142 @@ class PostgresStore(Store):
                 "delete from organization_settings where organization_id = %s and key = %s",
                 (str(organization_id), key),
             )
+
+    # --- alerts (0054) ---
+
+    _ALERT_COLS = (
+        "id, organization_id, job_id, alert_type, severity, status, payload,"
+        " created_at, acknowledged_by, acknowledged_at, resolved_at, escalated_at"
+    )
+
+    @staticmethod
+    def _alert_row(row) -> dict:
+        return {
+            "id": str(row[0]),
+            "organization_id": str(row[1]),
+            "job_id": str(row[2]) if row[2] else None,
+            "alert_type": row[3],
+            "severity": row[4],
+            "status": row[5],
+            "payload": row[6] or {},
+            "created_at": row[7].isoformat() if row[7] else None,
+            "acknowledged_by": str(row[8]) if row[8] else None,
+            "acknowledged_at": row[9].isoformat() if row[9] else None,
+            "resolved_at": row[10].isoformat() if row[10] else None,
+            "escalated_at": row[11].isoformat() if row[11] else None,
+        }
+
+    async def create_alert(
+        self, organization_id: str, alert_type: str, severity: str,
+        job_id: UUID | str | None = None, payload: dict | None = None,
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            # Duplicate-prevention: the partial unique index only covers
+            # job_id IS NOT NULL rows, so job-scoped alerts upsert-ignore via
+            # ON CONFLICT; job-less alerts (e.g. an org-level delivery
+            # failure) fall back to check-then-skip since there is no unique
+            # constraint to lean on for those.
+            if job_id is not None:
+                cur = await conn.execute(
+                    "insert into alerts (organization_id, job_id, alert_type, severity, payload)"
+                    " values (%s, %s, %s, %s, %s)"
+                    " on conflict (organization_id, job_id, alert_type)"
+                    " where status = 'open' and job_id is not null"
+                    " do nothing"
+                    f" returning {self._ALERT_COLS}",
+                    (str(organization_id), str(job_id), alert_type, severity, Jsonb(payload or {})),
+                )
+                row = await cur.fetchone()
+                if row is not None:
+                    return self._alert_row(row)
+                cur = await conn.execute(
+                    f"select {self._ALERT_COLS} from alerts"
+                    " where organization_id = %s and job_id = %s and alert_type = %s and status = 'open'",
+                    (str(organization_id), str(job_id), alert_type),
+                )
+                existing = await cur.fetchone()
+                return self._alert_row(existing)
+            existing_cur = await conn.execute(
+                f"select {self._ALERT_COLS} from alerts"
+                " where organization_id = %s and job_id is null and alert_type = %s and status = 'open'"
+                " limit 1",
+                (str(organization_id), alert_type),
+            )
+            existing = await existing_cur.fetchone()
+            if existing is not None:
+                return self._alert_row(existing)
+            cur = await conn.execute(
+                "insert into alerts (organization_id, job_id, alert_type, severity, payload)"
+                " values (%s, null, %s, %s, %s)"
+                f" returning {self._ALERT_COLS}",
+                (str(organization_id), alert_type, severity, Jsonb(payload or {})),
+            )
+            row = await cur.fetchone()
+            return self._alert_row(row)
+
+    async def list_alerts(self, organization_id: str, status: str | None = None) -> list[dict]:
+        async with await self._connect() as conn:
+            if status:
+                cur = await conn.execute(
+                    f"select {self._ALERT_COLS} from alerts"
+                    " where organization_id = %s and status = %s order by created_at desc",
+                    (str(organization_id), status),
+                )
+            else:
+                cur = await conn.execute(
+                    f"select {self._ALERT_COLS} from alerts"
+                    " where organization_id = %s order by created_at desc",
+                    (str(organization_id),),
+                )
+            rows = await cur.fetchall()
+        return [self._alert_row(r) for r in rows]
+
+    async def get_alert(self, alert_id: UUID | str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"select {self._ALERT_COLS} from alerts where id = %s", (str(alert_id),),
+            )
+            row = await cur.fetchone()
+        return self._alert_row(row) if row is not None else None
+
+    async def acknowledge_alert(self, alert_id: UUID | str, user_id: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update alerts set status = 'acknowledged', acknowledged_by = %s, acknowledged_at = now()"
+                " where id = %s"
+                f" returning {self._ALERT_COLS}",
+                (str(user_id), str(alert_id)),
+            )
+            row = await cur.fetchone()
+        return self._alert_row(row) if row is not None else None
+
+    async def resolve_alert(self, alert_id: UUID | str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update alerts set status = 'resolved', resolved_at = now()"
+                " where id = %s"
+                f" returning {self._ALERT_COLS}",
+                (str(alert_id),),
+            )
+            row = await cur.fetchone()
+        return self._alert_row(row) if row is not None else None
+
+    async def list_all_alerts(self, status: str | None = None) -> list[dict]:
+        """Platform-ops read-only view across every organization."""
+        async with await self._connect() as conn:
+            if status:
+                cur = await conn.execute(
+                    f"select {self._ALERT_COLS} from alerts where status = %s order by created_at desc",
+                    (status,),
+                )
+            else:
+                cur = await conn.execute(
+                    f"select {self._ALERT_COLS} from alerts order by created_at desc",
+                )
+            rows = await cur.fetchall()
+        return [self._alert_row(r) for r in rows]
 
 
 def make_store() -> Store:

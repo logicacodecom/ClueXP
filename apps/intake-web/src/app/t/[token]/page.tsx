@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import type { TicketGuards } from "@/types/schema.generated";
 import { useRouter, useParams } from "next/navigation";
-import { LoaderCircle, ShieldCheck, Star } from "lucide-react";
+import { CircleHelp, LoaderCircle, ShieldCheck, Star } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
 import { TrackingMap } from "@/components/tracking-map";
 
@@ -174,7 +174,6 @@ const emptyCustomerActions: CustomerActions = {
 };
 
 const CUSTOMER_MESSAGE_TEMPLATES = [
-  "need_more_details",
   "arrived",
   "running_late",
   "customer_unavailable",
@@ -297,6 +296,7 @@ function CustomerMessagesPanel({
   unreadCount,
   busy,
   error,
+  notice,
   onSend
 }: {
   locale: string;
@@ -304,6 +304,7 @@ function CustomerMessagesPanel({
   unreadCount: number;
   busy: boolean;
   error: string | null;
+  notice: string | null;
   onSend: (templateCode: string) => void;
 }) {
   return (
@@ -318,9 +319,33 @@ function CustomerMessagesPanel({
       </p>
       <p className="fine">
         {locale === "es"
-          ? "Mensajes rápidos con el técnico sobre este trabajo. Operaciones internas no aparecen aquí."
-          : "Quick messages with the technician for this job. Internal operations messages never appear here."}
+          ? "Despacho y el técnico pueden ver este hilo del trabajo. Las notas internas nunca aparecen aquí."
+          : "Dispatch and the technician can see this job thread. Internal notes never appear here."}
       </p>
+      <div className="panel" style={{ marginTop: 14, padding: 14 }}>
+        <div className="row" style={{ alignItems: "flex-start", gap: 10 }}>
+          <CircleHelp aria-hidden="true" size={20} style={{ flex: "0 0 auto", marginTop: 2 }} />
+          <div>
+            <strong>{locale === "es" ? "¿Necesita ayuda de despacho?" : "Need help from dispatch?"}</strong>
+            <p className="fine" style={{ marginTop: 4 }}>
+              {locale === "es"
+                ? "Envíe una solicitud rápida. El técnico también podrá verla para coordinar este trabajo."
+                : "Send a quick help request. Your technician can also see it to coordinate this job."}
+            </p>
+          </div>
+        </div>
+        <button
+          className="primary"
+          disabled={busy}
+          onClick={() => onSend("need_more_details")}
+          style={{ marginTop: 12, width: "100%" }}
+          type="button"
+        >
+          {busy
+            ? (locale === "es" ? "Enviando…" : "Sending…")
+            : (locale === "es" ? "Pedir ayuda a despacho" : "Ask dispatch for help")}
+        </button>
+      </div>
       <div className="stack" style={{ marginTop: 12 }}>
         {messages.length === 0 ? (
           <p className="fine">
@@ -353,6 +378,7 @@ function CustomerMessagesPanel({
           </button>
         ))}
       </div>
+      {notice ? <p aria-live="polite" className="fine" style={{ color: "#86efac", marginTop: 10 }}>{notice}</p> : null}
       {error ? <p className="fine" style={{ color: "#f87171", marginTop: 10 }}>{error}</p> : null}
     </div>
   );
@@ -392,6 +418,7 @@ export default function TokenTrackingPage() {
   const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const [messageBusy, setMessageBusy] = useState(false);
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [messageNotice, setMessageNotice] = useState<string | null>(null);
 
   const localeText = {
     waiting: {
@@ -591,6 +618,7 @@ export default function TokenTrackingPage() {
   const sendCustomerTemplate = async (templateCode: string) => {
     setMessageBusy(true);
     setMessageError(null);
+    setMessageNotice(null);
     try {
       const data = await api<{ message: JobMessage }>(`/t/${token}/messages`, {
         method: "POST",
@@ -601,6 +629,9 @@ export default function TokenTrackingPage() {
         })
       });
       setMessages((current) => [...current, data.message]);
+      setMessageNotice(templateCode === "need_more_details"
+        ? (locale === "es" ? "Solicitud de ayuda enviada a despacho." : "Help request sent to dispatch.")
+        : (locale === "es" ? "Mensaje enviado." : "Message sent."));
     } catch (err) {
       setMessageError(err instanceof Error ? err.message : (locale === "es" ? "No se pudo enviar el mensaje" : "Could not send message"));
     } finally {
@@ -903,6 +934,7 @@ export default function TokenTrackingPage() {
         error={messageError}
         locale={locale}
         messages={messages}
+        notice={messageNotice}
         unreadCount={messageUnreadCount}
         onSend={(code) => void sendCustomerTemplate(code)}
       />
