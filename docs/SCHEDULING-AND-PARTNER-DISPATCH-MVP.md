@@ -1,6 +1,6 @@
 # Scheduling and Partner Dispatch MVP
 
-**Status:** Proposed product specification  
+**Status:** Implemented MVP specification; deployed code needs pilot/browser acceptance evidence before widening
 **Product owner decision:** Keep immediate service intact and add a separate scheduled-service path. Include provider-managed scheduling and explicit, opt-in partner dispatch.  
 **Architecture constraint:** ClueXP supplies workflow and routing software. It does not become a service provider or silently dispatch a provider's jobs.
 
@@ -13,6 +13,8 @@ The product promise is:
 > Book now or schedule later. The company handling the request confirms the appointment, assigns the right technician, and keeps the customer informed through completion.
 
 Scheduling is not just a date picker. It requires customer choice, capacity management, technician reservations, provider approval, partner handoff, reminders, rescheduling, and an auditable conversion from a future reservation into an active job.
+
+Implementation note, 2026-08-20: the customer/provider scheduling path, organization partnerships, and technician reservation records are implemented and deployed through migrations `0051_organization_partnerships` and `0052_technician_reservations`. The Aug 14 correctness/security review items were fixed in `bd2d839`. Scheduling confirmation now records `confirmed_unassigned`; reserving a named technician for future work remains deferred until scheduled-work offer/accept semantics are implemented.
 
 ## 2. Product principles
 

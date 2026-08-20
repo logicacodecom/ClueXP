@@ -44,7 +44,7 @@
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting and agreement management are wired **and deployed** (production migrations through `0034` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0053` applied); production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
@@ -54,10 +54,10 @@
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
-| Notifications | `[~]` | Twilio transactional SMS foundation is implemented behind provider settings/A2P gates; push/email and production monitoring remain |
-| CI | `[x]` | Local gates green — current financial verification (2026-07-16) targeted API financial/settlement batch `9 passed`; migration applied through `0034`; shared typecheck plus provider and technician production builds pass |
+| Notifications | `[~]` | Operations/customer messaging, masked calls, Twilio SMS/voice, Expo push registration/receipts, and native background-location foundations are implemented; production alert ownership, monitoring, provider configuration, and native device acceptance remain |
+| CI | `[x]` | Local gates green — 2026-08 verification: full API suite passed (`421 passed, 1 skipped`), root typecheck passed, console/native tests passed, and all five app builds passed |
 
-Current production migration head: **`0034_settlement_periods`** (applied 2026-07-16; verified live via Alembic `current`). This includes `0029` service catalog, `0030` organization capabilities, `0031` financial closeout settings and item type catalog, `0032` job closeout reports, `0033` technician agreements, and `0034` settlement periods. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; live route smoke after commit `8bcbdb2` confirmed the new protected financial endpoints are deployed/auth-gated and read-only authenticated API smoke passed for provider financial settings, provider settlements, settlement periods, and technician settlements.
+Current production migration head: **`0053_provider_crm`** (confirmed in the 2026-08-14 handoff after `0051_organization_partnerships`, `0052_technician_reservations`, and `0053_provider_crm` were applied and `alembic_version` was synced). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, and provider CRM. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; latest production evidence in the handoff records `main@1f9f422` deployed after `0053`, followed by no-migration fix commit `bd2d839` for 15 scheduling/partnership/CRM security and correctness issues.
 
 ## Product Backlog & Release Map
 
@@ -585,11 +585,12 @@ affiliation foundation; model in [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3.)
 ## 9. Immediate Work Order
 
 Provider-managed dispatch (§3.4), the field-integrity core (§4), the tenant-scoped
-recovery workspace (§5), and the operational financial closeout/settlement records (§6) are
-**code-complete** and merged. Production migration head is `0034_settlement_periods`
-(applied 2026-07-16); the workforce, company-signup, technician-documents and financial
-records code is deployed (`cluexp-intake` auto-deploys on push to `main`).
-Remaining work to a meaningful pilot is operational, not new code:
+recovery workspace (§5), the operational financial closeout/settlement records (§6),
+communications foundations, scheduling/partnership controls, technician reservations, and
+provider CRM are **code-complete** and merged. Production migration head is
+`0053_provider_crm` per the 2026-08-14 deployment handoff; the latest no-migration fix
+commit is `bd2d839` (`fix(dispatch): close scheduling/partnership security and correctness gaps`).
+Remaining work to widen the pilot is release readiness and operations, not a large new feature slice:
 
 1. **Runtime-smoke the advisory-payment / live-tracking work:** PR #39 (merge `808f108`, tip
    commit `cfb0b4d`: technician-reported/customer-acknowledged payment, customer live tracking,
@@ -615,8 +616,12 @@ Remaining work to a meaningful pilot is operational, not new code:
    `PILOT-OPERATIONS.md` §7.1.]** Remaining before widening: PO sign-off (`PILOT-OPERATIONS.md`
    §10), then widen channel by channel. Rollback path (`PATCH
    dispatch_cutover_global_off=true`) is itself now proven, not just documented.
-6. **Sprint 4 remaining items** (Google Routes ETA, live position, shared cross-app timeline)
-   and **Sprint 5 communications/notifications** follow once the pilot passes.
+6. **Scheduling/partnership/CRM browser acceptance:** run a deployed browser QA pass across
+   customer scheduling, provider scheduling actions, partner offer/approval flows, CRM reads/updates,
+   transactional CRM SMS, and masked CRM calls. The Aug 14 review gaps are fixed in code, but
+   pilot sign-off still needs evidence.
+7. **Sprint 4/5 remaining items:** Google Routes ETA if required, shared cross-app timeline depth,
+   durable alerting, communications monitoring/configuration, and native physical-device QA.
 
 **Broader-launch gates (not optional follow-ups):**
 
@@ -627,8 +632,8 @@ Remaining work to a meaningful pilot is operational, not new code:
    unattended real-customer traffic.
 2. **Production notifications:** deliver and monitor critical dispatcher alerts, technician offers,
    and customer tracking/status messages with consent, retry/failure visibility and a documented
-   manual fallback. Provider selection remains a product/architecture decision; this gate does not
-   pretend SMS/email/push exists today.
+   manual fallback. Twilio and Expo foundations exist; the remaining gate is operational delivery,
+   configuration, monitoring, and acceptance evidence.
 3. **Real payments:** not required for a clearly disclosed non-commercial/internal pilot that uses
    advisory collection records only. Before marketing or using a real card flow, complete the
    provider-owned Stripe Connect direct-charge paths in Sprint 6. The provider is merchant of

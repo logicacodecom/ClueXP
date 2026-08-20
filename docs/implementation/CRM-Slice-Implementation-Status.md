@@ -67,7 +67,7 @@ Not yet implemented:
 | CRM activity timeline | Not yet | Calls, emails, note changes, and outcomes are not stored as append-only activities. |
 | Responsive interface | Complete | Desktop table and mobile customer cards are implemented. |
 | Tenant isolation | Complete | CRM reads and updates are scoped to the signed-in provider organization. |
-| Production migration | Pending deployment | Migration exists but must be applied in each deployed environment. |
+| Production migration | Complete | `0053_provider_crm` is applied in production per the 2026-08-14 handoff; later fixes in `bd2d839` required no migration. |
 
 ## 4. Implemented user experience
 
@@ -255,14 +255,13 @@ Starts a provider-scoped masked call to the customer. The provider's configured 
 
 ## 9. Remaining work
 
-### 9.1 Required before production release
+### 9.1 Required before pilot widening
 
-- Apply Alembic migration `0053_provider_crm` to each target database.
-- Deploy the updated intake API.
-- Deploy the updated provider web application.
-- Verify role access for `provider_admin` and `dispatcher`.
-- Test against a deployed API and database with realistic customer and job data.
+- Verify role access for `provider_admin` and `dispatcher` on the deployed production apps.
+- Test against the deployed API and database with realistic synthetic customer and job data.
 - Verify mobile, desktop, keyboard, loading, empty, and error states in a browser.
+- Smoke transactional CRM SMS and masked CRM calls with production provider communication settings.
+- Capture tenant-isolation evidence for CRM reads and updates after the Aug 14 no-migration fix.
 
 ### 9.2 Managed newsletter delivery
 
@@ -338,12 +337,11 @@ For a large customer book, add:
 
 ## 10. Recommended next phases
 
-### Phase 1 — Production readiness
+### Phase 1 — Pilot-widening readiness
 
-- Apply and verify the migration.
-- Complete environment-level browser testing.
-- Add server-side pagination and search.
+- Complete deployed browser testing.
 - Add API monitoring and operational error reporting.
+- Add server-side pagination and search before using CRM with a large customer book.
 
 ### Phase 2 — Contact operations
 
@@ -368,7 +366,7 @@ For a large customer book, add:
 
 ## 11. Release acceptance checklist
 
-- [ ] Migration `0053_provider_crm` is applied.
+- [x] Migration `0053_provider_crm` is applied in production per the 2026-08-14 handoff.
 - [ ] A provider sees only customers connected to its owned or fulfilled jobs.
 - [ ] CRM changes remain after a page refresh.
 - [ ] Another provider organization cannot read or overwrite those CRM changes.

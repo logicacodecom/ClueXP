@@ -79,9 +79,10 @@ nothing duplicates.
 Do not enable a company channel for real customers until all of these are true:
 
 - Company recovery controls (cancel/release/no-show/recall/resolve + notes + timeline) are merged and verified.
-- CI passes API tests, Alembic offline validation, shared typecheck, and all four application builds.
-- Production migration head is **at least `0015_job_payments`** (prod is currently at
-  `0024_gs_more_tunables`); `job_notes` (`0014`) and `job_payment_reports` (`0015`) are present.
+- CI passes API tests, Alembic offline validation, shared typecheck, and all five web application builds.
+- Production migration head is **`0053_provider_crm`** or later; `job_notes` (`0014`),
+  `job_payment_reports` (`0015`), communications (`0047`-`0050`), partnerships (`0051`),
+  technician reservations (`0052`), and provider CRM (`0053`) are present.
 - `ARRIVAL_PIN_SECRET`, `CRON_SECRET`, database credentials, and application authentication
   secrets are configured in the production secret manager.
 - The pilot company and approved technician roster are recorded **outside this public repository**.
@@ -106,7 +107,7 @@ request — never a real customer's data to prove readiness.
 | Check | Required evidence |
 |---|---|
 | Release | Git commit deployed by each of the four Vercel projects (prod `main` tip) |
-| Database | `alembic_version.version_num` ≥ `0015_job_payments`; `job_notes` + `job_payment_reports` present |
+| Database | `alembic_version.version_num` ≥ `0053_provider_crm`; core lifecycle, financial-record, communications, partnership, reservation, and CRM tables present |
 | Global switch | Current `dispatch_cutover_global_off` value (`global_settings`; read via `GET /api/ops/flags`) |
 | Company channel | Channel ID, slug, owner organization, and `dispatch_cutover_enabled` |
 | Provider access | Provider dispatcher can sign in and sees only its organization |
@@ -391,8 +392,8 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 | Area | Status |
 |---|---|
 | Real payment | None — demo charge/finalize routes are removed (`410`) |
-| SMS / email / push | Not available — manual sharing/polling is pilot-only and blocks unattended real-customer widening |
-| Job messaging / masked call | Not available — the technician can submit structured problem reports, but customer chat, dispatcher chat, delivery receipts, attachments, and mediated calling are not built |
+| SMS / email / push | Twilio transactional SMS and Expo push foundations exist; provider configuration, monitoring, alert ownership, and native device acceptance still block unattended real-customer widening. Managed email/newsletters are not built. |
+| Job messaging / masked call | Job messaging, delivery records, masked calls, and CRM calls are implemented; production configuration, monitoring, and deployed browser acceptance remain. Attachments and managed campaign/email messaging are not built. |
 | Live map / ETA | Coarse, clearly-labelled estimate (no continuous tracking) |
 | Technician GPS | Foreground/manual — PWA must be open |
 | Global active-job capacity | Intended contract is one active job per global technician across affiliations; current acceptance is job-atomic but does not yet DB-enforce the cross-job lock, and busy assignment remains overrideable |

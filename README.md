@@ -9,7 +9,7 @@ The project is documented by four canonical docs (plus a pilot runbook):
 - [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) — tech stack, database + storage, infrastructure, and the four subsystem specs (intake / technician / partner / ops). **Architecture source of truth.**
 - [`docs/TECHNICIAN-APP-REDESIGN.md`](docs/TECHNICIAN-APP-REDESIGN.md) — approved active-job-first technician experience, native/PWA boundaries, development workstreams, testing, and rollout gates.
 - [`docs/EXECUTION-PLAN.md`](docs/EXECUTION-PLAN.md) — product backlog, releases, sprints, tasks, and **Canonical Status**.
-- [`docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md`](docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md) — proposed customer booking, technician scheduling, and approved-partner overflow MVP.
+- [`docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md`](docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md) — implemented customer booking, technician scheduling, and approved-partner overflow MVP; production pilot verification and broader-launch gates remain.
 - [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) — the UI Guide (visual tokens, components); `docs/design-ref/` holds reference assets only.
 - [`docs/HANDOFF.md`](docs/HANDOFF.md) — the multi-agent communication channel.
 - Architecture decisions (why/rejected alternatives) live in `SYSTEM-DESIGN.md` §20 · [`docs/PILOT-OPERATIONS.md`](docs/PILOT-OPERATIONS.md) — pilot gates, cutover, matrix, rollback.
@@ -105,6 +105,11 @@ Production push/email and real payment authorization/capture/refund remain unimp
 technician-reported collection is advisory only. The accepted real-payment direction is
 provider-owned Stripe Connect direct charges: each provider is merchant of record and ClueXP does
 not hold or settle provider funds.
+
+Scheduling, partner overflow, technician reservations, and provider CRM are implemented on `main`
+and production migrations are documented through `0053_provider_crm`. Scheduling confirmation
+currently records `confirmed_unassigned`; named future technician reservation remains deferred
+until a real technician offer/accept flow exists for scheduled work.
 
 The first Twilio communications slice is implemented behind `COMMUNICATIONS_PROVIDER`.
 Default `noop` mode records honest `skipped_no_provider` outcomes. Twilio mode supports
