@@ -22,8 +22,14 @@ export const metadata: Metadata = {
   description: "ClueXP field technician application",
   manifest: "/manifest.webmanifest",
   icons: {
-    icon: "/icon.png",
-    apple: "/icon.png"
+    icon: [
+      { url: "/favicon-16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon.png", sizes: "1024x1024", type: "image/png" }
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/apple-icon.png"
   },
   appleWebApp: {
     capable: true,
