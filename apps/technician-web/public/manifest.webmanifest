@@ -5,13 +5,13 @@
   "start_url": "/jobs",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0b0d10",
-  "theme_color": "#ffbf00",
+  "background_color": "#15171C",
+  "theme_color": "#E6A338",
   "orientation": "portrait",
   "icons": [
     {
       "src": "/icon.png",
-      "sizes": "246x246",
+      "sizes": "1024x1024",
       "type": "image/png",
       "purpose": "any maskable"
     }
