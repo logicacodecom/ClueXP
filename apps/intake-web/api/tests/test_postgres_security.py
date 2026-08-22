@@ -109,3 +109,48 @@ def test_postgres_store_executes_save_token_and_org_isolation_paths():
         }
 
     asyncio.run(exercise())
+
+
+def test_postgres_store_external_api_foundation_paths():
+    async def exercise() -> None:
+        store = PostgresStore(DSN)
+        client = await store.create_external_client(
+            name="Postgres external client",
+            client_type="agent",
+            scopes=["services:read", "requests:write"],
+            rate_limit_per_minute=1,
+            metadata={"test": True},
+        )
+        issued = await store.issue_external_api_key(client["id"], scopes=["services:read"])
+
+        assert "api_key" in issued
+        async with await store._connect() as conn:
+            row = await (
+                await conn.execute(
+                    "select key_hash from external_api_keys where id = %s",
+                    (issued["key"]["id"],),
+                )
+            ).fetchone()
+        assert row[0] != issued["api_key"]
+
+        auth = await store.authenticate_external_api_key(issued["api_key"])
+        assert auth is not None
+        assert auth["client"]["id"] == client["id"]
+        assert auth["scopes"] == ["services:read"]
+
+        assert await store.check_external_rate_limit(client["id"], "services:read", 1) is True
+        assert await store.check_external_rate_limit(client["id"], "services:read", 1) is False
+
+        event = await store.record_external_api_event(
+            client_id=client["id"],
+            api_key_id=issued["key"]["id"],
+            action="services.list",
+            path="/v1/services",
+            status_code=200,
+            request_id="pg-public-api-test",
+            metadata={"ok": True},
+        )
+        assert event["client_id"] == client["id"]
+        assert event["metadata"] == {"ok": True}
+
+    asyncio.run(exercise())

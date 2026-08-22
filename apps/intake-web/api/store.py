@@ -15,6 +15,7 @@ The Ticket Pydantic model stays the single source of truth: we persist
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,11 @@ RUNTIME_DDL_RLS_TABLES = (
     "closeout_item_types",
     "customers",
     "events",
+    "external_api_events",
+    "external_api_idempotency_keys",
+    "external_api_keys",
+    "external_api_rate_limits",
+    "external_clients",
     "global_settings",
     "governance_events",
     "job_closeout_line_items",
@@ -133,6 +139,10 @@ def _default_agreement(organization_id: str, technician_id: str) -> dict:
         "updated_at": now,
         "updated_by": None,
     }
+
+
+def hash_external_api_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
 def _active_status_started_at(status: str | None, timestamps: dict[str, str | None]) -> str | None:
@@ -751,6 +761,48 @@ class Store:
 
     async def list_service_catalog(self, active_only: bool = False) -> list[dict]:  # pragma: no cover
         return []
+
+    async def create_external_client(
+        self,
+        *,
+        name: str,
+        client_type: str,
+        scopes: list[str],
+        organization_id: str | None = None,
+        rate_limit_per_minute: int = 60,
+        metadata: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def issue_external_api_key(
+        self,
+        client_id: str,
+        *,
+        scopes: list[str] | None = None,
+        expires_at: datetime | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def authenticate_external_api_key(self, raw_key: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:  # pragma: no cover
+        return True
+
+    async def record_external_api_event(
+        self,
+        *,
+        client_id: str | None,
+        api_key_id: str | None,
+        action: str,
+        path: str | None = None,
+        status_code: int | None = None,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+        ip: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
 
     async def upsert_service_category(self, data: dict, updated_by: str | None = None) -> dict:  # pragma: no cover
         raise NotImplementedError
@@ -1781,6 +1833,11 @@ class InMemoryStore(Store):
         self.reviews: list[dict] = []
         self.login_attempts: list[dict] = []
         self.governance_events: list[dict] = []
+        self._external_clients: dict[str, dict] = {}
+        self._external_api_keys: dict[str, dict] = {}
+        self._external_api_key_by_hash: dict[str, str] = {}
+        self._external_api_events: list[dict] = []
+        self._external_rate_limits: dict[tuple[str, str, str], int] = {}
         # Technician documents for Slice T6
         self.technician_documents: list[dict] = []
 
@@ -5038,6 +5095,122 @@ class InMemoryStore(Store):
             result.append({**category, "skills": skills})
         return result
 
+    async def create_external_client(
+        self,
+        *,
+        name: str,
+        client_type: str,
+        scopes: list[str],
+        organization_id: str | None = None,
+        rate_limit_per_minute: int = 60,
+        metadata: dict | None = None,
+    ) -> dict:
+        client_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": client_id,
+            "name": name,
+            "client_type": client_type,
+            "status": "active",
+            "organization_id": organization_id,
+            "allowed_scopes": sorted(set(scopes)),
+            "allowed_origins": [],
+            "rate_limit_per_minute": rate_limit_per_minute,
+            "metadata": metadata or {},
+            "created_at": now,
+            "updated_at": now,
+        }
+        self._external_clients[client_id] = row
+        return dict(row)
+
+    async def issue_external_api_key(
+        self,
+        client_id: str,
+        *,
+        scopes: list[str] | None = None,
+        expires_at: datetime | None = None,
+    ) -> dict:
+        client = self._external_clients.get(str(client_id))
+        if client is None:
+            raise KeyError(client_id)
+        raw_key = f"cxp_live_{secrets.token_urlsafe(32)}"
+        key_id = str(uuid4())
+        digest = hash_external_api_key(raw_key)
+        prefix = raw_key[:16]
+        allowed = set(client["allowed_scopes"])
+        key_scopes = sorted(set(scopes or client["allowed_scopes"]) & allowed)
+        row = {
+            "id": key_id,
+            "client_id": str(client_id),
+            "key_prefix": prefix,
+            "key_hash": digest,
+            "status": "active",
+            "scopes": key_scopes,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "last_used_at": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._external_api_keys[key_id] = row
+        self._external_api_key_by_hash[digest] = key_id
+        return {"api_key": raw_key, "key": {k: v for k, v in row.items() if k != "key_hash"}}
+
+    async def authenticate_external_api_key(self, raw_key: str) -> dict | None:
+        key_id = self._external_api_key_by_hash.get(hash_external_api_key(raw_key))
+        if key_id is None:
+            return None
+        key = self._external_api_keys.get(key_id)
+        if not key or key.get("status") != "active":
+            return None
+        expires_at = key.get("expires_at")
+        if expires_at and datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+            return None
+        client = self._external_clients.get(key["client_id"])
+        if not client or client.get("status") != "active":
+            return None
+        key["last_used_at"] = datetime.now(timezone.utc).isoformat()
+        return {
+            "client": dict(client),
+            "api_key": {k: v for k, v in key.items() if k != "key_hash"},
+            "scopes": list(key.get("scopes") or []),
+        }
+
+    async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:
+        now = datetime.now(timezone.utc)
+        window_start = now.replace(second=0, microsecond=0).isoformat()
+        key = (str(client_id), scope, window_start)
+        count = self._external_rate_limits.get(key, 0) + 1
+        self._external_rate_limits[key] = count
+        return count <= limit
+
+    async def record_external_api_event(
+        self,
+        *,
+        client_id: str | None,
+        api_key_id: str | None,
+        action: str,
+        path: str | None = None,
+        status_code: int | None = None,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+        ip: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        row = {
+            "id": str(uuid4()),
+            "client_id": client_id,
+            "api_key_id": api_key_id,
+            "action": action,
+            "path": path,
+            "status_code": status_code,
+            "idempotency_key": idempotency_key,
+            "request_id": request_id,
+            "ip": ip,
+            "metadata": metadata or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._external_api_events.append(row)
+        return dict(row)
+
     async def upsert_service_category(self, data: dict, updated_by: str | None = None) -> dict:
         row = {
             **data,
@@ -5437,6 +5610,97 @@ class PostgresStore(Store):
             await conn.execute(
                 "create index if not exists idx_closeout_item_types_status"
                 " on closeout_item_types (status, sort_order, code)"
+            )
+            await conn.execute(
+                "create table if not exists external_clients ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  name text not null,"
+                "  client_type text not null default 'partner'"
+                "    check (client_type in ('first_party','partner','agent','enterprise','internal')),"
+                "  status text not null default 'active'"
+                "    check (status in ('active','suspended','revoked')),"
+                "  organization_id uuid references organizations(id) on delete set null,"
+                "  allowed_scopes text[] not null default '{}',"
+                "  allowed_origins text[] not null default '{}',"
+                "  rate_limit_per_minute integer not null default 60 check (rate_limit_per_minute > 0),"
+                "  metadata jsonb not null default '{}',"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  created_by uuid references users(id) on delete set null"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists external_api_keys ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  client_id uuid not null references external_clients(id) on delete cascade,"
+                "  key_prefix text not null unique,"
+                "  key_hash text not null unique,"
+                "  status text not null default 'active' check (status in ('active','revoked')),"
+                "  scopes text[] not null default '{}',"
+                "  expires_at timestamptz,"
+                "  last_used_at timestamptz,"
+                "  created_at timestamptz not null default now(),"
+                "  revoked_at timestamptz,"
+                "  created_by uuid references users(id) on delete set null"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists external_api_events ("
+                "  id uuid primary key default gen_random_uuid(),"
+                "  client_id uuid references external_clients(id) on delete set null,"
+                "  api_key_id uuid references external_api_keys(id) on delete set null,"
+                "  action text not null,"
+                "  path text,"
+                "  status_code integer,"
+                "  idempotency_key text,"
+                "  request_id text,"
+                "  ip text,"
+                "  metadata jsonb not null default '{}',"
+                "  created_at timestamptz not null default now()"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists external_api_idempotency_keys ("
+                "  client_id uuid not null references external_clients(id) on delete cascade,"
+                "  idempotency_key text not null,"
+                "  request_hash text not null,"
+                "  method text not null,"
+                "  path text not null,"
+                "  status_code integer,"
+                "  response jsonb,"
+                "  created_at timestamptz not null default now(),"
+                "  updated_at timestamptz not null default now(),"
+                "  primary key (client_id, idempotency_key)"
+                ")"
+            )
+            await conn.execute(
+                "create table if not exists external_api_rate_limits ("
+                "  client_id uuid not null references external_clients(id) on delete cascade,"
+                "  scope text not null,"
+                "  window_start timestamptz not null,"
+                "  count integer not null default 0 check (count >= 0),"
+                "  primary key (client_id, scope, window_start)"
+                ")"
+            )
+            await conn.execute(
+                "create index if not exists idx_external_clients_status"
+                " on external_clients (status, client_type)"
+            )
+            await conn.execute(
+                "create index if not exists idx_external_api_keys_client"
+                " on external_api_keys (client_id, status)"
+            )
+            await conn.execute(
+                "create index if not exists idx_external_api_events_client_created"
+                " on external_api_events (client_id, created_at desc)"
+            )
+            await conn.execute(
+                "create index if not exists idx_external_api_events_action_created"
+                " on external_api_events (action, created_at desc)"
+            )
+            await conn.execute(
+                "create index if not exists idx_external_api_rate_limits_window"
+                " on external_api_rate_limits (window_start)"
             )
             for category in default_service_catalog():
                 await conn.execute(
@@ -12619,6 +12883,186 @@ class PostgresStore(Store):
             if category is not None:
                 category["skills"].append(skill)
         return list(categories.values())
+
+    @staticmethod
+    def _external_client_row(row: tuple) -> dict:
+        return {
+            "id": str(row[0]),
+            "name": row[1],
+            "client_type": row[2],
+            "status": row[3],
+            "organization_id": str(row[4]) if row[4] else None,
+            "allowed_scopes": list(row[5] or []),
+            "allowed_origins": list(row[6] or []),
+            "rate_limit_per_minute": row[7],
+            "metadata": row[8] or {},
+            "created_at": row[9].isoformat() if row[9] else None,
+            "updated_at": row[10].isoformat() if row[10] else None,
+        }
+
+    @staticmethod
+    def _external_api_key_row(row: tuple) -> dict:
+        return {
+            "id": str(row[0]),
+            "client_id": str(row[1]),
+            "key_prefix": row[2],
+            "status": row[3],
+            "scopes": list(row[4] or []),
+            "expires_at": row[5].isoformat() if row[5] else None,
+            "last_used_at": row[6].isoformat() if row[6] else None,
+            "created_at": row[7].isoformat() if row[7] else None,
+        }
+
+    async def create_external_client(
+        self,
+        *,
+        name: str,
+        client_type: str,
+        scopes: list[str],
+        organization_id: str | None = None,
+        rate_limit_per_minute: int = 60,
+        metadata: dict | None = None,
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into external_clients"
+                " (name, client_type, organization_id, allowed_scopes, rate_limit_per_minute, metadata)"
+                " values (%s, %s, %s, %s, %s, %s)"
+                " returning id, name, client_type, status, organization_id, allowed_scopes,"
+                " allowed_origins, rate_limit_per_minute, metadata, created_at, updated_at",
+                (
+                    name,
+                    client_type,
+                    str(organization_id) if organization_id else None,
+                    sorted(set(scopes)),
+                    rate_limit_per_minute,
+                    Jsonb(metadata or {}),
+                ),
+            )
+            row = await cur.fetchone()
+        return self._external_client_row(row)
+
+    async def issue_external_api_key(
+        self,
+        client_id: str,
+        *,
+        scopes: list[str] | None = None,
+        expires_at: datetime | None = None,
+    ) -> dict:
+        raw_key = f"cxp_live_{secrets.token_urlsafe(32)}"
+        digest = hash_external_api_key(raw_key)
+        prefix = raw_key[:16]
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select allowed_scopes from external_clients where id = %s and status = 'active'",
+                (str(client_id),),
+            )
+            client = await cur.fetchone()
+            if client is None:
+                raise KeyError(client_id)
+            allowed = set(client[0] or [])
+            key_scopes = sorted(set(scopes or client[0] or []) & allowed)
+            cur = await conn.execute(
+                "insert into external_api_keys (client_id, key_prefix, key_hash, scopes, expires_at)"
+                " values (%s, %s, %s, %s, %s)"
+                " returning id, client_id, key_prefix, status, scopes, expires_at, last_used_at, created_at",
+                (str(client_id), prefix, digest, key_scopes, expires_at),
+            )
+            row = await cur.fetchone()
+        return {"api_key": raw_key, "key": self._external_api_key_row(row)}
+
+    async def authenticate_external_api_key(self, raw_key: str) -> dict | None:
+        digest = hash_external_api_key(raw_key)
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select k.id, k.client_id, k.key_prefix, k.status, k.scopes, k.expires_at,"
+                " k.last_used_at, k.created_at,"
+                " c.id, c.name, c.client_type, c.status, c.organization_id, c.allowed_scopes,"
+                " c.allowed_origins, c.rate_limit_per_minute, c.metadata, c.created_at, c.updated_at"
+                " from external_api_keys k"
+                " join external_clients c on c.id = k.client_id"
+                " where k.key_hash = %s"
+                " and k.status = 'active'"
+                " and c.status = 'active'"
+                " and (k.expires_at is null or k.expires_at > now())",
+                (digest,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            await conn.execute(
+                "update external_api_keys set last_used_at = now() where id = %s",
+                (str(row[0]),),
+            )
+        return {
+            "api_key": self._external_api_key_row(row[:8]),
+            "client": self._external_client_row(row[8:]),
+            "scopes": list(row[4] or []),
+        }
+
+    async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into external_api_rate_limits (client_id, scope, window_start, count)"
+                " values (%s, %s, date_trunc('minute', now()), 1)"
+                " on conflict (client_id, scope, window_start) do update"
+                " set count = external_api_rate_limits.count + 1"
+                " returning count",
+                (str(client_id), scope),
+            )
+            row = await cur.fetchone()
+        return bool(row and row[0] <= limit)
+
+    async def record_external_api_event(
+        self,
+        *,
+        client_id: str | None,
+        api_key_id: str | None,
+        action: str,
+        path: str | None = None,
+        status_code: int | None = None,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+        ip: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into external_api_events"
+                " (client_id, api_key_id, action, path, status_code, idempotency_key, request_id, ip, metadata)"
+                " values (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " returning id, client_id, api_key_id, action, path, status_code,"
+                " idempotency_key, request_id, ip, metadata, created_at",
+                (
+                    str(client_id) if client_id else None,
+                    str(api_key_id) if api_key_id else None,
+                    action,
+                    path,
+                    status_code,
+                    idempotency_key,
+                    request_id,
+                    ip,
+                    Jsonb(metadata or {}),
+                ),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]),
+            "client_id": str(row[1]) if row[1] else None,
+            "api_key_id": str(row[2]) if row[2] else None,
+            "action": row[3],
+            "path": row[4],
+            "status_code": row[5],
+            "idempotency_key": row[6],
+            "request_id": row[7],
+            "ip": row[8],
+            "metadata": row[9] or {},
+            "created_at": row[10].isoformat() if row[10] else None,
+        }
 
     async def upsert_service_category(self, data: dict, updated_by: str | None = None) -> dict:
         async with await self._connect() as conn:

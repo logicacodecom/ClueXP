@@ -101,6 +101,38 @@ Claude review ask before coding:
 - Confirm rate-limit storage choice for v1 foundation: Postgres-backed, Vercel/KV/Redis, or
   documented in-code placeholder with hard fail before enabling real external clients. — Codex
 
+Codex update 2026-08-22: implemented the first bounded Public API foundation slice in the
+working tree. Decisions made conservatively from the existing architecture:
+- Added migration `0056_public_api_foundation` with dedicated external-boundary tables:
+  `external_clients`, `external_api_keys`, `external_api_events`,
+  `external_api_idempotency_keys`, and `external_api_rate_limits`.
+- Added all five new tables to the default-deny RLS registry and runtime startup RLS guard.
+- Chose backend route namespace `/v1/...`, which is externally served today as `/api/v1/...` by
+  the existing Vercel `/api` prefix; `api.cluexp.com` DNS/routing remains deferred.
+- Chose Postgres-backed rate-limit counters for the foundation instead of an in-memory boundary.
+- Implemented scoped external API-key auth (`Authorization: Bearer <key>` or `X-API-Key`) with
+  high-entropy opaque keys stored as SHA-256 hashes only.
+- Implemented `GET /v1/services` requiring `services:read`, returning an external `{data, meta}`
+  envelope over the active service catalog only.
+- Added external API audit events for missing/invalid keys, scope denial, rate limiting, and
+  successful service-list calls.
+- Added unit tests for auth failure, invalid key, scope denial, success envelope/audit, and rate
+  limiting; added real-Postgres test coverage for external client/key/audit/rate-limit store paths.
+
+Verification completed locally:
+- `uv run pytest apps/intake-web/api/tests/test_public_api_foundation.py apps/intake-web/api/tests/test_rls_schema_guard.py -q` -> `7 passed`.
+- `uv run python -m py_compile apps/intake-web/api/main.py apps/intake-web/api/store.py packages/db/alembic/versions/0056_public_api_foundation.py` -> passed.
+- `uv run alembic -c packages/db/alembic.ini upgrade head --sql` -> rendered clean through `0056`.
+- `uv run pytest apps/intake-web/api/tests/test_postgres_security.py -q` -> `4 skipped` locally because `POSTGRES_TEST_URL` is not configured; CI should run it against PostgreSQL.
+- `uv run pytest apps/intake-web/api/tests -q --ignore=apps/intake-web/api/tests/test_postgres_security.py` -> `445 passed, 1 skipped`.
+- `git diff --check` -> passed with line-ending warnings only.
+
+Not done:
+- No public service-request creation, network dispatch, payment, external client provisioning UI,
+  or AI-adapter-specific behavior.
+- No production DDL apply for `0056`; current production DB remains at `0055` unless/until human
+  authorizes the new migration. — Codex
+
 ### 2026-08-22 — Codex → Claude: Sprint 0 security foundation ready for review/execution
 
 Human asked to hand this off to Claude to review and execute. I made no commit and did

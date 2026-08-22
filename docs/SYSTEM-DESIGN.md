@@ -462,7 +462,7 @@ Customer affordances are driven by `customer_actions(status)`:
 
 ### 7.1 Where Migrations Live
 
-`packages/db/` — Alembic migrations. **Current repository and production head: `0055_default_deny_rls`** (applied to production 2026-08-22 after explicit authorization and verified in `docs/HANDOFF.md`). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM; `0054` alert escalation; `0055` default-deny RLS closure.
+`packages/db/` — Alembic migrations. **Current repository head: `0056_public_api_foundation`; current production head: `0055_default_deny_rls`** (`0055` was applied to production 2026-08-22 after explicit authorization and verified in `docs/HANDOFF.md`; `0056` is code-complete but not production-applied unless a later handoff says so). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM; `0054` alert escalation; `0055` default-deny RLS closure; `0056` public API external client foundation.
 
 The `PostgresStore.startup()` method in `store.py` also runs `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS` guards so the API boots cleanly even if a migration is behind.
 
@@ -921,6 +921,22 @@ Supabase Storage. Managed in `api/storage.py`.
 ## 13. Complete API Endpoint Reference
 
 All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
+
+### Public Platform API (`0056`, code-complete / not production-applied)
+The versioned public façade is implemented under backend path `/v1/...`, which is served as
+`/api/v1/...` through the existing Vercel `/api` prefix. `api.cluexp.com` DNS/routing remains
+deferred. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
+Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundation tables are
+`external_clients`, `external_api_keys`, `external_api_events`,
+`external_api_idempotency_keys`, and `external_api_rate_limits`; all are default-deny RLS
+protected.
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `GET` | `/v1/services` | external API key, `services:read` scope | Public active service taxonomy envelope `{ data, meta }`; audits success/failure and enforces a Postgres-backed per-client rate limit |
+
+No public service-request creation, network routing, payment, or AI-adapter-specific behavior is
+live in this slice.
 
 ### Auth
 | Method | Path | Auth | Purpose |

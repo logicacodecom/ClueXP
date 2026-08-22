@@ -181,6 +181,28 @@ class TicketEnvelope(BaseModel):
     operational_id: str | None = None
 
 
+class PublicApiMeta(BaseModel):
+    request_id: str
+    api_version: str = "v1"
+
+
+class PublicServiceSkill(BaseModel):
+    code: str
+    label: str
+    requires_verification: bool
+
+
+class PublicServiceCategory(BaseModel):
+    code: str
+    label: str
+    skills: list[PublicServiceSkill]
+
+
+class PublicServicesResponse(BaseModel):
+    data: list[PublicServiceCategory]
+    meta: PublicApiMeta
+
+
 class PhotoIntentRequest(BaseModel):
     filename: str
     content_type: str
@@ -3972,6 +3994,138 @@ async def healthz() -> dict[str, Any]:
     booted — which in production also means the fail-secure ARRIVAL_PIN_SECRET
     check passed (startup raises otherwise). Exposes no secrets or tenant data."""
     return {"status": "ok"}
+
+
+def _request_id(request: Request) -> str:
+    provided = request.headers.get("X-Request-ID", "").strip()
+    if provided and len(provided) <= 128:
+        return provided
+    return secrets.token_hex(12)
+
+
+def _request_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip() or None
+    return request.client.host if request.client else None
+
+
+def _presented_public_api_key(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    header_key = request.headers.get("x-api-key", "").strip()
+    return header_key or None
+
+
+async def require_public_api_client(
+    request: Request,
+    required_scope: str,
+) -> dict[str, Any]:
+    request_id = _request_id(request)
+    presented = _presented_public_api_key(request)
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if not presented:
+        await store.record_external_api_event(
+            client_id=None,
+            api_key_id=None,
+            action="auth_missing",
+            path=request.url.path,
+            status_code=401,
+            idempotency_key=idempotency_key,
+            request_id=request_id,
+            ip=_request_ip(request),
+        )
+        raise HTTPException(status_code=401, detail={"error": "missing_api_key", "request_id": request_id})
+    auth = await store.authenticate_external_api_key(presented)
+    if auth is None:
+        await store.record_external_api_event(
+            client_id=None,
+            api_key_id=None,
+            action="auth_invalid",
+            path=request.url.path,
+            status_code=401,
+            idempotency_key=idempotency_key,
+            request_id=request_id,
+            ip=_request_ip(request),
+        )
+        raise HTTPException(status_code=401, detail={"error": "invalid_api_key", "request_id": request_id})
+    client = auth["client"]
+    api_key = auth["api_key"]
+    if required_scope not in set(auth.get("scopes") or []):
+        await store.record_external_api_event(
+            client_id=client["id"],
+            api_key_id=api_key["id"],
+            action="scope_denied",
+            path=request.url.path,
+            status_code=403,
+            idempotency_key=idempotency_key,
+            request_id=request_id,
+            ip=_request_ip(request),
+            metadata={"required_scope": required_scope},
+        )
+        raise HTTPException(status_code=403, detail={"error": "insufficient_scope", "request_id": request_id})
+    allowed = await store.check_external_rate_limit(
+        client["id"],
+        required_scope,
+        int(client.get("rate_limit_per_minute") or 60),
+    )
+    if not allowed:
+        await store.record_external_api_event(
+            client_id=client["id"],
+            api_key_id=api_key["id"],
+            action="rate_limited",
+            path=request.url.path,
+            status_code=429,
+            idempotency_key=idempotency_key,
+            request_id=request_id,
+            ip=_request_ip(request),
+            metadata={"scope": required_scope},
+        )
+        raise HTTPException(status_code=429, detail={"error": "rate_limited", "request_id": request_id})
+    return {**auth, "request_id": request_id, "required_scope": required_scope}
+
+
+async def require_public_services_read(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "services:read")
+
+
+@app.get("/v1/services", response_model=PublicServicesResponse)
+async def public_v1_services(
+    request: Request,
+    response: Response,
+    context: dict[str, Any] = Depends(require_public_services_read),
+) -> PublicServicesResponse:
+    catalog = await store.list_service_catalog(active_only=True)
+    data = [
+        PublicServiceCategory(
+            code=category["code"],
+            label=category["label"],
+            skills=[
+                PublicServiceSkill(
+                    code=skill["code"],
+                    label=skill["label"],
+                    requires_verification=bool(skill.get("requires_verification")),
+                )
+                for skill in category.get("skills", [])
+            ],
+        )
+        for category in catalog
+    ]
+    request_id = context["request_id"]
+    response.headers["X-Request-ID"] = request_id
+    await store.record_external_api_event(
+        client_id=context["client"]["id"],
+        api_key_id=context["api_key"]["id"],
+        action="services.list",
+        path=request.url.path,
+        status_code=200,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+        request_id=request_id,
+        ip=_request_ip(request),
+        metadata={"category_count": len(data)},
+    )
+    return PublicServicesResponse(data=data, meta=PublicApiMeta(request_id=request_id))
 
 
 @app.get("/ops/flags")

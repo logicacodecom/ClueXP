@@ -49,6 +49,7 @@
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
+| Public Platform API | `[~]` | Foundation code is in progress at repository head `0056_public_api_foundation`: external clients/API keys, scoped `GET /api/v1/services`, audit events, and Postgres-backed rate-limit tables. Not production-applied until migration `0056` is authorized and deployed |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
@@ -58,6 +59,10 @@
 | CI | `[x]` | CI is green on `main@500d61b`, including clean PostgreSQL 16 migration and `Postgres RLS and store integration tests`; earlier local 2026-08 verification covered the full API suite, root typecheck, console/native tests, and app builds |
 
 Current production migration head: **`0055_default_deny_rls`** (applied 2026-08-22 after explicit human authorization; verified in the handoff with `alembic_version = 0055_default_deny_rls`, zero registered public relations missing RLS, zero public policies, backend owner access preserved, and anon/authenticated role probes seeing zero `jobs` rows). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, provider CRM, alert escalation, and the default-deny RLS closure. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; production smoke `GET https://intake.cluexp.com/api/healthz` returned `200 {"status":"ok"}` after the `0055` apply.
+
+Current repository migration head: **`0056_public_api_foundation`**. It adds the first bounded
+Public API / Agent Gateway foundation tables and `GET /api/v1/services`; production application is
+separate and requires explicit migration authorization.
 
 ## Product Backlog & Release Map
 
