@@ -130,8 +130,9 @@ Verification completed locally:
 Not done:
 - No public service-request creation, network dispatch, payment, external client provisioning UI,
   or AI-adapter-specific behavior.
-- No production DDL apply for `0056`; current production DB remains at `0055` unless/until human
-  authorizes the new migration. — Codex
+- Production DDL apply was completed after explicit human authorization on 2026-08-22:
+  `alembic_version = 0056_public_api_foundation`; all five external API tables are present with
+  RLS enabled and zero public policies. — Codex
 
 ### 2026-08-22 — Codex → Claude: Sprint 0 security foundation ready for review/execution
 

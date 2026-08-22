@@ -44,25 +44,25 @@
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0055` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0056` applied); production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
-| Public Platform API | `[~]` | Foundation code is in progress at repository head `0056_public_api_foundation`: external clients/API keys, scoped `GET /api/v1/services`, audit events, and Postgres-backed rate-limit tables. Not production-applied until migration `0056` is authorized and deployed |
+| Public Platform API | `[~]` | Foundation code is merged and production-applied through `0056_public_api_foundation`: external clients/API keys, scoped `GET /api/v1/services`, audit events, and Postgres-backed rate-limit tables. External client provisioning UI, public request creation, network dispatch, and payments remain deferred |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
 | Notifications | `[~]` | Operations/customer messaging, masked calls, Twilio SMS/voice, Expo push registration/receipts, and native background-location foundations are implemented; production alert ownership, monitoring, provider configuration, and native device acceptance remain |
-| CI | `[x]` | CI is green on `main@500d61b`, including clean PostgreSQL 16 migration and `Postgres RLS and store integration tests`; earlier local 2026-08 verification covered the full API suite, root typecheck, console/native tests, and app builds |
+| CI | `[x]` | CI is green on `main@675bcb9`, including clean PostgreSQL 16 migration and `Postgres RLS and store integration tests`; earlier local 2026-08 verification covered the full API suite, root typecheck, console/native tests, and app builds |
 
-Current production migration head: **`0055_default_deny_rls`** (applied 2026-08-22 after explicit human authorization; verified in the handoff with `alembic_version = 0055_default_deny_rls`, zero registered public relations missing RLS, zero public policies, backend owner access preserved, and anon/authenticated role probes seeing zero `jobs` rows). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, provider CRM, alert escalation, and the default-deny RLS closure. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; production smoke `GET https://intake.cluexp.com/api/healthz` returned `200 {"status":"ok"}` after the `0055` apply.
+Current production migration head: **`0056_public_api_foundation`** (applied 2026-08-22 after explicit human authorization; verified with `alembic_version = 0056_public_api_foundation`, all five external API tables present, RLS enabled, and zero public policies). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, provider CRM, alert escalation, the default-deny RLS closure, and the first public API external-client foundation. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; production smoke `GET https://intake.cluexp.com/api/healthz` returned `200 {"status":"ok"}` after the `0056` apply.
 
 Current repository migration head: **`0056_public_api_foundation`**. It adds the first bounded
-Public API / Agent Gateway foundation tables and `GET /api/v1/services`; production application is
-separate and requires explicit migration authorization.
+Public API / Agent Gateway foundation tables and `GET /api/v1/services`; production application
+was completed 2026-08-22 after explicit migration authorization.
 
 ## Product Backlog & Release Map
 
@@ -593,8 +593,9 @@ Provider-managed dispatch (§3.4), the field-integrity core (§4), the tenant-sc
 recovery workspace (§5), the operational financial closeout/settlement records (§6),
 communications foundations, scheduling/partnership controls, technician reservations, and
 provider CRM are **code-complete** and merged. Production migration head is
-`0055_default_deny_rls` per the 2026-08-22 production RLS handoff; the Sprint 0 security
-foundation commit is `500d61b` (`feat(security): add Sprint 0 foundation`).
+`0056_public_api_foundation` per the 2026-08-22 Public API foundation apply; the Sprint 0 security
+foundation commit is `500d61b` (`feat(security): add Sprint 0 foundation`) and the Public API
+foundation commit is `675bcb9` (`feat(api): add public API foundation`).
 Remaining work to widen the pilot is release readiness and operations, not a large new feature slice:
 
 1. **Runtime-smoke the advisory-payment / live-tracking work:** PR #39 (merge `808f108`, tip
