@@ -7,8 +7,8 @@
 **Closure migration:** `0055_default_deny_rls`
 
 **Deployment status:** applied to production on 2026-08-22 after explicit human authorization.
-Structural database verification passed; an external Supabase PostgREST denial probe with the live
-anon key remains recommended.
+Structural database verification and an external Supabase PostgREST denial probe with the live
+anon key both passed.
 
 The July audit below identified 18 exposed live tables at that point in time. A complete replay of
 the Alembic chain through `0054` now creates **53 application tables**. Earlier migrations enable
@@ -40,7 +40,8 @@ After the authorized production apply on 2026-08-22, the deployed database is st
 `0055_default_deny_rls`; all 55 existing relations covered by the migration registry have
 `relrowsecurity = true`; public-schema policy count remains `0`; the owner/backend `postgres`
 session still reads `public.jobs`; and `SET ROLE anon` / `SET ROLE authenticated` probes see zero
-`public.jobs` rows.
+`public.jobs` rows. A live HTTP PostgREST probe using the production anon key against
+`/rest/v1/jobs?select=id&limit=1` returned `200` with zero rows and no leaked data.
 
 CI now migrates a clean PostgreSQL 16 database and checks every public table's `relrowsecurity`,
 owner/service-role access, anon/authenticated read and mutation denial, representative
@@ -136,7 +137,8 @@ table above differentiates by blast radius, not by how exposed they are.
 ## Status
 
 Repository implementation is complete through the Sprint 0 closure migration and regression tests.
-Production migration `0055_default_deny_rls` is applied and structurally verified. Real Supabase
-PostgREST probes with the live anon key and the broader backend smoke matrix remain recommended.
-Real per-table allow policies remain intentionally deferred until an approved direct PostgREST
-consumer exists; there is none today.
+Production migration `0055_default_deny_rls` is applied, structurally verified, and externally
+probed through Supabase PostgREST with the live anon key. The backend was redeployed after
+production secret provisioning and smoke-tested on public/protected routes. Real per-table allow
+policies remain intentionally deferred until an approved direct PostgREST consumer exists; there is
+none today.

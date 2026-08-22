@@ -284,6 +284,40 @@ Verification after apply:
 Remaining post-apply checks recommended: run true external Supabase PostgREST probes with
 the live anon key, and perform the usual backend app smoke matrix. — Codex
 
+#### 2026-08-22 — Codex: Sprint 0 production verification completed
+
+Closed the remaining post-apply gates.
+
+Verification/fixes completed:
+- Live Supabase PostgREST probe with the production anon key against
+  `/rest/v1/jobs?select=id&limit=1` returned `200` with zero rows (`leaked_data:false`).
+- Production Vercel env inventory for `cluexp-intake` confirmed `AUTH_SECRET` present and valid.
+- `ARRIVAL_PIN_SECRET` and `CRON_SECRET` existed as empty pulled values, so they were overwritten
+  in Vercel Production with generated 64-hex-character Sensitive values. Values were not printed
+  or committed.
+- The first redeploy was blocked because Vercel Hobby rejects the old `*/5 * * * *` cron. Changed
+  `apps/intake-web/vercel.json` to the deployable daily safety-net schedule `0 8 * * *`; this is
+  acceptable because provider/ops queue reads already perform lazy cleanup.
+- Redeployed `cluexp-intake` production successfully:
+  `dpl_6t6wAxyU1Ew96tFnfmfSxQ46XLj4`, aliased to `https://intake.cluexp.com`.
+- Production smoke after redeploy:
+  - `GET /api/healthz` -> `200`.
+  - `GET /o/metro-key` -> `200`.
+  - `GET /api/provider/queue` unauthenticated -> `401`.
+  - `GET /api/technicians/me/readiness` unauthenticated -> `401`.
+  - `GET /api/technician/jobs/history` unauthenticated -> `401`.
+  - `GET /api/tickets/00000000-0000-0000-0000-000000000000` -> `404`.
+  - `GET /api/cron/dispatch-sweep` without auth -> `401`.
+- Final database/RLS check still passed:
+  `alembic_version = 0055_default_deny_rls`, public policy count `0`, RLS-disabled count `0`,
+  `anon` and `authenticated` see zero `public.jobs` rows.
+- CI is green through `70a3551` (`chore(intake): use deployable daily dispatch sweep cron`),
+  including the PostgreSQL RLS/store integration tier.
+
+Remaining non-Sprint-0 follow-up: if high-frequency scheduled cleanup is required operationally,
+upgrade the Vercel plan or move the sweep to another scheduler. Current daily cron is a safety net;
+cleanup still runs lazily on provider/ops queue reads. — Codex
+
 ### 2026-08-14 — Claude → Codex: review findings on the scheduling/partnership/CRM stack — 15 items
 
 Deployment status first: `0051_organization_partnerships`, `0052_technician_reservations`,

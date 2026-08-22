@@ -74,15 +74,15 @@ Before enabling real customer traffic for a company whose dispatcher relies on t
   outside the dispatcher inbox — provisioning the actual number is an operational task per org,
   not something migration `0054` or this code does for you.
 - Cron wired with correct secret handling: `apps/intake-web/vercel.json` declares
-  `{ "path": "/api/cron/dispatch-sweep", "schedule": "*/5 * * * *" }`, and `CRON_SECRET` is set
-  in the Vercel project's environment variables. Vercel automatically sends
+  `{ "path": "/api/cron/dispatch-sweep", "schedule": "0 8 * * *" }`, and `CRON_SECRET` is set
+  in the Vercel project's Production environment variables. Vercel automatically sends
   `Authorization: Bearer $CRON_SECRET` on cron-triggered invocations of a route when an env var
   named exactly `CRON_SECRET` exists in the project — which is what `/cron/dispatch-sweep`
   already checks via `hmac.compare_digest`. Outside production, an unset `CRON_SECRET` leaves the sweep at `503`;
-  production refuses to start without a valid value.
-  and `stalled_job`/`stuck_offer` alerts silently never fire — confirm a real cron invocation
-  returns `200` with an `"alerts"` count in the response body, don't just trust the cron entry
-  exists.
+  production refuses to start without a valid value. The current Vercel plan supports daily cron,
+  not the earlier five-minute schedule; provider/ops queue reads still perform lazy cleanup, so
+  the daily cron is a safety net. Confirm a real cron invocation returns `200` with an `"alerts"`
+  count in the response body, don't just trust the cron entry exists.
 - No demo/fake number fallback for any org taking real traffic — `TWILIO_DEFAULT_FROM_NUMBER`
   should only ever be hit for orgs that are explicitly still in the internal/synthetic pilot.
 
