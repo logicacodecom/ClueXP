@@ -44,7 +44,7 @@
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0053` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0055` applied); production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
@@ -55,9 +55,9 @@
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
 | Notifications | `[~]` | Operations/customer messaging, masked calls, Twilio SMS/voice, Expo push registration/receipts, and native background-location foundations are implemented; production alert ownership, monitoring, provider configuration, and native device acceptance remain |
-| CI | `[x]` | Local gates green — 2026-08 verification: full API suite passed (`421 passed, 1 skipped`), root typecheck passed, console/native tests passed, and all five app builds passed |
+| CI | `[x]` | CI is green on `main@500d61b`, including clean PostgreSQL 16 migration and `Postgres RLS and store integration tests`; earlier local 2026-08 verification covered the full API suite, root typecheck, console/native tests, and app builds |
 
-Current production migration head: **`0053_provider_crm`** (confirmed in the 2026-08-14 handoff after `0051_organization_partnerships`, `0052_technician_reservations`, and `0053_provider_crm` were applied and `alembic_version` was synced). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, and provider CRM. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; latest production evidence in the handoff records `main@1f9f422` deployed after `0053`, followed by no-migration fix commit `bd2d839` for 15 scheduling/partnership/CRM security and correctness issues.
+Current production migration head: **`0055_default_deny_rls`** (applied 2026-08-22 after explicit human authorization; verified in the handoff with `alembic_version = 0055_default_deny_rls`, zero registered public relations missing RLS, zero public policies, backend owner access preserved, and anon/authenticated role probes seeing zero `jobs` rows). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, provider CRM, alert escalation, and the default-deny RLS closure. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; production smoke `GET https://intake.cluexp.com/api/healthz` returned `200 {"status":"ok"}` after the `0055` apply.
 
 ## Product Backlog & Release Map
 
@@ -588,8 +588,8 @@ Provider-managed dispatch (§3.4), the field-integrity core (§4), the tenant-sc
 recovery workspace (§5), the operational financial closeout/settlement records (§6),
 communications foundations, scheduling/partnership controls, technician reservations, and
 provider CRM are **code-complete** and merged. Production migration head is
-`0053_provider_crm` per the 2026-08-14 deployment handoff; the latest no-migration fix
-commit is `bd2d839` (`fix(dispatch): close scheduling/partnership security and correctness gaps`).
+`0055_default_deny_rls` per the 2026-08-22 production RLS handoff; the Sprint 0 security
+foundation commit is `500d61b` (`feat(security): add Sprint 0 foundation`).
 Remaining work to widen the pilot is release readiness and operations, not a large new feature slice:
 
 1. **Runtime-smoke the advisory-payment / live-tracking work:** PR #39 (merge `808f108`, tip

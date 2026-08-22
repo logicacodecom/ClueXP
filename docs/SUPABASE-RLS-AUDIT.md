@@ -6,8 +6,9 @@
 
 **Closure migration:** `0055_default_deny_rls`
 
-**Deployment status:** implemented and locally/offline validated; production application still
-requires an authorized migration run and PostgREST denial probe.
+**Deployment status:** applied to production on 2026-08-22 after explicit human authorization.
+Structural database verification passed; an external Supabase PostgREST denial probe with the live
+anon key remains recommended.
 
 The July audit below identified 18 exposed live tables at that point in time. A complete replay of
 the Alembic chain through `0054` now creates **53 application tables**. Earlier migrations enable
@@ -28,13 +29,18 @@ roles receive zero rows and cannot insert when PostgREST grants are present.
 | Through migration `0054` | 17 / 53 | 36 / 53 |
 | Fresh database at `0055` | 53 / 53 | 0 / 53 |
 
-The configured deployed database was checked read-only on 2026-08-22. It is still stamped
-`0054_alert_escalation` and has 56 public relations including `alembic_version`, legacy/live-only
-relations, and the 53 current application tables: **22 have RLS enabled and 34 have it disabled**.
-Both `anon` and `authenticated` have privileges on all 34 unprotected tables (238 privilege rows
-per role). The deployed `postgres` and `service_role` roles have `BYPASSRLS`; `anon` and
-`authenticated` do not. There are zero public-schema policies. This confirms the exposure remains
-live until `0055` is deployed; the migration was not applied as part of this review.
+The configured deployed database was checked read-only before the migration on 2026-08-22. It was
+stamped `0054_alert_escalation` and had 56 public relations including `alembic_version`,
+legacy/live-only relations, and the 53 current application tables: **22 had RLS enabled and 34 had
+it disabled**. Both `anon` and `authenticated` had privileges on all 34 unprotected tables (238
+privilege rows per role). The deployed `postgres` and `service_role` roles had `BYPASSRLS`; `anon`
+and `authenticated` did not. There were zero public-schema policies.
+
+After the authorized production apply on 2026-08-22, the deployed database is stamped
+`0055_default_deny_rls`; all 55 existing relations covered by the migration registry have
+`relrowsecurity = true`; public-schema policy count remains `0`; the owner/backend `postgres`
+session still reads `public.jobs`; and `SET ROLE anon` / `SET ROLE authenticated` probes see zero
+`public.jobs` rows.
 
 CI now migrates a clean PostgreSQL 16 database and checks every public table's `relrowsecurity`,
 owner/service-role access, anon/authenticated read and mutation denial, representative
@@ -122,13 +128,15 @@ table above differentiates by blast radius, not by how exposed they are.
 3. ~~Identify what's actually exposed through anon/service roles~~ — done above: all 18, fully, via `anon`+`authenticated`; the backend's own path (`postgres` role) is unaffected either way.
 4. **Stopgap implemented in migration `0055`: enable RLS with zero policies on every application table.** Per the analysis above this has no effect on the owner-role backend path and closes the anon/authenticated hole.
 5. Design and add real RLS policies per table (deny-by-default; only add allow policies if/when a legitimate PostgREST or client-side consumer is introduced — there isn't one today).
-6. Verify the FastAPI backend's read/write paths still work post-change (integration smoke test against a branch/staging DB before touching prod again).
+6. ~~Verify the FastAPI backend's read/write paths still work post-change~~ — production
+   `GET https://intake.cluexp.com/api/healthz` returned `200 {"status":"ok"}` after the
+   migration; broader pilot smoke remains recommended.
 7. Add a regression check: a test (mirroring the existing `test_postgres_sql_has_no_unescaped_percent` style guard-test pattern in `test_dispatch.py`) or a CI/Supabase-advisor check that fails if a new table ships with RLS disabled and anon/authenticated grants present, so this doesn't silently recur.
 
 ## Status
 
-Repository implementation is complete through the Sprint 0 closure migration and regression
-tests. Production remains blocked until `0055` is applied to the deployed database and real
-Supabase PostgREST probes confirm anon/authenticated denial without disrupting backend and signed
-storage workflows. Real per-table allow policies remain intentionally deferred until an approved
-direct PostgREST consumer exists; there is none today.
+Repository implementation is complete through the Sprint 0 closure migration and regression tests.
+Production migration `0055_default_deny_rls` is applied and structurally verified. Real Supabase
+PostgREST probes with the live anon key and the broader backend smoke matrix remain recommended.
+Real per-table allow policies remain intentionally deferred until an approved direct PostgREST
+consumer exists; there is none today.
