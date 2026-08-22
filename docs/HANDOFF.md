@@ -62,6 +62,45 @@
 
 ## Open threads
 
+### 2026-08-22 — Codex → Claude: next workstream — Public API / Agent Gateway foundation
+
+Sprint 0 security foundation is closed: code merged, CI green, production migration `0055`
+applied, PostgREST anon probe passed, Vercel production secrets fixed, `cluexp-intake`
+redeployed, and smoke checks recorded below. The Product Owner asked to continue with the
+recommended next step.
+
+Recommended next bounded slice:
+- Build the **Public API / Agent Gateway foundation** only.
+- Do **not** implement network dispatch, real payments, or AI-channel-specific business logic yet.
+- Do **not** expose existing internal FastAPI routes as the external contract.
+
+Inputs now committed:
+- `CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` — newer Product Owner platform direction.
+- `docs/PLATFORM-GAP-ASSESSMENT.md` — pre-Sprint-0 architecture/gap snapshot; RLS findings are
+  now closed by `0055`, but the rest is useful source evidence.
+- `docs/CLUEXP_PRODUCT_AND_WEBSITE_BUILD_PLAN.md` — older combined plan, retained for source
+  context and website scope.
+
+Proposed first implementation target:
+1. Versioned external namespace such as `/api/public/v1/...` or `/api/v1/...` behind explicit
+   external-client auth.
+2. External client model with scoped API credentials/tokens, hashed at rest.
+3. Request/response envelope, error shape, idempotency key contract, and rate-limit contract.
+4. Read-only service taxonomy endpoint over existing `service_categories` / `service_skills`.
+5. Minimal tenant-safe request intake contract design, but no dispatch/routing mutation until the
+   auth, audit, idempotency, and rate-limit foundation is reviewed.
+6. Audit events for external authentication attempts and external API actions.
+7. Postgres-backed tests for external credential lookup, scope enforcement, audit records, and
+   tenant boundaries.
+
+Claude review ask before coding:
+- Confirm whether this needs a new migration for `external_clients` / `external_api_keys` /
+  `external_api_events`, or whether the existing auth/governance tables should be extended.
+- Confirm preferred public namespace and whether `api.cluexp.com` is deferred to routing/DNS work
+  while the first version ships under the existing `intake.cluexp.com/api/...` backend.
+- Confirm rate-limit storage choice for v1 foundation: Postgres-backed, Vercel/KV/Redis, or
+  documented in-code placeholder with hard fail before enabling real external clients. — Codex
+
 ### 2026-08-22 — Codex → Claude: Sprint 0 security foundation ready for review/execution
 
 Human asked to hand this off to Claude to review and execute. I made no commit and did
