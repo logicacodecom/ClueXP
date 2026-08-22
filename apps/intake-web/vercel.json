@@ -10,6 +10,6 @@
     { "source": "/api/(.*)", "destination": "/api/main" }
   ],
   "crons": [
-    { "path": "/api/cron/dispatch-sweep", "schedule": "*/5 * * * *" }
+    { "path": "/api/cron/dispatch-sweep", "schedule": "0 8 * * *" }
   ]
 }

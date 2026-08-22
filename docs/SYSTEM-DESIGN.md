@@ -696,6 +696,10 @@ The dispatch sweep endpoint has been reduced to **cleanup only** — it no longe
 Production refuses to start if it is missing, short, or a known placeholder; outside production an
 unset value leaves the endpoint disabled with 503.
 
+**Current schedule:** daily at 08:00 UTC in `apps/intake-web/vercel.json`. The current Vercel plan
+rejects sub-daily cron schedules; provider/ops queue reads still perform lazy cleanup, so this cron
+is a safety net rather than the only cleanup path.
+
 **What it does (cleanup only):**
 1. `expire_stale_offers()` — marks past-`expires_at` offers as `expired`; returns jobs with no remaining active offer to `pending_dispatch`
 2. `auto_close_pending()` — closes `completed_pending_customer` jobs past `AUTO_CLOSE_WINDOW_SECONDS`
