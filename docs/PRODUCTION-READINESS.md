@@ -18,8 +18,8 @@ npm run build --workspace @cluexp/ops-web
 ## Production environment
 
 - `DATABASE_URL` set for all server-side API projects that need live persistence.
-- `ARRIVAL_PIN_SECRET` set to a high-entropy secret.
-- `CRON_SECRET` set if scheduled sweeps are enabled.
+- `AUTH_SECRET`, `ARRIVAL_PIN_SECRET`, and `CRON_SECRET` set to independent high-entropy values of
+  at least 32 characters. Production startup rejects missing, short, and known-placeholder values.
 - `CUSTOMER_INTAKE_BASE_URL` or `NEXT_PUBLIC_INTAKE_BASE_URL` set to `https://intake.cluexp.com`.
 - `NEXT_PUBLIC_CLUEXP_API_BASE_URL` set consistently for provider, technician, and ops web proxies.
 - Google Maps server key configured only where geocoding/reverse-geocoding is expected.
@@ -78,7 +78,8 @@ Before enabling real customer traffic for a company whose dispatcher relies on t
   in the Vercel project's environment variables. Vercel automatically sends
   `Authorization: Bearer $CRON_SECRET` on cron-triggered invocations of a route when an env var
   named exactly `CRON_SECRET` exists in the project — which is what `/cron/dispatch-sweep`
-  already checks via `hmac.compare_digest`. If `CRON_SECRET` is unset, the sweep returns `503`
+  already checks via `hmac.compare_digest`. Outside production, an unset `CRON_SECRET` leaves the sweep at `503`;
+  production refuses to start without a valid value.
   and `stalled_job`/`stuck_offer` alerts silently never fire — confirm a real cron invocation
   returns `200` with an `"alerts"` count in the response body, don't just trust the cron entry
   exists.

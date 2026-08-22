@@ -144,11 +144,18 @@ async def validation_error_detail(_: Request, exc: RequestValidationError) -> JS
 @app.exception_handler(Exception)
 async def unhandled_error_detail(request: Request, exc: Exception) -> JSONResponse:
     """Default 500 body is the plain text "Internal Server Error"."""
-    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
-    # ponytail: the exception text goes to the client — it is what makes a 500
-    # diagnosable from the browser. Swap for an opaque error id + log lookup if a
-    # public endpoint ever raises something sensitive.
-    return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
+    error_id = secrets.token_hex(8)
+    logger.error(
+        "Unhandled request error id=%s method=%s path=%s error_type=%s",
+        error_id,
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+    )
+    return JSONResponse(
+        {"detail": "An unexpected error occurred.", "error_id": error_id},
+        status_code=500,
+    )
 
 
 # OTP is deferred this sprint (no frontend gate); best-effort, demo-only.
@@ -1013,9 +1020,9 @@ async def envelope(ticket: Ticket) -> TicketEnvelope:
         try:
             photo.url = await storage.create_signed_download_url(storage.PRIVATE_BUCKET, photo.url)
         except RuntimeError:
-            # Keep the durable storage path if signing is unavailable; callers
-            # still receive the ticket instead of losing the whole response.
-            pass
+            # A durable private storage path is sensitive metadata and is not a
+            # usable customer URL. Fail closed instead of returning it.
+            photo.url = ""
     return TicketEnvelope(
         ticket=response_ticket,
         guards={
@@ -1040,6 +1047,22 @@ async def require_ticket(ticket_id: UUID) -> Ticket:
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
+
+
+INTAKE_CAPABILITY_COOKIE = "cluexp_intake_capability"
+
+
+async def require_intake_ticket(ticket_id: UUID, request: Request) -> Ticket:
+    """Authorize public intake reads/mutations with the per-job capability.
+
+    Return the same 404 for a missing job, missing cookie, or wrong cookie so a
+    raw UUID never becomes an existence oracle.
+    """
+    presented = request.cookies.get(INTAKE_CAPABILITY_COOKIE, "")
+    expected = await store.get_tracking_token(ticket_id)
+    if not presented or not expected or not hmac.compare_digest(presented, expected):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return await require_ticket(ticket_id)
 
 
 def deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -2004,8 +2027,9 @@ async def download_document(
         url = await storage.create_signed_download_url(
             document["storage_bucket"], document["storage_path"]
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+    except RuntimeError:
+        logger.error("provider_document_signing_failed")
+        raise HTTPException(status_code=503, detail="Document download is temporarily unavailable")
     return {"download_url": url, "expires_in": storage.DOWNLOAD_TTL_SECONDS}
 
 
@@ -2441,8 +2465,9 @@ async def provider_document_upload_intent(
     path = f"providers/{organization_id}/{uuid4()}-{safe_name}"
     try:
         intent = await storage.create_signed_upload_url(storage.PRIVATE_BUCKET, path)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+    except RuntimeError:
+        logger.error("provider_document_upload_signing_failed")
+        raise HTTPException(status_code=503, detail="Document upload is temporarily unavailable")
     return PhotoIntentResponse(
         bucket=intent.bucket,
         path=intent.path,
@@ -2851,8 +2876,9 @@ async def upload_my_document(
 
     try:
         await storage.upload_object(bucket, path, content, content_type)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Document upload failed: {str(exc)}")
+    except Exception:
+        logger.error("technician_document_upload_failed")
+        raise HTTPException(status_code=502, detail="Document upload failed")
 
     data = {
         "document_type": document_type,
@@ -3005,7 +3031,7 @@ async def _create_alert_best_effort(
 
 
 @app.post("/tickets", response_model=TicketEnvelope)
-async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope:
+async def create_ticket(response: Response, payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
     # Trusted intake-channel resolution (SYSTEM-DESIGN §20.4): the browser supplies only a channel
     # slug (attribution, dropped by sanitize); the owning org is resolved server-side and
@@ -3022,6 +3048,18 @@ async def create_ticket(payload: dict[str, Any] | None = None) -> TicketEnvelope
     await save(ticket, origin)
     await log_transition(ticket, "created")
     env = await envelope(ticket)
+    capability = await store.get_tracking_token(ticket.ticket_id)
+    if not capability:
+        raise HTTPException(status_code=503, detail="Could not secure the intake session")
+    response.set_cookie(
+        INTAKE_CAPABILITY_COOKIE,
+        capability,
+        httponly=True,
+        secure=config.IS_PRODUCTION,
+        samesite="strict",
+        max_age=12 * 60 * 60,
+        path="/",
+    )
 
     # ClueXP is a SaaS platform — it does not dispatch. A request only enters the
     # operational ladder when it belongs to a provider company via a branded intake
@@ -3163,20 +3201,15 @@ async def parse_provider_job_text(
 
 
 @app.get("/tickets/{ticket_id}", response_model=TicketEnvelope)
-async def get_ticket(ticket_id: UUID) -> TicketEnvelope:
+async def get_ticket(ticket_id: UUID, request: Request) -> TicketEnvelope:
     await latency()
-    env = await envelope(await require_ticket(ticket_id))
-    token = await store.get_tracking_token(ticket_id)
-    if token:
-        env.tracking_token = token
-        env.tracking_path = f"/t/{token}"
-    return env
+    return await envelope(await require_intake_ticket(ticket_id, request))
 
 
 @app.patch("/tickets/{ticket_id}", response_model=TicketEnvelope)
-async def patch_ticket(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelope:
+async def patch_ticket(ticket_id: UUID, payload: dict[str, Any], request: Request) -> TicketEnvelope:
     await latency()
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     merged = deep_merge(ticket.model_dump(mode="python"), sanitize_client_payload(payload))
     updated = Ticket.model_validate(merged)
     await save(updated)
@@ -3185,9 +3218,11 @@ async def patch_ticket(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelo
 
 
 @app.post("/tickets/{ticket_id}/photo-intent", response_model=PhotoIntentResponse)
-async def photo_intent(ticket_id: UUID, payload: PhotoIntentRequest) -> PhotoIntentResponse:
+async def photo_intent(
+    ticket_id: UUID, payload: PhotoIntentRequest, request: Request
+) -> PhotoIntentResponse:
     await latency()
-    await require_ticket(ticket_id)
+    await require_intake_ticket(ticket_id, request)
     try:
         storage.validate_upload_claim(payload.content_type, payload.size)
         ext = _extension_for_content_type(payload.content_type)
@@ -3195,8 +3230,9 @@ async def photo_intent(ticket_id: UUID, payload: PhotoIntentRequest) -> PhotoInt
         intent = await storage.create_signed_upload_url(storage.PRIVATE_BUCKET, path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError:
+        logger.error("intake_photo_upload_signing_failed")
+        raise HTTPException(status_code=503, detail="Photo upload is temporarily unavailable")
     return PhotoIntentResponse(
         bucket=intent.bucket,
         path=intent.path,
@@ -3208,9 +3244,11 @@ async def photo_intent(ticket_id: UUID, payload: PhotoIntentRequest) -> PhotoInt
 
 
 @app.post("/tickets/{ticket_id}/photo-complete", response_model=TicketEnvelope)
-async def photo_complete(ticket_id: UUID, payload: PhotoCompleteRequest) -> TicketEnvelope:
+async def photo_complete(
+    ticket_id: UUID, payload: PhotoCompleteRequest, request: Request
+) -> TicketEnvelope:
     await latency()
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     if payload.bucket != storage.PRIVATE_BUCKET:
         raise HTTPException(status_code=400, detail="Invalid storage bucket")
     if not payload.path.startswith(f"tickets/{ticket_id}/"):
@@ -3242,9 +3280,9 @@ async def _intake_show_estimate_for_ticket(ticket_id: UUID) -> bool:
 
 
 @app.post("/tickets/{ticket_id}/price-quote", response_model=TicketEnvelope)
-async def price_quote(ticket_id: UUID) -> TicketEnvelope:
+async def price_quote(ticket_id: UUID, request: Request) -> TicketEnvelope:
     await latency()
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     if not await _intake_show_estimate_for_ticket(ticket_id):
         raise HTTPException(status_code=409, detail="Estimate step is disabled for this provider")
     base = {
@@ -3262,12 +3300,14 @@ async def price_quote(ticket_id: UUID) -> TicketEnvelope:
 
 
 @app.post("/tickets/{ticket_id}/payment-method", response_model=TicketEnvelope)
-async def payment_method(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelope:
+async def payment_method(
+    ticket_id: UUID, payload: dict[str, Any], request: Request
+) -> TicketEnvelope:
     await latency()
     token = str(payload.get("token", ""))
     if not token.startswith("tok_"):
         raise HTTPException(status_code=400, detail="Invalid processor token")
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     ticket.payment_method = PaymentMethod(
         processor=str(payload.get("processor", "stub")),
         token=token,
@@ -3281,9 +3321,9 @@ async def payment_method(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnve
 
 
 @app.post("/tickets/{ticket_id}/commit", response_model=TicketEnvelope)
-async def commit(ticket_id: UUID) -> TicketEnvelope:
+async def commit(ticket_id: UUID, request: Request) -> TicketEnvelope:
     await latency()
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     # Sprint 1: payment-on-file is deferred, so price acceptance is the sole
     # commercial-consent gate. Restore the payment-method check before launch.
     estimate_required = await _intake_show_estimate_for_ticket(ticket_id)
@@ -3326,18 +3366,20 @@ async def commit(ticket_id: UUID) -> TicketEnvelope:
 
 
 @app.post("/tickets/{ticket_id}/otp/send")
-async def send_otp(ticket_id: UUID) -> dict[str, str]:
+async def send_otp(ticket_id: UUID, request: Request) -> dict[str, str]:
     await latency()
-    await require_ticket(ticket_id)
+    await require_intake_ticket(ticket_id, request)
     code = str(random.randint(100000, 999999))
     otp_codes[ticket_id] = code
     return {"dev_code": code, "message": "Code sent"}
 
 
 @app.post("/tickets/{ticket_id}/otp/verify", response_model=TicketEnvelope)
-async def verify_otp(ticket_id: UUID, payload: dict[str, Any]) -> TicketEnvelope:
+async def verify_otp(
+    ticket_id: UUID, payload: dict[str, Any], request: Request
+) -> TicketEnvelope:
     await latency()
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     if otp_codes.get(ticket_id) != str(payload.get("code", "")):
         raise HTTPException(status_code=400, detail="Code did not match")
     await log_transition(ticket, "otp_verified")
@@ -5084,7 +5126,7 @@ async def technician_offers(
 
 
 @app.get("/tickets/{ticket_id}/tracking")
-async def tracking(ticket_id: UUID) -> dict[str, Any]:
+async def tracking(ticket_id: UUID, request: Request) -> dict[str, Any]:
     """Customer-safe dispatch tracking READ. Returns an explicit ``state``
     (``waiting`` | ``matched`` | ``no_eligible`` | ``expired_retry`` | ``error``)
     and, only when matched, a customer-safe ``assignment`` (owner/fulfillment
@@ -5093,6 +5135,7 @@ async def tracking(ticket_id: UUID) -> dict[str, Any]:
     exposes candidates/scoring/rosters/internal IDs, and never creates offers
     (pure read — offer creation is owned by the dispatch write + scheduled sweep)."""
     await latency()
+    await require_intake_ticket(ticket_id, request)
     try:
         status = await store.get_dispatch_status(
             ticket_id,
@@ -7848,9 +7891,11 @@ async def review_ticket(ticket_id: UUID) -> dict[str, Any]:
 
 
 @app.post("/tickets/{ticket_id}/handoff", response_model=TicketEnvelope)
-async def handoff(ticket_id: UUID, payload: dict[str, Any] | None = None) -> TicketEnvelope:
+async def handoff(
+    ticket_id: UUID, request: Request, payload: dict[str, Any] | None = None
+) -> TicketEnvelope:
     await latency()
-    ticket = await require_ticket(ticket_id)
+    ticket = await require_intake_ticket(ticket_id, request)
     ticket.status = TicketStatus.FALLBACK_TO_HUMAN
     await save(ticket)
     await log_transition(ticket, f"handoff:{(payload or {}).get('reason', 'explicit')}")

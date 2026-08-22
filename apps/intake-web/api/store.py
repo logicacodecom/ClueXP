@@ -64,6 +64,39 @@ from api.schema import Ticket
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# Legacy startup DDL remains for local/backward compatibility. Any table it can
+# create must receive the same default-deny RLS decision as Alembic, otherwise a
+# migration-lagged deployment could recreate the PostgREST exposure at runtime.
+RUNTIME_DDL_RLS_TABLES = (
+    "closeout_item_types",
+    "customers",
+    "events",
+    "global_settings",
+    "governance_events",
+    "job_closeout_line_items",
+    "job_closeout_reports",
+    "job_operational_id_counters",
+    "job_payment_reports",
+    "job_reviews",
+    "jobs",
+    "login_attempts",
+    "media",
+    "organization_capabilities",
+    "organization_partnerships",
+    "rating_summaries",
+    "service_categories",
+    "service_skills",
+    "settlement_adjustments",
+    "settlement_payments",
+    "settlement_period_jobs",
+    "settlement_periods",
+    "technician_agreements",
+    "technician_reservations",
+    "user_organization_memberships",
+    "user_roles",
+    "users",
+)
+
 # Demo/seed login password. Intentionally simple for the demo environment; override
 # via env. The JWT signing secret (AUTH_SECRET) is separate and must still be strong.
 DEMO_PASSWORD = os.environ.get("DEMO_SEED_PASSWORD", "123456")
@@ -1758,6 +1791,8 @@ class InMemoryStore(Store):
         self._tickets[ticket.ticket_id] = ticket
         self._job_operational_id = getattr(self, "_job_operational_id", {})
         jid = str(ticket.ticket_id)
+        self._tokens = getattr(self, "_tokens", {})
+        self._tokens.setdefault(jid, _new_tracking_token())
         if jid not in self._job_operational_id:
             self._operational_id_counters = getattr(self, "_operational_id_counters", {})
             key = (ticket.created_at.year, ticket.created_at.month, ticket.created_at.day)
@@ -5786,6 +5821,10 @@ class PostgresStore(Store):
                 "create index if not exists idx_login_attempts_identifier_time"
                 " on login_attempts (lower(identifier), created_at)"
             )
+            for table in RUNTIME_DDL_RLS_TABLES:
+                await conn.execute(
+                    f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY"
+                )
             if config.DEMO_SEED:
                 await self._seed_demo_auth(conn)
 

@@ -21,6 +21,29 @@ Status: checklist for pilot readiness. Do not paste real customer data, tokens, 
 - Customer tracking actions must resolve through `tracking_token`, never raw job IDs.
 - `approval_url` may cross from technician-web to intake-web only as an absolute customer-origin URL.
 - Private media URLs should be minted at read time through the API, not persisted as durable public URLs.
+- Raw customer job UUID routes require the HttpOnly, same-site per-job intake capability cookie;
+  customer lifecycle/tracking continues to use `/t/{token}`. Missing/wrong capabilities return the
+  same 404 as an unknown job.
+- Private media signing fails closed: a storage path is never substituted for a failed signed URL.
+
+## Sprint 0 implementation review (2026-08-22)
+
+- **Logs/errors:** unexpected exceptions now return an opaque error plus a correlation ID; exception
+  text and upstream storage responses are not returned to clients. Server event logs still use
+  internal job/org identifiers where needed for operations; no request bodies, tracking tokens,
+  signed URLs, phone numbers, or exact technician coordinates were added to logs.
+- **Signed media:** customer intake photos and provider/technician compliance documents are issued
+  through short-lived signed URLs. Signing failures return a generic unavailable response and do
+  not expose durable bucket paths.
+- **PII and location:** provider reads remain organization-scoped; technician job reads remain
+  self-scoped; customer reads remain token/capability-scoped. Live technician location remains
+  status- and freshness-gated. Platform-admin oversight remains a broad privileged role and should
+  receive operational MFA/access-review controls before broader launch.
+- **Service role:** the Supabase service-role credential remains server-only and is used for Storage.
+  Database owner/Postgres and Supabase service-role RLS bypass are intentional; external clients
+  have no direct PostgREST use case.
+- **RLS:** migration `0055_default_deny_rls` covers every Alembic-managed application table with no
+  allow policies. Deployment and live PostgREST denial verification remain release gates.
 
 ## Pre-merge / pre-deploy review
 
@@ -28,6 +51,8 @@ Status: checklist for pilot readiness. Do not paste real customer data, tokens, 
 - Confirm API tests cover tenant isolation and tracking-token reads.
 - Confirm Vercel environment variables do not expose secrets to browser bundles.
 - Confirm `ARRIVAL_PIN_SECRET` is set in production.
+- Confirm `AUTH_SECRET`, `ARRIVAL_PIN_SECRET`, and `CRON_SECRET` are independent high-entropy values
+  of at least 32 characters; production startup rejects missing, short, and known placeholders.
 - Confirm `CUSTOMER_INTAKE_BASE_URL` or `NEXT_PUBLIC_INTAKE_BASE_URL` points to the production intake origin.
 - If Twilio is enabled, confirm every Twilio webhook validates signatures using the public Vercel URL and submitted parameters before DB work.
 - Confirm call recording/transcription is disabled until consent and jurisdiction policy are approved.

@@ -26,7 +26,7 @@ def test_validation_error_detail_is_a_string():
     assert "admin_email" in _detail(resp)
 
 
-def test_unhandled_error_detail_carries_the_cause():
+def test_unhandled_error_detail_is_opaque_and_traceable():
     # The InMemory store raises NotImplementedError here; default Starlette would
     # answer with the plain text "Internal Server Error".
     client = TestClient(app, raise_server_exceptions=False)
@@ -35,4 +35,6 @@ def test_unhandled_error_detail_carries_the_cause():
         "admin_email": "a@example.com", "password": "password123",
     })
     assert resp.status_code == 500
-    assert _detail(resp) == "NotImplementedError: registration requires the Postgres store"
+    assert _detail(resp) == "An unexpected error occurred."
+    assert len(resp.json()["error_id"]) == 16
+    assert "NotImplementedError" not in resp.text

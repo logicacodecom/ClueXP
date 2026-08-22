@@ -27,6 +27,24 @@ jobs:
         run: npm run build:ops
   api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cluexp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cluexp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_TEST_URL: postgresql://postgres:postgres@localhost:5432/cluexp_test
+      MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cluexp_test
+      DEMO_SEED: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -41,8 +59,15 @@ jobs:
           git diff --exit-code src/types/schema.generated.ts
       - name: api unit tests (dispatch tracking contract)
         working-directory: apps/intake-web
-        run: uv run --with-requirements requirements.txt --with pytest pytest api/tests -q
+        run: uv run --with-requirements requirements.txt --with pytest pytest api/tests -q --ignore=api/tests/test_postgres_security.py
       - name: alembic migrations are valid (offline)
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: uv run --with alembic --with "sqlalchemy>=2" --with psycopg alembic -c packages/db/alembic.ini upgrade head --sql
+      - name: prepare Supabase catalog shim
+        run: uv run --with psycopg packages/db/scripts/prepare_postgres_test.py
+      - name: migrate clean Postgres database
+        run: uv run --with alembic --with "sqlalchemy>=2" --with psycopg alembic -c packages/db/alembic.ini upgrade head
+      - name: Postgres RLS and store integration tests
+        working-directory: apps/intake-web
+        run: uv run --with-requirements requirements.txt --with pytest pytest api/tests/test_postgres_security.py -q

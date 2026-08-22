@@ -462,7 +462,7 @@ Customer affordances are driven by `customer_actions(status)`:
 
 ### 7.1 Where Migrations Live
 
-`packages/db/` — Alembic migrations. **Current production head: `0053_provider_crm`** (confirmed in the 2026-08-14 deployment handoff). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM.
+`packages/db/` — Alembic migrations. **Current repository head: `0055_default_deny_rls`** (production deployment must be verified separately). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM; `0054` alert escalation; `0055` default-deny RLS closure.
 
 The `PostgresStore.startup()` method in `store.py` also runs `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS` guards so the API boots cleanly even if a migration is behind.
 
@@ -692,7 +692,9 @@ The dispatch sweep endpoint has been reduced to **cleanup only** — it no longe
 
 `POST https://intake.cluexp.com/api/cron/dispatch-sweep`
 
-**Authentication:** `Authorization: Bearer {CRON_SECRET}` — set as Vercel env var `CRON_SECRET`. If unset, the endpoint returns 503.
+**Authentication:** `Authorization: Bearer {CRON_SECRET}` — set as Vercel env var `CRON_SECRET`.
+Production refuses to start if it is missing, short, or a known placeholder; outside production an
+unset value leaves the endpoint disabled with 503.
 
 **What it does (cleanup only):**
 1. `expire_stale_offers()` — marks past-`expires_at` offers as `expired`; returns jobs with no remaining active offer to `pending_dispatch`
@@ -729,11 +731,11 @@ All environment variables for `intake-web`. Set in Vercel project dashboard unde
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | — | Postgres DSN. If unset, in-memory store is used. Use Session Pooler URL (port 5432) not direct (port 5432 IPv6 only). |
-| `AUTH_SECRET` | `cluexp-dev-auth-secret-change-me` (dev only) | Signs/verifies session JWTs (`auth.py`). **Must be a strong, unique value in prod** — the default literal is public, so an unset prod secret means forgeable tokens. |
+| `AUTH_SECRET` | dev fallback outside production only | Signs/verifies session JWTs (`auth.py`). Production refuses to start when missing, shorter than 32 characters, or set to a known placeholder. |
 | `GOOGLE_MAPS_API_KEY` | — | Server-side geocoding + Places autocomplete. Must have Geocoding + Places API (New) enabled, Application Restrictions = None. |
 | `SUPABASE_URL` | — | Supabase project URL for storage signed URLs. |
 | `SUPABASE_SERVICE_ROLE_KEY` | — | Service-role key for storage operations. Legacy fallback `SUPABASE_SERVICE_KEY` is still read if the role-key name is absent. Server-only — never expose to the browser. |
-| `CRON_SECRET` | `""` (disabled) | Bearer secret for `POST /cron/dispatch-sweep`. Unset = endpoint returns 503. Sent as `Authorization: Bearer ${CRON_SECRET}` by Vercel Cron / pg_cron / any caller. |
+| `CRON_SECRET` | `""` outside production | Bearer secret for `POST /cron/dispatch-sweep`. Because production declares the sweep cron, production refuses missing, short, and known-placeholder values. |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set explicitly in prod. |
 | `DEMO_SEED` | `true` | If true, seeds demo technicians/orgs on startup. Applies to **both** the in-memory store and a Postgres store: `PostgresStore._seed_demo_auth` idempotently upserts the demo accounts and calls `demo_seed.seed_florida_locksmith` so the Tampa demo provider is always present in a fresh demo DB. Set `false` to disable. |
 | `DEMO_SEED_PASSWORD` | `123456` | Login password for the seeded demo accounts. Intentionally simple for demos; the JWT signing secret (`AUTH_SECRET`) is separate and must still be strong. |
@@ -762,7 +764,9 @@ in `PILOT-OPERATIONS.md`).
 
 ### Backend — Environment Detection
 
-The backend decides it is "production" (which makes `ARRIVAL_PIN_SECRET` mandatory — see below) from any of these. None need an explicit value beyond what the host already sets.
+The backend decides it is "production" (which makes `AUTH_SECRET`, `ARRIVAL_PIN_SECRET`, and
+`CRON_SECRET` mandatory and placeholder-checked) from any of these. None need an explicit value
+beyond what the host already sets.
 
 | Variable | Purpose |
 |----------|---------|
@@ -775,7 +779,7 @@ Secure customer-held PIN the technician must enter to move `en_route → arrived
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ARRIVAL_PIN_SECRET` | dev fallback (`dev-arrival-pin-secret`) | HMAC key for the stored PIN hash — stable per deployment so the hash can be recomputed for comparison; protects PINs if the DB leaks. **Fail-secure: production refuses to start if this is unset** (no silent fallback). Generate with `openssl rand -hex 32`. |
+| `ARRIVAL_PIN_SECRET` | dev fallback outside production only | HMAC key for the stored PIN hash. Production refuses missing, short, and known-placeholder values. Generate with `openssl rand -hex 32`. |
 | `ARRIVAL_PIN_TTL_SECONDS` | `900` | How long a generated PIN stays valid (15 min). |
 | `ARRIVAL_PIN_MAX_ATTEMPTS` | `5` | Wrong-PIN attempts before the PIN is burned. |
 
@@ -928,10 +932,10 @@ All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/ap
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `POST` | `/tickets` | public | Create job; fires dispatch if cutover active |
-| `GET` | `/tickets/{id}` | public | Get ticket state (polling endpoint for the non-cutover intake path) |
-| `PATCH` | `/tickets/{id}` | public | Update ticket fields during intake form steps |
-| `POST` | `/tickets/{id}/price-quote` | public | Generate price estimate |
-| `POST` | `/tickets/{id}/commit` | public | Finalize the intake record (does **not** dispatch — dispatch is decided at create; §3.4) |
+| `GET` | `/tickets/{id}` | intake capability cookie | Get ticket state during the originating intake session |
+| `PATCH` | `/tickets/{id}` | intake capability cookie | Update ticket fields during intake form steps |
+| `POST` | `/tickets/{id}/price-quote` | intake capability cookie | Generate price estimate |
+| `POST` | `/tickets/{id}/commit` | intake capability cookie | Finalize the intake record (does **not** dispatch — dispatch is decided at create; §3.4) |
 | `POST` | `/tickets/{id}/dispatch` | — | **Gated (410)** — legacy auto-match stub, removed |
 
 ### Customer Tracking (Cutover Path)
@@ -974,7 +978,7 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 | `GET` | `/technicians/{id}/offers` | session | List active offers for a technician |
 | `POST` | `/offers/{id}/accept` | session | Technician accepts an offer (atomic first-accept-wins) |
 | `POST` | `/offers/{id}/decline` | session | Technician declines an offer; job returns to `pending_dispatch` |
-| `GET` | `/tickets/{id}/dispatch-status` | public | Check dispatch state — **non-cutover/legacy polling only**; the provider-managed path uses `/t/{token}` (no auto-dispatch behind this) |
+| `GET` | `/tickets/{id}/tracking` | intake capability cookie | Check dispatch state — **non-cutover/legacy polling only**; the provider-managed path uses `/t/{token}` (no auto-dispatch behind this) |
 | `POST` | `/tickets/{id}/offers` | — | **Gated (410)** — use `/provider/queue/{id}/assign` instead |
 | `GET/POST` | `/cron/dispatch-sweep` | CRON_SECRET | Scheduled: expire stale offers + auto-close (no re-dispatch) |
 
@@ -1373,7 +1377,7 @@ How code goes from a branch to production (Vercel + Supabase + GitHub). Infra/ru
 - `.github/workflows/` changes need the GitHub `workflow` OAuth scope (or the web UI).
 
 **CI gate (must pass before merge):** Python `pytest` (`apps/intake-web/api/tests`), Alembic
-offline validation, shared TypeScript typecheck, and production builds of all four apps
+offline validation, a clean PostgreSQL 16 migration plus RLS/PostgresStore security tests, shared TypeScript typecheck, and production builds of all four apps
 (`build:ops` / `build:provider` / `build:tech` / intake-web).
 
 **Migrations to production:** the prod DB direct host is IPv6-only/unreachable from CI; apply

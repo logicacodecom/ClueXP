@@ -4,10 +4,11 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 from typing import Any
+
+from api import config
 
 
 def _b64url(data: bytes) -> str:
@@ -20,7 +21,7 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def _secret() -> bytes:
-    return os.environ.get("AUTH_SECRET", "cluexp-dev-auth-secret-change-me").encode("utf-8")
+    return config.AUTH_SECRET.encode("utf-8")
 
 
 def hash_password(password: str, *, salt: str | None = None) -> str:

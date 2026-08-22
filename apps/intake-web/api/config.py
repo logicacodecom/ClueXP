@@ -5,6 +5,36 @@ from __future__ import annotations
 import os
 
 
+IS_PRODUCTION = (
+    os.environ.get("VERCEL_ENV", "").strip().lower() == "production"
+    or os.environ.get("APP_ENV", os.environ.get("ENVIRONMENT", "")).strip().lower()
+    in {"production", "prod"}
+)
+
+_AUTH_SECRET_DEV_DEFAULT = "cluexp-dev-auth-secret-change-me"
+_ARRIVAL_PIN_SECRET_DEV_DEFAULT = "dev-arrival-pin-secret"
+_KNOWN_PLACEHOLDER_SECRETS = {
+    _AUTH_SECRET_DEV_DEFAULT,
+    _ARRIVAL_PIN_SECRET_DEV_DEFAULT,
+    "change-me",
+    "changeme",
+    "secret",
+}
+
+
+def _secret(name: str, *, dev_default: str | None = None) -> str:
+    """Resolve a server secret, rejecting missing/placeholder values in production."""
+    value = os.environ.get(name, "").strip()
+    if IS_PRODUCTION and (
+        not value or value.lower() in _KNOWN_PLACEHOLDER_SECRETS or len(value) < 32
+    ):
+        raise RuntimeError(
+            f"{name} must be set to a non-placeholder secret of at least 32 characters "
+            "in production. Refusing to start."
+        )
+    return value or (dev_default or "")
+
+
 def _int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, "") or default)
@@ -37,7 +67,7 @@ TOP_N_OFFERS = _int("DISPATCH_TOP_N", 1)
 # Shared secret for the scheduled sweep endpoint. Scheduler-agnostic: Vercel Cron
 # sends `Authorization: Bearer ${CRON_SECRET}`; Supabase pg_cron/pg_net or any
 # external caller sends the same header. If unset, the sweep endpoint is disabled.
-CRON_SECRET = os.environ.get("CRON_SECRET", "")
+CRON_SECRET = _secret("CRON_SECRET")
 
 # --- fulfillment cutover (Sprint 3) ---
 # How long a `completed_pending_customer` job waits for the customer to confirm
@@ -65,19 +95,10 @@ ARRIVAL_PIN_MAX_ATTEMPTS = _int("ARRIVAL_PIN_MAX_ATTEMPTS", 5)
 # stored hash can be recomputed for comparison; protects PINs if the DB leaks.
 # Fail secure: production MUST set ARRIVAL_PIN_SECRET explicitly. We never silently
 # fall back to a public default in production — startup fails instead.
-IS_PRODUCTION = (
-    os.environ.get("VERCEL_ENV", "").strip().lower() == "production"
-    or os.environ.get("APP_ENV", os.environ.get("ENVIRONMENT", "")).strip().lower() in {"production", "prod"}
+AUTH_SECRET = _secret("AUTH_SECRET", dev_default=_AUTH_SECRET_DEV_DEFAULT)
+ARRIVAL_PIN_SECRET = _secret(
+    "ARRIVAL_PIN_SECRET", dev_default=_ARRIVAL_PIN_SECRET_DEV_DEFAULT
 )
-_arrival_pin_secret = os.environ.get("ARRIVAL_PIN_SECRET")
-if not _arrival_pin_secret:
-    if IS_PRODUCTION:
-        raise RuntimeError(
-            "ARRIVAL_PIN_SECRET must be set in production. Refusing to start with an "
-            "insecure default — set a high-entropy secret (e.g. `openssl rand -hex 32`)."
-        )
-    _arrival_pin_secret = "dev-arrival-pin-secret"
-ARRIVAL_PIN_SECRET = _arrival_pin_secret
 
 # --- tracking-token mutation rate limit (Gate 4) ---
 # Per-token sliding window guarding the customer capability-link mutations

@@ -1219,7 +1219,12 @@ def test_public_ticket_patch_cannot_forge_scheduled_dispatch_state():
         ),
     )
     changed_start = original_start + timedelta(hours=1)
-    response = TestClient(app).patch(
+    capability = "intake-" + uuid4().hex
+    app_store._tokens = getattr(app_store, "_tokens", {})
+    app_store._tokens[str(jid)] = capability
+    client = TestClient(app)
+    client.cookies.set("cluexp_intake_capability", capability)
+    response = client.patch(
         f"/tickets/{jid}",
         json={
             "service_appointment": {

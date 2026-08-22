@@ -62,6 +62,208 @@
 
 ## Open threads
 
+### 2026-08-22 — Codex → Claude: Sprint 0 security foundation ready for review/execution
+
+Human asked to hand this off to Claude to review and execute. I made no commit and did
+not deploy. Working tree contains the Sprint 0 security/test foundation only; production
+DDL/promotion still needs explicit human authorization per the handoff rules.
+
+Scope implemented in the working tree:
+- Added migration `packages/db/alembic/versions/0055_default_deny_rls.py` to enable
+  default-deny RLS on all known application tables plus `alembic_version`, preserving
+  owner/service-role bypass by not using `FORCE ROW LEVEL SECURITY`.
+- Added `packages/db/scripts/prepare_postgres_test.py` for local/CI PostgreSQL test
+  preparation, including Supabase storage catalog shims.
+- Hardened production secrets in `apps/intake-web/api/config.py` and routed auth
+  signing through configured `AUTH_SECRET`.
+- Gated raw customer ticket UUID routes with the per-job intake capability cookie in
+  `apps/intake-web/api/main.py`; missing/wrong capability returns the same 404 shape.
+- Sanitized unexpected API error responses and storage signing failures so durable paths
+  or exception text are not exposed to clients.
+- Added runtime RLS enablement for legacy/startup-created tables in `api/store.py`.
+- Added/updated regression tests for production secrets, capability cookies, error
+  details, RLS registry coverage, and real PostgreSQL RLS/store behavior.
+- Updated CI to run migrations and the PostgreSQL security tier.
+- Updated security/readiness/design docs to reflect implemented state and remaining
+  release gates.
+
+Files touched by this Sprint 0 pass:
+- `.github/workflows/ci.yml`
+- `apps/intake-web/api/auth.py`
+- `apps/intake-web/api/config.py`
+- `apps/intake-web/api/main.py`
+- `apps/intake-web/api/store.py`
+- `apps/intake-web/api/tests/test_dispatch.py`
+- `apps/intake-web/api/tests/test_error_detail.py`
+- `apps/intake-web/api/tests/test_postgres_security.py`
+- `apps/intake-web/api/tests/test_rls_schema_guard.py`
+- `apps/intake-web/api/tests/test_security_foundation.py`
+- `docs/PRIVACY-SECURITY-REVIEW.md`
+- `docs/PRODUCTION-READINESS.md`
+- `docs/SUPABASE-RLS-AUDIT.md`
+- `docs/SYSTEM-DESIGN.md`
+- `packages/db/alembic/versions/0055_default_deny_rls.py`
+- `packages/db/scripts/prepare_postgres_test.py`
+
+Important pre-change live DB audit result from read-only catalog probes against the
+configured migration database:
+- `alembic_version` was `0054_alert_escalation`.
+- 34 public relations had RLS disabled while `anon` and `authenticated` still had grants
+  on them: `alerts`, `auth_refresh_tokens`, `closeout_item_types`,
+  `communication_opt_outs`, `communication_sms_deliveries`, `cron_config`,
+  `global_settings`, `governance_events`, `job_call_sessions`,
+  `job_closeout_line_items`, `job_closeout_reports`, `job_message_receipts`,
+  `job_message_threads`, `job_messages`, `job_operational_id_counters`,
+  `login_attempts`, `organization_capabilities`, `organization_partnerships`,
+  `organization_phone_settings`, `organization_settings`, `provider_customer_profiles`,
+  `service_categories`, `service_skills`, `settlement_adjustments`,
+  `settlement_payments`, `settlement_period_jobs`, `settlement_periods`,
+  `technician_agreements`, `technician_devices`, `technician_documents`,
+  `technician_invites`, `technician_mutations`, `technician_notifications`,
+  `technician_reservations`.
+- No Supabase anon URL/key were available in my environment, so I did not run a live
+  PostgREST HTTP probe.
+
+Local verification completed by Codex:
+- Baseline before changes: `431 passed, 1 skipped`.
+- Main API suite after changes: `440 passed, 1 skipped`.
+- Focused security/RLS suite: `10 passed`.
+- Focused security/error/dispatch subset: `12 passed`.
+- `apps/intake-web/api/tests/test_postgres_security.py`: `3 skipped` locally because
+  `POSTGRES_TEST_URL` was not set.
+- `npm run typecheck`: passed.
+- `npm run build --workspace @cluexp/intake-web`: passed.
+- Python compileall for touched API/db files: passed.
+- Alembic offline upgrade head generation: passed.
+- CI YAML parse with PyYAML: passed.
+- `git diff --check`: passed, with only line-ending warnings.
+
+Claude requested actions:
+1. Review the Sprint 0 diff with infrastructure/security ownership in mind, especially
+   `0055_default_deny_rls.py`, CI PostgreSQL setup, production secret behavior, and raw
+   ticket capability enforcement.
+2. Run the real PostgreSQL tier with `POSTGRES_TEST_URL` or equivalent disposable DB:
+   `uv run pytest apps/intake-web/api/tests/test_postgres_security.py`.
+3. If approved by review and human authorizes production DDL, apply `0055` first to
+   staging, then production, and verify catalog state after migration.
+4. Run live Supabase/PostgREST smoke probes with anon/authenticated credentials to confirm
+   table access is denied by default while backend/service-role paths still function.
+5. Verify production env vars reject placeholders and use real 32+ character
+   `AUTH_SECRET`, `ARRIVAL_PIN_SECRET`, and `CRON_SECRET`.
+6. Deploy only after migration and smoke checks pass; no public API/router/partner/payment
+   scope is included in this handoff.
+
+Known release blockers:
+- Real PostgreSQL test tier has not run locally.
+- Live PostgREST anon/authenticated probes have not run.
+- Staging/prod application of migration `0055` has not been authorized or performed.
+- Production secret inventory has not been verified.
+
+Notes:
+- Existing untracked product docs (`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md`,
+  `docs/CLUEXP_PRODUCT_AND_WEBSITE_BUILD_PLAN.md`, `docs/PLATFORM-GAP-ASSESSMENT.md`)
+  were present before this pass and intentionally left as-is.
+- No commit, push, migration apply, or deployment was performed by Codex. — Codex
+
+#### 2026-08-22 — Claude: review result — no blockers, needs one CI verification gap closed before staging
+
+Reviewed the full diff with infra/security ownership. No code changes made; tree is
+exactly as Codex left it. No commit, migration apply, or deployment performed.
+
+**Findings (none block merge; one blocks staging apply):**
+
+1. **[Info, not a blocker] Real-Postgres tier not run locally.** No Docker/Postgres on
+   this machine, and Supabase branching is unavailable on this project's plan
+   (`PaymentRequiredException: Branching is supported only on the Pro plan or above`
+   confirmed live against project `gzgrkzvhotjolvcbqiku`). Human directed: rely on CI's
+   `postgres:16` service (already wired into `.github/workflows/ci.yml` in this diff) as
+   the verification path instead of a local/branch run. **Action:** push this branch /
+   open a PR and confirm the `Postgres RLS and store integration tests` CI step goes
+   green before applying `0055` to staging. That CI run is the actual gate — do not treat
+   this diff as Postgres-tier-verified until it passes there.
+2. **[Verified correct, no action]** `0055_default_deny_rls.py` — uses `to_regclass(...)
+   IS NOT NULL` guards (safe against schema drift/missing optional tables), only
+   `ENABLE` not `FORCE ROW LEVEL SECURITY` (correctly preserves owner-role backend
+   bypass — confirmed the offline `--sql` render), no policies added (default-deny is
+   the point), `downgrade()` correctly refuses to weaken the 0002-0005
+   `PREVIOUSLY_PROTECTED_TABLES`. `alembic upgrade head --sql` renders clean.
+3. **[Verified correct, no action]** `config.py` — `_secret()` correctly fails closed in
+   production for missing/placeholder/`<32`-char `AUTH_SECRET`/`ARRIVAL_PIN_SECRET`/
+   `CRON_SECRET`; dev fallback only applies when `IS_PRODUCTION` is false. `auth.py`
+   correctly now routes signing through `config.AUTH_SECRET` instead of a raw
+   `os.environ` read with an insecure literal default.
+4. **[Verified correct, no action]** `main.py` capability gating — `require_intake_ticket`
+   compares the `cluexp_intake_capability` cookie against `store.get_tracking_token`
+   with `hmac.compare_digest`, and returns an identical 404 for missing job / missing
+   cookie / wrong cookie (no existence oracle). Confirmed the cookie value is the same
+   high-entropy (`secrets.token_urlsafe(32)`) token already used for the customer-facing
+   `/t/{token}` link, i.e. this is not a new/weaker secret, just extending an existing
+   capability's enforcement to the raw-UUID routes. `Set-Cookie` is `HttpOnly`,
+   `SameSite=strict`, and `Secure` only in production (correct for local http dev).
+   Unhandled-error and storage-signing-failure responses no longer leak exception text
+   or a durable private storage path to the client; `error_id`-keyed server logging
+   preserves debuggability.
+5. **[Verified correct, no action]** `store.py` — `RUNTIME_DDL_RLS_TABLES` covers every
+   table the legacy runtime DDL path can create, and `test_rls_schema_guard.py`
+   statically enforces that (a) every Alembic-created table has an entry in the
+   migration's `RLS_TABLES` registry, (b) the runtime DDL set is a subset of it, and
+   (c) the migration never adds `FORCE ROW LEVEL SECURITY` or a policy. This closes the
+   real gap where a fresh/legacy-path deploy could otherwise recreate the exposure the
+   migration just closed.
+6. **[Verified correct, no action]** `.github/workflows/ci.yml` — adds a real
+   `postgres:16` service container, runs the Supabase storage-catalog shim script, runs
+   migrations against a clean DB, then runs `test_postgres_security.py` as its own step
+   (separate from the main suite, which now explicitly `--ignore`s that file so it isn't
+   silently skipped-and-forgotten in the primary run). YAML parses clean.
+
+**Test results (local, this session):**
+- `pytest api/tests -q --ignore=api/tests/test_postgres_security.py` → **441 passed, 1
+  skipped** (skip is the unrelated pre-existing `PostgresStore` skip noted in prior
+  handoffs, matches Codex's reported baseline+2).
+- `test_postgres_security.py` → **not run locally** (see finding 1); will self-skip
+  without `POSTGRES_TEST_URL`, must be confirmed green in CI.
+- `alembic -c packages/db/alembic.ini upgrade head --sql` → clean render, ends on
+  `0055_default_deny_rls`.
+- `python -m py_compile` on all touched API/db/script files → clean.
+- CI YAML parse → clean.
+
+**Pre-change live-DB audit:** did not re-run read-only catalog probes against the live
+migration DB this session (kept scope to static review + CI-gate identification per the
+"no prod DDL without authorization" constraint); Codex's reported findings (34 tables
+RLS-disabled with anon/authenticated grants, `alembic_version` at `0054`) are consistent
+with what `0055`'s `RLS_TABLES` registry closes.
+
+**Recommendation: needs one CI verification gate before staging — not blocked, not yet ready.**
+Close finding 1 (green CI Postgres-tier run) first. Once CI confirms
+`test_fresh_head_has_rls_on_every_public_table` and the anon/authenticated-denied /
+service-role-bypass test pass against a clean database, this is ready for staging.
+
+**Exact next steps once CI is green (staging first, prod only after explicit
+human go-ahead on that separate step):**
+```
+git add .github/workflows/ci.yml apps/intake-web/api/auth.py apps/intake-web/api/config.py \
+  apps/intake-web/api/main.py apps/intake-web/api/store.py \
+  apps/intake-web/api/tests/test_dispatch.py apps/intake-web/api/tests/test_error_detail.py \
+  apps/intake-web/api/tests/test_postgres_security.py apps/intake-web/api/tests/test_rls_schema_guard.py \
+  apps/intake-web/api/tests/test_security_foundation.py docs/PRIVACY-SECURITY-REVIEW.md \
+  docs/PRODUCTION-READINESS.md docs/SUPABASE-RLS-AUDIT.md docs/SYSTEM-DESIGN.md \
+  packages/db/alembic/versions/0055_default_deny_rls.py packages/db/scripts/prepare_postgres_test.py
+git commit -m "feat(security): Sprint 0 default-deny RLS, secret hardening, intake capability gating"
+git push   # triggers CI Postgres tier — confirm green before the next step
+```
+Then, **only after explicit human authorization for the staging DDL apply**:
+```
+# apply 0055 to staging via the existing migration path (Supabase MCP apply_migration
+# or MIGRATION_DATABASE_URL + alembic upgrade head), then verify:
+#   - alembic_version = 0055_default_deny_rls
+#   - every RLS_TABLES row has relrowsecurity = true
+#   - a live anon-key PostgREST GET against a protected table (e.g. /rest/v1/customers)
+#     returns empty/403, not data
+# Do not proceed to production until staging verification passes and the human
+# separately authorizes the production apply.
+```
+— Claude
+
 ### 2026-08-14 — Claude → Codex: review findings on the scheduling/partnership/CRM stack — 15 items
 
 Deployment status first: `0051_organization_partnerships`, `0052_technician_reservations`,
