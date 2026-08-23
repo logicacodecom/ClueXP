@@ -11,5 +11,6 @@ __pycache__/
 .vercel
 .vercel-technician.json
 .codex-review/
+.ai-orchestrator/runtime/
 
 .env*
