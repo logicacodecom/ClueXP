@@ -62,6 +62,80 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: plan for the remaining service-request lifecycle endpoints (posted before coding)
+
+Human's next slice: `GET /v1/service-requests/{id}`, `GET
+/v1/service-requests/{id}/tracking`, `POST
+/v1/service-requests/{id}/cancellations`. Posting the plan first, matching
+this session's established pattern for anything schema-adjacent.
+
+**One real gap found during design, requiring a small schema addition:**
+for a `private_partner` request, ownership is already checkable via
+`customer_owner_org_id`. For a `network` request there is **no owner org at
+all** — nothing today records *which external client created it*, so there
+is currently no way to authorize read/cancel access to an unauthorized
+draft network request before `dispatch-authorizations` ever runs (and even
+after, only the authorizing client would be knowable, not necessarily the
+creating one, if those ever differ). ADR-6 explicitly flagged this exact gap
+as deferred "until a second consumer needs the extra dimension" — this is
+that consumer.
+
+**Migration `0059`** (new, will not be applied without separate
+authorization, same as every migration this session): `jobs.origin_client_id
+uuid references external_clients(id)`, plus an index. No new table, so no
+RLS-registry backfill needed (the column lives on an already-RLS-covered
+table).
+
+**Ownership rule for all three new endpoints** (404, not 403, on mismatch —
+matching this codebase's existing existence-hiding convention for
+capability-scoped resources, e.g. `require_intake_ticket`):
+- `private_partner`: caller's `organization_id` must equal
+  `customer_owner_org_id`.
+- `network`: caller must be the creating client (`origin_client_id`), the
+  client that ran `dispatch-authorizations` (`authorized_by_client_id`, if
+  authorized yet), or a `client_type='internal'` platform client.
+
+**New scopes:** `service_requests:read` (both GET routes),
+`service_requests:cancel` (POST cancellations) — not reusing
+`service_requests:write`/`:authorize`, matching this session's
+one-scope-per-capability convention.
+
+**`GET /v1/service-requests/{id}`:** `{request_reference, dispatch_scope,
+status, created_at}` where `status` is a **coarse public vocabulary**
+(`received | authorized | completed | cancelled`) collapsed from internal
+dispatch status — intentionally coarser than `/tracking`, no fulfillment-step
+detail. Not returning the submitted `service_skill` back: the Ticket model
+only persists the coarse `AccessType` bucket `_access_type_for_skill` maps
+onto (documented approximation from the creation-endpoint slice), and
+echoing that back mislabeled as the original skill would be dishonest
+rather than privacy-minimized.
+
+**`GET /v1/service-requests/{id}/tracking`:** reuses `store.get_dispatch_status`
+unchanged — the exact same customer-safe state machine the internal
+`/tickets/{id}/tracking` already uses (`waiting | matched | no_eligible |
+expired_retry`, technician identity revealed only at `matched`, never
+earlier). "Don't leak technician identity before the existing customer
+lifecycle permits it" is satisfied by reusing the identical function, not by
+building a second one that could drift.
+
+**`POST /v1/service-requests/{id}/cancellations`:** reuses `store.cancel_job`
+unchanged (atomic, revokes outstanding offers). Gate:
+`status == "draft" or can_customer_cancel(status)` — draft (never
+authorized) is trivially cancellable since nothing has happened yet;
+authorized requests follow the exact existing customer-cancel window
+(pending_dispatch through en_route; blocked from arrived on, i.e. "too far
+into fulfillment"). **Idempotent:** if already `cancelled`, returns the
+existing state as success rather than re-running `cancel_job` or erroring.
+Requires a `reason` (min length, same bar as the existing customer-facing
+cancel).
+
+**Explicitly not touched:** payments, private-to-network overflow, automatic
+re-offer, any MCP/ChatGPT/Claude/Gemini/Siri adapter — none of these three
+endpoints have any code path near those areas.
+
+If anything above doesn't match intent, say so before I start — otherwise
+proceeding to implement now. — Claude
+
 ### 2026-08-23 — Codex: final review of Tier 2 Network Router proof run
 
 Reviewed Claude's Tier 2 Network Router MVP implementation and the controlled synthetic production
