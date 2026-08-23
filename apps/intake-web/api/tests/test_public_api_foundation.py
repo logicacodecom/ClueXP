@@ -23,13 +23,16 @@ def isolated_app(monkeypatch):
     return main, replacement
 
 
-def _issue_key(store: InMemoryStore, scopes: list[str], *, rate_limit: int = 60) -> str:
+def _issue_key(
+    store: InMemoryStore, scopes: list[str], *, rate_limit: int = 60, organization_id: str | None = None,
+) -> str:
     client = asyncio.run(
         store.create_external_client(
             name="Test external client",
             client_type="agent",
             scopes=scopes,
             rate_limit_per_minute=rate_limit,
+            organization_id=organization_id,
         )
     )
     issued = asyncio.run(store.issue_external_api_key(client["id"], scopes=scopes))
@@ -44,9 +47,9 @@ def test_public_services_requires_api_key_and_audits_failures(isolated_app):
     invalid = client.get("/v1/services", headers={"Authorization": "Bearer not-real"})
 
     assert missing.status_code == 401
-    assert missing.json()["detail"]["error"] == "missing_api_key"
+    assert missing.json()["error"] == "missing_api_key"
     assert invalid.status_code == 401
-    assert invalid.json()["detail"]["error"] == "invalid_api_key"
+    assert invalid.json()["error"] == "invalid_api_key"
     assert [event["action"] for event in store._external_api_events] == [
         "auth_missing",
         "auth_invalid",
@@ -61,7 +64,7 @@ def test_public_services_requires_services_read_scope(isolated_app):
     response = client.get("/v1/services", headers={"X-API-Key": api_key})
 
     assert response.status_code == 403
-    assert response.json()["detail"]["error"] == "insufficient_scope"
+    assert response.json()["error"] == "insufficient_scope"
     assert store._external_api_events[-1]["action"] == "scope_denied"
 
 
@@ -100,7 +103,7 @@ def test_public_services_is_rate_limited_per_external_client(isolated_app):
 
     assert first.status_code == 200
     assert second.status_code == 429
-    assert second.json()["detail"]["error"] == "rate_limited"
+    assert second.json()["error"] == "rate_limited"
     assert store._external_api_events[-1]["action"] == "rate_limited"
 
 
@@ -137,7 +140,7 @@ def test_coverage_check_requires_scope_and_api_key(isolated_app):
         json={"lat": 40.0, "lng": -73.0, "service_skill": "locksmith.residential_lockout"},
     )
     assert wrong_scope.status_code == 403
-    assert wrong_scope.json()["detail"]["error"] == "insufficient_scope"
+    assert wrong_scope.json()["error"] == "insufficient_scope"
 
 
 def test_coverage_check_reports_true_only_when_a_verified_technician_is_in_range(isolated_app):
@@ -209,7 +212,88 @@ def test_coverage_check_idempotency_key_replays_then_rejects_conflicting_body(is
 
     assert first.status_code == 200 and first.json() == replay.json()
     assert conflict.status_code == 409
-    assert conflict.json()["detail"]["error"] == "idempotency_key_reuse"
+    assert conflict.json()["error"] == "idempotency_key_reuse"
     # The replay must not perform the check again or emit a second audit event.
     create_events = [e for e in store._external_api_events if e["action"] == "coverage_checks.create"]
     assert len(create_events) == 1
+
+
+_VALID_SERVICE_REQUEST = {
+    "dispatch_scope": "network",
+    "service_skill": "locksmith.residential_lockout",
+    "location": {"lat": 40.0, "lng": -73.0, "raw_text": "123 Main St"},
+    "consent": {"terms_accepted": True, "policy_version": "2026-08-01"},
+    "customer": {"name": "Jamie Rivera", "phone": "+15551234567"},
+}
+
+
+def test_service_request_requires_scope_and_consent(isolated_app):
+    main, store = isolated_app
+    api_key = _issue_key(store, ["coverage:check"])
+    client = TestClient(main.app)
+
+    wrong_scope = client.post("/v1/service-requests", headers={"X-API-Key": api_key}, json=_VALID_SERVICE_REQUEST)
+    assert wrong_scope.status_code == 403
+
+    write_key = _issue_key(store, ["service_requests:write"])
+    no_consent = dict(_VALID_SERVICE_REQUEST, consent={"terms_accepted": False, "policy_version": "2026-08-01"})
+    rejected = client.post("/v1/service-requests", headers={"X-API-Key": write_key}, json=no_consent)
+    assert rejected.status_code == 422
+
+
+def test_network_service_request_is_created_but_invisible_until_authorized(isolated_app):
+    main, store = isolated_app
+    api_key = _issue_key(store, ["service_requests:write"])
+    client = TestClient(main.app)
+
+    response = client.post("/v1/service-requests", headers={"X-API-Key": api_key}, json=_VALID_SERVICE_REQUEST)
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["dispatch_scope"] == "network"
+    assert body["status"] == "received"
+    # Safe external reference only -- never the raw job UUID.
+    assert body["request_reference"]
+    assert len(body["request_reference"]) < 36 or "-" not in body["request_reference"][:8]
+
+    # The whole point of Tier 1: no job_status was set, so it is invisible to
+    # both the ops queue and the dispatch sweep -- not by an extra flag, but
+    # because both already gate strictly on "pending_dispatch".
+    assert getattr(store, "_job_status", {}) == {}
+    assert asyncio.run(store.get_ops_queue(None)) == []
+
+
+def test_private_partner_service_request_requires_partner_bound_client(isolated_app):
+    main, store = isolated_app
+    unbound_key = _issue_key(store, ["service_requests:write"])
+    client = TestClient(main.app)
+
+    payload = dict(_VALID_SERVICE_REQUEST, dispatch_scope="private_partner")
+    rejected = client.post("/v1/service-requests", headers={"X-API-Key": unbound_key}, json=payload)
+    assert rejected.status_code == 422
+    assert rejected.json()["error"] == "dispatch_scope_requires_partner_client"
+
+    bound_key = _issue_key(store, ["service_requests:write"], organization_id="partner-org-1")
+    accepted = client.post("/v1/service-requests", headers={"X-API-Key": bound_key}, json=payload)
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["dispatch_scope"] == "private_partner"
+    ticket_id = next(iter(store._tickets))
+    assert store._job_org[str(ticket_id)] == "partner-org-1"
+
+
+def test_service_request_rejects_unknown_skill_and_idempotency_replays(isolated_app):
+    main, store = isolated_app
+    api_key = _issue_key(store, ["service_requests:write"])
+    client = TestClient(main.app)
+
+    unknown = dict(_VALID_SERVICE_REQUEST, service_skill="not.a.real.skill")
+    rejected = client.post("/v1/service-requests", headers={"X-API-Key": api_key}, json=unknown)
+    assert rejected.status_code == 422
+    assert rejected.json()["error"] == "unknown_service_skill"
+
+    headers = {"X-API-Key": api_key, "Idempotency-Key": "svc-req-1"}
+    first = client.post("/v1/service-requests", headers=headers, json=_VALID_SERVICE_REQUEST)
+    replay = client.post("/v1/service-requests", headers=headers, json=_VALID_SERVICE_REQUEST)
+    assert first.status_code == 200
+    assert first.json() == replay.json()
+    assert len(store._tickets) == 1  # replay must not create a second job

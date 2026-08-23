@@ -62,6 +62,106 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: `POST /v1/service-requests` — Tier 1 decisions implemented, Tier 2/3 still open
+
+Human answered "do it" on the Tier 1/2/3 decision split proposed 2026-08-22 (see
+that entry below) — proceeding with the conservative Tier 1 defaults I
+recommended, since Tier 1 is what's needed to unblock a real (if inert)
+request-creation endpoint:
+1. Restricted scope (`service_requests:write`, separate from `coverage:check`).
+2. Invisible-until-authorized — implemented structurally, not via a flag.
+3. Consent required at creation (`consent.terms_accepted` must be `true`).
+4. Per-client volume caps — reuses the existing rate-limit machinery per-scope
+   (`service_requests:write` gets its own rate-limit bucket, same mechanism as
+   `services:read`/`coverage:check`); no new caps code needed.
+
+Tier 2 (provider eligibility/ranking, re-offer fairness) and Tier 3 (customer
+support ownership, payments) remain **fully undecided and unimplemented** —
+this endpoint does not route, dispatch, or assign anything.
+
+Implemented:
+- `POST /v1/service-requests` (ADR-6, `docs/SYSTEM-DESIGN.md` §20.6): accepts
+  `{dispatch_scope, service_skill, location, consent, situation?, urgency?,
+  customer?, notes?}`, creates a real `Ticket`/job row via the existing
+  `save()`/`store.save()` path, and returns `{request_reference,
+  dispatch_scope, status: "received"}` — the friendly `operational_id`, never
+  the raw job UUID (same rule as customer tracking links). If the operational
+  id somehow isn't assigned, the endpoint fails closed with a generic 500
+  rather than falling back to the raw UUID.
+- **Never calls `store.set_job_status(..., "pending_dispatch")`.** The ops
+  queue (`get_ops_queue`) and the dispatch sweep cron both already gate
+  strictly on that status, so the created job is invisible to both by
+  construction — not an extra visibility flag that could be forgotten
+  elsewhere, just the absence of the one call that makes a job live.
+- `dispatch_scope=private_partner` requires the authenticated API client to
+  have `organization_id` set (a partner-bound client); otherwise `422
+  dispatch_scope_requires_partner_client`. `dispatch_scope=network` requires
+  no organization binding. `origin_org_id`/`customer_owner_org_id` are set
+  from `client["organization_id"]` server-side only — never from the request
+  body, mirroring ADR-4's existing `org_id` anti-spoofing rule.
+- `service_skill` is validated against the live service catalog
+  (`store.list_service_catalog(active_only=True)`, the same source `/v1/services`
+  serves) — an unknown code is a `422 unknown_service_skill`, not silently
+  accepted (unlike `/v1/coverage-checks`, which is read-only and safe to leave
+  permissive; this endpoint persists data, so the bar is higher).
+- Supports `Idempotency-Key` via the same `begin_or_get_external_api_mutation`
+  contract as `coverage-checks`; a retry with the same key + body replays the
+  original response without creating a second job.
+- **Found and fixed a real ADR-5 contract violation while building this:**
+  `HTTPException`-raised `/v1` errors (auth/scope/rate-limit, and now this
+  endpoint's business-rule rejections) were still nested under FastAPI's
+  default `{"detail": {...}}` wrapper, while `RequestValidationError`
+  responses were already flat — inconsistent with ADR-5's "one shape, every
+  `/v1` route" promise. Added `http_exception_detail`
+  (`@app.exception_handler(HTTPException)`) alongside the existing two
+  handlers, scoped to `/v1` paths only via the same `_is_public_api_path()`
+  check; internal routes are unaffected. **This changes the wire shape of the
+  already-shipped `/v1/services`/`/v1/coverage-checks` 401/403/429 error
+  bodies** from `{"detail": {"error": ...}}` to flat `{"error": ...}` — every
+  affected test was updated to match. No external client exists yet to have
+  depended on the old nested shape (no provisioning UI, all keys issued
+  manually so far), so this is judged safe to correct now rather than carry
+  the inconsistency forward.
+- Re-exported `docs/openapi-v1-snapshot.json` (now 3 paths) and updated
+  `SYSTEM-DESIGN.md` §13's endpoint table + ADR-5/ADR-6 with what's actually
+  implemented vs. still just frozen vocabulary.
+
+Not done (Tier 2/3, correctly out of scope for this pass):
+- No `POST .../dispatch-authorizations`, no routing, no technician ever sees
+  this data. A created request has no path to becoming a real dispatched job
+  yet — that's the next real decision point (provider eligibility/ranking,
+  re-offer fairness) and needs Tier 2 answered first.
+- No `origin_type`/`origin_client_id` persisted as distinct fields yet — reuses
+  the existing `origin_org_id`/`customer_owner_org_id` columns from ADR-4
+  rather than adding new ones for a single call site; noted in ADR-6 as
+  deferred until a second consumer needs the extra dimension.
+- Idempotency-key TTL/staleness (flagged in the threat model below) is now
+  live for a real persisted-record endpoint, not just a no-op read — still not
+  addressed. Low severity while the record itself is inert, but should be
+  revisited before Tier 2 makes these records consequential.
+
+Verification:
+- `pytest api/tests -q --ignore=api/tests/test_postgres_security.py` → `453
+  passed, 1 skipped` (up from 449; +12 new tests covering scope/consent
+  gating, invisible-until-authorized, private-partner client binding, unknown
+  skill rejection, and idempotency replay — plus updates to existing
+  auth-error tests for the flat envelope fix).
+- `python -m py_compile` on all touched files → clean.
+- `npx tsc --noEmit -p apps/intake-web/tsconfig.json` → clean.
+- `scripts/generate_types.py` → no diff.
+- `alembic upgrade head --sql` → unchanged head (`0056_public_api_foundation`);
+  no migration needed, no new tables.
+- `scripts/export_openapi_v1.py` re-run → snapshot now has 3 `/v1` paths.
+- Postgres tier not re-run locally (same constraint as prior sessions — no
+  disposable Postgres available); nothing in this pass touches `PostgresStore`
+  SQL beyond what `0056`'s slice already added and CI already verified, so no
+  new Postgres-specific test was added this time.
+
+Files changed: `apps/intake-web/api/main.py`,
+`apps/intake-web/api/tests/test_public_api_foundation.py`,
+`docs/openapi-v1-snapshot.json`, `docs/SYSTEM-DESIGN.md`, `docs/HANDOFF.md`
+(this entry). Not committed/pushed yet. — Claude
+
 ### 2026-08-22 — Claude: threat model + origin/dispatch_scope vocabulary freeze (docs only)
 
 Continuing Phase 1 per the roadmap. Docs-only pass — no code, no migration, no new

@@ -943,9 +943,10 @@ key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flig
 |--------|------|------|---------|
 | `GET` | `/v1/services` | external API key, `services:read` scope | Public active service taxonomy envelope `{ data, meta }`; audits success/failure and enforces a Postgres-backed per-client rate limit |
 | `POST` | `/v1/coverage-checks` | external API key, `coverage:check` scope | Pure read: does the verified network have an available, skilled technician within range of `{lat, lng, service_skill}`? Returns only an aggregate `{ covered: bool, service_skill }` — never a technician identity, roster, or count. No ticket/job is created; no dispatch is triggered. Supports `Idempotency-Key`. |
+| `POST` | `/v1/service-requests` | external API key, `service_requests:write` scope | Creates a canonical service request per ADR-6's `dispatch_scope` (`private_partner` requires an API client bound to a partner `organization_id`; `network` requires none). Returns `{ request_reference, dispatch_scope, status: "received" }` — never the raw job UUID. Requires `consent.terms_accepted=true` at creation. **Never sets `job_status` to `pending_dispatch`** — the request is invisible to the ops queue and dispatch sweep (both already gate strictly on that status) until a future, separate `dispatch-authorizations` endpoint (not implemented) authorizes it. Supports `Idempotency-Key`. |
 
-No public service-request creation, network routing, payment, or AI-adapter-specific behavior is
-live in this slice.
+No network routing, dispatch authorization, payment, or AI-adapter-specific behavior is live in
+this slice — `POST /v1/service-requests` persists a record only.
 
 ### Auth
 | Method | Path | Auth | Purpose |
@@ -1511,10 +1512,17 @@ This ADR freezes the contract shape only; it authorizes no new dispatch/business
   `/v1` decision). A future breaking change gets `/v2`; `/v1` routes never change response shape
   in place.
 - **Error envelope — one shape, every `/v1` route:** `{ error: string, request_id: string, detail?:
-  string }`. Applies uniformly to 401/403/404/409/422/429/500, including FastAPI's default
-  validation-error and unhandled-exception handlers when the request path is under `/v1` — internal
-  (`/tickets`, `/provider/*`, `/ops/*`, technician, admin) routes keep their existing response
-  shapes unchanged; this ADR does not touch them.
+  string }`, **flat, never nested under a `detail` key.** Applies uniformly to
+  401/403/404/409/422/429/500 — validation errors, `HTTPException`s raised via `public_api_error()`
+  (auth/scope/rate-limit/idempotency/business-rule rejections), and unhandled exceptions all share
+  one `@app.exception_handler` per exception type, each branching on `_is_public_api_path()`.
+  Internal (`/tickets`, `/provider/*`, `/ops/*`, technician, admin) routes keep FastAPI's default
+  `{"detail": ...}` shape unchanged — every internal frontend BFF already reads `body.detail`
+  (see the handler's docstring in `main.py`), and this ADR does not touch them. *(Amendment
+  2026-08-23: initially only `RequestValidationError`/unhandled-`Exception` were flattened;
+  `HTTPException` was still nested under `detail` for `/v1`, discovered as a real contract
+  violation while building `/v1/service-requests` and fixed by adding
+  `http_exception_detail` alongside the other two handlers.)*
 - **Idempotency — optional but enforced when presented:** any `/v1` `POST` may accept an
   `Idempotency-Key` header. A fresh key reserves a row in `external_api_idempotency_keys` keyed on
   `(client_id, idempotency_key)` and the caller proceeds; the same key + an identical request body
@@ -1525,8 +1533,11 @@ This ADR freezes the contract shape only; it authorizes no new dispatch/business
   `begin_or_get_technician_mutation` pattern (§20 prior art) rather than inventing a new one.
   **Rejected: mandatory idempotency key on every `POST`.** *A pure-read-effect endpoint like
   `/v1/coverage-checks` is safe to retry without one; forcing the header on callers that don't need
-  it adds friction for no safety gain. Endpoints with real side effects (future
-  `/v1/service-requests`) should require it at that point, not retrofit it.*
+  it adds friction for no safety gain.* `POST /v1/service-requests` (below) does have a real side
+  effect (a persisted record) and also treats `Idempotency-Key` as optional rather than mandatory,
+  consistent with this decision — a client that skips it simply creates a duplicate record on
+  retry, which is a caller-side risk to accept, not a platform integrity risk, since the record is
+  inert (not dispatched) either way.
 - **Audit:** every `/v1` call — success or failure — writes one `external_api_events` row
   (`action`, `path`, `status_code`, `request_id`, `idempotency_key`, caller IP, scoped metadata).
   Replay responses do not re-emit a duplicate event (the original call already recorded one).
@@ -1535,25 +1546,31 @@ This ADR freezes the contract shape only; it authorizes no new dispatch/business
   boundary, even though the same rule engine (`rank_candidates`) that ranks real dispatch
   candidates is reused internally to compute the answer.
 - **OpenAPI:** exported via FastAPI's built-in `app.openapi()`/`/openapi.json` (no separate spec to
-  hand-maintain); `POST /v1/coverage-checks` and `GET /v1/services` are documented there today.
+  hand-maintain); `POST /v1/coverage-checks`, `POST /v1/service-requests`, and `GET /v1/services`
+  are documented there today.
 
 ### 20.6 ADR-6 — Origin vocabulary and `dispatch_scope` mapping (Accepted 2026-08-22)
 
-Vocabulary/mapping freeze only — **no endpoint implements this yet.** Written now so the first
-consequential endpoint (`POST /v1/service-requests`, Phase 2 MVP) has a reviewed contract to build
-against instead of inventing one ad hoc under implementation pressure. Nothing in this ADR is
-reachable from any live route.
+Vocabulary/mapping freeze, now implemented by `POST /v1/service-requests` (2026-08-23) — request
+*creation* only, still with no dispatch/routing/authorization behind it (Phase 2 MVP remains
+undone; see §8). Written so the first consequential endpoint has a reviewed contract to build
+against instead of inventing one ad hoc under implementation pressure.
 
 - **`origin_client_id` is never client-supplied.** It is always the authenticated
   `external_clients.id` resolved by `require_public_api_client` from the presented API key — exactly
   the same anti-spoofing shape ADR-4 already established for browser-supplied `org_id` on `/tickets`
   ("attribution only, never authority"). A request body must never contain an `origin_client_id`
   field; if a future endpoint accepts one for logging/display, it is ignored for authorization.
+  (`POST /v1/service-requests` does not yet surface `origin_client_id`/`origin_type` in its
+  response or persist them as distinct job columns — it derives `customer_owner_org_id`/
+  `origin_org_id` from `client["organization_id"]` today, reusing the existing ADR-4 columns rather
+  than adding new ones for a single-field win; revisit if a second origin dimension is needed.)
 - **`origin_type` public vocabulary:** `first_party_website | human_app | partner_website |
   partner_widget | partner_api | ai_agent_adapter | enterprise_partner | internal_operations`.
   Resolved server-side from `external_clients.client_type` (`first_party | partner | agent |
   enterprise | internal`) plus the calling route, not accepted as a raw client-supplied string —
-  same principle as `origin_client_id`.
+  same principle as `origin_client_id`. Not yet wired into `/v1/service-requests`'s response (see
+  above) — the vocabulary is frozen, the plumbing is deferred until a second call site needs it.
 - **`dispatch_scope` public two-value contract, frozen exactly as the roadmap specifies:**
   `private_partner | network`. Maps to the existing `fulfillment_policy` DB values one-directionally:
   - `dispatch_scope=private_partner` → `fulfillment_policy="private"` (`POLICY_PRIVATE`).

@@ -13,7 +13,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -175,6 +175,17 @@ async def validation_error_detail(request: Request, exc: RequestValidationError)
     return JSONResponse({"detail": detail}, status_code=422)
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_detail(request: Request, exc: HTTPException) -> JSONResponse:
+    """FastAPI's default wraps every HTTPException body as `{"detail": ...}` --
+    the convention every internal frontend BFF already reads (see the module
+    docstring above). `/v1` instead promises the flat `PublicApiError` envelope
+    (ADR-5), so unwrap here for `/v1` only; internal routes keep the default."""
+    if _is_public_api_path(request.url.path) and isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(exc.detail, status_code=exc.status_code, headers=exc.headers)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+
+
 @app.exception_handler(Exception)
 async def unhandled_error_detail(request: Request, exc: Exception) -> JSONResponse:
     """Default 500 body is the plain text "Internal Server Error"."""
@@ -242,6 +253,18 @@ class PublicServicesResponse(BaseModel):
     meta: PublicApiMeta
 
 
+def _validate_lat(v: float) -> float:
+    if not -90.0 <= v <= 90.0:
+        raise ValueError("lat must be between -90 and 90")
+    return v
+
+
+def _validate_lng(v: float) -> float:
+    if not -180.0 <= v <= 180.0:
+        raise ValueError("lng must be between -180 and 180")
+    return v
+
+
 class PublicCoverageCheckRequest(BaseModel):
     lat: float
     lng: float
@@ -250,16 +273,12 @@ class PublicCoverageCheckRequest(BaseModel):
     @field_validator("lat")
     @classmethod
     def _lat_range(cls, v: float) -> float:
-        if not -90.0 <= v <= 90.0:
-            raise ValueError("lat must be between -90 and 90")
-        return v
+        return _validate_lat(v)
 
     @field_validator("lng")
     @classmethod
     def _lng_range(cls, v: float) -> float:
-        if not -180.0 <= v <= 180.0:
-            raise ValueError("lng must be between -180 and 180")
-        return v
+        return _validate_lng(v)
 
 
 class PublicCoverageCheckResult(BaseModel):
@@ -269,6 +288,80 @@ class PublicCoverageCheckResult(BaseModel):
 
 class PublicCoverageCheckResponse(BaseModel):
     data: PublicCoverageCheckResult
+    meta: PublicApiMeta
+
+
+# --- POST /v1/service-requests (ADR-6: dispatch_scope contract) ---
+# Creates a canonical service-request record only. Never sets job_status to
+# "pending_dispatch", so the job is invisible to the ops queue and the dispatch
+# sweep -- both already gate strictly on that status. It only becomes
+# dispatchable through a future, separate authorize_dispatch step (Tier 2,
+# not implemented yet; see docs/HANDOFF.md 2026-08-22 decision log).
+class PublicServiceRequestLocation(BaseModel):
+    lat: float
+    lng: float
+    raw_text: str | None = None
+
+    @field_validator("lat")
+    @classmethod
+    def _lat_range(cls, v: float) -> float:
+        return _validate_lat(v)
+
+    @field_validator("lng")
+    @classmethod
+    def _lng_range(cls, v: float) -> float:
+        return _validate_lng(v)
+
+
+class PublicServiceRequestCustomer(BaseModel):
+    name: str | None = None
+    phone: str | None = None
+
+
+class PublicServiceRequestConsent(BaseModel):
+    """Consent must exist at creation time, not deferred to a later
+    authorization step (Tier 1 decision, docs/HANDOFF.md 2026-08-22)."""
+
+    terms_accepted: bool
+    policy_version: str
+
+    @field_validator("terms_accepted")
+    @classmethod
+    def _must_accept(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("terms_accepted must be true to create a service request")
+        return v
+
+    @field_validator("policy_version")
+    @classmethod
+    def _policy_version_present(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("policy_version must not be empty")
+        return v
+
+
+class PublicServiceRequestCreate(BaseModel):
+    dispatch_scope: Literal["private_partner", "network"]
+    service_skill: str
+    location: PublicServiceRequestLocation
+    consent: PublicServiceRequestConsent
+    situation: str | None = None
+    urgency: str | None = None
+    customer: PublicServiceRequestCustomer | None = None
+    notes: str | None = None
+
+
+class PublicServiceRequestResult(BaseModel):
+    # Safe external reference only (docs/JOB-OPERATIONAL-ID-SCOPE.md) -- the raw
+    # job UUID is never returned to an external client, same rule as customer-
+    # facing tracking.
+    request_reference: str
+    dispatch_scope: str
+    status: str
+
+
+class PublicServiceRequestResponse(BaseModel):
+    data: PublicServiceRequestResult
     meta: PublicApiMeta
 
 
@@ -4264,6 +4357,137 @@ async def public_v1_coverage_checks(
         request_id=request_id,
         ip=_request_ip(request),
         metadata={"covered": covered, "service_skill": skill},
+    )
+    return body
+
+
+def _access_type_for_skill(skill: str) -> AccessType:
+    """Coarse legacy bucket for the existing `Ticket.access_type` field. This is
+    an approximation (e.g. `locksmith.broken_key` buckets to OTHER, losing
+    skill-level precision) accepted because this draft request never reaches
+    dispatch matching -- a future authorize_dispatch/routing step (Tier 2,
+    undecided) is the right place to route on the exact `service_skill` code."""
+    if skill.startswith("locksmith.vehicle") or skill.startswith("locksmith.key_programming"):
+        return AccessType.CAR
+    if skill.startswith("locksmith.residential"):
+        return AccessType.HOME
+    if skill.startswith("locksmith.commercial"):
+        return AccessType.BUSINESS
+    return AccessType.OTHER
+
+
+async def require_public_service_requests_write(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "service_requests:write")
+
+
+@app.post("/v1/service-requests", response_model=PublicServiceRequestResponse)
+async def public_v1_create_service_request(
+    request: Request,
+    response: Response,
+    payload: PublicServiceRequestCreate,
+    context: dict[str, Any] = Depends(require_public_service_requests_write),
+) -> PublicServiceRequestResponse:
+    """Create a canonical service-request record only (ADR-6). Deliberately
+    never calls `store.set_job_status(..., "pending_dispatch")` -- the ops
+    queue and dispatch sweep both gate strictly on that status already, so an
+    unauthorized external request stays invisible and un-dispatched by
+    construction, not by an extra flag. `origin_org_id`/`customer_owner_org_id`
+    are resolved server-side from the authenticated client, never from the
+    request body, mirroring ADR-4's existing anti-spoofing rule for
+    browser-supplied `org_id`."""
+    request_id = context["request_id"]
+    response.headers["X-Request-ID"] = request_id
+    client = context["client"]
+    client_id = client["id"]
+    idempotency_key = request.headers.get("Idempotency-Key")
+    request_hash = hashlib.sha256(payload.model_dump_json().encode("utf-8")).hexdigest()
+
+    if payload.dispatch_scope == "private_partner" and not client.get("organization_id"):
+        raise public_api_error(
+            422, "dispatch_scope_requires_partner_client", request_id,
+            detail="dispatch_scope=private_partner requires an API client bound to a partner organization.",
+        )
+
+    if idempotency_key:
+        reservation = await store.begin_or_get_external_api_mutation(
+            client_id, idempotency_key, request_hash, "POST", "/v1/service-requests",
+        )
+        if reservation["state"] == "conflict":
+            raise public_api_error(
+                409, "idempotency_key_reuse", request_id,
+                detail="Idempotency-Key was already used with a different request body.",
+            )
+        if reservation["state"] == "pending":
+            raise public_api_error(
+                409, "request_in_progress", request_id,
+                detail="A request with this Idempotency-Key is still being processed.",
+            )
+        if reservation["state"] == "done":
+            return PublicServiceRequestResponse.model_validate(reservation["response"])
+
+    org_id = str(client["organization_id"]) if payload.dispatch_scope == "private_partner" else None
+    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
+    catalog = await store.list_service_catalog(active_only=True)
+    if skill not in active_skill_codes(catalog):
+        raise public_api_error(
+            422, "unknown_service_skill", request_id, detail=f"Unknown service_skill: {payload.service_skill!r}",
+        )
+
+    ticket = Ticket(
+        channel="mobile_web",
+        status=TicketStatus.DRAFT,
+        access_type=_access_type_for_skill(skill),
+        situation=_enum_or_default(Situation, payload.situation or "", Situation.LOCKED_OUT),
+        urgency=_enum_or_default(Urgency, payload.urgency or "", Urgency.URGENT),
+        location={
+            "raw_text": payload.location.raw_text,
+            "lat": payload.location.lat,
+            "lng": payload.location.lng,
+        },
+        customer_name=payload.customer.name if payload.customer else None,
+        customer_phone=payload.customer.phone if payload.customer else None,
+        additional_details=payload.notes,
+    )
+    origin = {
+        "origin_org_id": org_id,
+        "customer_owner_org_id": org_id,
+        "customer_name": ticket.customer_name,
+        "customer_phone": ticket.customer_phone,
+    }
+    await save(ticket, origin)
+    await log_transition(ticket, f"v1_service_request_created:{payload.dispatch_scope}")
+    reference = await store.get_operational_id(ticket.ticket_id)
+    if not reference:
+        # Never fall back to the raw job UUID -- same rule as the customer-facing
+        # tracking link. If the friendly reference didn't get assigned, this is a
+        # server bug, not something to paper over by leaking the internal id.
+        logger.error("service_request_missing_operational_id")
+        raise public_api_error(500, "internal_error", request_id)
+
+    body = PublicServiceRequestResponse(
+        data=PublicServiceRequestResult(
+            request_reference=reference,
+            dispatch_scope=payload.dispatch_scope,
+            status="received",
+        ),
+        meta=PublicApiMeta(request_id=request_id),
+    )
+
+    if idempotency_key:
+        await store.complete_external_api_mutation(
+            client_id, idempotency_key, status_code=200, response=body.model_dump(mode="json"),
+        )
+
+    await store.record_external_api_event(
+        client_id=client_id,
+        api_key_id=context["api_key"]["id"],
+        action="service_requests.create",
+        path=request.url.path,
+        status_code=200,
+        idempotency_key=idempotency_key,
+        request_id=request_id,
+        ip=_request_ip(request),
+        metadata={"dispatch_scope": payload.dispatch_scope, "service_skill": skill},
     )
     return body
 

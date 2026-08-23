@@ -115,6 +115,194 @@
         "title": "PublicServiceCategory",
         "type": "object"
       },
+      "PublicServiceRequestConsent": {
+        "description": "Consent must exist at creation time, not deferred to a later\nauthorization step (Tier 1 decision, docs/HANDOFF.md 2026-08-22).",
+        "properties": {
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "terms_accepted": {
+            "title": "Terms Accepted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "terms_accepted",
+          "policy_version"
+        ],
+        "title": "PublicServiceRequestConsent",
+        "type": "object"
+      },
+      "PublicServiceRequestCreate": {
+        "properties": {
+          "consent": {
+            "$ref": "#/components/schemas/PublicServiceRequestConsent"
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicServiceRequestCustomer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dispatch_scope": {
+            "enum": [
+              "private_partner",
+              "network"
+            ],
+            "title": "Dispatch Scope",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/PublicServiceRequestLocation"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "service_skill": {
+            "title": "Service Skill",
+            "type": "string"
+          },
+          "situation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Situation"
+          },
+          "urgency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Urgency"
+          }
+        },
+        "required": [
+          "dispatch_scope",
+          "service_skill",
+          "location",
+          "consent"
+        ],
+        "title": "PublicServiceRequestCreate",
+        "type": "object"
+      },
+      "PublicServiceRequestCustomer": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "title": "PublicServiceRequestCustomer",
+        "type": "object"
+      },
+      "PublicServiceRequestLocation": {
+        "properties": {
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lng": {
+            "title": "Lng",
+            "type": "number"
+          },
+          "raw_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Text"
+          }
+        },
+        "required": [
+          "lat",
+          "lng"
+        ],
+        "title": "PublicServiceRequestLocation",
+        "type": "object"
+      },
+      "PublicServiceRequestResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicServiceRequestResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicServiceRequestResponse",
+        "type": "object"
+      },
+      "PublicServiceRequestResult": {
+        "properties": {
+          "dispatch_scope": {
+            "title": "Dispatch Scope",
+            "type": "string"
+          },
+          "request_reference": {
+            "title": "Request Reference",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_reference",
+          "dispatch_scope",
+          "status"
+        ],
+        "title": "PublicServiceRequestResult",
+        "type": "object"
+      },
       "PublicServiceSkill": {
         "properties": {
           "code": {
@@ -243,6 +431,45 @@
           }
         },
         "summary": "Public V1 Coverage Checks"
+      }
+    },
+    "/v1/service-requests": {
+      "post": {
+        "description": "Create a canonical service-request record only (ADR-6). Deliberately\nnever calls `store.set_job_status(..., \"pending_dispatch\")` -- the ops\nqueue and dispatch sweep both gate strictly on that status already, so an\nunauthorized external request stays invisible and un-dispatched by\nconstruction, not by an extra flag. `origin_org_id`/`customer_owner_org_id`\nare resolved server-side from the authenticated client, never from the\nrequest body, mirroring ADR-4's existing anti-spoofing rule for\nbrowser-supplied `org_id`.",
+        "operationId": "public_v1_create_service_request_v1_service_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicServiceRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicServiceRequestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Create Service Request"
       }
     },
     "/v1/services": {
