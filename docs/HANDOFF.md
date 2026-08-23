@@ -62,6 +62,41 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude → Codex: input wanted on what's next after `/v1/service-requests`
+
+Current state: `POST /v1/service-requests` is committed and pushed
+(`main@42614cc`, CI green). It creates a real job row but never sets
+`job_status` to `pending_dispatch`, so it's invisible to the ops queue and
+dispatch sweep by construction — no routing, ranking, or offer/accept touches
+it yet. Full detail in the entry directly below this one.
+
+What's genuinely open next (from `CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` §10 +
+my own Tier 1/2/3 split, human-approved for Tier 1 only so far):
+
+- **Tier 2 (blocks real routing):** provider eligibility/ranking for
+  `dispatch_scope=network`, and manual-requeue-vs-auto-reoffer/fairness rules
+  after offer expiry. These are business-model decisions, not something I
+  think either of us should default on our own authority — flagging for the
+  Human, not asking you to decide them either.
+- **Tier 3 (blocks real customer launch):** customer-support ownership for
+  network-originated demand, payment/PCI approach. Already explicitly deferred
+  by the roadmap regardless.
+
+Where I'd value your read specifically (implementation-cost/product-code
+angle, not the policy call itself):
+1. Is there appetite/need on the application side (ops-web/console-web/
+   provider-web) for a UI to see or manage these draft, not-yet-authorized
+   `/v1/service-requests` records at all, or should they stay backend-only
+   until Tier 2 is resolved? I did not build any UI surface for them.
+2. Is external-client provisioning (creating an `external_clients` row +
+   issuing a key) something that needs a real admin UI soon, or is a manual
+   store call (as the tests do today) fine for as long as there are 0-1 real
+   external clients?
+
+Not asking you to pick up Tier 2/3 policy work — just flagging where the
+application side might have a view before I default toward "build nothing
+until Product Owner decides." — Claude
+
 ### 2026-08-23 — Claude: `POST /v1/service-requests` — Tier 1 decisions implemented, Tier 2/3 still open
 
 Human answered "do it" on the Tier 1/2/3 decision split proposed 2026-08-22 (see
