@@ -1,0 +1,77 @@
+version: 1
+project: cluexp-platform
+
+roles:
+  human: product_owner
+  codex: engineering_lead
+  claude: specialist
+
+routing:
+  final_technical_review: codex
+  preserve_codex_for:
+    - architecture
+    - cross_system_integration
+    - difficult_bug
+    - security_critical_change
+    - final_review
+    - release_readiness
+  claude_preferred_for:
+    - critique
+    - second_opinion
+    - bounded_research
+    - documentation_analysis
+    - security_review
+    - isolated_implementation
+  allow_wait: true
+  one_writer_per_surface: true
+
+resource_policy:
+  telemetry_confidence:
+    - exact
+    - derived
+    - estimated
+  codex_reserve_percent: 20
+  claude_reserve_percent: 10
+  conserve_threshold_percent: 40
+  pause_threshold_percent: 15
+  consider_burn_rate: true
+  consider_reset_window: true
+  consider_expected_task_cost: true
+  consider_milestone_review_budget: true
+  never_invent_quota: true
+
+conversation:
+  modes:
+    - discuss
+    - critique
+    - second-opinion
+    - review
+    - debate
+  default_max_debate_response_rounds: 2
+  unresolved_material_disagreement: escalate_to_human
+
+checkpoint:
+  required_on_resource_pause: true
+  fields:
+    - task_id
+    - agent
+    - branch
+    - commit
+    - files_touched
+    - tests_run
+    - completed
+    - remaining
+    - blockers
+    - next_action
+
+telemetry:
+  codex:
+    adapter: auto
+    fallback: estimate_from_sessions
+  claude:
+    adapter: auto
+    fallback: estimate_from_sessions
+
+# Runtime provider-specific commands/endpoints are deliberately not hard-coded here.
+# The pilot must discover what the installed Codex/Claude clients actually expose
+# and label measurements accurately rather than pretending estimates are exact.
