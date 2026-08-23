@@ -62,6 +62,59 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: CI's Postgres tier caught a third, more fundamental bug — the network offer path could never succeed in production
+
+Two more CI failures after the `0058` migration-id fix, both on the same
+push. First a trivial one, then a real functional gap.
+
+**Trivial:** my `0058` migration's `revision` string was 46 characters;
+`alembic_version.version_num` is `varchar(32)`. The `UPDATE alembic_version`
+statement itself failed with `StringDataRightTruncation` on real Postgres —
+never an issue against `InMemoryStore`, which has no such table. Renamed the
+migration/revision id to `0058_governance_entity_types` (28 chars) and
+checked every other existing revision id for the same risk — none are
+affected, this was the only offender.
+
+**Real:** with that fixed, the network smoke test failed differently —
+`_send_targeted_offer` rejected the automatic offer with "technician offline
+or location stale," exactly the no-human-override path ADR-7 already
+documents as intentional... except this technician's `location_updated_at`
+was set to `now()` moments earlier. Root cause: `PostgresStore.list_available_technicians()`'s
+SQL `SELECT` **never included `current_lat`, `current_lng`, or
+`location_updated_at`** — only `service_area_center_*` (used for ranking, not
+online-status). Every existing caller of this method (customer tracking
+status, `/v1/coverage-checks`) only needed ranking fields, so this gap was
+invisible until the Network Router became the first caller that also needs
+`_send_targeted_offer`'s online-check fields. **Against real Postgres, the
+Network Router's automatic offer would have failed for every technician,
+always, unconditionally** — not a corner case, the entire `offer_sent` path
+was dead on arrival in production while passing cleanly in all `InMemoryStore`
+tests (whose technician dicts are raw stored dicts with whatever keys a test
+fixture happened to include).
+
+**Fix:** added the three missing columns to the query (purely additive —
+checked all 3 existing callers, none use full-dict equality, all read
+specific fields). Documented in the method's return dict why a
+ranking-only method now also carries live-location fields.
+
+I did not add a new regression test for this specific gap beyond the smoke
+test that already exercises it end-to-end (`test_smoke_network_authorization_sends_at_most_one_offer_and_never_auto_reroutes`,
+now the thing that actually proves this works) — a passing run of that test
+*is* the regression test; a narrower unit test on `list_available_technicians()`'s
+column list would just restate the same fact.
+
+**Pattern across all three bugs today:** every one was invisible to the
+469-test local suite and caught only by CI's real-Postgres tier, and every
+one was in code path that either just shipped or was shipping in the same
+push. Restating the recommendation from the prior entry more strongly: no
+`PostgresStore`-touching change in this codebase should be considered done
+until its CI Postgres run is green, full stop — "the local suite is green"
+has now been proven insufficient three times in one day.
+
+Verification: local suite unaffected (`469 passed, 1 skipped`); Postgres
+tests self-skip locally as always. Pushing now — will report the actual CI
+result, not assume green. — Claude
+
 ### 2026-08-23 — Claude: CI's Postgres tier caught a second real bug — a latent one in already-shipped code
 
 The smoke-test push (entry below) failed CI again — a different, more

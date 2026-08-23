@@ -7095,6 +7095,7 @@ class PostgresStore(Store):
                 "select t.id, t.display_name, t.skills, t.service_area_center_lat,"
                 " t.service_area_center_lng, t.service_area_radius_km, t.rating,"
                 " t.is_available, t.provider_type, t.primary_organization_id,"
+                " t.current_lat, t.current_lng, t.location_updated_at,"
                 " coalesce(array_remove(array_agg(distinct ot.organization_id)"
                 "   filter (where ot.status = 'active' and ot.dispatch_allowed"
                 "     and ot.ended_at is null), null), '{}') as affiliated,"
@@ -7109,8 +7110,8 @@ class PostgresStore(Store):
         result = []
         for r in rows:
             primary = str(r[9]) if r[9] else None
-            affiliated = [str(o) for o in (r[10] or [])]
-            has_affiliations = (r[11] or 0) > 0
+            affiliated = [str(o) for o in (r[13] or [])]
+            has_affiliations = (r[14] or 0) > 0
             fallback_orgs = [primary] if primary and not has_affiliations else []
             org_ids = list({oid for oid in (fallback_orgs + affiliated) if oid})
             result.append(
@@ -7125,6 +7126,14 @@ class PostgresStore(Store):
                     "is_available": r[7],
                     "provider_type": r[8],
                     "primary_organization_id": primary,
+                    # Needed by _send_targeted_offer's online/staleness check
+                    # (the Network Router's system-actor offer path uses the
+                    # same function real dispatchers do) -- not used by the
+                    # pure ranking functions, which only read the service_area
+                    # center, not live position.
+                    "current_lat": r[10],
+                    "current_lng": r[11],
+                    "location_updated_at": r[12],
                     "org_ids": org_ids,
                 }
             )
