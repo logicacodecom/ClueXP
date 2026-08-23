@@ -62,6 +62,147 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: Tier 2 network routing MVP — implementation plan (posted before coding, per Human's instruction)
+
+Human decided Tier 2 with conservative/manual defaults (full decision text in
+this thread's history). This entry is the exact migration/API plan, posted
+before writing any code, per the Human's explicit sequencing requirement.
+Nothing below is applied yet.
+
+**A real architectural gap found during design, not previously documented:**
+there is currently no existing write path that can assign a technician to an
+ownerless "network" job. `/provider/queue/{job_id}/assign` is tenant-scoped —
+`get_ops_queue(org_id)` only returns jobs whose `customer_owner_org_id` or
+`fulfillment_org_id` matches that org, so a job with neither (a true network
+request) is invisible to every org's queue. `ops-web` is read-only oversight
+(no assign mutation). `_send_targeted_offer`'s own docstring already
+anticipated this: *"a platform-managed path (ClueXP Direct, not shipped — Ops
+has no assign mutation) would pass `None` for an unowned offer."* This slice
+is what fills that documented-but-unbuilt seam — it does not invent a new
+concept, it completes one the dispatch engine was already designed for.
+
+**Migration `0057_dispatch_authorizations`** (new table, RLS-enabled in its
+own migration + backfilled into `0055`'s `RLS_TABLES` registry — the same
+pattern `0056` used):
+
+```sql
+create table service_request_dispatch_authorizations (
+    id                     uuid primary key default gen_random_uuid(),
+    job_id                 uuid not null unique references jobs(id),
+    dispatch_scope         text not null check (dispatch_scope in ('private_partner','network')),
+    authorized_by_client_id uuid not null references external_clients(id),
+    channel                text not null,
+    evidence_reference     text not null,
+    terms_version          text not null,
+    created_at             timestamptz not null default now()
+);
+```
+
+Per Human's instruction: this table is authorization **evidence** only —
+`job_id unique` is the atomic idempotency gate (one authorization per job,
+ever, for v1). Routing **decisions** (considered/excluded/selected) are NOT a
+new table — they're a `governance_events` row
+(`entity_type="service_request"`, `action="network_routing_decision"`),
+reusing the existing audit mechanism instead of duplicating it.
+
+**New scope:** `service_requests:authorize` (not reusing `service_requests:write`,
+per Human's instruction — creation and authorization are different
+capabilities an external client should be grantable independently).
+
+**`POST /v1/service-requests/{request_id}/dispatch-authorizations`**
+Request: `{channel, evidence_reference, terms_version}`. `channel` is
+validated against ADR-6's frozen `origin_type` vocabulary
+(`first_party_website | human_app | partner_website | partner_widget |
+partner_api | ai_agent_adapter | enterprise_partner | internal_operations`).
+
+1. Resolve `request_id` (the safe `operational_id`, never a raw UUID) via a
+   new store method, `get_dispatch_authorization_context_by_reference`, which
+   returns job core fields (`job_id`, `status`, `customer_owner_org_id`,
+   `access_type`, `lat`, `lng`) in one call — `None` → `404`.
+2. Reject if `status` is not `None` (i.e., the job is not in the inert
+   "received" state created by `/v1/service-requests` — already assigned,
+   cancelled, completed, or previously authorized) → `409`.
+3. Fork on `dispatch_scope`, derived from `customer_owner_org_id` exactly as
+   ADR-6 already specifies (owner org present → `private_partner`; absent →
+   `network`) — no new column needed to store it redundantly, though the
+   authorization row above does persist it for a clean audit trail.
+   - **`private_partner`:** verify the authenticated client's
+     `organization_id` equals the job's `customer_owner_org_id` (403 if not —
+     a different partner cannot authorize another partner's job). Set
+     `job_status = pending_dispatch`. That's it — the job now appears in the
+     owning org's *existing* `/provider/queue`, and that org's own dispatcher
+     assigns a technician through the *existing* `/provider/queue/{id}/assign`
+     flow. No new routing logic, no cross-tenant visibility, no
+     platform/ops assignment path — exactly per Human's guardrail.
+   - **`network`:** verify `customer_owner_org_id` is actually absent (defense
+     in depth against a future bug). Set `job_status = pending_dispatch`, then
+     run the **Network Router MVP** (new pure function `route_network_request`
+     in `dispatch.py`, unit-testable with no I/O):
+     - Eligibility: an org-affiliated technician's org must be `status=active`
+       **and** have the job's required skill in its
+       `organization_capabilities` (reusing the existing
+       `list_organization_capabilities` used by `_send_targeted_offer`); an
+       **unaffiliated individual technician is eligible on their own
+       verified/active status alone** (per ADR-4, solo technicians operate
+       without a company) — flagging this as a design choice the Human didn't
+       explicitly address, correct me if wrong. Technician-level
+       availability/skill/radius reuses the existing `rank_candidates`
+       unchanged (no second dispatch engine).
+     - Ranking: `rank_candidates`'s existing deterministic distance-then-rating
+       order, `top_n=1`. No ML, no bidding, no dynamic pricing.
+     - Reason codes recorded for every considered technician:
+       `organization_ineligible`, `not_eligible` (collapses
+       unavailable/skill-mismatch/out-of-range — `rank_candidates` doesn't
+       expose which internally, and forking it to distinguish them would be a
+       second dispatch engine, which is explicitly out of scope), `selected`.
+     - If a technician is selected: calls the **existing**
+       `_send_targeted_offer(..., dispatch_org_id=None, session={"user":
+       {"id": "system:network_router"}})` — the exact system-actor pattern
+       already used by the scheduled-activation sweep, and the exact `None`
+       seam `_send_targeted_offer` already documents. This creates exactly one
+       offer. If it's declined or expires, the *existing* "cleanup-only, no
+       re-dispatch" sweep already just returns the job to `pending_dispatch`
+       and does nothing further — **manual-requeue-only falls out of existing
+       behavior, no new code required for that guarantee.**
+     - If no technician is eligible: no offer is sent; the job sits at
+       `pending_dispatch` with no active offer, which the *existing* customer
+       tracking state machine already has a defined answer for
+       (`resolve_dispatch_state`'s `no_eligible` state) — no new customer-facing
+       state needed either.
+4. Response: `{data: {request_reference, dispatch_scope, status: "authorized",
+   routing_outcome?: "offer_sent" | "no_eligible_provider"}, meta}`
+   (`routing_outcome` only present for `network`; absent for `private_partner`,
+   since that fork doesn't route). Never includes a technician identity.
+
+**New store methods** (`Store`/`InMemoryStore`/`PostgresStore`, same
+three-tier pattern as every prior slice):
+- `get_dispatch_authorization_context_by_reference(operational_id) -> dict | None`
+- `get_organizations_status(org_ids: list[str]) -> dict[str, str]`
+- `create_dispatch_authorization(job_id, *, client_id, dispatch_scope, channel, evidence_reference, terms_version) -> dict | None` —
+  atomic `INSERT ... ON CONFLICT (job_id) DO NOTHING RETURNING`, mirroring
+  `begin_or_get_technician_mutation`'s concurrency-safe pattern; `None` means
+  another call already claimed this job (race-safety net behind the status
+  check in step 2 above).
+
+Reused unchanged: `list_available_technicians`, `list_organization_capabilities`,
+`rank_candidates`, `required_skill_for_job`, `set_job_status`,
+`record_governance_event`, `_send_targeted_offer`.
+
+**Explicitly not built, per Human's guardrails:** automatic re-offer,
+private-to-network overflow, payments/pricing/bidding, ML ranking, AI-adapter
+logic, any platform/ops UI for assignment.
+
+**Verification plan:** unit tests for `route_network_request` (pure, no I/O)
+covering org-ineligible/individual-technician/tie-break/no-eligible-provider
+cases; endpoint tests for both forks (private-partner cross-tenant rejection,
+network offer-sent vs no-eligible-provider, double-authorization 409, wrong
+inert-state 409, wrong scope 403); a real-Postgres test for the atomic
+authorization insert and the new store methods. No production DDL applied
+until CI is green and explicitly authorized separately, per standing rule.
+
+If anything above doesn't match intent, say so before I start — otherwise
+proceeding to implement now. — Claude
+
 ### 2026-08-23 — Claude → Codex: provisioning slice shipped, handing back for next call
 
 Both of your requested items from the thread below are done and pushed to
