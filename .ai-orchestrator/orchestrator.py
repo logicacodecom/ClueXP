@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".ai-orchestrator" / "runtime"
 CHECKPOINTS = RUNTIME / "checkpoints"
 EVENTS = RUNTIME / "events.jsonl"
+# Adapter-level failures; these are not provider CLI exit codes.
+AGENT_TIMEOUT_RETURN_CODE = 124
+AGENT_LAUNCH_RETURN_CODE = 126
 
 
 @dataclass
@@ -51,29 +54,97 @@ def discover() -> dict[str, AgentStatus]:
     }
 
 
-def run_agent(agent: str, prompt: str, cwd: Path = ROOT, timeout: int = 1800) -> subprocess.CompletedProcess[str]:
+def _stream_text(value: str | bytes | None) -> str:
+    """Normalize captured process output without assuming it is present or decodable."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _failed_agent_output(agent: str, result: subprocess.CompletedProcess[str]) -> str:
+    """Return contextual diagnostics even when a failed command has sparse output."""
+    stderr = _stream_text(result.stderr).strip()
+    stdout = _stream_text(result.stdout).strip()
+    details = []
+    if stderr:
+        details.append(f"stderr:\n{stderr}")
+    if stdout:
+        details.append(f"stdout:\n{stdout}")
+    header = f"{agent} command failed with exit code {result.returncode}."
+    return "\n".join([header, *details])
+
+
+def _configure_stdio() -> None:
+    """Keep redirected Windows console streams from reintroducing locale decoding errors."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+def run_agent(
+    agent: str,
+    prompt: str,
+    cwd: Path = ROOT,
+    timeout: int = 1800,
+    *,
+    read_only: bool = False,
+) -> subprocess.CompletedProcess[str]:
     exe = shutil.which(agent)
     if not exe:
         raise RuntimeError(f"{agent} executable not found on PATH")
 
-    # Supported non-interactive entrypoints. Keep provider-specific flags here.
+    # Keep substantive prompts off argv: Windows has a small command-line limit,
+    # while both supported non-interactive entrypoints accept text through stdin.
     if agent == "codex":
-        argv = [exe, "exec", "--skip-git-repo-check", prompt]
+        argv = [exe, "exec", "--skip-git-repo-check"]
+        if read_only:
+            argv.extend(["--sandbox", "read-only"])
+        argv.append("-")
     elif agent == "claude":
-        argv = [exe, "-p", prompt]
+        argv = [exe, "-p", "--input-format", "text"]
+        if read_only:
+            argv.extend(["--permission-mode", "plan"])
     else:
         raise ValueError(agent)
 
     started = time.time()
-    result = subprocess.run(
-        argv,
-        cwd=str(cwd),
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        env=os.environ.copy(),
-        check=False,
-    )
+    child_env = os.environ.copy()
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            input=prompt,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=timeout,
+            env=child_env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _stream_text(exc.stdout)
+        stderr = _stream_text(exc.stderr)
+        message = f"{agent} command timed out after {timeout} seconds."
+        stderr = f"{stderr.rstrip()}\n{message}" if stderr.strip() else message
+        result = subprocess.CompletedProcess(argv, AGENT_TIMEOUT_RETURN_CODE, stdout, stderr)
+    except OSError as exc:
+        result = subprocess.CompletedProcess(
+            argv,
+            AGENT_LAUNCH_RETURN_CODE,
+            "",
+            f"Unable to launch {agent} command: {exc}",
+        )
+
+    # Keep downstream handling safe even if a mocked or platform-specific runner
+    # supplies missing/byte streams despite text capture being requested.
+    result.stdout = _stream_text(result.stdout)
+    result.stderr = _stream_text(result.stderr)
     _log(
         "agent_run",
         agent=agent,
@@ -115,11 +186,11 @@ def discuss(proposition: str, rounds: int = 2) -> int:
         "Propose a concise technical position with assumptions, risks, and acceptance criteria. "
         f"Proposition: {proposition}"
     )
-    codex = run_agent("codex", codex_prompt)
+    codex = run_agent("codex", codex_prompt, read_only=True)
     if codex.returncode:
-        print(codex.stderr, file=sys.stderr)
+        print(_failed_agent_output("codex", codex), file=sys.stderr)
         return codex.returncode
-    lead = codex.stdout.strip()
+    lead = _stream_text(codex.stdout).strip()
     print("\n=== CODEX PROPOSAL ===\n" + lead)
 
     for n in range(1, rounds + 1):
@@ -128,11 +199,11 @@ def discuss(proposition: str, rounds: int = 2) -> int:
             "Critique the Codex proposal below. Find blocking correctness/security/tenancy/API/data risks, "
             "then optional improvements. Do not agree reflexively.\n\nCODEX PROPOSAL:\n" + lead
         )
-        claude = run_agent("claude", critique_prompt)
+        claude = run_agent("claude", critique_prompt, read_only=True)
         if claude.returncode:
-            print(claude.stderr, file=sys.stderr)
+            print(_failed_agent_output("claude", claude), file=sys.stderr)
             return claude.returncode
-        critique = claude.stdout.strip()
+        critique = _stream_text(claude.stdout).strip()
         print(f"\n=== CLAUDE CRITIQUE {n} ===\n{critique}")
 
         resolve_prompt = (
@@ -141,11 +212,11 @@ def discuss(proposition: str, rounds: int = 2) -> int:
             "and output the revised decision plus unresolved items requiring Human Product Owner authority.\n\n"
             f"PRIOR PROPOSAL:\n{lead}\n\nCLAUDE CRITIQUE:\n{critique}"
         )
-        resolved = run_agent("codex", resolve_prompt)
+        resolved = run_agent("codex", resolve_prompt, read_only=True)
         if resolved.returncode:
-            print(resolved.stderr, file=sys.stderr)
+            print(_failed_agent_output("codex", resolved), file=sys.stderr)
             return resolved.returncode
-        lead = resolved.stdout.strip()
+        lead = _stream_text(resolved.stdout).strip()
         print(f"\n=== CODEX RESOLUTION {n} ===\n{lead}")
 
     checkpoint("discussion", "codex", {"completed": "bounded discussion", "remaining": [], "blockers": [], "next_action": lead})
@@ -153,6 +224,7 @@ def discuss(proposition: str, rounds: int = 2) -> int:
 
 
 def main() -> int:
+    _configure_stdio()
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor")

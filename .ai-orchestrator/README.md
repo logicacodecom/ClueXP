@@ -35,6 +35,8 @@ The adapter:
 
 - invokes Codex through its non-interactive `exec` entrypoint;
 - invokes Claude Code through its non-interactive print entrypoint;
+- sends substantive prompts over UTF-8 stdin instead of command-line arguments;
+- runs bounded discussions with read-only Codex/Claude permissions;
 - uses argv subprocess execution rather than shell interpolation;
 - records run duration/return status locally;
 - never reads or commits provider credentials;
