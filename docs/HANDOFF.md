@@ -62,6 +62,62 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: staging verification — no staging environment exists; smoke tests run via CI's Postgres tier instead
+
+Human approved both Tier 2 judgment calls (unaffiliated-individual eligibility;
+no auto-override for offline/mismatched technicians) with no changes
+requested, and asked to apply `0057` to staging first with 5 smoke-test
+scenarios, prod only after that's green and separately authorized.
+
+**Checked before doing anything: no staging environment exists.** Confirmed
+via Supabase MCP — the ClueXP project (`gzgrkzvhotjolvcbqiku`) has exactly one
+branch, `main`, which *is* production; branching (the only way to get a
+disposable non-prod database on this platform) still requires the Pro plan,
+same constraint hit and reported earlier this session. There is no
+distinct staging tier to apply `0057` to. Flagged this to the Human rather
+than assuming; Human chose: run the 5 requested smoke scenarios against CI's
+ephemeral Postgres (ephemeral `postgres:16` service, migrated to head fresh
+every run) as the closest available real-DB verification, and hold `0057`
+for explicit production authorization after that's green — **`0057` is still
+not applied to any database, including this session's own ClueXP Supabase
+project.**
+
+Added two new HTTP-level smoke tests to `test_postgres_security.py`, driving
+the real FastAPI app (`TestClient`) against `PostgresStore` instead of just
+calling store methods directly — the most faithful check available without a
+live Supabase environment:
+
+1. `test_smoke_private_partner_authorization_stays_isolated_to_owning_org` —
+   creates a real `private_partner` request, authorizes it, and asserts: it
+   appears in owning org A's `get_ops_queue` **only** (org B's queue is
+   empty); zero `governance_events` routing-decision rows exist for it (proof
+   partner-private jobs never touch network routing); and passing the raw job
+   UUID as the path parameter (instead of the `operational_id` reference)
+   is a `404`, not a fallback lookup.
+2. `test_smoke_network_authorization_sends_at_most_one_offer_and_never_auto_reroutes` —
+   seeds one real available/verified technician, authorizes a `network`
+   request, asserts exactly one `dispatch_offers` row exists, then forces
+   that offer to expire and runs the real `expire_stale_offers()` sweep:
+   asserts the offer count is still exactly 1 (no second/replacement offer
+   created) and the job's `jobs.status` returned to `pending_dispatch` — proof
+   there is no automatic re-offer/re-route, and it falls out of the existing
+   cleanup-only sweep rather than needing new code.
+
+Together with the already-existing
+`test_postgres_store_dispatch_authorization_context_and_atomic_insert`
+(reference resolution for both scopes, atomic duplicate-authorization
+rejection), this covers all 5 requested scenarios except live PostgREST/RLS
+anon-role probing, which needs an actual Supabase environment and remains a
+real gap until either staging becomes available or these are verified
+directly against prod post-apply.
+
+Verification: local suite unaffected (`469 passed, 1 skipped`, unchanged);
+new Postgres tests self-skip locally (no `POSTGRES_TEST_URL`) and will run in
+CI. Pushing now — will report the actual CI result before asking for
+production authorization, per standing rule (a green CI run is not the same
+claim as "verified in a live Supabase environment," and I'll say which one
+actually happened). — Claude
+
 ### 2026-08-23 — Claude: CI caught a real prod-breaking bug in the dispatch-authorizations fix — fixed
 
 CI's Postgres tier (the one thing I couldn't run locally, flagged as such in

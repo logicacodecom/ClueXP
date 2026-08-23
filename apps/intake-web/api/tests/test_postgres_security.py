@@ -8,6 +8,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 from psycopg.errors import InsufficientPrivilege
+from starlette.testclient import TestClient
 
 from api.schema import Ticket
 from api.store import PostgresStore
@@ -284,3 +285,171 @@ def test_postgres_store_dispatch_authorization_context_and_atomic_insert():
         assert duplicate is None
 
     asyncio.run(exercise())
+
+
+# --- Staging-equivalent smoke tests (no separate Supabase staging tier exists;
+# CI's ephemeral Postgres is the closest available real-DB verification) ---
+# Exercises the actual HTTP surface, not just store methods, against a real
+# Postgres-backed app instance.
+
+
+def _pg_app_client(monkeypatch) -> tuple[TestClient, PostgresStore]:
+    from api import main
+
+    pg_store = PostgresStore(DSN)
+    monkeypatch.setattr(main, "store", pg_store)
+
+    async def no_latency() -> None:
+        return None
+
+    monkeypatch.setattr(main, "latency", no_latency)
+    return TestClient(main.app), pg_store
+
+
+def _issue_pg_key(store: PostgresStore, scopes: list[str], *, organization_id: str | None = None) -> str:
+    async def _issue() -> str:
+        client = await store.create_external_client(
+            name="Smoke test client", client_type="agent", scopes=scopes, organization_id=organization_id,
+        )
+        issued = await store.issue_external_api_key(client["id"], scopes=scopes)
+        return issued["api_key"]
+
+    return asyncio.run(_issue())
+
+
+def test_smoke_private_partner_authorization_stays_isolated_to_owning_org(monkeypatch):
+    client, store = _pg_app_client(monkeypatch)
+    org_a, org_b = uuid4(), uuid4()
+
+    async def seed_orgs() -> None:
+        async with await store._connect() as conn:
+            await conn.execute(
+                "insert into organizations (id, display_name, status) values"
+                " (%s, 'Org A', 'active'), (%s, 'Org B', 'active')",
+                (org_a, org_b),
+            )
+
+    asyncio.run(seed_orgs())
+    write_key = _issue_pg_key(store, ["service_requests:write"], organization_id=str(org_a))
+    auth_key = _issue_pg_key(store, ["service_requests:authorize"], organization_id=str(org_a))
+
+    created = client.post("/v1/service-requests", headers={"X-API-Key": write_key}, json={
+        "dispatch_scope": "private_partner",
+        "service_skill": "locksmith.residential_lockout",
+        "location": {"lat": 40.0, "lng": -73.0, "raw_text": "smoke test address"},
+        "consent": {"terms_accepted": True, "policy_version": "v1"},
+    })
+    assert created.status_code == 200, created.text
+    reference = created.json()["data"]["request_reference"]
+
+    authorized = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key},
+        json={"channel": "partner_api", "evidence_reference": "smoke-test", "terms_version": "v1"},
+    )
+    assert authorized.status_code == 200, authorized.text
+    assert authorized.json()["data"] == {
+        "request_reference": reference, "dispatch_scope": "private_partner",
+        "status": "authorized", "routing_outcome": None,
+    }
+
+    # Enters org A's own queue only -- never leaks into org B's queue, and
+    # never touches network routing (no governance_events routing decision).
+    queue_a = asyncio.run(store.get_ops_queue(org_id=str(org_a)))
+    queue_b = asyncio.run(store.get_ops_queue(org_id=str(org_b)))
+    assert any(row["id"] for row in queue_a)
+    assert queue_b == []
+
+    async def routing_events_for_this_job() -> list[dict]:
+        job_id = queue_a[0]["id"]
+        async with await store._connect() as conn:
+            cur = await conn.execute(
+                "select action from governance_events where entity_id = %s", (job_id,),
+            )
+            return [r[0] for r in await cur.fetchall()]
+
+    assert asyncio.run(routing_events_for_this_job()) == []
+
+    # The public endpoint resolves by operational_id -- a raw job UUID is not
+    # a valid reference and must not be treated as a fallback lookup.
+    raw_uuid_attempt = client.post(
+        f"/v1/service-requests/{queue_a[0]['id']}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key},
+        json={"channel": "partner_api", "evidence_reference": "x", "terms_version": "v1"},
+    )
+    assert raw_uuid_attempt.status_code == 404
+
+
+def test_smoke_network_authorization_sends_at_most_one_offer_and_never_auto_reroutes(monkeypatch):
+    client, store = _pg_app_client(monkeypatch)
+    tech_id = uuid4()
+
+    async def seed_technician() -> None:
+        async with await store._connect() as conn:
+            await conn.execute(
+                "insert into technicians"
+                " (id, display_name, status, vetting_status, skills, service_area_center_lat,"
+                " service_area_center_lng, service_area_radius_km, rating, is_available,"
+                " current_lat, current_lng, location_updated_at)"
+                " values (%s, 'Smoke Tech', 'active', 'verified',"
+                " array['locksmith.residential_lockout'], 40.0, -73.0, 25, 4.8, true,"
+                " 40.0, -73.0, now())",
+                (tech_id,),
+            )
+
+    asyncio.run(seed_technician())
+    write_key = _issue_pg_key(store, ["service_requests:write"])
+    auth_key = _issue_pg_key(store, ["service_requests:authorize"])
+
+    created = client.post("/v1/service-requests", headers={"X-API-Key": write_key}, json={
+        "dispatch_scope": "network",
+        "service_skill": "locksmith.residential_lockout",
+        "location": {"lat": 40.001, "lng": -73.001, "raw_text": "smoke test address"},
+        "consent": {"terms_accepted": True, "policy_version": "v1"},
+    })
+    assert created.status_code == 200, created.text
+    reference = created.json()["data"]["request_reference"]
+
+    authorized = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key},
+        json={"channel": "ai_agent_adapter", "evidence_reference": "smoke-test", "terms_version": "v1"},
+    )
+    assert authorized.status_code == 200, authorized.text
+    assert authorized.json()["data"]["routing_outcome"] == "offer_sent"
+
+    async def offer_count_and_status() -> tuple[int, str]:
+        async with await store._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from dispatch_offers where technician_id = %s", (tech_id,),
+            )
+            count = (await cur.fetchone())[0]
+            cur = await conn.execute(
+                "update dispatch_offers set expires_at = now() - interval '1 hour'"
+                " where technician_id = %s returning job_id",
+                (tech_id,),
+            )
+            job_id = (await cur.fetchone())[0]
+        return count, str(job_id)
+
+    offer_count, job_id = asyncio.run(offer_count_and_status())
+    assert offer_count == 1  # at most one unowned offer, never a fan-out
+
+    # Simulate the offer going stale, then run the same cleanup-only sweep the
+    # cron uses -- it must NOT create a second/replacement offer (no auto
+    # re-offer / auto-reroute), only return the job to pending_dispatch.
+    asyncio.run(store.expire_stale_offers())
+
+    async def post_expiry_state() -> tuple[int, str | None]:
+        async with await store._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from dispatch_offers where technician_id = %s", (tech_id,),
+            )
+            total_offers = (await cur.fetchone())[0]
+            cur = await conn.execute("select status from jobs where id = %s", (job_id,))
+            row = await cur.fetchone()
+        return total_offers, (row[0] if row else None)
+
+    total_offers_after, job_status_after = asyncio.run(post_expiry_state())
+    assert total_offers_after == 1  # still exactly the one original offer -- no re-offer
+    assert job_status_after == "pending_dispatch"  # returned to the queue, not auto-reassigned
