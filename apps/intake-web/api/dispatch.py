@@ -408,3 +408,68 @@ def eta_range_from_km(dist_km: float | None) -> tuple[int | None, int | None]:
     low = max(10, int(mid * 0.8))
     high = int(mid * 1.3) + 5
     return (low, high)
+
+
+# --- Network Router MVP (Tier 2, ADR-6/ADR-7) ---
+# Deterministic, explainable, rule-based -- no ML, no bidding, no dynamic
+# pricing. Sits above the existing technician-level `rank_candidates`; reuses
+# it unchanged rather than building a second dispatch engine. Pure function,
+# no I/O -- the caller supplies org eligibility precomputed from the store.
+ROUTING_REASON_ORG_INELIGIBLE = "organization_ineligible"
+ROUTING_REASON_NOT_ELIGIBLE = "not_eligible"
+ROUTING_REASON_SELECTED = "selected"
+
+
+def route_network_request(
+    job: dict[str, Any],
+    technicians: list[dict[str, Any]],
+    *,
+    skill_needed: str | None,
+    org_status: dict[str, str],
+    org_capabilities: dict[str, set[str]],
+    top_n: int = 1,
+) -> dict[str, Any]:
+    """Route one network (`dispatch_scope=network`) job to at most one
+    technician. Returns ``{"considered": [...], "selected_technician_id": id|None}``.
+
+    Eligibility: an org-affiliated technician's org must be ``status == "active"``
+    and (if a skill is required) offer that skill in its capabilities. An
+    **unaffiliated individual technician is eligible on their own
+    verified/active status alone** -- ADR-4 permits solo technicians without a
+    company; there is no organization to gate on. Technician-level
+    availability/skill/service-radius is unchanged, delegated entirely to
+    `rank_candidates`.
+
+    Reason codes are intentionally coarse: `rank_candidates` does not expose
+    *why* a technician was excluded (unavailable vs. skill mismatch vs. out of
+    range), and forking it to distinguish those would mean a second dispatch
+    engine -- explicitly out of scope. Every org-ineligible technician gets
+    `organization_ineligible`; every org-eligible technician not selected gets
+    `not_eligible`; the winner (if any) gets `selected`.
+    """
+
+    def _org_eligible(tech: dict[str, Any]) -> bool:
+        org_ids = tech.get("org_ids") or []
+        if not org_ids:
+            return True  # unaffiliated individual technician
+        return any(
+            org_status.get(oid) == "active"
+            and (not skill_needed or skill_needed in org_capabilities.get(oid, set()))
+            for oid in org_ids
+        )
+
+    eligible_pool = [t for t in technicians if _org_eligible(t)]
+    ineligible_ids = {t["id"] for t in technicians} - {t["id"] for t in eligible_pool}
+
+    ranked = rank_candidates(job, eligible_pool, top_n=top_n)
+    selected_id = ranked[0]["id"] if ranked else None
+
+    considered = [
+        {"technician_id": tid, "reason_code": ROUTING_REASON_ORG_INELIGIBLE}
+        for tid in ineligible_ids
+    ]
+    for tech in eligible_pool:
+        reason = ROUTING_REASON_SELECTED if tech["id"] == selected_id else ROUTING_REASON_NOT_ELIGIBLE
+        considered.append({"technician_id": tech["id"], "reason_code": reason})
+
+    return {"considered": considered, "selected_technician_id": selected_id}

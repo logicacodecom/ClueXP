@@ -1376,6 +1376,27 @@ class Store:
     async def get_operational_id(self, job_id: UUID) -> str | None:  # pragma: no cover
         raise NotImplementedError
 
+    # --- Tier 2: dispatch authorization + Network Router MVP ---
+    async def get_dispatch_authorization_context_by_reference(
+        self, operational_id: str
+    ) -> dict | None:  # pragma: no cover
+        return None
+
+    async def get_organizations_status(self, org_ids: list[str]) -> dict[str, str]:  # pragma: no cover
+        return {}
+
+    async def create_dispatch_authorization(
+        self,
+        job_id: UUID,
+        *,
+        client_id: str,
+        dispatch_scope: str,
+        channel: str,
+        evidence_reference: str,
+        terms_version: str,
+    ) -> dict | None:  # pragma: no cover
+        return None
+
     async def resolve_tracking_token(self, token: str) -> str | None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1914,6 +1935,55 @@ class InMemoryStore(Store):
 
     async def get_operational_id(self, job_id: UUID) -> str | None:
         return getattr(self, "_job_operational_id", {}).get(str(job_id))
+
+    async def get_dispatch_authorization_context_by_reference(self, operational_id: str) -> dict | None:
+        by_op_id = getattr(self, "_job_operational_id", {})
+        jid = next((j for j, op_id in by_op_id.items() if op_id == operational_id), None)
+        if jid is None or UUID(jid) not in self._tickets:
+            return None
+        ticket = self._tickets[UUID(jid)]
+        loc = getattr(ticket, "location", None)
+        owner_org = getattr(self, "_job_org", {}).get(jid)
+        return {
+            "job_id": jid,
+            "operational_id": operational_id,
+            "status": getattr(self, "_job_status", {}).get(jid),
+            "customer_owner_org_id": owner_org,
+            "access_type": ticket.access_type.value if ticket.access_type else None,
+            "lat": getattr(loc, "lat", None),
+            "lng": getattr(loc, "lng", None),
+        }
+
+    async def get_organizations_status(self, org_ids: list[str]) -> dict[str, str]:
+        orgs = getattr(self, "_organizations", {})
+        return {oid: orgs[oid]["status"] for oid in org_ids if oid in orgs}
+
+    async def create_dispatch_authorization(
+        self,
+        job_id: UUID,
+        *,
+        client_id: str,
+        dispatch_scope: str,
+        channel: str,
+        evidence_reference: str,
+        terms_version: str,
+    ) -> dict | None:
+        self._dispatch_authorizations = getattr(self, "_dispatch_authorizations", {})
+        jid = str(job_id)
+        if jid in self._dispatch_authorizations:
+            return None
+        row = {
+            "id": str(uuid4()),
+            "job_id": jid,
+            "dispatch_scope": dispatch_scope,
+            "authorized_by_client_id": str(client_id),
+            "channel": channel,
+            "evidence_reference": evidence_reference,
+            "terms_version": terms_version,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._dispatch_authorizations[jid] = row
+        return dict(row)
 
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:
         # No DB locally — public ClueXP intake (no owning org).
@@ -6510,6 +6580,71 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
             return row[0] if row else None
+
+    async def get_dispatch_authorization_context_by_reference(self, operational_id: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, operational_id, status, customer_owner_org_id, access_type, lat, lng"
+                " from jobs where operational_id = %s",
+                (operational_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": str(row[0]),
+            "operational_id": row[1],
+            "status": row[2],
+            "customer_owner_org_id": str(row[3]) if row[3] else None,
+            "access_type": row[4],
+            "lat": row[5],
+            "lng": row[6],
+        }
+
+    async def get_organizations_status(self, org_ids: list[str]) -> dict[str, str]:
+        if not org_ids:
+            return {}
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, status from organizations where id = any(%s::uuid[])",
+                ([str(o) for o in org_ids],),
+            )
+            rows = await cur.fetchall()
+        return {str(r[0]): r[1] for r in rows}
+
+    async def create_dispatch_authorization(
+        self,
+        job_id: UUID,
+        *,
+        client_id: str,
+        dispatch_scope: str,
+        channel: str,
+        evidence_reference: str,
+        terms_version: str,
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into service_request_dispatch_authorizations"
+                " (job_id, dispatch_scope, authorized_by_client_id, channel, evidence_reference, terms_version)"
+                " values (%s, %s, %s, %s, %s, %s)"
+                " on conflict (job_id) do nothing"
+                " returning id, job_id, dispatch_scope, authorized_by_client_id, channel,"
+                " evidence_reference, terms_version, created_at",
+                (str(job_id), dispatch_scope, str(client_id), channel, evidence_reference, terms_version),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "job_id": str(row[1]),
+            "dispatch_scope": row[2],
+            "authorized_by_client_id": str(row[3]),
+            "channel": row[4],
+            "evidence_reference": row[5],
+            "terms_version": row[6],
+            "created_at": row[7].isoformat() if row[7] else None,
+        }
 
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:
         if not slug:

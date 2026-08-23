@@ -89,6 +89,79 @@
         "title": "PublicCoverageCheckResult",
         "type": "object"
       },
+      "PublicDispatchAuthorizationRequest": {
+        "properties": {
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "evidence_reference": {
+            "title": "Evidence Reference",
+            "type": "string"
+          },
+          "terms_version": {
+            "title": "Terms Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "evidence_reference",
+          "terms_version"
+        ],
+        "title": "PublicDispatchAuthorizationRequest",
+        "type": "object"
+      },
+      "PublicDispatchAuthorizationResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicDispatchAuthorizationResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicDispatchAuthorizationResponse",
+        "type": "object"
+      },
+      "PublicDispatchAuthorizationResult": {
+        "properties": {
+          "dispatch_scope": {
+            "title": "Dispatch Scope",
+            "type": "string"
+          },
+          "request_reference": {
+            "title": "Request Reference",
+            "type": "string"
+          },
+          "routing_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Routing Outcome"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_reference",
+          "dispatch_scope",
+          "status"
+        ],
+        "title": "PublicDispatchAuthorizationResult",
+        "type": "object"
+      },
       "PublicServiceCategory": {
         "properties": {
           "code": {
@@ -470,6 +543,55 @@
           }
         },
         "summary": "Public V1 Create Service Request"
+      }
+    },
+    "/v1/service-requests/{request_id}/dispatch-authorizations": {
+      "post": {
+        "operationId": "public_v1_authorize_dispatch_v1_service_requests__request_id__dispatch_authorizations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicDispatchAuthorizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicDispatchAuthorizationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Authorize Dispatch"
       }
     },
     "/v1/services": {

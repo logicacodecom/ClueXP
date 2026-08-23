@@ -922,14 +922,15 @@ Supabase Storage. Managed in `api/storage.py`.
 
 All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
 
-### Public Platform API (`0056`, production-applied)
+### Public Platform API (`0056` production-applied; `0057` migration added, not yet applied)
 The versioned public façade is implemented under backend path `/v1/...`, which is served as
 `/api/v1/...` through the existing Vercel `/api` prefix. `api.cluexp.com` DNS/routing remains
 deferred. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
 Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundation tables are
 `external_clients`, `external_api_keys`, `external_api_events`,
-`external_api_idempotency_keys`, and `external_api_rate_limits`; all are default-deny RLS
-protected.
+`external_api_idempotency_keys`, and `external_api_rate_limits` (`0056`); plus
+`service_request_dispatch_authorizations` (`0057`, authorization evidence only — routing decisions
+are `governance_events` rows, not a table). All are default-deny RLS protected.
 
 Every `/v1` error response (auth, scope, rate limit, validation, or unhandled) uses one documented
 envelope — `{ error, request_id, detail? }` — regardless of route, so an external client parses one
@@ -943,10 +944,11 @@ key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flig
 |--------|------|------|---------|
 | `GET` | `/v1/services` | external API key, `services:read` scope | Public active service taxonomy envelope `{ data, meta }`; audits success/failure and enforces a Postgres-backed per-client rate limit |
 | `POST` | `/v1/coverage-checks` | external API key, `coverage:check` scope | Pure read: does the verified network have an available, skilled technician within range of `{lat, lng, service_skill}`? Returns only an aggregate `{ covered: bool, service_skill }` — never a technician identity, roster, or count. No ticket/job is created; no dispatch is triggered. Supports `Idempotency-Key`. |
-| `POST` | `/v1/service-requests` | external API key, `service_requests:write` scope | Creates a canonical service request per ADR-6's `dispatch_scope` (`private_partner` requires an API client bound to a partner `organization_id`; `network` requires none). Returns `{ request_reference, dispatch_scope, status: "received" }` — never the raw job UUID. Requires `consent.terms_accepted=true` at creation. **Never sets `job_status` to `pending_dispatch`** — the request is invisible to the ops queue and dispatch sweep (both already gate strictly on that status) until a future, separate `dispatch-authorizations` endpoint (not implemented) authorizes it. Supports `Idempotency-Key`. |
+| `POST` | `/v1/service-requests` | external API key, `service_requests:write` scope | Creates a canonical service request per ADR-6's `dispatch_scope` (`private_partner` requires an API client bound to a partner `organization_id`; `network` requires none). Returns `{ request_reference, dispatch_scope, status: "received" }` — never the raw job UUID. Requires `consent.terms_accepted=true` at creation. **Never sets `job_status` to `pending_dispatch`** — invisible to the ops queue and dispatch sweep until authorized. Supports `Idempotency-Key`. |
+| `POST` | `/v1/service-requests/{request_id}/dispatch-authorizations` | external API key, `service_requests:authorize` scope | Explicit dispatch authorization gate (ADR-7). `private_partner`: requires the caller's `organization_id` to match the request's owner (403 otherwise), then only sets `job_status=pending_dispatch` — the job enters the owning org's existing `/provider/queue`, no new routing logic. `network`: also sets `pending_dispatch`, then runs the Network Router MVP and, on a selection, sends exactly one offer via the existing `_send_targeted_offer(dispatch_org_id=None)`. `job_id` is unique in `service_request_dispatch_authorizations` — the atomic idempotency gate (a second call is `409 already_authorized`). Already-non-inert requests (assigned/cancelled/completed/previously authorized) are `409 not_in_receivable_state`. Returns `{ request_reference, dispatch_scope, status: "authorized", routing_outcome? }` — `routing_outcome` (`offer_sent` \| `no_eligible_provider`) only for `network`; never a technician identity. |
 
-No network routing, dispatch authorization, payment, or AI-adapter-specific behavior is live in
-this slice — `POST /v1/service-requests` persists a record only.
+No payment, dynamic pricing, bidding, ML ranking, automatic re-offer, private-to-network
+overflow, or AI-adapter-specific behavior is live in this slice.
 
 ### Auth
 | Method | Path | Auth | Purpose |
@@ -1603,7 +1605,67 @@ against instead of inventing one ad hoc under implementation pressure.
   private-partner and neutral-network demand (e.g., an agent adapter routing some requests through a
   partner's own book of business and others as open network demand); collapsing the two fields into
   one inference would remove a caller's ability to express that distinction.*
-- **Consent/authorization objects (`authorize_dispatch`, terms/privacy/media consent) are explicitly
-  deferred, not designed here.** They gate `POST .../dispatch-authorizations` per the roadmap's
-  capability set (§5), which does not exist yet. Freezing the origin/scope vocabulary first is a
-  prerequisite for that design, not a substitute for it.
+- **Consent/authorization objects.** `authorize_dispatch` evidence capture is now implemented by
+  `POST /v1/service-requests/{id}/dispatch-authorizations` (2026-08-23, ADR-7, §20.7) — `channel`
+  on that endpoint reuses this ADR's `origin_type` vocabulary directly (the one place it's actually
+  wired in today; `/v1/service-requests` itself still doesn't surface `origin_type` per the note
+  above). Full terms/privacy/media consent capture beyond `terms_accepted`+`policy_version` (already
+  on `/v1/service-requests`) remains deferred.
+
+### 20.7 ADR-7 — Network Router MVP: eligibility, ranking, and manual-requeue (Accepted 2026-08-23)
+
+Tier 2 decision (Human, conservative/manual defaults) — implemented by
+`POST /v1/service-requests/{request_id}/dispatch-authorizations`
+(`dispatch_scope=network` fork) and `dispatch.route_network_request` (pure, no I/O).
+
+- **A real architectural gap this ADR fills, not previously documented:** no existing write path
+  could assign a technician to an ownerless "network" job — `/provider/queue/{id}/assign` is
+  tenant-scoped (`get_ops_queue(org_id)` only returns jobs whose `customer_owner_org_id`/
+  `fulfillment_org_id` matches), and `ops-web` is read-only oversight. `_send_targeted_offer`'s own
+  docstring already named this seam: *"a platform-managed path ... would pass `None` for an unowned
+  offer."* This ADR is what uses it, not a new concept.
+- **`private_partner` never enters routing.** The authorization endpoint's `private_partner` fork
+  only sets `job_status=pending_dispatch`; the owning org's own dispatcher assigns through the
+  existing `/provider/queue/{id}/assign`. No new routing logic, no cross-tenant visibility, no
+  platform/ops assignment path for private demand — the Network Router only ever runs for
+  `dispatch_scope=network`.
+- **Eligibility:** an org-affiliated technician's org must be `status=active` **and** (if a skill is
+  required) offer it in `organization_capabilities` (reusing the same lookup
+  `_send_targeted_offer` already uses for company-capability checks). **An unaffiliated individual
+  technician is eligible on their own verified/active status alone** — ADR-4 permits solo
+  technicians without a company, so there is no organization to gate on. Technician-level
+  availability/skill/service-radius is unchanged — delegated entirely to the existing
+  `rank_candidates`, not reimplemented.
+- **Ranking:** `rank_candidates`'s existing deterministic distance-then-rating order, `top_n=1`. No
+  ML, no bidding, no dynamic pricing — matches the Human's explicit instruction.
+- **Reason codes are intentionally coarse:** `organization_ineligible`, `not_eligible` (collapses
+  unavailable/skill-mismatch/out-of-range, since `rank_candidates` doesn't expose which — splitting
+  it out would mean forking that function, i.e. a second dispatch engine), `selected`. Recorded as a
+  `governance_events` row (`entity_type="service_request"`, `action="network_routing_decision"`) —
+  **not a new table.** Per the Human's explicit instruction, `service_request_dispatch_authorizations`
+  (migration `0057`) is authorization *evidence* only; routing *decisions* reuse the existing audit
+  mechanism.
+- **No automatic re-offer, by construction, not by added logic.** If the one offer sent is declined
+  or expires, the existing "cleanup-only, no re-dispatch" sweep already just returns the job to
+  `pending_dispatch` and does nothing further — this guarantee falls out of behavior that already
+  existed; no new code enforces it.
+- **The system actor never auto-supplies a human-override.** `_send_targeted_offer` requires an
+  `override_reason` for an offline/stale-location or skill-mismatched technician — a safety check
+  designed for a human dispatcher to consciously accept. The Network Router passes
+  `override_reason=None` always; if the top-ranked pick can't get a clean automatic offer, the
+  outcome is `no_eligible_provider` for v1, not an auto-escalation to the next candidate.
+  **Rejected: auto-supplying an override reason for a system-initiated offer.** *Bypassing a
+  safety check meant for human judgment, with no human present to actually exercise that judgment,
+  is exactly the kind of silent-authority-expansion this whole roadmap is designed to avoid.*
+- **Support ownership (Human decision, not yet built):** ClueXP/platform owns support for
+  network-originated demand before assignment; the fulfillment provider owns service execution
+  after acceptance, with ClueXP retaining platform/audit oversight. Documented here; no support
+  tooling changes were made — none was needed for this slice.
+- **Idempotency:** `job_id UNIQUE` in `service_request_dispatch_authorizations` (migration `0057`)
+  is the atomic gate — a second authorization attempt for the same job is `409 already_authorized`
+  via `INSERT ... ON CONFLICT (job_id) DO NOTHING`, the same concurrency-safe pattern as
+  `begin_or_get_technician_mutation`. A job that already has any `job_status` set (assigned,
+  cancelled, completed, or previously authorized) is separately rejected before that insert is even
+  attempted (`409 not_in_receivable_state`).
+- **Explicitly not built, per the Human's guardrails:** private-to-network overflow, payments,
+  dynamic pricing, bidding, ML ranking, AI-adapter logic, any platform/ops assignment UI.

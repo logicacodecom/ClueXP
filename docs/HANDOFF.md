@@ -62,6 +62,95 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: Tier 2 network routing MVP — implemented per plan above, not yet applied to prod
+
+Human confirmed the plan below matched intent and approved proceeding, with
+guardrails (separate `service_requests:authorize` scope, idempotent-by-`job_id`
+authorization, private/network fork with cross-tenant rejection, org
+status+capability eligibility, coarse-but-real reason codes, no auto
+re-offer, no overflow). Implemented exactly as planned; two things came up
+during implementation worth flagging:
+
+1. **A design gap the plan didn't fully resolve, decided conservatively:**
+   `_send_targeted_offer` requires a human-supplied `override_reason` for an
+   offline/stale-location or skill-mismatched technician — a safety check
+   built for a human dispatcher. The Network Router has no human. Decided:
+   the system actor never auto-supplies an override; if the top-ranked pick
+   can't get a clean automatic offer, the outcome is `no_eligible_provider`
+   for v1, not an auto-escalation to the next candidate. Recorded as ADR-7's
+   explicit rejected-alternative ("bypassing a safety check meant for human
+   judgment, with no human present to exercise it, is exactly what this
+   roadmap is designed to avoid").
+2. **Individual (unaffiliated) technician eligibility** wasn't explicitly
+   addressed in the Human's guardrails ("organization is active/approved").
+   Decided: a technician with no `org_ids` is eligible on their own
+   verified/active status alone, since ADR-4 already permits solo
+   technicians without a company — there is no organization to gate on for
+   them. Flagged in both the plan (above) and ADR-7; please correct if wrong.
+
+Implemented:
+- Migration `0057_dispatch_authorizations` — `service_request_dispatch_authorizations`
+  table (job_id unique, dispatch_scope, authorized_by_client_id, channel,
+  evidence_reference, terms_version), RLS-enabled in its own migration and
+  backfilled into `0055`'s `RLS_TABLES` registry (same pattern `0056` used).
+  **Not applied to any database — offline `--sql` render only, per standing
+  rule.**
+- `dispatch.route_network_request` — pure function, no I/O, 6 unit tests
+  (`test_network_router.py`) covering unaffiliated-individual eligibility,
+  org-status+capability gating, deterministic nearest-wins ranking,
+  no-eligible-provider, multi-org-affiliation (any one qualifying org is
+  enough), and the no-skill-needed case.
+- `POST /v1/service-requests/{request_id}/dispatch-authorizations` — new
+  scope `service_requests:authorize` (not reusing `service_requests:write`,
+  per Human's instruction). Resolves `request_id` from the safe
+  `operational_id` via new `get_dispatch_authorization_context_by_reference`.
+  Rejects a non-inert request (`409 not_in_receivable_state`) before
+  touching anything. `private_partner`: verifies the caller's
+  `organization_id` matches the job's owner (`403` otherwise), sets
+  `pending_dispatch`, done. `network`: verifies scope, sets `pending_dispatch`,
+  runs the router, records the routing decision as a `governance_events` row
+  (not a new table, per instruction), and on a selection calls the existing
+  `_send_targeted_offer(dispatch_org_id=None)`.
+- New store methods (`Store`/`InMemoryStore`/`PostgresStore`):
+  `get_dispatch_authorization_context_by_reference`, `get_organizations_status`,
+  `create_dispatch_authorization` (atomic `INSERT ... ON CONFLICT (job_id) DO
+  NOTHING`, mirroring `begin_or_get_technician_mutation`).
+- 8 new endpoint tests in `test_public_api_foundation.py`: scope gating,
+  unknown-reference 404, unknown-channel 422, private-partner cross-tenant
+  403 + happy path + double-authorization 409, network offer-sent (verified
+  no technician identity leaks in the response), no-eligible-provider, and
+  org-ineligible-technician-excluded (verified the exact reason-code
+  metadata recorded).
+- Postgres-tier test `test_postgres_store_dispatch_authorization_context_and_atomic_insert`
+  covering the reference lookup for both scopes, org status lookup, and the
+  atomic duplicate-authorization rejection against real Postgres.
+
+Verification:
+- `pytest api/tests -q --ignore=api/tests/test_postgres_security.py` → `468
+  passed, 1 skipped` (up from 462; +6 router unit tests, +8 endpoint tests
+  landed incrementally, matches).
+- `test_postgres_security.py` → `7 skipped` locally (no `POSTGRES_TEST_URL`),
+  will run in CI.
+- `python -m py_compile`, `npx tsc --noEmit`, `scripts/generate_types.py`
+  (no diff) → all clean.
+- `alembic upgrade head --sql` → renders clean through `0057_dispatch_authorizations`;
+  `test_rls_schema_guard.py` passes (new table is in `0055`'s registry).
+- `scripts/export_openapi_v1.py` re-run → snapshot now has 4 `/v1` paths.
+
+Files changed/added: `apps/intake-web/api/dispatch.py`,
+`apps/intake-web/api/main.py`, `apps/intake-web/api/store.py`,
+`apps/intake-web/api/tests/test_network_router.py` (new),
+`apps/intake-web/api/tests/test_public_api_foundation.py`,
+`apps/intake-web/api/tests/test_postgres_security.py`,
+`packages/db/alembic/versions/0057_dispatch_authorizations.py` (new),
+`packages/db/alembic/versions/0055_default_deny_rls.py` (registry backfill
+only — no SQL behavior change), `docs/SYSTEM-DESIGN.md`,
+`docs/openapi-v1-snapshot.json`, `docs/HANDOFF.md` (this entry).
+
+**Not committed/pushed yet. No production DDL applied — `0057` needs
+explicit authorization for staging/prod apply, separately from this code
+review, per standing rule.** — Claude
+
 ### 2026-08-23 — Claude: Tier 2 network routing MVP — implementation plan (posted before coding, per Human's instruction)
 
 Human decided Tier 2 with conservative/manual defaults (full decision text in

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -404,3 +405,179 @@ def test_admin_rejects_unknown_scope_and_missing_client(isolated_app):
 
     missing_client = client.get(f"/admin/external-clients/{uuid4()}", headers=admin)
     assert missing_client.status_code == 404
+
+
+def _create_service_request(client: TestClient, api_key: str, **overrides) -> str:
+    payload = dict(_VALID_SERVICE_REQUEST, **overrides)
+    created = client.post("/v1/service-requests", headers={"X-API-Key": api_key}, json=payload)
+    assert created.status_code == 200, created.text
+    return created.json()["data"]["request_reference"]
+
+
+_VALID_AUTHORIZATION = {
+    "channel": "partner_api", "evidence_reference": "chat-turn-4-explicit-yes", "terms_version": "2026-08-01",
+}
+
+
+def test_dispatch_authorization_requires_scope_and_unknown_reference_is_404(isolated_app):
+    main, store = isolated_app
+    write_key = _issue_key(store, ["service_requests:write"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key)
+
+    wrong_scope = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": write_key}, json=_VALID_AUTHORIZATION,
+    )
+    assert wrong_scope.status_code == 403
+
+    auth_key = _issue_key(store, ["service_requests:authorize"])
+    missing = client.post(
+        "/v1/service-requests/not-a-real-reference/dispatch-authorizations",
+        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+    )
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "service_request_not_found"
+
+
+def test_dispatch_authorization_rejects_unknown_channel(isolated_app):
+    main, store = isolated_app
+    write_key = _issue_key(store, ["service_requests:write"])
+    auth_key = _issue_key(store, ["service_requests:authorize"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key)
+
+    bad = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key},
+        json={"channel": "not_a_real_channel", "evidence_reference": "x", "terms_version": "v1"},
+    )
+    assert bad.status_code == 422
+
+
+def test_private_partner_authorization_requires_matching_org_and_queues_only(isolated_app):
+    main, store = isolated_app
+    org_id = str(uuid4())
+    write_key = _issue_key(store, ["service_requests:write"], organization_id=org_id)
+    bound_auth_key = _issue_key(store, ["service_requests:authorize"], organization_id=org_id)
+    other_org_auth_key = _issue_key(store, ["service_requests:authorize"], organization_id=str(uuid4()))
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key, dispatch_scope="private_partner")
+
+    wrong_org = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": other_org_auth_key}, json=_VALID_AUTHORIZATION,
+    )
+    assert wrong_org.status_code == 403
+    assert wrong_org.json()["error"] == "not_authorized_for_organization"
+
+    authorized = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": bound_auth_key}, json=_VALID_AUTHORIZATION,
+    )
+    assert authorized.status_code == 200
+    body = authorized.json()["data"]
+    assert body == {
+        "request_reference": reference, "dispatch_scope": "private_partner",
+        "status": "authorized", "routing_outcome": None,
+    }
+    # No routing/offer logic touched -- only visible via the org's own queue.
+    job_id = next(iter(store._tickets))
+    assert store._job_status[str(job_id)] == "pending_dispatch"
+    assert getattr(store, "_offers", {}) == {}
+
+    already = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": bound_auth_key}, json=_VALID_AUTHORIZATION,
+    )
+    assert already.status_code == 409
+    assert already.json()["error"] == "not_in_receivable_state"
+
+
+def _network_tech(tech_id: str, *, org_ids: list[str] | None = None) -> dict:
+    return {
+        "id": tech_id,
+        "display_name": tech_id,
+        "skills": ["locksmith.residential_lockout"],
+        "is_available": True,
+        "status": "active",
+        "vetting_status": "verified",
+        "service_area_center_lat": 40.0,
+        "service_area_center_lng": -73.0,
+        "service_area_radius_km": 25,
+        "org_ids": org_ids or [],
+        "rating": 4.5,
+        "location_updated_at": datetime.now(timezone.utc),
+    }
+
+
+def test_network_authorization_sends_offer_to_unaffiliated_eligible_technician(isolated_app):
+    main, store = isolated_app
+    solo_tech_id = str(uuid4())
+    store._technicians = [_network_tech(solo_tech_id)]
+    write_key = _issue_key(store, ["service_requests:write"])
+    auth_key = _issue_key(store, ["service_requests:authorize"])
+    client = TestClient(main.app)
+    reference = _create_service_request(
+        client, write_key,
+        location={"lat": 40.001, "lng": -73.001, "raw_text": "near"},
+    )
+
+    authorized = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+    )
+
+    assert authorized.status_code == 200
+    body = authorized.json()["data"]
+    assert body["dispatch_scope"] == "network"
+    assert body["routing_outcome"] == "offer_sent"
+    # Never leaks which technician was selected.
+    assert solo_tech_id not in authorized.text
+
+    job_id = next(iter(store._tickets))
+    assert store._job_status[str(job_id)] == "pending_dispatch"
+    routing_events = [e for e in store.governance_events if e["action"] == "network_routing_decision"]
+    assert len(routing_events) == 1
+    assert routing_events[0]["metadata"]["selected_technician_id"] == solo_tech_id
+
+
+def test_network_authorization_reports_no_eligible_provider(isolated_app):
+    main, store = isolated_app
+    store._technicians = []  # nobody available anywhere
+    write_key = _issue_key(store, ["service_requests:write"])
+    auth_key = _issue_key(store, ["service_requests:authorize"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key)
+
+    authorized = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+    )
+
+    assert authorized.status_code == 200
+    assert authorized.json()["data"]["routing_outcome"] == "no_eligible_provider"
+
+
+def test_network_authorization_excludes_org_ineligible_technician(isolated_app):
+    main, store = isolated_app
+    store._technicians = [_network_tech("suspended-org-tech", org_ids=["org-suspended"])]
+    store._organizations["org-suspended"] = {
+        "id": "org-suspended", "display_name": "Suspended Co", "status": "suspended",
+    }
+    write_key = _issue_key(store, ["service_requests:write"])
+    auth_key = _issue_key(store, ["service_requests:authorize"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key)
+
+    authorized = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+    )
+
+    assert authorized.status_code == 200
+    assert authorized.json()["data"]["routing_outcome"] == "no_eligible_provider"
+    routing_events = [e for e in store.governance_events if e["action"] == "network_routing_decision"]
+    assert routing_events[0]["metadata"]["considered"] == [
+        {"technician_id": "suspended-org-tech", "reason_code": "organization_ineligible"}
+    ]

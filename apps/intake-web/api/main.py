@@ -66,6 +66,7 @@ from api.dispatch import (
     normalize_settlement_payment_method,
     normalize_policy,
     rank_candidates,
+    route_network_request,
     select_candidates,
     to_db_policy,
 )
@@ -4492,11 +4493,182 @@ async def public_v1_create_service_request(
     return body
 
 
+# --- POST /v1/service-requests/{request_id}/dispatch-authorizations (Tier 2) ---
+# ADR-6/ADR-7: explicit authorization gate. Forks on dispatch_scope, derived
+# from customer_owner_org_id exactly as ADR-6 specifies. private_partner only
+# ever enters the owning org's existing provider queue -- no new routing
+# logic, no cross-tenant visibility, no platform/ops assignment path. network
+# runs the Network Router MVP (dispatch.route_network_request) and, on a
+# selection, sends exactly one offer via the existing _send_targeted_offer's
+# documented dispatch_org_id=None seam. `job_id` unique in
+# service_request_dispatch_authorizations is the atomic idempotency gate.
+DISPATCH_AUTHORIZATION_CHANNELS = {
+    "first_party_website", "human_app", "partner_website", "partner_widget",
+    "partner_api", "ai_agent_adapter", "enterprise_partner", "internal_operations",
+}
+
+
+class PublicDispatchAuthorizationRequest(BaseModel):
+    channel: str
+    evidence_reference: str
+    terms_version: str
+
+    @field_validator("channel")
+    @classmethod
+    def _known_channel(cls, v: str) -> str:
+        if v not in DISPATCH_AUTHORIZATION_CHANNELS:
+            raise ValueError(f"Unknown channel: {v!r}")
+        return v
+
+    @field_validator("evidence_reference")
+    @classmethod
+    def _evidence_present(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("evidence_reference must not be empty")
+        return v
+
+    @field_validator("terms_version")
+    @classmethod
+    def _terms_version_present(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("terms_version must not be empty")
+        return v
+
+
+class PublicDispatchAuthorizationResult(BaseModel):
+    request_reference: str
+    dispatch_scope: str
+    status: str
+    # Only present for dispatch_scope=network -- private_partner doesn't route.
+    routing_outcome: str | None = None
+
+
+class PublicDispatchAuthorizationResponse(BaseModel):
+    data: PublicDispatchAuthorizationResult
+    meta: PublicApiMeta
+
+
+async def require_public_service_requests_authorize(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "service_requests:authorize")
+
+
+@app.post(
+    "/v1/service-requests/{request_id}/dispatch-authorizations",
+    response_model=PublicDispatchAuthorizationResponse,
+)
+async def public_v1_authorize_dispatch(
+    request_id: str,
+    request: Request,
+    response: Response,
+    payload: PublicDispatchAuthorizationRequest,
+    context: dict[str, Any] = Depends(require_public_service_requests_authorize),
+) -> PublicDispatchAuthorizationResponse:
+    req_id = context["request_id"]
+    response.headers["X-Request-ID"] = req_id
+    client = context["client"]
+    client_id = client["id"]
+
+    ctx = await store.get_dispatch_authorization_context_by_reference(request_id)
+    if ctx is None:
+        raise public_api_error(404, "service_request_not_found", req_id)
+    if ctx["status"] is not None:
+        raise public_api_error(
+            409, "not_in_receivable_state", req_id,
+            detail="This service request is already assigned, completed, cancelled, or authorized.",
+        )
+
+    job_id = UUID(ctx["job_id"])
+    owner_org_id = ctx.get("customer_owner_org_id")
+    dispatch_scope = "private_partner" if owner_org_id else "network"
+
+    if dispatch_scope == "private_partner" and str(client.get("organization_id") or "") != str(owner_org_id):
+        raise public_api_error(
+            403, "not_authorized_for_organization", req_id,
+            detail="This API client is not bound to the organization that owns this request.",
+        )
+
+    authorization = await store.create_dispatch_authorization(
+        job_id, client_id=client_id, dispatch_scope=dispatch_scope,
+        channel=payload.channel, evidence_reference=payload.evidence_reference,
+        terms_version=payload.terms_version,
+    )
+    if authorization is None:
+        raise public_api_error(409, "already_authorized", req_id)
+
+    await store.set_job_status(job_id, STATUS_PENDING_DISPATCH)
+
+    routing_outcome: str | None = None
+    if dispatch_scope == "private_partner":
+        await _create_alert_best_effort(
+            owner_org_id, alert_type="new_job", severity="info", job_id=job_id,
+            payload={"source": "v1_dispatch_authorization"}, log_name="alert_new_job_failed",
+        )
+    else:
+        job_for_routing = {"access_type": ctx.get("access_type"), "lat": ctx.get("lat"), "lng": ctx.get("lng")}
+        skill_needed = required_skill_for_job(job_for_routing)
+        technicians = await store.list_available_technicians()
+        org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
+        org_status = await store.get_organizations_status(org_ids)
+        org_capabilities = {
+            oid: set(await store.list_organization_capabilities(oid))
+            for oid, status in org_status.items() if status == "active"
+        }
+        routed = route_network_request(
+            job_for_routing, technicians, skill_needed=skill_needed,
+            org_status=org_status, org_capabilities=org_capabilities,
+        )
+        await store.record_governance_event(
+            entity_type="service_request", entity_id=job_id, action="network_routing_decision",
+            actor_id=client_id,
+            metadata={"rules_version": "network_router_v1", **routed},
+        )
+        selected_id = routed["selected_technician_id"]
+        tech = next((t for t in technicians if t["id"] == selected_id), None) if selected_id else None
+        if tech is not None:
+            try:
+                # override_reason=None deliberately: _send_targeted_offer requires
+                # a human override for an offline/stale-location technician, and
+                # there is no human here to supply one. The system actor never
+                # auto-supplies an override -- if the top-ranked pick can't get a
+                # clean automatic offer, this is "no_eligible_provider" for v1,
+                # not an auto-escalation to the next candidate (that would be a
+                # second dispatch engine; out of scope per the conservative-v1
+                # instruction).
+                await _send_targeted_offer(
+                    job=job_for_routing, job_id=job_id, technician_id=UUID(selected_id), tech=tech,
+                    override_reason=None, session={"user": {"id": "system:network_router"}},
+                    audit_prefix="network_router", dispatch_org_id=None,
+                )
+                routing_outcome = "offer_sent"
+            except HTTPException:
+                logger.exception("network_router_offer_failed", extra={"job_id": str(job_id)})
+                routing_outcome = "no_eligible_provider"
+        else:
+            routing_outcome = "no_eligible_provider"
+
+    await store.record_external_api_event(
+        client_id=client_id, api_key_id=context["api_key"]["id"],
+        action="dispatch_authorizations.create", path=request.url.path, status_code=200,
+        request_id=req_id, ip=_request_ip(request),
+        metadata={"dispatch_scope": dispatch_scope, "routing_outcome": routing_outcome},
+    )
+
+    return PublicDispatchAuthorizationResponse(
+        data=PublicDispatchAuthorizationResult(
+            request_reference=request_id, dispatch_scope=dispatch_scope,
+            status="authorized", routing_outcome=routing_outcome,
+        ),
+        meta=PublicApiMeta(request_id=req_id),
+    )
+
+
 # --- Admin: external API client / key lifecycle (platform_admin only) ---
 # Narrow provisioning surface, not partner self-service. A manual store call
 # (as the tests use) is fine while there are 0-1 real external clients; this
 # is the "safe operational habit" step before that stops being true.
-KNOWN_PUBLIC_API_SCOPES = {"services:read", "coverage:check", "service_requests:write"}
+KNOWN_PUBLIC_API_SCOPES = {
+    "services:read", "coverage:check", "service_requests:write", "service_requests:authorize",
+}
 
 
 def _validate_public_api_scopes(scopes: list[str]) -> list[str]:

@@ -64,6 +64,7 @@ RLS_TABLES = (
     "provider_documents",
     "rating_summaries",
     "service_categories",
+    "service_request_dispatch_authorizations",
     "service_skills",
     "settlement_adjustments",
     "settlement_payments",
