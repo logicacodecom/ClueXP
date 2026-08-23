@@ -154,3 +154,50 @@ def test_postgres_store_external_api_foundation_paths():
         assert event["metadata"] == {"ok": True}
 
     asyncio.run(exercise())
+
+
+def test_postgres_store_external_api_idempotency_reserve_replay_and_conflict():
+    async def exercise() -> None:
+        store = PostgresStore(DSN)
+        client = await store.create_external_client(
+            name="Idempotency client", client_type="agent", scopes=["coverage:check"],
+        )
+        client_id = client["id"]
+
+        first = await store.begin_or_get_external_api_mutation(
+            client_id, "idem-1", "hash-a", "POST", "/v1/coverage-checks",
+        )
+        assert first == {"state": "new"}
+
+        pending = await store.begin_or_get_external_api_mutation(
+            client_id, "idem-1", "hash-a", "POST", "/v1/coverage-checks",
+        )
+        assert pending["state"] == "pending"
+
+        await store.complete_external_api_mutation(
+            client_id, "idem-1", status_code=200, response={"data": {"covered": True}},
+        )
+
+        done = await store.begin_or_get_external_api_mutation(
+            client_id, "idem-1", "hash-a", "POST", "/v1/coverage-checks",
+        )
+        assert done == {
+            "state": "done", "status_code": 200, "response": {"data": {"covered": True}},
+        }
+
+        conflict = await store.begin_or_get_external_api_mutation(
+            client_id, "idem-1", "hash-b", "POST", "/v1/coverage-checks",
+        )
+        assert conflict == {"state": "conflict"}
+
+        # A different client with the same idempotency key string is a distinct
+        # reservation (client_id is part of the primary key) — must not collide.
+        other_client = await store.create_external_client(
+            name="Other client", client_type="agent", scopes=["coverage:check"],
+        )
+        isolated = await store.begin_or_get_external_api_mutation(
+            other_client["id"], "idem-1", "hash-a", "POST", "/v1/coverage-checks",
+        )
+        assert isolated == {"state": "new"}
+
+    asyncio.run(exercise())

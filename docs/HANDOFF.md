@@ -62,6 +62,88 @@
 
 ## Open threads
 
+### 2026-08-22 — Claude: Phase 1 contract slice — error envelope, idempotency, `POST /v1/coverage-checks`, OpenAPI export
+
+Continuing from the closed Public API foundation slice (`0056`, below) per
+`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` Phase 1. No new migration — this is code +
+docs only, no schema change, no production DDL, no commit/push/deploy performed.
+
+Implemented:
+- Formalized the `/v1` error envelope as `PublicApiError` (`{error, request_id,
+  detail?}`) and wired it into the `RequestValidationError`/unhandled-`Exception`
+  handlers *only* for paths under `/v1` — internal route error shapes are
+  untouched. The existing `require_public_api_client` 401/403/429 bodies already
+  matched this shape; formalized as documented contract, not changed.
+- Added `begin_or_get_external_api_mutation` / `complete_external_api_mutation` to
+  `Store`/`InMemoryStore`/`PostgresStore`, mirroring the existing
+  `begin_or_get_technician_mutation` reserve/replay/conflict pattern, backed by
+  the already-existing (0056) `external_api_idempotency_keys` table. This was
+  previously unused — the table existed but nothing reserved/replayed against it.
+- Added `POST /v1/coverage-checks` (new scope `coverage:check`): given
+  `{lat, lng, service_skill}`, returns `{covered: bool, service_skill}` only —
+  computed via the existing `list_available_technicians()` + `rank_candidates()`
+  dispatch rule engine, but never returns technician identity, distance, or
+  count. No ticket/job is created, no dispatch triggered, no fulfillment
+  assignment — deliberately excludes `dispatch_scope`/consent/attribution, which
+  are Phase 2 concerns per the roadmap. Supports optional `Idempotency-Key`.
+- Exported the public contract: `apps/intake-web/scripts/export_openapi_v1.py`
+  generates `docs/openapi-v1-snapshot.json` (paths/schemas pruned to `/v1/*`
+  only — internal routes never leak into it). Re-run after any `/v1` change.
+- Added ADR-5 in `docs/SYSTEM-DESIGN.md` §20.5 freezing the error-envelope,
+  idempotency, and versioning contract decisions (including the rejected
+  alternative: mandatory idempotency key on every `POST` — rejected because a
+  pure-read-effect endpoint doesn't need one).
+- Updated §13's Public Platform API table with the new endpoint and envelope/
+  idempotency contract description.
+
+Not done (deliberately, per Phase 1/Phase 2 boundary):
+- No `dispatch_scope`, `origin_type`/`origin_client_id`, or consent capture at
+  the API layer — these require the consent/attribution model design first
+  (roadmap §4) and would cross into Phase 2 if added ad hoc here.
+- No `POST /v1/service-requests` (real ticket creation) — the first mutating
+  `/v1` endpoint intentionally has zero persistence/dispatch side effects
+  (`coverage-checks`) so the idempotency contract could be proven safely before
+  a consequential endpoint uses it.
+- No external-client provisioning UI — granting scopes to a client is still a
+  manual `create_external_client`/`issue_external_api_key` call (same as
+  `services:read` before it).
+- No CI drift-guard for `openapi-v1-snapshot.json` (unlike
+  `schema.generated.ts`'s CI check) — flagging as a followup, not done this pass,
+  to avoid expanding CI scope beyond what this slice needed.
+
+Verification:
+- `pytest api/tests -q --ignore=api/tests/test_postgres_security.py` → `449
+  passed, 1 skipped` (up from 441; +8 new tests for the coverage-check endpoint
+  covering auth/scope, true/false coverage with no identity leak, coordinate
+  validation, and idempotency reserve/replay/conflict).
+- `test_postgres_security.py` → added
+  `test_postgres_store_external_api_idempotency_reserve_replay_and_conflict`
+  (reserve/pending/done/conflict + cross-client isolation); not run locally, no
+  disposable Postgres available this session (Supabase branching needs a
+  Pro-plan project, confirmed unavailable on `gzgrkzvhotjolvcbqiku`); will run in
+  CI's `postgres:16` service same as the rest of that tier.
+- `python -m py_compile` on all touched/added files → clean.
+- `alembic upgrade head --sql` → unchanged head (`0056_public_api_foundation`),
+  confirms no migration was needed for this slice.
+- `npx tsc --noEmit -p apps/intake-web/tsconfig.json` → clean.
+- `scripts/generate_types.py` → no diff (new models live in `main.py`, out of
+  that script's `api.schema`-only scope, same as the pre-existing
+  `PublicServicesResponse`).
+
+Files changed/added (all uncommitted):
+- `apps/intake-web/api/main.py`
+- `apps/intake-web/api/store.py`
+- `apps/intake-web/api/tests/test_public_api_foundation.py`
+- `apps/intake-web/api/tests/test_postgres_security.py`
+- `apps/intake-web/scripts/export_openapi_v1.py` (new)
+- `docs/openapi-v1-snapshot.json` (new)
+- `docs/SYSTEM-DESIGN.md`
+- `docs/HANDOFF.md` (this entry)
+
+Next: confirm CI's Postgres tier passes on push (same gate as `0055`/`0056`),
+then this is ready to commit. No further roadmap work should build on top until
+reviewed. — Claude
+
 ### 2026-08-22 — Codex → Claude: next workstream — Public API / Agent Gateway foundation
 
 Sprint 0 security foundation is closed: code merged, CI green, production migration `0055`

@@ -789,6 +789,16 @@ class Store:
     async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:  # pragma: no cover
         return True
 
+    async def begin_or_get_external_api_mutation(
+        self, client_id: str, idempotency_key: str, request_hash: str, method: str, path: str,
+    ) -> dict:  # pragma: no cover
+        return {"state": "new"}
+
+    async def complete_external_api_mutation(
+        self, client_id: str, idempotency_key: str, *, status_code: int, response: dict,
+    ) -> None:  # pragma: no cover
+        return None
+
     async def record_external_api_event(
         self,
         *,
@@ -1838,6 +1848,7 @@ class InMemoryStore(Store):
         self._external_api_key_by_hash: dict[str, str] = {}
         self._external_api_events: list[dict] = []
         self._external_rate_limits: dict[tuple[str, str, str], int] = {}
+        self._external_api_idempotency: dict[tuple[str, str], dict] = {}
         # Technician documents for Slice T6
         self.technician_documents: list[dict] = []
 
@@ -5181,6 +5192,39 @@ class InMemoryStore(Store):
         count = self._external_rate_limits.get(key, 0) + 1
         self._external_rate_limits[key] = count
         return count <= limit
+
+    async def begin_or_get_external_api_mutation(
+        self, client_id: str, idempotency_key: str, request_hash: str, method: str, path: str,
+    ) -> dict:
+        """Reserve an idempotency key or report the prior outcome, mirroring
+        ``begin_or_get_technician_mutation``. A fresh key is reserved (state=new)
+        and the caller performs the work; a re-seen key with the same request
+        replays the stored result (state=done) or, with a different request body
+        under the same key, is rejected (state=conflict)."""
+        entry_key = (str(client_id), idempotency_key)
+        existing = self._external_api_idempotency.get(entry_key)
+        if existing is None:
+            self._external_api_idempotency[entry_key] = {
+                "request_hash": request_hash, "method": method, "path": path,
+                "status_code": None, "response": None,
+            }
+            return {"state": "new"}
+        if existing["request_hash"] != request_hash:
+            return {"state": "conflict"}
+        if existing["status_code"] is None:
+            return {"state": "pending"}
+        return {
+            "state": "done", "status_code": existing["status_code"], "response": existing["response"],
+        }
+
+    async def complete_external_api_mutation(
+        self, client_id: str, idempotency_key: str, *, status_code: int, response: dict,
+    ) -> None:
+        entry_key = (str(client_id), idempotency_key)
+        entry = self._external_api_idempotency.get(entry_key)
+        if entry is not None:
+            entry["status_code"] = status_code
+            entry["response"] = response
 
     async def record_external_api_event(
         self,
@@ -13014,6 +13058,52 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return bool(row and row[0] <= limit)
+
+    async def begin_or_get_external_api_mutation(
+        self, client_id: str, idempotency_key: str, request_hash: str, method: str, path: str,
+    ) -> dict:
+        """Reserve an idempotency key or report the prior outcome. The insert's
+        ``ON CONFLICT DO NOTHING`` makes the reserve atomic under concurrent retries,
+        mirroring ``begin_or_get_technician_mutation``."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "insert into external_api_idempotency_keys"
+                " (client_id, idempotency_key, request_hash, method, path)"
+                " values (%s, %s, %s, %s, %s)"
+                " on conflict (client_id, idempotency_key) do nothing"
+                " returning client_id",
+                (str(client_id), idempotency_key, request_hash, method, path),
+            )
+            inserted = await cur.fetchone()
+            if inserted is not None:
+                return {"state": "new"}
+            cur = await conn.execute(
+                "select request_hash, status_code, response from external_api_idempotency_keys"
+                " where client_id = %s and idempotency_key = %s",
+                (str(client_id), idempotency_key),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return {"state": "new"}
+        stored_hash, status_code, response = row
+        if stored_hash != request_hash:
+            return {"state": "conflict"}
+        if status_code is None:
+            return {"state": "pending"}
+        return {"state": "done", "status_code": status_code, "response": response}
+
+    async def complete_external_api_mutation(
+        self, client_id: str, idempotency_key: str, *, status_code: int, response: dict,
+    ) -> None:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            await conn.execute(
+                "update external_api_idempotency_keys"
+                " set status_code = %s, response = %s, updated_at = now()"
+                " where client_id = %s and idempotency_key = %s",
+                (status_code, Jsonb(response), str(client_id), idempotency_key),
+            )
 
     async def record_external_api_event(
         self,

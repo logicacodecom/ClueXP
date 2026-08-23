@@ -65,6 +65,7 @@ from api.dispatch import (
     normalize_payment_method,
     normalize_settlement_payment_method,
     normalize_policy,
+    rank_candidates,
     select_candidates,
     to_db_policy,
 )
@@ -131,14 +132,47 @@ async def strip_vercel_api_prefix(request, call_next):
 # and then renders `body.detail`. So any error body that isn't JSON-with-a-detail
 # reaches the browser as a blank generic message. These two handlers guarantee the
 # shape for the cases FastAPI/Starlette would otherwise answer differently.
+PUBLIC_API_PREFIX = "/v1"
+
+
+def _is_public_api_path(path: str) -> bool:
+    return path == PUBLIC_API_PREFIX or path.startswith(PUBLIC_API_PREFIX + "/")
+
+
+class PublicApiError(BaseModel):
+    """Documented `/v1` error envelope. Every `/v1` error response — validation,
+    auth, scope, rate-limit, or unhandled — takes this shape so external clients
+    parse one contract instead of per-route ad hoc bodies."""
+
+    error: str
+    request_id: str
+    detail: str | None = None
+
+
+def public_api_error(
+    status_code: int, error: str, request_id: str, *, detail: str | None = None
+) -> HTTPException:
+    body: dict[str, Any] = {"error": error, "request_id": request_id}
+    if detail:
+        body["detail"] = detail
+    return HTTPException(status_code=status_code, detail=body)
+
+
 @app.exception_handler(RequestValidationError)
-async def validation_error_detail(_: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_error_detail(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Default 422 detail is a list of error objects; flatten to one string."""
     fields = [
         f"{'.'.join(str(p) for p in err['loc'][1:]) or 'body'}: {err['msg']}"
         for err in exc.errors()
     ]
-    return JSONResponse({"detail": "; ".join(fields)}, status_code=422)
+    detail = "; ".join(fields)
+    if _is_public_api_path(request.url.path):
+        request_id = request.headers.get("X-Request-ID", "").strip()[:128] or secrets.token_hex(12)
+        return JSONResponse(
+            {"error": "invalid_request", "request_id": request_id, "detail": detail},
+            status_code=422,
+        )
+    return JSONResponse({"detail": detail}, status_code=422)
 
 
 @app.exception_handler(Exception)
@@ -152,6 +186,11 @@ async def unhandled_error_detail(request: Request, exc: Exception) -> JSONRespon
         request.url.path,
         type(exc).__name__,
     )
+    if _is_public_api_path(request.url.path):
+        return JSONResponse(
+            {"error": "internal_error", "request_id": error_id},
+            status_code=500,
+        )
     return JSONResponse(
         {"detail": "An unexpected error occurred.", "error_id": error_id},
         status_code=500,
@@ -200,6 +239,36 @@ class PublicServiceCategory(BaseModel):
 
 class PublicServicesResponse(BaseModel):
     data: list[PublicServiceCategory]
+    meta: PublicApiMeta
+
+
+class PublicCoverageCheckRequest(BaseModel):
+    lat: float
+    lng: float
+    service_skill: str
+
+    @field_validator("lat")
+    @classmethod
+    def _lat_range(cls, v: float) -> float:
+        if not -90.0 <= v <= 90.0:
+            raise ValueError("lat must be between -90 and 90")
+        return v
+
+    @field_validator("lng")
+    @classmethod
+    def _lng_range(cls, v: float) -> float:
+        if not -180.0 <= v <= 180.0:
+            raise ValueError("lng must be between -180 and 180")
+        return v
+
+
+class PublicCoverageCheckResult(BaseModel):
+    covered: bool
+    service_skill: str
+
+
+class PublicCoverageCheckResponse(BaseModel):
+    data: PublicCoverageCheckResult
     meta: PublicApiMeta
 
 
@@ -4126,6 +4195,77 @@ async def public_v1_services(
         metadata={"category_count": len(data)},
     )
     return PublicServicesResponse(data=data, meta=PublicApiMeta(request_id=request_id))
+
+
+async def require_public_coverage_check(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "coverage:check")
+
+
+@app.post("/v1/coverage-checks", response_model=PublicCoverageCheckResponse)
+async def public_v1_coverage_checks(
+    request: Request,
+    response: Response,
+    payload: PublicCoverageCheckRequest,
+    context: dict[str, Any] = Depends(require_public_coverage_check),
+) -> PublicCoverageCheckResponse:
+    """Public coverage lookup: does the verified network have an available,
+    skilled technician near this location? Pure read over existing
+    `list_available_technicians()` — no ticket/job is created, no dispatch is
+    triggered, and no technician identity or roster is ever returned, only an
+    aggregate boolean. Safe against Phase 2 network-routing business logic:
+    this answers "is coverage plausible" the same way an unauthenticated
+    customer's own eligibility question would, using the same rule engine
+    (`rank_candidates`) the existing dispatch flow already trusts."""
+    request_id = context["request_id"]
+    response.headers["X-Request-ID"] = request_id
+    client_id = context["client"]["id"]
+    idempotency_key = request.headers.get("Idempotency-Key")
+    request_hash = hashlib.sha256(payload.model_dump_json().encode("utf-8")).hexdigest()
+
+    if idempotency_key:
+        reservation = await store.begin_or_get_external_api_mutation(
+            client_id, idempotency_key, request_hash, "POST", "/v1/coverage-checks",
+        )
+        if reservation["state"] == "conflict":
+            raise public_api_error(
+                409, "idempotency_key_reuse", request_id,
+                detail="Idempotency-Key was already used with a different request body.",
+            )
+        if reservation["state"] == "pending":
+            raise public_api_error(
+                409, "request_in_progress", request_id,
+                detail="A request with this Idempotency-Key is still being processed.",
+            )
+        if reservation["state"] == "done":
+            return PublicCoverageCheckResponse.model_validate(reservation["response"])
+
+    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
+    technicians = await store.list_available_technicians()
+    job = {"access_type": skill, "lat": payload.lat, "lng": payload.lng}
+    covered = bool(rank_candidates(job, technicians, top_n=1))
+
+    body = PublicCoverageCheckResponse(
+        data=PublicCoverageCheckResult(covered=covered, service_skill=skill),
+        meta=PublicApiMeta(request_id=request_id),
+    )
+
+    if idempotency_key:
+        await store.complete_external_api_mutation(
+            client_id, idempotency_key, status_code=200, response=body.model_dump(mode="json"),
+        )
+
+    await store.record_external_api_event(
+        client_id=client_id,
+        api_key_id=context["api_key"]["id"],
+        action="coverage_checks.create",
+        path=request.url.path,
+        status_code=200,
+        idempotency_key=idempotency_key,
+        request_id=request_id,
+        ip=_request_ip(request),
+        metadata={"covered": covered, "service_skill": skill},
+    )
+    return body
 
 
 @app.get("/ops/flags")

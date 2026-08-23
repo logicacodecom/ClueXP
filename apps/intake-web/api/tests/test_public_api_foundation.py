@@ -102,3 +102,114 @@ def test_public_services_is_rate_limited_per_external_client(isolated_app):
     assert second.status_code == 429
     assert second.json()["detail"]["error"] == "rate_limited"
     assert store._external_api_events[-1]["action"] == "rate_limited"
+
+
+def _tech(tech_id: str, *, lat: float = 40.0, lng: float = -73.0) -> dict:
+    return {
+        "id": tech_id,
+        "display_name": tech_id,
+        "skills": ["locksmith.residential_lockout"],
+        "is_available": True,
+        "status": "active",
+        "vetting_status": "verified",
+        "service_area_center_lat": lat,
+        "service_area_center_lng": lng,
+        "service_area_radius_km": 25,
+        "org_ids": ["some-org"],
+        "rating": 4.8,
+    }
+
+
+def test_coverage_check_requires_scope_and_api_key(isolated_app):
+    main, store = isolated_app
+    client = TestClient(main.app)
+
+    missing_key = client.post(
+        "/v1/coverage-checks",
+        json={"lat": 40.0, "lng": -73.0, "service_skill": "locksmith.residential_lockout"},
+    )
+    assert missing_key.status_code == 401
+
+    api_key = _issue_key(store, ["services:read"])
+    wrong_scope = client.post(
+        "/v1/coverage-checks",
+        headers={"X-API-Key": api_key},
+        json={"lat": 40.0, "lng": -73.0, "service_skill": "locksmith.residential_lockout"},
+    )
+    assert wrong_scope.status_code == 403
+    assert wrong_scope.json()["detail"]["error"] == "insufficient_scope"
+
+
+def test_coverage_check_reports_true_only_when_a_verified_technician_is_in_range(isolated_app):
+    main, store = isolated_app
+    store._technicians = [_tech("near-tech", lat=40.0, lng=-73.0)]
+    api_key = _issue_key(store, ["coverage:check"])
+    client = TestClient(main.app)
+
+    covered = client.post(
+        "/v1/coverage-checks",
+        headers={"X-API-Key": api_key},
+        json={"lat": 40.01, "lng": -73.01, "service_skill": "locksmith.residential_lockout"},
+    )
+    not_covered = client.post(
+        "/v1/coverage-checks",
+        headers={"X-API-Key": api_key},
+        json={"lat": 10.0, "lng": 10.0, "service_skill": "locksmith.residential_lockout"},
+    )
+
+    assert covered.status_code == 200
+    assert covered.json()["data"] == {"covered": True, "service_skill": "locksmith.residential_lockout"}
+    assert not_covered.status_code == 200
+    assert not_covered.json()["data"]["covered"] is False
+    # No technician identity, roster, or count is ever exposed -- only the boolean.
+    assert "near-tech" not in covered.text
+    last_event = store._external_api_events[-1]
+    assert last_event["action"] == "coverage_checks.create"
+    assert last_event["metadata"] == {"covered": False, "service_skill": "locksmith.residential_lockout"}
+
+
+def test_coverage_check_rejects_out_of_range_coordinates(isolated_app):
+    main, store = isolated_app
+    api_key = _issue_key(store, ["coverage:check"])
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/v1/coverage-checks",
+        headers={"X-API-Key": api_key},
+        json={"lat": 999.0, "lng": -73.0, "service_skill": "locksmith.residential_lockout"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"
+    assert "request_id" in response.json()
+
+
+def test_coverage_check_idempotency_key_replays_then_rejects_conflicting_body(isolated_app):
+    main, store = isolated_app
+    store._technicians = [_tech("near-tech")]
+    api_key = _issue_key(store, ["coverage:check"])
+    client = TestClient(main.app)
+    headers = {"X-API-Key": api_key, "Idempotency-Key": "cov-key-1"}
+
+    first = client.post(
+        "/v1/coverage-checks",
+        headers=headers,
+        json={"lat": 40.01, "lng": -73.01, "service_skill": "locksmith.residential_lockout"},
+    )
+    replay = client.post(
+        "/v1/coverage-checks",
+        headers=headers,
+        json={"lat": 40.01, "lng": -73.01, "service_skill": "locksmith.residential_lockout"},
+    )
+    conflict = client.post(
+        "/v1/coverage-checks",
+        headers=headers,
+        json={"lat": 10.0, "lng": 10.0, "service_skill": "locksmith.residential_lockout"},
+    )
+
+    assert first.status_code == 200 and first.json() == replay.json()
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["error"] == "idempotency_key_reuse"
+    # The replay must not perform the check again or emit a second audit event.
+    create_events = [e for e in store._external_api_events if e["action"] == "coverage_checks.create"]
+    assert len(create_events) == 1

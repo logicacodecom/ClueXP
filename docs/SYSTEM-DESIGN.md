@@ -931,9 +931,18 @@ Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundat
 `external_api_idempotency_keys`, and `external_api_rate_limits`; all are default-deny RLS
 protected.
 
+Every `/v1` error response (auth, scope, rate limit, validation, or unhandled) uses one documented
+envelope — `{ error, request_id, detail? }` — regardless of route, so an external client parses one
+contract instead of per-route ad hoc bodies. Idempotency is supported gateway-wide for
+consequential (`POST`) operations via an optional `Idempotency-Key` header: a fresh key reserves and
+executes; the same key + identical body replays the stored response without re-executing; the same
+key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flight retry returns
+`409 request_in_progress`. Backed by `external_api_idempotency_keys` (see ADR-5, §20.5).
+
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `GET` | `/v1/services` | external API key, `services:read` scope | Public active service taxonomy envelope `{ data, meta }`; audits success/failure and enforces a Postgres-backed per-client rate limit |
+| `POST` | `/v1/coverage-checks` | external API key, `coverage:check` scope | Pure read: does the verified network have an available, skilled technician within range of `{lat, lng, service_skill}`? Returns only an aggregate `{ covered: bool, service_skill }` — never a technician identity, roster, or count. No ticket/job is created; no dispatch is triggered. Supports `Idempotency-Key`. |
 
 No public service-request creation, network routing, payment, or AI-adapter-specific behavior is
 live in this slice.
@@ -1490,3 +1499,40 @@ marketplace is the widened future (§18, [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md
   later without a retrofit).
 - **Trust-state contract reinforced:** `matched` fires only on a named verified
   `fulfillment_technician_id`; org-accept ≠ matched; no customer/tech identity before assignment.
+
+### 20.5 ADR-5 — Public `/v1` API: error envelope, idempotency, versioning (Accepted 2026-08-22)
+
+Phase 1 (`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` §8) requires a reviewed `/v1` contract before any
+business-logic (network routing, real service-request creation) is added to the public surface.
+This ADR freezes the contract shape only; it authorizes no new dispatch/business logic.
+
+- **Namespace/versioning:** `/v1/...` is the sole public namespace (served as `/api/v1/...` behind
+  Vercel's existing `/api` prefix; `api.cluexp.com` DNS remains deferred, per ADR-4's existing
+  `/v1` decision). A future breaking change gets `/v2`; `/v1` routes never change response shape
+  in place.
+- **Error envelope — one shape, every `/v1` route:** `{ error: string, request_id: string, detail?:
+  string }`. Applies uniformly to 401/403/404/409/422/429/500, including FastAPI's default
+  validation-error and unhandled-exception handlers when the request path is under `/v1` — internal
+  (`/tickets`, `/provider/*`, `/ops/*`, technician, admin) routes keep their existing response
+  shapes unchanged; this ADR does not touch them.
+- **Idempotency — optional but enforced when presented:** any `/v1` `POST` may accept an
+  `Idempotency-Key` header. A fresh key reserves a row in `external_api_idempotency_keys` keyed on
+  `(client_id, idempotency_key)` and the caller proceeds; the same key + an identical request body
+  hash replays the stored `(status_code, response)` without re-executing; the same key + a
+  *different* body hash returns `409 idempotency_key_reuse` (never silently executes twice under a
+  reused key); a key reserved but not yet completed (concurrent retry) returns `409
+  request_in_progress`. This mirrors the existing internal `technician_mutations` /
+  `begin_or_get_technician_mutation` pattern (§20 prior art) rather than inventing a new one.
+  **Rejected: mandatory idempotency key on every `POST`.** *A pure-read-effect endpoint like
+  `/v1/coverage-checks` is safe to retry without one; forcing the header on callers that don't need
+  it adds friction for no safety gain. Endpoints with real side effects (future
+  `/v1/service-requests`) should require it at that point, not retrofit it.*
+- **Audit:** every `/v1` call — success or failure — writes one `external_api_events` row
+  (`action`, `path`, `status_code`, `request_id`, `idempotency_key`, caller IP, scoped metadata).
+  Replay responses do not re-emit a duplicate event (the original call already recorded one).
+- **Privacy minimization worked example:** `POST /v1/coverage-checks` (below) answers "is there
+  coverage" as a boolean only — no technician id, name, distance, or count crosses the public
+  boundary, even though the same rule engine (`rank_candidates`) that ranks real dispatch
+  candidates is reused internally to compute the answer.
+- **OpenAPI:** exported via FastAPI's built-in `app.openapi()`/`/openapi.json` (no separate spec to
+  hand-maintain); `POST /v1/coverage-checks` and `GET /v1/services` are documented there today.

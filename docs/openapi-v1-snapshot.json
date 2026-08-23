@@ -1,0 +1,267 @@
+{
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "PublicApiMeta": {
+        "properties": {
+          "api_version": {
+            "default": "v1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "PublicApiMeta",
+        "type": "object"
+      },
+      "PublicCoverageCheckRequest": {
+        "properties": {
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lng": {
+            "title": "Lng",
+            "type": "number"
+          },
+          "service_skill": {
+            "title": "Service Skill",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lat",
+          "lng",
+          "service_skill"
+        ],
+        "title": "PublicCoverageCheckRequest",
+        "type": "object"
+      },
+      "PublicCoverageCheckResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicCoverageCheckResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicCoverageCheckResponse",
+        "type": "object"
+      },
+      "PublicCoverageCheckResult": {
+        "properties": {
+          "covered": {
+            "title": "Covered",
+            "type": "boolean"
+          },
+          "service_skill": {
+            "title": "Service Skill",
+            "type": "string"
+          }
+        },
+        "required": [
+          "covered",
+          "service_skill"
+        ],
+        "title": "PublicCoverageCheckResult",
+        "type": "object"
+      },
+      "PublicServiceCategory": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/PublicServiceSkill"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "skills"
+        ],
+        "title": "PublicServiceCategory",
+        "type": "object"
+      },
+      "PublicServiceSkill": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "requires_verification": {
+            "title": "Requires Verification",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "requires_verification"
+        ],
+        "title": "PublicServiceSkill",
+        "type": "object"
+      },
+      "PublicServicesResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PublicServiceCategory"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicServicesResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "ClueXP Public API",
+    "version": "v1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/coverage-checks": {
+      "post": {
+        "description": "Public coverage lookup: does the verified network have an available,\nskilled technician near this location? Pure read over existing\n`list_available_technicians()` \u2014 no ticket/job is created, no dispatch is\ntriggered, and no technician identity or roster is ever returned, only an\naggregate boolean. Safe against Phase 2 network-routing business logic:\nthis answers \"is coverage plausible\" the same way an unauthenticated\ncustomer's own eligibility question would, using the same rule engine\n(`rank_candidates`) the existing dispatch flow already trusts.",
+        "operationId": "public_v1_coverage_checks_v1_coverage_checks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicCoverageCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicCoverageCheckResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Coverage Checks"
+      }
+    },
+    "/v1/services": {
+      "get": {
+        "operationId": "public_v1_services_v1_services_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicServicesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Public V1 Services"
+      }
+    }
+  }
+}
