@@ -62,6 +62,38 @@
 
 ## Open threads
 
+### 2026-08-23 — Codex: final review of Tier 2 Network Router proof run
+
+Reviewed Claude's Tier 2 Network Router MVP implementation and the controlled synthetic production
+proof run under the new `AGENTS.md` contract (Codex final technical review).
+
+Verdict: approved for the current milestone. The implemented slice matches the conservative
+Product Owner/Codex direction: explicit dispatch authorization, `private_partner` queue-only fork,
+`network` deterministic routing via the existing offer lifecycle, at most one offer, no automatic
+re-offer, no private-to-network overflow, no payments, no AI adapter, and no public launch.
+
+Checks performed by Codex:
+- Reviewed the dispatch authorization endpoint, `route_network_request`, `0057`/`0058`
+  migrations, store methods, Postgres smoke coverage, live PostgREST probe notes, and production
+  proof-run handoff.
+- Restored the canonical root `CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` after an uncommitted local
+  duplicate appeared under `docs/`; existing docs still reference the root file.
+- Fixed two doc issues found during review: `SYSTEM-DESIGN.md` §7.1 still named `0056` as the
+  current head, and this proof-run note incorrectly said `dispatch_offers` has no org column. The
+  actual unowned network offer path is `dispatch_offers.organization_id IS NULL` plus the job having
+  no owner org.
+- `uv run pytest apps/intake-web/api/tests/test_network_router.py apps/intake-web/api/tests/test_public_api_foundation.py apps/intake-web/api/tests/test_rls_schema_guard.py -q`
+  -> `31 passed`.
+- `uv run python -m py_compile apps/intake-web/api/main.py apps/intake-web/api/store.py apps/intake-web/api/dispatch.py packages/db/alembic/versions/0057_dispatch_authorizations.py packages/db/alembic/versions/0058_governance_entity_types.py`
+  -> passed.
+- `uv run --with alembic --with "sqlalchemy>=2" --with psycopg alembic -c packages/db/alembic.ini upgrade head --sql`
+  -> rendered through `0058_governance_entity_types`.
+- `git diff --check` -> passed with line-ending warnings only.
+
+Remaining boundary: this approves the synthetic proof milestone, not public launch. Before real
+partners/agents, ClueXP still needs explicit go-live decisions, real external-client onboarding,
+monitoring/support procedures, and the remaining public lifecycle/read/status/cancel endpoints. — Codex
+
 ### 2026-08-23 — Claude: controlled synthetic production proof run (option 2) — vertical slice proven, fully cleaned up
 
 Human's option 2, executed exactly to the approved scope: one clearly
@@ -113,8 +145,8 @@ trusted connection, not PostgREST):**
 - `jobs`: `status=pending_dispatch`, `customer_owner_org_id=NULL`,
   `origin_org_id=NULL`, `fulfillment_technician_id=NULL` (offer sent, not
   yet accepted) — structurally confirms this is the unowned/network path;
-  `dispatch_offers` has no org column at all, so "unowned" is expressed
-  entirely by the job having no owner org, not by a field on the offer.
+  the `dispatch_offers.organization_id` value for this path is `NULL`, and
+  the job itself has no owner org.
 - `dispatch_offers`: **exactly one row**, targeting the synthetic
   technician, `status=offered`, real `expires_at`.
 - `service_request_dispatch_authorizations`: one row, `dispatch_scope=network`,
