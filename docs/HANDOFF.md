@@ -62,6 +62,50 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: CI's Postgres tier caught a second real bug — a latent one in already-shipped code
+
+The smoke-test push (entry below) failed CI again — a different, more
+consequential bug than the first: `governance_events.entity_type` has a DB
+`CHECK` constraint (`0028`) allowing only `'organization'`, `'technician'`,
+`'user'`. My new Network Router routing-decision write uses
+`entity_type='service_request'` — rejected with `CheckViolation`.
+
+**Worse: this exposed that the *already-shipped, already-pushed*
+external-client provisioning slice (`abb252e`, external API client
+provisioning + key lifecycle) has the identical bug.** It writes
+`entity_type='external_client'`/`'external_api_key'`, also not in the
+allowed set. That code has been on `main` since earlier today and would have
+thrown `CheckViolation` on every single admin-provisioning action the moment
+it ran against real Postgres — completely invisible in the 456+ passing
+local tests because `InMemoryStore` has no such constraint to violate. It
+simply hadn't been exercised against real Postgres until this session's
+Network Router smoke test happened to also trip the same class of bug and
+prompted a closer look.
+
+**Fix:** migration `0058_governance_events_public_api_entity_types` widens
+the constraint to also allow `external_client`, `external_api_key`,
+`service_request` — new legitimate actors for this audit table, not
+organization/technician/user in disguise, so widening rather than remapping
+onto an existing type. Added
+`test_governance_events_accepts_public_api_entity_types` covering all three
+directly against real Postgres, closing both the just-found bug and the
+already-shipped latent one in the same pass.
+
+**Process note, not just a code note:** two migrations in, and CI's
+real-Postgres tier has now caught one bug each time — both were the same
+root cause (constraint/column behavior that `InMemoryStore` doesn't model)
+and both were invisible to the full local suite. This is the exact risk
+`docs/PLATFORM-GAP-ASSESSMENT.md` flagged before Sprint 0 even started
+("any `store.py` change to `PostgresStore` is unverified by the test suite").
+Recommend treating "CI's Postgres tier is green" as a required gate for any
+future `PostgresStore`/`governance_events`-touching change, not just this
+one — it has now paid for itself twice in one day.
+
+Verification: local suite unaffected (`469 passed, 1 skipped`); new test
+self-skips locally, alembic renders clean through `0058`,
+`test_rls_schema_guard.py` still passes (no new table, nothing to register).
+Pushing now. — Claude
+
 ### 2026-08-23 — Claude: staging verification — no staging environment exists; smoke tests run via CI's Postgres tier instead
 
 Human approved both Tier 2 judgment calls (unaffiliated-individual eligibility;

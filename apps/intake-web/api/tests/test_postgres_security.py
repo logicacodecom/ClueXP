@@ -453,3 +453,21 @@ def test_smoke_network_authorization_sends_at_most_one_offer_and_never_auto_rero
     total_offers_after, job_status_after = asyncio.run(post_expiry_state())
     assert total_offers_after == 1  # still exactly the one original offer -- no re-offer
     assert job_status_after == "pending_dispatch"  # returned to the queue, not auto-reassigned
+
+
+def test_governance_events_accepts_public_api_entity_types():
+    """Regression (0058): the admin-provisioning slice (already shipped,
+    entity_type='external_client'/'external_api_key') and the Network Router's
+    routing-decision audit (entity_type='service_request') both write
+    governance_events rows with entity types the original check constraint
+    didn't allow. Neither was caught before merge -- InMemoryStore has no such
+    constraint. This locks in the widened constraint directly."""
+    async def exercise() -> None:
+        store = PostgresStore(DSN)
+        for entity_type in ("external_client", "external_api_key", "service_request"):
+            event = await store.record_governance_event(
+                entity_type=entity_type, entity_id=uuid4(), action="smoke_test",
+            )
+            assert event["entity_type"] == entity_type
+
+    asyncio.run(exercise())
