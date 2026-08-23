@@ -62,6 +62,106 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: controlled synthetic production proof run (option 2) — vertical slice proven, fully cleaned up
+
+Human's option 2, executed exactly to the approved scope: one clearly
+synthetic external client, one clearly synthetic technician, one real
+`dispatch_scope=network` request through the live production API
+(`https://intake.cluexp.com`), then full cleanup. No real customers, no real
+providers/technicians, no real phone/SMS/push, no payments, no launch
+behavior, no partner self-service.
+
+**Confirmed the deployed app actually has the new routes live** before
+starting: `GET /api/v1/service-requests` returned `405 Method Not Allowed`
+(proves the route exists — a missing route would 404), not assumed from the
+migration apply alone.
+
+**Synthetic data created (all clearly labeled, all deleted after):**
+- `external_clients.id = 2419b080-37a6-40ab-9f97-fdcba6b760e8` — name
+  `SYNTHETIC-TEST-PROOF-RUN-2026-08-23`, `metadata.synthetic=true`. Scopes:
+  `services:read, coverage:check, service_requests:write,
+  service_requests:authorize`.
+- `external_api_keys.id = b582428e-603f-4920-9c70-7519c6efcc0b` — raw key
+  generated locally (`cxp_live_...`), only its SHA-256 hash was ever written
+  to the DB, matching how the real endpoint issues keys. The raw key existed
+  only in this session's process memory and shell history for the duration
+  of the run; not logged anywhere durable.
+- `technicians.id = e68e7e2b-8805-4e9f-bf99-09a48f1721fd` — name
+  `SYNTHETIC-TEST-TECH-PROOF-RUN`, unaffiliated (no `org_ids`), verified/
+  active, one skill (`locksmith.residential_lockout`), fresh
+  `location_updated_at` so the offer-send's online check would pass.
+
+**Live sequence run against production, via real HTTP calls with the real
+issued key (not a mock, not a direct store call):**
+1. `GET /api/v1/services` → `200`, catalog returned, key auth confirmed
+   working.
+2. `POST /api/v1/coverage-checks` → `200 {"covered": true, ...}` — confirmed
+   the synthetic technician was discoverable before creating a real request;
+   no identity leaked in the response (boolean only, as designed).
+3. `POST /api/v1/service-requests` (`dispatch_scope=network`) → `200
+   {"request_reference": "26082300001", "dispatch_scope": "network",
+   "status": "received"}`. **Reference is the safe operational id, never a
+   raw UUID** — the raw `jobs.id` (`ef9e6b8a-3e7a-42bb-878f-58f638ac9966`)
+   never appeared in any API response, only in my own direct DB queries for
+   verification/cleanup.
+4. `POST /api/v1/service-requests/26082300001/dispatch-authorizations` →
+   `200 {"request_reference": "26082300001", "dispatch_scope": "network",
+   "status": "authorized", "routing_outcome": "offer_sent"}`.
+
+**Verified directly against the database before cleanup (all via the
+trusted connection, not PostgREST):**
+- `jobs`: `status=pending_dispatch`, `customer_owner_org_id=NULL`,
+  `origin_org_id=NULL`, `fulfillment_technician_id=NULL` (offer sent, not
+  yet accepted) — structurally confirms this is the unowned/network path;
+  `dispatch_offers` has no org column at all, so "unowned" is expressed
+  entirely by the job having no owner org, not by a field on the offer.
+- `dispatch_offers`: **exactly one row**, targeting the synthetic
+  technician, `status=offered`, real `expires_at`.
+- `service_request_dispatch_authorizations`: one row, `dispatch_scope=network`,
+  `authorized_by_client_id` = the synthetic client, `channel=internal_operations`.
+- `governance_events`: one `network_routing_decision` row,
+  `considered=[{"technician_id": "e68e7e2b-...", "reason_code": "selected"}]`
+  — exactly the reason-code shape ADR-7 specifies. No other candidates
+  existed to be excluded (only one synthetic technician was seeded), so
+  the "excluded" reason-code path wasn't separately exercised here — it was
+  exercised in the CI Postgres smoke test (`test_network_authorization_excludes_org_ineligible_technician`)
+  and the router's own unit tests instead.
+- No other org's data, no other job, was touched anywhere — private-partner
+  isolation wasn't just "unaffected," nothing else in the system was
+  addressed by this run at all.
+- Not re-tested here: auto-re-offer-after-expiry (already proven against
+  real Postgres in the CI smoke test with a forced expiry+sweep; didn't
+  re-run that against prod since it adds no new information and would mean
+  leaving a real offer to expire in production for no benefit).
+
+**PII/leakage check:** read every response body above verbatim (reproduced
+in this entry) — none contain a technician id, name, phone, or any field
+beyond `request_reference` (operational id) / `dispatch_scope` / `status` /
+`routing_outcome`. Confirms the "never leak technician identity" property
+holds under a real request, not just in tests.
+
+**Cleanup — full, in FK-safe order, verified with a single count query
+returning all zeros afterward:** `dispatch_offers`, `service_request_dispatch_authorizations`,
+`events`, `governance_events`, `jobs`, `external_api_events`,
+`external_api_keys`, `external_clients`, `technicians`. **Nothing remains in
+production from this run** except the consumed operational-id sequence
+number `26082300001` (a normal, harmless sequence gap — not reversible and
+not meant to be; the next real request will be `26082300002` or later).
+
+**What this proves:** the full vertical slice — coverage check → request
+creation → explicit authorization → Network Router MVP → single unowned
+offer — works end-to-end against the real production database and the real
+deployed app, not just against `InMemoryStore` or CI's ephemeral Postgres.
+Combined with the three bugs CI already caught and fixed earlier today, this
+is the first time this exact code path has been exercised against the real
+Supabase project.
+
+**Not done, correctly out of scope:** no public launch, no partner
+self-service, no real client left provisioned, no broader dispatch behavior
+enabled. Per the Human's instruction, this remains a synthetic proof, not a
+go-live — a separate explicit approval is required before anything here
+becomes reachable by a real partner. — Claude
+
 ### 2026-08-23 — Claude: live PostgREST anon probe of `0057`/`0058` tables — passed, one gap documented
 
 Human's option 1 (post-apply live verification, before the gated
