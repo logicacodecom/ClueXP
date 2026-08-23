@@ -1071,6 +1071,15 @@ ClueXP does **not** dispatch; there is intentionally no `/ops/.../assign`.
 | `POST` | `/admin/jobs/{id}/resolve` | session (**dispatcher / provider_admin**) | **Provider recovery, despite the `/admin/` path.** Close / cancel / redispatch a job the caller's org owns or fulfills; tenant-scoped (foreign job → 404). `platform_admin` is **not** an allowed caller (403) — ClueXP Ops does not recover provider jobs. |
 | `GET` | `/admin/global-settings` | session (platform_admin) | List runtime operational settings (`global_settings`, §7.2a). Never returns secrets (table forbids them). |
 | `PATCH` | `/admin/global-settings/{key}` | session (platform_admin) | Update one allowlisted setting. Unknown key → 404; invalid type/range → 422; records `updated_by`/`updated_at`; clears the resolver cache. |
+| `POST` | `/admin/external-clients` | session (platform_admin) | Provision an external `/v1` API client (name, `client_type`, `scopes` validated against `KNOWN_PUBLIC_API_SCOPES`, optional `organization_id` binding, rate limit). Not partner self-service. |
+| `GET` | `/admin/external-clients` / `/admin/external-clients/{id}` | session (platform_admin) | List/inspect clients and their keys' metadata — `key_hash` is never included in any response. |
+| `POST` | `/admin/external-clients/{id}/keys` | session (platform_admin) | Issue a scoped key; the raw key is returned exactly once in this response and is never recoverable afterward (only its SHA-256 hash persists). |
+| `POST` | `/admin/external-clients/{id}/keys/{key_id}/revoke` | session (platform_admin) | Revoke one key; it immediately stops authenticating. |
+| `PATCH` | `/admin/external-clients/{id}/status` | session (platform_admin) | Set client status (`active`/`suspended`/`revoked`) — deactivates every key under a compromised or offboarded client at once. |
+
+Every external-client/key admin action writes a `governance_events` row (`entity_type`
+`external_client`/`external_api_key`), the same audit mechanism as technician/organization
+approvals above — not `external_api_events`, which records API *traffic*, not admin actions.
 
 ---
 

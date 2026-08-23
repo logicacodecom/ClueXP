@@ -201,3 +201,35 @@ def test_postgres_store_external_api_idempotency_reserve_replay_and_conflict():
         assert isolated == {"state": "new"}
 
     asyncio.run(exercise())
+
+
+def test_postgres_store_external_client_admin_lifecycle():
+    async def exercise() -> None:
+        store = PostgresStore(DSN)
+        client = await store.create_external_client(
+            name="Admin lifecycle client", client_type="partner", scopes=["services:read"],
+        )
+        issued = await store.issue_external_api_key(client["id"], scopes=["services:read"])
+        key_id = issued["key"]["id"]
+
+        listed = await store.list_external_clients()
+        assert any(c["id"] == client["id"] for c in listed)
+        target = next(c for c in listed if c["id"] == client["id"])
+        assert target["keys"][0]["id"] == key_id
+        assert "key_hash" not in target["keys"][0]
+
+        fetched = await store.get_external_client(client["id"])
+        assert fetched["keys"][0]["id"] == key_id
+        assert await store.get_external_client(str(uuid4())) is None
+
+        revoked = await store.revoke_external_api_key(key_id)
+        assert revoked["status"] == "revoked"
+        assert revoked["revoked_at"] is not None
+        assert await store.authenticate_external_api_key(issued["api_key"]) is None
+        assert await store.revoke_external_api_key(str(uuid4())) is None
+
+        updated = await store.set_external_client_status(client["id"], "suspended")
+        assert updated["status"] == "suspended"
+        assert await store.set_external_client_status(str(uuid4()), "suspended") is None
+
+    asyncio.run(exercise())

@@ -786,6 +786,18 @@ class Store:
     async def authenticate_external_api_key(self, raw_key: str) -> dict | None:  # pragma: no cover
         return None
 
+    async def list_external_clients(self) -> list[dict]:  # pragma: no cover
+        return []
+
+    async def get_external_client(self, client_id: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def revoke_external_api_key(self, key_id: str) -> dict | None:  # pragma: no cover
+        return None
+
+    async def set_external_client_status(self, client_id: str, status: str) -> dict | None:  # pragma: no cover
+        return None
+
     async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:  # pragma: no cover
         return True
 
@@ -5160,6 +5172,7 @@ class InMemoryStore(Store):
             "expires_at": expires_at.isoformat() if expires_at else None,
             "last_used_at": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "revoked_at": None,
         }
         self._external_api_keys[key_id] = row
         self._external_api_key_by_hash[digest] = key_id
@@ -5184,6 +5197,44 @@ class InMemoryStore(Store):
             "api_key": {k: v for k, v in key.items() if k != "key_hash"},
             "scopes": list(key.get("scopes") or []),
         }
+
+    async def list_external_clients(self) -> list[dict]:
+        clients = []
+        for client in self._external_clients.values():
+            keys = [
+                {k: v for k, v in key.items() if k != "key_hash"}
+                for key in self._external_api_keys.values()
+                if key["client_id"] == client["id"]
+            ]
+            clients.append({**client, "keys": keys})
+        return sorted(clients, key=lambda c: c["created_at"], reverse=True)
+
+    async def get_external_client(self, client_id: str) -> dict | None:
+        client = self._external_clients.get(str(client_id))
+        if client is None:
+            return None
+        keys = [
+            {k: v for k, v in key.items() if k != "key_hash"}
+            for key in self._external_api_keys.values()
+            if key["client_id"] == str(client_id)
+        ]
+        return {**client, "keys": keys}
+
+    async def revoke_external_api_key(self, key_id: str) -> dict | None:
+        key = self._external_api_keys.get(str(key_id))
+        if key is None:
+            return None
+        key["status"] = "revoked"
+        key["revoked_at"] = datetime.now(timezone.utc).isoformat()
+        return {k: v for k, v in key.items() if k != "key_hash"}
+
+    async def set_external_client_status(self, client_id: str, status: str) -> dict | None:
+        client = self._external_clients.get(str(client_id))
+        if client is None:
+            return None
+        client["status"] = status
+        client["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return dict(client)
 
     async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:
         now = datetime.now(timezone.utc)
@@ -13045,6 +13096,89 @@ class PostgresStore(Store):
             "client": self._external_client_row(row[8:]),
             "scopes": list(row[4] or []),
         }
+
+    @staticmethod
+    def _external_api_key_admin_row(row: tuple) -> dict:
+        """Same shape as `_external_api_key_row` plus `revoked_at` -- admin
+        listing needs it, the auth hot-path doesn't. Never includes `key_hash`."""
+        return {
+            "id": str(row[0]),
+            "client_id": str(row[1]),
+            "key_prefix": row[2],
+            "status": row[3],
+            "scopes": list(row[4] or []),
+            "expires_at": row[5].isoformat() if row[5] else None,
+            "last_used_at": row[6].isoformat() if row[6] else None,
+            "created_at": row[7].isoformat() if row[7] else None,
+            "revoked_at": row[8].isoformat() if row[8] else None,
+        }
+
+    async def list_external_clients(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, name, client_type, status, organization_id, allowed_scopes,"
+                " allowed_origins, rate_limit_per_minute, metadata, created_at, updated_at"
+                " from external_clients order by created_at desc"
+            )
+            client_rows = await cur.fetchall()
+            cur = await conn.execute(
+                "select id, client_id, key_prefix, status, scopes, expires_at,"
+                " last_used_at, created_at, revoked_at from external_api_keys"
+            )
+            key_rows = await cur.fetchall()
+        keys_by_client: dict[str, list[dict]] = {}
+        for row in key_rows:
+            keys_by_client.setdefault(str(row[1]), []).append(self._external_api_key_admin_row(row))
+        return [
+            {**self._external_client_row(row), "keys": keys_by_client.get(str(row[0]), [])}
+            for row in client_rows
+        ]
+
+    async def get_external_client(self, client_id: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, name, client_type, status, organization_id, allowed_scopes,"
+                " allowed_origins, rate_limit_per_minute, metadata, created_at, updated_at"
+                " from external_clients where id = %s",
+                (str(client_id),),
+            )
+            client_row = await cur.fetchone()
+            if client_row is None:
+                return None
+            cur = await conn.execute(
+                "select id, client_id, key_prefix, status, scopes, expires_at,"
+                " last_used_at, created_at, revoked_at from external_api_keys where client_id = %s",
+                (str(client_id),),
+            )
+            key_rows = await cur.fetchall()
+        return {
+            **self._external_client_row(client_row),
+            "keys": [self._external_api_key_admin_row(row) for row in key_rows],
+        }
+
+    async def revoke_external_api_key(self, key_id: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update external_api_keys set status = 'revoked', revoked_at = now()"
+                " where id = %s"
+                " returning id, client_id, key_prefix, status, scopes, expires_at,"
+                " last_used_at, created_at, revoked_at",
+                (str(key_id),),
+            )
+            row = await cur.fetchone()
+        return self._external_api_key_admin_row(row) if row else None
+
+    async def set_external_client_status(self, client_id: str, status: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update external_clients set status = %s, updated_at = now()"
+                " where id = %s"
+                " returning id, name, client_type, status, organization_id, allowed_scopes,"
+                " allowed_origins, rate_limit_per_minute, metadata, created_at, updated_at",
+                (status, str(client_id)),
+            )
+            row = await cur.fetchone()
+        return self._external_client_row(row) if row else None
 
     async def check_external_rate_limit(self, client_id: str, scope: str, limit: int) -> bool:
         async with await self._connect() as conn:

@@ -4492,6 +4492,141 @@ async def public_v1_create_service_request(
     return body
 
 
+# --- Admin: external API client / key lifecycle (platform_admin only) ---
+# Narrow provisioning surface, not partner self-service. A manual store call
+# (as the tests use) is fine while there are 0-1 real external clients; this
+# is the "safe operational habit" step before that stops being true.
+KNOWN_PUBLIC_API_SCOPES = {"services:read", "coverage:check", "service_requests:write"}
+
+
+def _validate_public_api_scopes(scopes: list[str]) -> list[str]:
+    if not scopes:
+        raise HTTPException(status_code=422, detail="At least one scope is required")
+    unknown = sorted(set(scopes) - KNOWN_PUBLIC_API_SCOPES)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown scope(s): {', '.join(unknown)}")
+    return sorted(set(scopes))
+
+
+class AdminExternalClientCreate(BaseModel):
+    name: str
+    client_type: Literal["first_party", "partner", "agent", "enterprise", "internal"]
+    scopes: list[str]
+    organization_id: UUID | None = None
+    rate_limit_per_minute: int = 60
+    metadata: dict[str, Any] | None = None
+
+
+class AdminExternalKeyIssueRequest(BaseModel):
+    scopes: list[str] | None = None
+    expires_at: datetime | None = None
+
+
+class AdminExternalClientStatusUpdate(BaseModel):
+    status: Literal["active", "suspended", "revoked"]
+
+
+@app.post("/admin/external-clients")
+async def admin_create_external_client(
+    payload: AdminExternalClientCreate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    scopes = _validate_public_api_scopes(payload.scopes)
+    if payload.rate_limit_per_minute <= 0:
+        raise HTTPException(status_code=422, detail="rate_limit_per_minute must be positive")
+    client = await store.create_external_client(
+        name=payload.name,
+        client_type=payload.client_type,
+        scopes=scopes,
+        organization_id=str(payload.organization_id) if payload.organization_id else None,
+        rate_limit_per_minute=payload.rate_limit_per_minute,
+        metadata=payload.metadata,
+    )
+    await _record_admin_governance_event(
+        session, entity_type="external_client", entity_id=UUID(client["id"]), action="create",
+        metadata={"client_type": payload.client_type, "scopes": scopes},
+    )
+    return client
+
+
+@app.get("/admin/external-clients")
+async def admin_list_external_clients(
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    require_any_role(session, {"platform_admin"})
+    return await store.list_external_clients()
+
+
+@app.get("/admin/external-clients/{client_id}")
+async def admin_get_external_client(
+    client_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    client = await store.get_external_client(str(client_id))
+    if client is None:
+        raise HTTPException(status_code=404, detail="External client not found")
+    return client
+
+
+@app.post("/admin/external-clients/{client_id}/keys")
+async def admin_issue_external_api_key(
+    client_id: UUID,
+    payload: AdminExternalKeyIssueRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    scopes = _validate_public_api_scopes(payload.scopes) if payload.scopes is not None else None
+    try:
+        issued = await store.issue_external_api_key(
+            str(client_id), scopes=scopes, expires_at=payload.expires_at,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="External client not found")
+    # The raw key is returned exactly once, here, and is never stored or logged
+    # in recoverable form -- store.py persists only its SHA-256 hash.
+    await _record_admin_governance_event(
+        session, entity_type="external_api_key", entity_id=UUID(issued["key"]["id"]), action="issue",
+        metadata={"client_id": str(client_id), "scopes": issued["key"]["scopes"]},
+    )
+    return issued
+
+
+@app.post("/admin/external-clients/{client_id}/keys/{key_id}/revoke")
+async def admin_revoke_external_api_key(
+    client_id: UUID,
+    key_id: UUID,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    key = await store.revoke_external_api_key(str(key_id))
+    if key is None or key["client_id"] != str(client_id):
+        raise HTTPException(status_code=404, detail="External API key not found")
+    await _record_admin_governance_event(
+        session, entity_type="external_api_key", entity_id=key_id, action="revoke",
+        metadata={"client_id": str(client_id)},
+    )
+    return key
+
+
+@app.patch("/admin/external-clients/{client_id}/status")
+async def admin_set_external_client_status(
+    client_id: UUID,
+    payload: AdminExternalClientStatusUpdate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"platform_admin"})
+    client = await store.set_external_client_status(str(client_id), payload.status)
+    if client is None:
+        raise HTTPException(status_code=404, detail="External client not found")
+    await _record_admin_governance_event(
+        session, entity_type="external_client", entity_id=client_id, action="status_change",
+        metadata={"status": payload.status},
+    )
+    return client
+
+
 @app.get("/ops/flags")
 async def ops_flags(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
     """Read-only oversight: the effective dispatch flags on the running deployment,

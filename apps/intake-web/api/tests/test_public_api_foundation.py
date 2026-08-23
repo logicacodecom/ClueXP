@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 from starlette.testclient import TestClient
 
+from api.auth import create_access_token
 from api.store import InMemoryStore
 
 
@@ -21,6 +23,18 @@ def isolated_app(monkeypatch):
 
     monkeypatch.setattr(main, "latency", no_latency)
     return main, replacement
+
+
+def _platform_admin_headers(store: InMemoryStore) -> dict[str, str]:
+    uid = str(uuid4())
+    store.users[uid] = {
+        "id": uid, "email": f"admin-{uid}@example.test", "phone": None,
+        "display_name": "Platform Admin", "password_hash": "x",
+        "roles": ["platform_admin"], "active_organization_id": None,
+        "organization_name": None,
+    }
+    token = create_access_token({"sub": uid, "id": uid, "roles": ["platform_admin"]})
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _issue_key(
@@ -297,3 +311,96 @@ def test_service_request_rejects_unknown_skill_and_idempotency_replays(isolated_
     assert first.status_code == 200
     assert first.json() == replay.json()
     assert len(store._tickets) == 1  # replay must not create a second job
+
+
+def test_admin_external_client_provisioning_requires_platform_admin(isolated_app):
+    main, store = isolated_app
+    client = TestClient(main.app)
+
+    unauthenticated = client.post("/admin/external-clients", json={
+        "name": "Partner Co", "client_type": "partner", "scopes": ["services:read"],
+    })
+    assert unauthenticated.status_code == 401
+
+    tech_uid = str(uuid4())
+    store.users[tech_uid] = {
+        "id": tech_uid, "email": "tech@example.test", "phone": None, "display_name": "Tech",
+        "password_hash": "x", "roles": ["technician"], "active_organization_id": None,
+        "organization_name": None,
+    }
+    wrong_role = client.post(
+        "/admin/external-clients",
+        headers={"Authorization": f"Bearer {create_access_token({'sub': tech_uid, 'roles': ['technician']})}"},
+        json={"name": "Partner Co", "client_type": "partner", "scopes": ["services:read"]},
+    )
+    assert wrong_role.status_code == 403
+
+
+def test_admin_can_create_client_issue_list_revoke_and_deactivate(isolated_app):
+    main, store = isolated_app
+    client = TestClient(main.app)
+    admin = _platform_admin_headers(store)
+
+    created = client.post(
+        "/admin/external-clients",
+        headers=admin,
+        json={
+            "name": "Partner Co", "client_type": "partner",
+            "scopes": ["services:read", "coverage:check"], "organization_id": str(uuid4()),
+        },
+    )
+    assert created.status_code == 200
+    client_id = created.json()["id"]
+    assert "key_hash" not in created.json()
+
+    issued = client.post(f"/admin/external-clients/{client_id}/keys", headers=admin, json={})
+    assert issued.status_code == 200
+    assert issued.json()["api_key"].startswith("cxp_live_")
+    assert "key_hash" not in issued.json()["key"]
+    key_id = issued.json()["key"]["id"]
+
+    listed = client.get("/admin/external-clients", headers=admin)
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    assert not any("key_hash" in k for k in listed.json()[0]["keys"])
+
+    fetched = client.get(f"/admin/external-clients/{client_id}", headers=admin)
+    assert fetched.status_code == 200
+    assert fetched.json()["keys"][0]["id"] == key_id
+
+    revoked = client.post(f"/admin/external-clients/{client_id}/keys/{key_id}/revoke", headers=admin)
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+    # A revoked key must actually stop authenticating.
+    auth_after_revoke = asyncio.run(store.authenticate_external_api_key(issued.json()["api_key"]))
+    assert auth_after_revoke is None
+
+    deactivated = client.patch(
+        f"/admin/external-clients/{client_id}/status", headers=admin, json={"status": "suspended"},
+    )
+    assert deactivated.status_code == 200
+    assert deactivated.json()["status"] == "suspended"
+
+    # Governance events recorded every step, none containing the raw key.
+    actions = [e["action"] for e in store.governance_events if e["entity_type"] in ("external_client", "external_api_key")]
+    assert actions == ["create", "issue", "revoke", "status_change"]
+    assert not any("cxp_live_" in str(e) for e in store.governance_events)
+
+
+def test_admin_rejects_unknown_scope_and_missing_client(isolated_app):
+    main, store = isolated_app
+    client = TestClient(main.app)
+    admin = _platform_admin_headers(store)
+
+    bad_scope = client.post(
+        "/admin/external-clients",
+        headers=admin,
+        json={"name": "X", "client_type": "partner", "scopes": ["not_a_real_scope"]},
+    )
+    assert bad_scope.status_code == 422
+
+    missing = client.post(f"/admin/external-clients/{uuid4()}/keys", headers=admin, json={})
+    assert missing.status_code == 404
+
+    missing_client = client.get(f"/admin/external-clients/{uuid4()}", headers=admin)
+    assert missing_client.status_code == 404
