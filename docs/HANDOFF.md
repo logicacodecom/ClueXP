@@ -62,6 +62,62 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: live PostgREST anon probe of `0057`/`0058` tables — passed, one gap documented
+
+Human's option 1 (post-apply live verification, before the gated
+end-to-end proof run). Full method/results/discrepancy-check written up in
+`docs/SUPABASE-RLS-AUDIT.md` under "2026-08-23 — live PostgREST probe of the
+Tier 2 tables" — this entry is the summary.
+
+**Tables probed:** `service_request_dispatch_authorizations` (new, `0057`)
+and `governance_events` (constraint widened by `0058`).
+
+**Result:** anon PostgREST (real project anon key, live HTTP against
+`gzgrkzvhotjolvcbqiku.supabase.co/rest/v1/...`, not mocked) cannot read,
+insert, update, or delete on either table.
+- `service_request_dispatch_authorizations`: INSERT is conclusively rejected
+  (`401`, explicit `42501` RLS-violation message naming the table). SELECT
+  returned `200 []`, but the table is genuinely empty in prod, so that alone
+  doesn't distinguish "RLS blocked it" from "nothing's there yet" — didn't
+  push further because doing so would require a real `jobs`/`external_clients`
+  row to test against (FK-required), which is exactly what "do not create
+  real external clients" ruled out.
+- `governance_events`: same INSERT rejection, **plus** a full read/write
+  cycle against a row I know exists — inserted one synthetic probe row via
+  the trusted connection, hit it by exact id through the anon key for
+  SELECT/UPDATE/DELETE (all three: `200 []`, i.e. zero rows visible/affected
+  despite the row being real), re-confirmed via the trusted connection that
+  it was untouched, then deleted it via the trusted connection.
+  **Nothing anon-originated was persisted anywhere; the only write to prod
+  was the probe insert+delete, both via the trusted connection, not
+  PostgREST.**
+- Both tables: `information_schema.role_table_grants` shows `anon` and
+  `authenticated` hold identical full grant sets (Supabase's default) — RLS
+  with zero policies is the *only* thing blocking access on either table,
+  confirmed, not assumed.
+
+**Gap, documented not hidden:** `authenticated` role wasn't live-probed with
+a genuine token — this project's backend uses first-party auth, not
+Supabase Auth (`select count(*) from auth.users` = `0` in prod), so no real
+`authenticated`-role JWT exists, and minting a synthetic one would need the
+project's JWT secret (not accessed). Reasoned via identical grants +
+uniform zero-policy enforcement that anon's result is representative, but
+this is a real gap if the project ever starts issuing real Supabase Auth
+sessions, not something to forget about.
+
+**Discrepancy between Postgres catalog checks and live PostgREST:** none.
+The prior session's catalog-only checks predicted exactly what was observed
+live.
+
+Docs updated: `docs/SUPABASE-RLS-AUDIT.md` (full detail),
+`docs/HANDOFF.md` (this entry). No code changes — this was a live-environment
+verification pass only. Committing/pushing next so CI runs (docs-only, but
+matching the standing process of every change going through CI).
+
+Per the Human's instruction: **not proceeding to option 2 (the controlled
+synthetic end-to-end production proof run) without separate explicit
+approval.** — Claude
+
 ### 2026-08-23 — Claude: production DDL applied — `0057`/`0058` live, migration-verification only
 
 Human authorized production apply for exactly this migration set after CI

@@ -142,3 +142,58 @@ probed through Supabase PostgREST with the live anon key. The backend was redepl
 production secret provisioning and smoke-tested on public/protected routes. Real per-table allow
 policies remain intentionally deferred until an approved direct PostgREST consumer exists; there is
 none today.
+
+### 2026-08-23 — live PostgREST probe of the Tier 2 tables (`0057`/`0058`)
+
+Extended the same live-probe pattern to `service_request_dispatch_authorizations` (new in `0057`)
+and re-confirmed `governance_events` (touched by `0058`'s widened entity-type constraint) — this
+time with a full read/write cycle against a **known-existing row**, not just an empty-table read,
+which is the gap the original 2026-08-22 anon probe left open (an empty `SELECT` result is
+ambiguous between "RLS blocked it" and "the table is genuinely empty").
+
+**Method:** live HTTP calls to `https://gzgrkzvhotjolvcbqiku.supabase.co/rest/v1/...` using the
+project's real anon key (legacy JWT, `role: anon`), not a mocked client.
+
+| Table | Grants (anon & authenticated) | Live anon SELECT | Live anon INSERT | Live anon UPDATE | Live anon DELETE |
+|---|---|---|---|---|---|
+| `service_request_dispatch_authorizations` | full SELECT/INSERT/UPDATE/DELETE/etc. (Supabase default) | `200 []` (table empty in prod — not independently conclusive alone) | `401`, `{"code":"42501", "message":"new row violates row-level security policy for table \"service_request_dispatch_authorizations\""}` — conclusive | not independently tested (see below) | not independently tested (see below) |
+| `governance_events` | full SELECT/INSERT/UPDATE/DELETE/etc. (Supabase default) | `200 []` against a **known real row id** — conclusive | `401`, same `42501` RLS-violation shape — conclusive | `200 []` (zero rows returned/affected) against the known real row id — conclusive | `200 []` against the known real row id — conclusive |
+
+**How the known-row test worked:** inserted one synthetic probe row directly into
+`governance_events` via the trusted service connection (`entity_type='service_request'`,
+`action='rls_live_probe'`, id `16f72e5c-3cc7-49fb-83d2-dd2f4c6a6d05`), then hit that exact row by id
+through the anon PostgREST key for `SELECT`/`PATCH`/`DELETE`. All three returned an empty result
+(`200 []`, using `Prefer: return=representation` so an affected-but-invisible row would still show a
+count) even though the row demonstrably existed — re-queried via the service connection immediately
+after and confirmed unchanged (`action` still `rls_live_probe`, not the attempted `tampered`), then
+deleted via the trusted connection and confirmed removed (`count = 0`). **Nothing anon-originated was
+persisted; the only write to production was the probe row itself, inserted and removed via the
+trusted connection, not through PostgREST.**
+
+**Why the same known-row test wasn't repeated against `service_request_dispatch_authorizations`:**
+that table has `NOT NULL` foreign keys to `jobs` and `external_clients` — inserting a real row to
+test against would mean fabricating a job or an external client in production, which was explicitly
+out of scope for this pass ("do not create real external clients"). The `INSERT` result alone is
+still conclusive proof (RLS rejects a fabricated row outright, independent of what's already in the
+table), and `governance_events` — sharing the exact same default-deny-with-zero-policies mechanism
+and identical anon/authenticated grants — serves as the representative full-cycle proof for the
+enforcement pattern both tables use.
+
+**`authenticated` role:** not live-probed with a genuine role-scoped token. This project's backend
+uses first-party FastAPI/Postgres auth (`SYSTEM-DESIGN.md` §"Authentication") — confirmed
+`select count(*) from auth.users` returns `0` in production, i.e. Supabase Auth (GoTrue) issues no
+real sessions here, so no genuine `authenticated`-role JWT exists to test with, and minting one would
+require the project's JWT signing secret, which was not accessed. This is not a gap specific to this
+pass — the original `0055` anon probe (2026-08-22, referenced above) was likewise anon-only.
+Reasoned rather than assumed: `information_schema.role_table_grants` shows `anon` and `authenticated`
+hold **identical** raw grant sets on both tables (full SELECT/INSERT/UPDATE/DELETE), and RLS with
+zero policies applies uniformly to any non-owner/non-bypass role — there is no per-role carve-out
+anywhere in `0055`–`0058`. The anon result is representative of `authenticated` by construction, not
+by assumption alone, but a literal authenticated-role probe remains a real, documented gap if this
+project ever starts issuing real Supabase Auth sessions.
+
+**Discrepancy between Postgres catalog checks and live PostgREST behavior:** none found. The prior
+session's catalog-only verification (`relrowsecurity=true`, zero `pg_policies` rows) predicted
+exactly the behavior observed live: reads return nothing, writes are rejected. The one thing the
+catalog check alone could not distinguish — RLS-blocked vs. genuinely-empty on a `SELECT` — is why
+the known-row test above was added this pass.
