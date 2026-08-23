@@ -59,6 +59,38 @@ Status: checklist for pilot readiness. Do not paste real customer data, tokens, 
 - Confirm transactional SMS sends are gated by provider SMS enablement and A2P 10DLC readiness; STOP/START opt-out is tested.
 - Confirm dispatch/tech UI labels distinguish estimate, ETA, collection record, approval, and real payment.
 
+## Public `/v1` API threat model (2026-08-22)
+
+Scope: the external-client-facing surface only (`GET /v1/services`, `POST
+/v1/coverage-checks`, and the shared `require_public_api_client` boundary). Internal
+routes (`/tickets`, `/provider/*`, `/ops/*`, technician, admin) are out of scope here —
+they are covered by the access-control checks above and are never reachable through
+this boundary.
+
+**Assets:** external API keys (bearer secrets), the verified-technician network
+(location/skill/availability, even in aggregate), per-client rate-limit budgets, the
+idempotency ledger, and the audit trail itself (`external_api_events`).
+
+**Trust boundary:** anything in the request (headers, body) is untrusted until
+`require_public_api_client` resolves it to a `client_id`/`api_key_id`/`scopes` tuple
+from the database. No caller-supplied identifier is ever treated as authoritative —
+same anti-spoofing principle ADR-4 already applies to intake-channel resolution.
+
+| Threat | Vector | Mitigation | Residual risk |
+|---|---|---|---|
+| API key theft/leak | Key logged, committed, or intercepted | Keys are opaque (`cxp_live_` + 32 bytes), stored only as SHA-256 hashes (`key_hash`), never re-displayed after issuance; `Bearer`/`X-API-Key` only, never a query param (so it doesn't land in access logs/referrers) | No key rotation/expiry enforcement UI yet; `expires_at` column exists but nothing sets it by policy. Revocation is a manual DB update — no self-service revoke endpoint. |
+| Brute-force / credential stuffing against the key space | Repeated guesses via `Authorization` header | 32 bytes of entropy (`secrets.token_urlsafe(32)`) makes guessing infeasible; every failed attempt is audited (`auth_invalid`) with no user enumeration (constant-shape 401 regardless of reason) | No IP-level lockout/backoff on repeated `auth_invalid` — only the per-minute rate limit, which only applies *after* a valid key is presented. A pre-auth flood is bounded by Vercel/infra limits, not application code. |
+| Scope escalation | A key issued for `services:read` used to call a `coverage:check`-scoped route | Scope checked server-side per route (`required_scope not in set(auth["scopes"])`) before any handler logic runs; denial is audited (`scope_denied`) | None identified — scopes are additive and server-resolved only, never client-supplied. |
+| Coverage-check as a competitor/coverage-mapping oracle | A client with a valid key repeatedly polls `/v1/coverage-checks` across a grid of coordinates to reverse-engineer ClueXP's network footprint/density | Response is a single boolean, never technician count, identity, or distance — grid-polling only ever learns a binary in/out-of-range map, not density or capacity; per-client rate limiting bounds how fast a grid can be swept | Rate limiting is per-client-per-minute, not per-IP or anomaly-scored — a client provisioned with a generous `rate_limit_per_minute` could still sweep a coarse grid over hours/days. Accepted for this slice because the leaked signal (binary coverage) is the same information a real customer's own address-eligibility check already reveals one point at a time; revisit if `rate_limit_per_minute` defaults are raised without review. |
+| Idempotency-key collision across clients | Two different external clients happen to send the same `Idempotency-Key` string | Primary key is `(client_id, idempotency_key)`, not `idempotency_key` alone — cross-client collision is structurally impossible (verified by `test_postgres_store_external_api_idempotency_reserve_replay_and_conflict`'s cross-client isolation case) | None identified. |
+| Idempotency-key replay used to bypass a future rate limit or resubmit a stale request | Client resends the same key long after the original request | Replay returns the *original* stored response verbatim; it does not re-execute or re-consume a rate-limit slot, so it cannot be used to force fresh work, only to fetch what already happened | No TTL/expiry on `external_api_idempotency_keys` rows yet — a key from months ago still replays. Low severity while `/v1` has only a no-side-effect endpoint; **must be revisited before a consequential endpoint (`/v1/service-requests`) ships**, since an unbounded idempotency ledger for a real mutating action has different staleness/storage implications. |
+| Unhandled exception leaking internals | An unexpected server error inside a `/v1` handler | The `/v1`-scoped exception handler returns `{error: "internal_error", request_id}` only; the exception type/message/traceback stays server-side in the log line keyed by the same id | None identified. |
+| Cross-tenant data leakage through a future mutating endpoint | Not applicable to the current two routes (neither reads nor writes tenant-owned data) | N/A today | **Must be designed, not assumed, before `/v1/service-requests` or any endpoint that touches `origin_org_id`/`customer_owner_org_id`.** Tracked as the ADR-6 `dispatch_scope`/`origin_client_id` contract in `SYSTEM-DESIGN.md` §20.6 — this is a vocabulary freeze only, not an implementation, specifically so this threat gets a designed answer before code exists. |
+
+**Explicitly out of scope for this threat model** (no code exists yet, so nothing to
+threat-model): request creation, dispatch/routing, payment, and any AI-adapter-specific
+behavior. Re-run this exercise when any of those ship.
+
 ## Future ownership-proof design guardrails
 
 - Provider setting first: off by default unless pilot operations approves it.

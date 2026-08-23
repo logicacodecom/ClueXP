@@ -62,6 +62,44 @@
 
 ## Open threads
 
+### 2026-08-22 — Claude: threat model + origin/dispatch_scope vocabulary freeze (docs only)
+
+Continuing Phase 1 per the roadmap. Docs-only pass — no code, no migration, no new
+endpoint, nothing committed changes behavior. Two additions:
+
+1. **`/v1` threat model** — new section in `docs/PRIVACY-SECURITY-REVIEW.md`
+   ("Public `/v1` API threat model"). Covers API key theft/brute-force, scope
+   escalation, `coverage-checks` as a network-mapping oracle (accepted risk,
+   reasoning recorded), idempotency-key collision (structurally prevented by the
+   `(client_id, idempotency_key)` primary key) and replay/staleness (flagged —
+   **must be revisited before `/v1/service-requests` exists**, since an
+   unbounded idempotency ledger has different implications for a real mutating
+   action), and unhandled-exception leakage. Explicitly scopes out
+   request-creation/dispatch/payment/AI-adapter threats since no code exists yet
+   for them.
+2. **ADR-6 in `docs/SYSTEM-DESIGN.md` §20.6** — freezes the public `origin_type`
+   vocabulary, confirms `origin_client_id` is always server-resolved from the
+   authenticated API key (never client-supplied, same anti-spoofing shape as
+   ADR-4's `org_id` rule), and maps the public two-value `dispatch_scope`
+   (`private_partner | network`) onto the existing `fulfillment_policy` DB
+   values. Explicitly recorded: `network_overflow`
+   (`POLICY_OWNER_FIRST`/"owner pool first, then widen") is **not reachable**
+   through the public contract — no `dispatch_scope` value maps to it, matching
+   the roadmap's requirement that overflow needs its own future consent/opt-in
+   design. Also rejected auto-deriving `dispatch_scope` from `origin_type`
+   (a partner can legitimately originate both private and network demand).
+
+This is vocabulary/mapping only — no endpoint reads or writes any of this yet.
+It exists so the eventual `POST /v1/service-requests` (Phase 2 MVP) has a
+reviewed contract to build against rather than inventing one under
+implementation pressure.
+
+Verification: docs-only diff (`git status` shows only the two `.md` files
+touched); no code/test/migration changes, so no test run was needed.
+
+Files changed: `docs/PRIVACY-SECURITY-REVIEW.md`, `docs/SYSTEM-DESIGN.md`,
+`docs/HANDOFF.md` (this entry). — Claude
+
 ### 2026-08-22 — Claude: Phase 1 contract slice — error envelope, idempotency, `POST /v1/coverage-checks`, OpenAPI export
 
 Continuing from the closed Public API foundation slice (`0056`, below) per

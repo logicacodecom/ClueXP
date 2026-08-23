@@ -1536,3 +1536,48 @@ This ADR freezes the contract shape only; it authorizes no new dispatch/business
   candidates is reused internally to compute the answer.
 - **OpenAPI:** exported via FastAPI's built-in `app.openapi()`/`/openapi.json` (no separate spec to
   hand-maintain); `POST /v1/coverage-checks` and `GET /v1/services` are documented there today.
+
+### 20.6 ADR-6 — Origin vocabulary and `dispatch_scope` mapping (Accepted 2026-08-22)
+
+Vocabulary/mapping freeze only — **no endpoint implements this yet.** Written now so the first
+consequential endpoint (`POST /v1/service-requests`, Phase 2 MVP) has a reviewed contract to build
+against instead of inventing one ad hoc under implementation pressure. Nothing in this ADR is
+reachable from any live route.
+
+- **`origin_client_id` is never client-supplied.** It is always the authenticated
+  `external_clients.id` resolved by `require_public_api_client` from the presented API key — exactly
+  the same anti-spoofing shape ADR-4 already established for browser-supplied `org_id` on `/tickets`
+  ("attribution only, never authority"). A request body must never contain an `origin_client_id`
+  field; if a future endpoint accepts one for logging/display, it is ignored for authorization.
+- **`origin_type` public vocabulary:** `first_party_website | human_app | partner_website |
+  partner_widget | partner_api | ai_agent_adapter | enterprise_partner | internal_operations`.
+  Resolved server-side from `external_clients.client_type` (`first_party | partner | agent |
+  enterprise | internal`) plus the calling route, not accepted as a raw client-supplied string —
+  same principle as `origin_client_id`.
+- **`dispatch_scope` public two-value contract, frozen exactly as the roadmap specifies:**
+  `private_partner | network`. Maps to the existing `fulfillment_policy` DB values one-directionally:
+  - `dispatch_scope=private_partner` → `fulfillment_policy="private"` (`POLICY_PRIVATE`).
+  - `dispatch_scope=network` → `fulfillment_policy="network_open"` (`POLICY_NETWORK_OPEN`).
+  - **`network_overflow` (`POLICY_OWNER_FIRST`, the existing "owner pool first, then widen"
+    internal policy) is never reachable through the public `dispatch_scope` contract.** A public
+    caller cannot request it, and no `dispatch_scope` value maps to it. This matches the roadmap's
+    explicit constraint that overflow is a separate, future, opt-in-only policy and "must not be
+    inferred from `network`."
+  - A request with no `customer_owner_org_id` context (a neutral, ClueXP-network request from an
+    agent/partner with no prior tenant relationship) defaults to `dispatch_scope=network`, mirroring
+    `normalize_policy`'s existing "no owner org → network_open" default — no new default-inference
+    rule is introduced, the public field just names the existing one.
+- **Rejected: exposing `network_overflow` as a third public `dispatch_scope` value.** *The roadmap
+  is explicit that private-to-network overflow needs its own consent model, timing, and partner
+  controls (§10) before it exists publicly at all — collapsing it into the two-value contract now,
+  even as an inert option, would let a future implementer wire it up without that design work ever
+  happening.*
+- **Rejected: deriving `dispatch_scope` from `origin_type` automatically** (e.g. "partner origin
+  always implies `private_partner`"). *A single partner may legitimately originate both
+  private-partner and neutral-network demand (e.g., an agent adapter routing some requests through a
+  partner's own book of business and others as open network demand); collapsing the two fields into
+  one inference would remove a caller's ability to express that distinction.*
+- **Consent/authorization objects (`authorize_dispatch`, terms/privacy/media consent) are explicitly
+  deferred, not designed here.** They gate `POST .../dispatch-authorizations` per the roadmap's
+  capability set (§5), which does not exist yet. Freezing the origin/scope vocabulary first is a
+  prerequisite for that design, not a substitute for it.
