@@ -44,12 +44,12 @@
 |---|---|---|
 | Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0056` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0058` applied); production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
-| Public Platform API | `[~]` | Foundation code is merged and production-applied through `0056_public_api_foundation`: external clients/API keys, scoped `GET /api/v1/services`, audit events, and Postgres-backed rate-limit tables. External client provisioning UI, public request creation, network dispatch, and payments remain deferred |
+| Public Platform API | `[~]` | Foundation through Tier 2 network routing is merged and production-applied through `0058_governance_entity_types`: external clients/API keys, scoped `GET /api/v1/services`, `POST /v1/service-requests`, `POST /v1/service-requests/{id}/dispatch-authorizations` (private_partner queue-only fork + Network Router MVP for network scope), platform-admin external-client/key provisioning, audit events, and Postgres-backed rate-limit tables. **Schema is applied; no real external client has been created and no real network offer has been triggered in production** — this is migration/apply verification only, not a launch. Partner-facing UI, real client onboarding, provider eligibility/ranking economics beyond the MVP, automatic re-offer, private-to-network overflow, and payments remain deferred |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
@@ -58,11 +58,28 @@
 | Notifications | `[~]` | Operations/customer messaging, masked calls, Twilio SMS/voice, Expo push registration/receipts, and native background-location foundations are implemented; production alert ownership, monitoring, provider configuration, and native device acceptance remain |
 | CI | `[x]` | CI is green on `main@675bcb9`, including clean PostgreSQL 16 migration and `Postgres RLS and store integration tests`; earlier local 2026-08 verification covered the full API suite, root typecheck, console/native tests, and app builds |
 
-Current production migration head: **`0056_public_api_foundation`** (applied 2026-08-22 after explicit human authorization; verified with `alembic_version = 0056_public_api_foundation`, all five external API tables present, RLS enabled, and zero public policies). This includes the earlier financial/settlement records through `0034`, native/device/notification and communication migrations through `0050`, organization partnerships, technician reservations, provider CRM, alert escalation, the default-deny RLS closure, and the first public API external-client foundation. Earlier `0023`/`0024` global settings remain DB-backed and runtime-editable via the admin API. **Deploy note:** Vercel projects auto-deploy from `main`; production smoke `GET https://intake.cluexp.com/api/healthz` returned `200 {"status":"ok"}` after the `0056` apply.
+Current production migration head: **`0058_governance_entity_types`** (applied 2026-08-23 after
+explicit human authorization, following a green CI run of the Tier 2 network-routing slice against
+CI's real-Postgres tier — no separate Supabase staging environment exists for this project;
+branching requires a Pro-plan upgrade, confirmed unavailable). Verified: `alembic_version =
+0058_governance_entity_types`; `service_request_dispatch_authorizations` exists with RLS enabled
+(`relrowsecurity=true`, `relforcerowsecurity=false`) and zero policies; `governance_events` accepts
+`service_request`/`external_client`/`external_api_key` (confirmed via rolled-back probe inserts,
+nothing persisted); production `GET https://intake.cluexp.com/api/healthz` returned `200
+{"status":"ok"}` after the apply. **This was migration/apply verification only — no real external
+client was created and no real network dispatch/offer was triggered.** Includes everything through
+`0056` (see prior entry) plus `0057` (`service_request_dispatch_authorizations`, authorization
+evidence for the dispatch-authorization gate) and `0058` (widens the `governance_events` entity-type
+constraint the Network Router's routing-decision audit and the external-client provisioning slice
+both need — the latter was live on `main` since `abb252e` without this fix and would have failed on
+every real admin-provisioning action against production).
 
-Current repository migration head: **`0056_public_api_foundation`**. It adds the first bounded
-Public API / Agent Gateway foundation tables and `GET /api/v1/services`; production application
-was completed 2026-08-22 after explicit migration authorization.
+Current repository migration head: **`0058_governance_entity_types`**. Adds the Tier 2 Network
+Router MVP's `POST /v1/service-requests/{id}/dispatch-authorizations` (private_partner
+queue-only fork; network fork runs deterministic eligibility+ranking and sends at most one offer via
+the existing `_send_targeted_offer(dispatch_org_id=None)` seam, no auto re-offer) and the
+external-client/key admin provisioning surface (`/admin/external-clients/*`, platform_admin only).
+Production application was completed 2026-08-23 after explicit migration authorization.
 
 ## Product Backlog & Release Map
 
@@ -593,9 +610,11 @@ Provider-managed dispatch (§3.4), the field-integrity core (§4), the tenant-sc
 recovery workspace (§5), the operational financial closeout/settlement records (§6),
 communications foundations, scheduling/partnership controls, technician reservations, and
 provider CRM are **code-complete** and merged. Production migration head is
-`0056_public_api_foundation` per the 2026-08-22 Public API foundation apply; the Sprint 0 security
-foundation commit is `500d61b` (`feat(security): add Sprint 0 foundation`) and the Public API
-foundation commit is `675bcb9` (`feat(api): add public API foundation`).
+`0058_governance_entity_types` per the 2026-08-23 Tier 2 network-routing apply; the Sprint 0 security
+foundation commit is `500d61b` (`feat(security): add Sprint 0 foundation`), the Public API
+foundation commit is `675bcb9` (`feat(api): add public API foundation`), and the Tier 2 network
+routing commits are `f7d6e83`/`14249e4`/`741a144`/`0192205`/`6b60997`/`5620d6e` (dispatch
+authorizations + Network Router MVP, plus the three CI-caught fixes described in `docs/HANDOFF.md`).
 Remaining work to widen the pilot is release readiness and operations, not a large new feature slice:
 
 1. **Runtime-smoke the advisory-payment / live-tracking work:** PR #39 (merge `808f108`, tip

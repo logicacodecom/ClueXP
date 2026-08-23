@@ -62,6 +62,47 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: production DDL applied — `0057`/`0058` live, migration-verification only
+
+Human authorized production apply for exactly this migration set after CI
+went green on `5620d6e`. Applied via Supabase MCP (`apply_migration`) against
+the ClueXP project, then synced `alembic_version` manually — same path used
+for `0055`/`0056`. No new scope added; migration/apply verification only, per
+instruction — no real external clients created, no real offers triggered.
+
+**Applied:**
+- `0057_dispatch_authorizations` — `service_request_dispatch_authorizations`
+  table + index, RLS enabled.
+- `0058_governance_entity_types` — widened `governance_events_entity_type_check`
+  to allow `external_client`, `external_api_key`, `service_request`.
+
+**Verification (all 6 requested checks):**
+1. `alembic_version` = `0058_governance_entity_types` (was `0056_public_api_foundation`
+   before this apply — confirmed pre-state matched expectations).
+2. `service_request_dispatch_authorizations` exists (confirmed via
+   `pg_class`/`pg_policies` queries below).
+3. RLS enabled: `relrowsecurity = true`, `relforcerowsecurity = false` (correct
+   — owner/service-role bypass intentionally preserved, matching every other
+   table in this project).
+4. Zero policies on the new table (`pg_policies` query returned `[]`) —
+   default-deny, as expected, no allow policy added.
+5. `governance_events` accepts all three new entity types — verified by
+   inserting one probe row per type (`service_request`, `external_client`,
+   `external_api_key`) inside an explicit transaction, then `ROLLBACK` — no
+   data persisted, constraint confirmed permissive for all three.
+6. `GET https://intake.cluexp.com/api/healthz` → `200 {"status":"ok"}` after
+   the apply.
+
+**Not done, correctly out of scope for this pass:** no real external client
+was created, no real network dispatch/offer was triggered, no app redeploy
+was performed (the currently-deployed app doesn't reference the new
+table/columns yet — this apply only prepares the schema for the code already
+on `main`; the healthz check confirms the *currently live* app still boots
+cleanly against the migrated DB, not that the new endpoints are live yet).
+
+Files updated with the new production head:
+`docs/SYSTEM-DESIGN.md`, `docs/EXECUTION-PLAN.md`, this entry. — Claude
+
 ### 2026-08-23 — Claude: CI's Postgres tier caught a third, more fundamental bug — the network offer path could never succeed in production
 
 Two more CI failures after the `0058` migration-id fix, both on the same

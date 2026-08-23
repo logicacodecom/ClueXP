@@ -922,7 +922,7 @@ Supabase Storage. Managed in `api/storage.py`.
 
 All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
 
-### Public Platform API (`0056` production-applied; `0057` migration added, not yet applied)
+### Public Platform API (`0056`–`0058` production-applied, 2026-08-23)
 The versioned public façade is implemented under backend path `/v1/...`, which is served as
 `/api/v1/...` through the existing Vercel `/api` prefix. `api.cluexp.com` DNS/routing remains
 deferred. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
@@ -930,7 +930,14 @@ Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundat
 `external_clients`, `external_api_keys`, `external_api_events`,
 `external_api_idempotency_keys`, and `external_api_rate_limits` (`0056`); plus
 `service_request_dispatch_authorizations` (`0057`, authorization evidence only — routing decisions
-are `governance_events` rows, not a table). All are default-deny RLS protected.
+are `governance_events` rows, not a table, widened to accept them by `0058`). All are default-deny
+RLS protected, zero policies, verified against production after apply.
+
+Production `alembic_version` is `0058_governance_entity_types` as of 2026-08-23 (applied via
+Supabase MCP after CI went green; migration/apply verification only — no real external client was
+created and no real network offer was triggered as part of the apply). Note: the DB schema is ahead
+of the currently-deployed app code — this apply prepares the schema the code on `main` needs; it
+does not itself deploy that code.
 
 Every `/v1` error response (auth, scope, rate limit, validation, or unhandled) uses one documented
 envelope — `{ error, request_id, detail? }` — regardless of route, so an external client parses one
