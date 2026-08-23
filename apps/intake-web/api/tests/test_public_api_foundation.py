@@ -419,6 +419,22 @@ _VALID_AUTHORIZATION = {
 }
 
 
+def test_dispatch_authorization_context_status_is_draft_not_none_for_a_fresh_request(isolated_app):
+    """Regression: PostgresStore's jobs.status is never actually NULL -- it
+    starts at TicketStatus.DRAFT ("draft") and is only overwritten once
+    dispatch begins. A `status is None` check would reject every real request
+    in production while appearing to work against InMemoryStore. Locking in
+    the cross-store contract here, not just via HTTP status codes."""
+    main, store = isolated_app
+    write_key = _issue_key(store, ["service_requests:write"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key)
+
+    ctx = asyncio.run(store.get_dispatch_authorization_context_by_reference(reference))
+
+    assert ctx["status"] == "draft"
+
+
 def test_dispatch_authorization_requires_scope_and_unknown_reference_is_404(isolated_app):
     main, store = isolated_app
     write_key = _issue_key(store, ["service_requests:write"])

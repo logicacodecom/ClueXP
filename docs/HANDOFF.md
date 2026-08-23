@@ -62,6 +62,51 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: CI caught a real prod-breaking bug in the dispatch-authorizations fix — fixed
+
+CI's Postgres tier (the one thing I couldn't run locally, flagged as such in
+the entry below) failed on the very first push of the Tier 2 slice — exactly
+the scenario that gate exists for.
+
+**The bug:** `get_dispatch_authorization_context_by_reference`'s "receivable"
+check compared `status is not None`. That's correct against `InMemoryStore`
+(its `_job_status` dict simply has no entry until `set_job_status` is
+called). It's **wrong** against `PostgresStore`: `jobs.status` is never
+actually `NULL` — it's initialized to `Ticket.status`'s default
+(`TicketStatus.DRAFT` → `"draft"`) at creation and only overwritten once
+`set_job_status` runs. Against real Postgres, every freshly created
+`/v1/service-requests` record already has `status="draft"`, so the buggy
+check would have returned `409 not_in_receivable_state` for **every**
+authorization attempt in production, while passing cleanly against
+`InMemoryStore` in all 468 local tests. This is precisely the
+`PostgresStore`-is-structurally-untested-by-the-suite risk this project has
+flagged repeatedly (`docs/HANDOFF.md`/memory: "pytest never covers
+Postgres") — caught here because this slice's CI-only Postgres test actually
+exercised the real column semantics.
+
+**The fix:** both stores now return the ticket's real status
+(`ticket.status.value`, i.e. `"draft"`) as the default when no
+dispatch-lifecycle status has been set, matching Postgres's actual behavior
+exactly instead of diverging from it. The endpoint's check changed from
+`status is not None` to `status != TicketStatus.DRAFT.value` — semantically
+"has anything moved this past the fresh intake-draft state /v1/service-requests
+creates it in," which is both correct and a slightly stronger check (also
+catches a status changed to `fallback_to_human`/`complete` via some other
+path, not just dispatch-lifecycle changes).
+
+Added a regression test
+(`test_dispatch_authorization_context_status_is_draft_not_none_for_a_fresh_request`)
+that asserts the store-level contract directly (`ctx["status"] == "draft"`),
+not just via HTTP status codes, so this can't silently regress again. Fixed
+the Postgres-tier test's now-wrong assertion to match.
+
+Verification: `pytest api/tests -q --ignore=api/tests/test_postgres_security.py`
+→ `469 passed, 1 skipped` (+1, the new regression test). `generate_types.py`
+and `export_openapi_v1.py` both re-run with no diff (contract shape
+unchanged — this was a logic bug, not a schema/contract change). Pushing now
+to re-run CI's Postgres tier, which is the actual verification this fix
+needs. — Claude
+
 ### 2026-08-23 — Claude: Tier 2 network routing MVP — implemented per plan above, not yet applied to prod
 
 Human confirmed the plan below matched intent and approved proceeding, with

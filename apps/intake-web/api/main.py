@@ -4571,7 +4571,11 @@ async def public_v1_authorize_dispatch(
     ctx = await store.get_dispatch_authorization_context_by_reference(request_id)
     if ctx is None:
         raise public_api_error(404, "service_request_not_found", req_id)
-    if ctx["status"] is not None:
+    # "Receivable" means still exactly the intake-draft state /v1/service-requests
+    # creates it in. `jobs.status` (both stores) is never actually unset -- it
+    # starts at TicketStatus.DRAFT and is overwritten once dispatch begins, so
+    # comparing to DRAFT (not None) is what actually detects "already touched".
+    if ctx["status"] != TicketStatus.DRAFT.value:
         raise public_api_error(
             409, "not_in_receivable_state", req_id,
             detail="This service request is already assigned, completed, cancelled, or authorized.",

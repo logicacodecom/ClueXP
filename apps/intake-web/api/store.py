@@ -1944,10 +1944,15 @@ class InMemoryStore(Store):
         ticket = self._tickets[UUID(jid)]
         loc = getattr(ticket, "location", None)
         owner_org = getattr(self, "_job_org", {}).get(jid)
+        # Mirrors PostgresStore: jobs.status is a single column carrying both the
+        # intake-graph TicketStatus ("draft" et al.) and, once dispatch begins,
+        # the dispatch-lifecycle status (STATUS_PENDING_DISPATCH et al.) --
+        # never actually unset. Default to the ticket's own status, not None.
+        dispatch_status = getattr(self, "_job_status", {}).get(jid)
         return {
             "job_id": jid,
             "operational_id": operational_id,
-            "status": getattr(self, "_job_status", {}).get(jid),
+            "status": dispatch_status or ticket.status.value,
             "customer_owner_org_id": owner_org,
             "access_type": ticket.access_type.value if ticket.access_type else None,
             "lat": getattr(loc, "lat", None),

@@ -258,7 +258,7 @@ def test_postgres_store_dispatch_authorization_context_and_atomic_insert():
 
         ctx = await store.get_dispatch_authorization_context_by_reference(network_reference)
         assert ctx["job_id"] == str(network_ticket.ticket_id)
-        assert ctx["status"] is None
+        assert ctx["status"] == "draft"  # jobs.status is never actually unset
         assert ctx["customer_owner_org_id"] is None
 
         private_ctx = await store.get_dispatch_authorization_context_by_reference(private_reference)
