@@ -15,7 +15,7 @@ than routing these actions through an existing allowed entity type, since
 they are genuinely new legal actors for this table, not organization/
 technician/user in disguise.
 
-Revision ID: 0058_governance_events_public_api_entity_types
+Revision ID: 0058_governance_entity_types
 Revises: 0057_dispatch_authorizations
 Create Date: 2026-08-23
 """
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0058_governance_events_public_api_entity_types"
+revision = "0058_governance_entity_types"
 down_revision = "0057_dispatch_authorizations"
 branch_labels = None
 depends_on = None
