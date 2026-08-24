@@ -106,9 +106,43 @@ new CI-only script mode). `python -m py_compile` on the modified script passed.
 
 Not started yet: developer-docs is complete but the MCP server skeleton itself (priority 4) is
 explicitly gated on this design doc being reviewed — not building it without a review pass, per
-the overnight instructions' own sequencing ("MCP skeleton only if the contract is clear"). Next
-slice: check for small public-API hardening gaps (priority 5) while this design doc waits for
-review, since it's independent, safe, and doesn't require a product decision.
+the overnight instructions' own sequencing ("MCP skeleton only if the contract is clear"). CI
+green on `6c28a37`.
+
+### 2026-08-24 — Claude: overnight slice 2, public-API hardening audit — no gaps found
+
+Checked priority 5 ("public API hardening leftovers") against the shipped `/v1` surface before
+considering it done:
+
+- **Scope enforcement**: shared `require_public_api_client` dependency is exercised by dedicated
+  tests on `/v1/services`, `/v1/coverage-checks`, `/v1/service-requests` (write), and
+  `GET /v1/service-requests/{id}` (`test_get_service_request_requires_scope_and_ownership`). Since
+  every `/v1` route runs through the same one dependency, this is full coverage of the
+  scope-check code path itself, not per-route duplication.
+- **Idempotency**: `Idempotency-Key` replay/conflict tested for coverage-checks and
+  service-requests create; the dispatch-authorizations atomic gate (`ON CONFLICT (job_id) DO
+  NOTHING` -> `409 already_authorized`) is covered by
+  `test_dispatch_authorization_requires_scope_and_unknown_reference_is_404`'s sibling test around
+  line 510 (`not_in_receivable_state`/`already_authorized` paths).
+- **Audit events**: every `/v1` route calls `store.record_external_api_event` on every exit path
+  (checked `service_requests.create`, `dispatch_authorizations.create`, `network_routing_decision`,
+  `service_requests.read`, `service_requests.tracking`, `service_requests.cancel` — all present in
+  `main.py`). No silent/unaudited path found.
+- **Ownership isolation**: creator, authorizing-client, and wrong-owner cases are all tested for
+  read/tracking/cancel (existence-hiding via `404`, never `403`, consistent with ADR-8).
+- **`created_at`/date formatting**: `created_at` is `datetime.isoformat()` (timezone-aware, UTC)
+  consistently in both stores — matches the fix already shipped in `daea326`.
+- **Rate-limit docs/tests**: `docs/PUBLIC-API-DEVELOPER-GUIDE.md` now documents the behavior;
+  `check_external_rate_limit`/`429 rate_limited` already has existing coverage from the Tier 1
+  slice (unchanged this session).
+
+Conclusion: no safe, non-speculative hardening gap found. Adding more tests here would just
+duplicate coverage of the same shared dependency — not worth the diff. Not committing a
+no-op change. Next: priority 6 (docs) is effectively done as part of slice 1; the MCP skeleton
+(priority 4) remains the one meaningful remaining item, and it stays gated on
+`docs/AGENT-INTEGRATION-MCP-PLAN.md` getting a Codex/Human review pass before any server code is
+written, per the overnight instructions' explicit sequencing. Stopping here rather than building
+ungated MCP server code.
 
 ---
 
