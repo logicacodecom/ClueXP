@@ -62,6 +62,24 @@
 
 ## Open threads
 
+### 2026-08-24 — Codex: local MCP proof run
+
+Human asked Codex to run the proof directly. Added a repeatable local integration proof under
+`apps/cluexp-mcp-server/tests/test_local_v1_integration.py`: MCP tool functions call the MCP
+HTTP wrapper, which calls the real FastAPI `/v1` app through `httpx.ASGITransport`, backed only by
+an `InMemoryStore` external API client/key fixture. No socket is opened, `CLUEXP_API_BASE_URL` is
+`http://local-cluexp-api.test`, and the test asserts no production URL, dispatch-authorization
+endpoint, or cancellation endpoint is used.
+
+Covered tools: `list_services`, `check_coverage`, `create_service_request` with `confirm=false`
+(proves no API write), `create_service_request` with `confirm=true` (creates one local in-memory
+request only), `get_service_request`, and `get_tracking`. The proof also asserts there are still
+exactly five MCP tools and no dispatch authorization/offer state was created.
+
+`requirements-dev.txt` now includes the local intake API requirements for this proof test. No
+production traffic, no production DB, no real external client, no dispatch, no deployment, no MCP
+publishing. — Codex
+
 ### 2026-08-24 — Codex: MCP skeleton review follow-up
 
 Reviewed Claude's `5d25c54` MCP skeleton. Scope and guardrails match the instruction: standalone
