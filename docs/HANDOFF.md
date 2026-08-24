@@ -62,6 +62,83 @@
 
 ## Open threads
 
+### 2026-08-24 — Claude: local MCP internal-preview smoke — passed, one local/dev record, fully within guardrails
+
+Ran the smoke procedure from `apps/cluexp-mcp-server/INTERNAL-PREVIEW-RUNBOOK.md` against a real
+local server (real sockets, not the mocked/ASGI test suite) since no live MCP client (e.g. Claude
+Desktop) was available in this environment to drive the stdio protocol. Executed the same tool
+functions the server exposes (`server.mcp._tool_manager.get_tool(name).fn`), driven directly over
+real HTTP to a live local process, in the exact order the runbook's §5 manual smoke script
+specifies — this is a stronger proof than the in-process ASGI test, at the cost of not literally
+clicking through an MCP client UI. Noting the deviation explicitly rather than overclaiming.
+
+**Setup:**
+1. `uv run --with-requirements requirements-dev.txt pytest tests -q` from `apps/cluexp-mcp-server`
+   -> `13 passed` (runbook step 1).
+2. Started a real local `uvicorn` process: `apps/intake-web`, `DEMO_SEED=true
+   DEMO_SEED_PASSWORD=123456`, **no `DATABASE_URL` set** -> `make_store()` returns `InMemoryStore`
+   (`apps/intake-web/api/store.py:13809`), so this touched no database, local or otherwise, and
+   definitely not production. `GET /api/healthz` -> `200 {"status":"ok"}`.
+3. Logged in as the demo-seeded `platform_admin` (`avery@cluexp.com`) to get a bearer token, then
+   used the real `/admin/external-clients` and `.../keys` HTTP endpoints (not a store shortcut) to
+   mint a genuine external client + key scoped to exactly the runbook's four scopes
+   (`services:read`, `coverage:check`, `service_requests:write`, `service_requests:read`) — no
+   `service_requests:authorize` or `service_requests:cancel` scope was ever issued, so even if a
+   dispatch/cancel tool existed it could not have been authorized against this key. **Caveat**: the
+   minted key string happens to start with `cxp_live_` — that is the store's fixed key-prefix
+   format regardless of environment, not a signal of production. This key exists only in this
+   local `InMemoryStore` process's memory and was discarded when the process was killed; it was
+   never committed anywhere (not even in this doc).
+4. `CLUEXP_API_BASE_URL=http://127.0.0.1:8000`, `CLUEXP_API_KEY=<the minted local key>` — matches
+   the runbook's §2 values exactly, no production URL anywhere in the session.
+
+**Result — smoke script (runbook §5), executed in order:**
+1. `list_services` -> `200`, returned the locksmith catalog.
+2. `check_coverage` with a real returned skill (`locksmith.vehicle_lockout`) -> `200`,
+   `{"covered": false, ...}` (no seeded coverage for that point in this fresh in-memory store —
+   correct, not a bug; coverage is a read, no side effect either way).
+3. `create_service_request` with `confirm=false` -> `{"error": "confirmation_required"}`. Uvicorn
+   access log confirms **zero** `POST /v1/service-requests` call was made for this step — the tool
+   layer blocked it before any HTTP request was sent, matching `client.py`'s enforcement.
+4. (Summarized to the operator inline, per script step 4 — dispatch_scope=network,
+   locksmith.vehicle_lockout, the smoke test address.)
+5. `create_service_request` with `confirm=true` -> `200`,
+   `{"request_reference": "26082400001", "dispatch_scope": "network", "status": "received"}`. Used
+   `dispatch_scope="network"` (not `private_partner`) because the minted client has no
+   `organization_id` — `private_partner` correctly `422`s without one (confirmed by an earlier,
+   deliberately-failed attempt in the same session; that attempt is not a duplicate creation, see
+   below).
+6. `get_service_request` -> `200`, same reference, `status: "received"`, real `created_at`.
+7. `get_tracking` -> `200`, `state: "waiting"`, `assignment: null` (no technician identity, matches
+   the customer-safe tracking contract).
+
+**Verification against the stop conditions:**
+- Uvicorn's access log (`grep "GET /v1\|POST /v1"`) shows exactly one successful
+  `POST /v1/service-requests 200` for the whole session (the earlier `private_partner` attempt
+  failed `422` before any record was created) -> **exactly one local/dev service request record
+  created**, not two.
+- `grep -c "dispatch-authorizations\|cancellations" <uvicorn log>` -> `0`. No dispatch
+  authorization, no cancellation, no technician offer occurred or could have occurred — those
+  scopes were never issued to the key and those tools don't exist in `mcp_server/server.py`.
+- No `DATABASE_URL`, no production URL, no committed key anywhere in this session.
+- Server process (PID confirmed via `netstat`) was killed at the end of the session;
+  `GET /api/healthz` afterward -> connection refused, confirming full teardown.
+
+**Blockers:** none. The only deviation from the runbook's literal steps 3-4 (start the stdio
+server, connect a real MCP client) is the lack of an available MCP client in this environment —
+noted above, not a blocker to the actual proof, since the same tool code executed the identical
+call sequence over the same transport-adjacent path (the tool functions themselves, which are
+exactly what an MCP client would invoke).
+
+**Next action for Codex/Human:** if a literal MCP-client-driven click-through (e.g. actually wiring
+`examples/claude-desktop.local.example.json` into a running Claude Desktop instance) is required
+for sign-off rather than this direct tool-function proof, that needs a environment with an
+installed MCP client, which this session doesn't have — flagging rather than guessing whether
+that's necessary. No code or doc changes were needed as a result of this smoke (no bug found), so
+nothing new to commit beyond this HANDOFF entry.
+
+---
+
 ### 2026-08-24 — Codex: public AI/search discoverability assets started
 
 Started the public discoverability track without deployment/publishing. Added intake-web app-router
