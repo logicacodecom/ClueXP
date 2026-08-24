@@ -53,9 +53,9 @@ Every `/v1` error, regardless of cause, has this shape:
 
 ## Idempotency
 
-Mutating calls (`POST /v1/service-requests`, and its downstream authorization/cancellation calls) accept an `Idempotency-Key` header. Reuse the same key when retrying a request that may or may not have succeeded (e.g. after a timeout) — the server returns the original result instead of creating a duplicate. Use a new key for a genuinely new request.
+`POST /v1/coverage-checks` and `POST /v1/service-requests` support `Idempotency-Key` replay/conflict handling. Reuse the same key when retrying a request that may or may not have succeeded (e.g. after a timeout) — the server returns the original result instead of creating a duplicate. Use a new key for a genuinely new request.
 
-The `dispatch-authorizations` endpoint is additionally idempotent by construction: at most one authorization can ever exist per service request, regardless of key reuse.
+`POST /v1/service-requests/{request_reference}/dispatch-authorizations` is idempotent by construction: at most one authorization can ever exist per service request, regardless of header reuse. `POST /v1/service-requests/{request_reference}/cancellations` is idempotent by request state when a request is already cancelled. Do not depend on header-based replay/conflict behavior for those downstream endpoints.
 
 ## Rate limits
 

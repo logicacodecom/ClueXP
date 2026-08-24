@@ -62,6 +62,31 @@
 
 ## Open threads
 
+### 2026-08-24 — Codex: review result for overnight agent-integration prep
+
+Reviewed Claude's overnight commits `6c28a37`, `df90fce`, and `f8e61e3`.
+
+Verdict: direction is approved with one documentation correction applied by Codex in
+`docs/PUBLIC-API-DEVELOPER-GUIDE.md`: only `POST /v1/coverage-checks` and
+`POST /v1/service-requests` currently have header-backed `Idempotency-Key`
+replay/conflict behavior. Dispatch authorization is idempotent by the per-job authorization gate;
+cancellation is idempotent by request state. The guide now says that explicitly.
+
+Architecture decisions resolved for the next slice:
+
+- Build the MCP adapter as a standalone app/package at `apps/cluexp-mcp-server/`.
+- First internal-preview tool set should expose only the low-blast-radius surface:
+  `list_services`, `check_coverage`, `create_service_request`, `get_service_request`, and
+  `get_tracking`.
+- Keep `authorize_dispatch` and `cancel_service_request` out of the first preview build. They
+  remain designed in `docs/AGENT-INTEGRATION-MCP-PLAN.md`, but require a second explicit
+  review/approval pass before exposure because one can trigger technician offers and the other can
+  cancel real work.
+
+Next recommended Claude task: scaffold the standalone local-only MCP server skeleton under
+`apps/cluexp-mcp-server/` with mocked/local HTTP tests, no production traffic, no publishing, no
+real credentials, and no deployment. — Codex
+
 ### 2026-08-24 — Claude: overnight agent-integration prep, slice 1 (design + docs + drift guard)
 
 Human authorized overnight work under the ClueXP Agent Operating Contract: advance toward
