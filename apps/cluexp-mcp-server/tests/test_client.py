@@ -65,6 +65,19 @@ async def test_check_coverage_error_envelope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_non_json_error_body_is_still_structured(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html>bad gateway</html>")
+
+    _patch_async_client(monkeypatch, handler)
+    with pytest.raises(client.ClueXPApiError) as exc_info:
+        await client.list_services()
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.error == "unknown_error"
+    assert exc_info.value.request_id is None
+
+
+@pytest.mark.asyncio
 async def test_create_service_request_sends_idempotency_key(monkeypatch):
     seen = {}
 
@@ -99,3 +112,20 @@ async def test_get_service_request_and_tracking_paths(monkeypatch):
     await client.get_service_request("SR-1")
     await client.get_tracking("SR-1")
     assert paths == ["/v1/service-requests/SR-1", "/v1/service-requests/SR-1/tracking"]
+
+
+@pytest.mark.asyncio
+async def test_request_reference_path_segments_are_escaped(monkeypatch):
+    urls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(200, json={"data": {}, "meta": {"request_id": "r5"}})
+
+    _patch_async_client(monkeypatch, handler)
+    await client.get_service_request("SR-1/extra")
+    await client.get_tracking("SR-2/extra")
+    assert urls == [
+        "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra",
+        "http://local-test-api.invalid/v1/service-requests/SR-2%2Fextra/tracking",
+    ]

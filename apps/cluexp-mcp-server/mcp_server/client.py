@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -57,7 +58,10 @@ async def _request(
     async with httpx.AsyncClient(base_url=_base_url(), timeout=15.0) as client:
         response = await client.request(method, path, json=json, headers=headers)
     if response.status_code >= 400:
-        body = response.json() if response.content else {}
+        try:
+            body = response.json() if response.content else {}
+        except ValueError:
+            body = {}
         raise ClueXPApiError(
             status_code=response.status_code,
             error=body.get("error", "unknown_error"),
@@ -109,8 +113,10 @@ async def create_service_request(
 
 
 async def get_service_request(request_reference: str) -> dict[str, Any]:
-    return await _request("GET", f"/v1/service-requests/{request_reference}")
+    reference = quote(request_reference, safe="")
+    return await _request("GET", f"/v1/service-requests/{reference}")
 
 
 async def get_tracking(request_reference: str) -> dict[str, Any]:
-    return await _request("GET", f"/v1/service-requests/{request_reference}/tracking")
+    reference = quote(request_reference, safe="")
+    return await _request("GET", f"/v1/service-requests/{reference}/tracking")
