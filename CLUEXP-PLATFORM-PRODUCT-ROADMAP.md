@@ -1,69 +1,24 @@
 # ClueXP Platform Product Roadmap
 
 **Status:** Authoritative Product Owner direction  
-**Repository:** ClueXP Platform (`C:\__CODE__\ClueXP\intake`)  
-**Last updated:** 2026-08-22  
-**Implementation authority:** This document authorizes planning and phased implementation only after each phase's prerequisites are satisfied. It does not authorize an unbounded rewrite.
+**Repository:** ClueXP Platform  
+**Last updated:** 2026-08-24
 
-## 1. Purpose and authority
-
-This is the implementation source of truth for evolving the existing ClueXP Platform into a secure, partner-neutral orchestration and fulfillment platform for urgent local services. It supersedes the combined platform-and-website roadmap for Platform work. The separate cluexp.com repository is governed by `CLUEXP-WEBSITE-REBUILD-PLAN.md`.
-
-Use the code and migrations as the authority for what exists today. Use this roadmap as the authority for the approved target state and sequencing. Preserve working behavior unless a phase explicitly changes it.
-
-The governing product principle is:
+## 1. Governing architecture
 
 > **One authoritative fulfillment platform. One controlled public API. Many independent demand channels.**
 
-ClueXP is not a locksmith company and does not directly perform locksmith services. ClueXP provides request intake, orchestration, dispatch, tracking, trust infrastructure, and network intelligence. Independent participating providers perform the physical service through their technicians.
-
-## 2. As-is assessment: what must be preserved and what must change
-
-The repository assessment in `docs/PLATFORM-GAP-ASSESSMENT.md`, supported by `docs/SYSTEM-DESIGN.md`, `docs/SUPABASE-RLS-AUDIT.md`, and the implementation, establishes the following baseline.
-
-### Preserve
-
-- The three-axis job ownership model introduced by ADR-4: `origin_org_id`, `customer_owner_org_id`, and `fulfillment_org_id`.
-- Nullable organization ownership on `intake_channels`, which already permits a ClueXP/platform-originated channel.
-- The existing `fulfillment_policy` behavior for private and network-capable demand.
-- The tested eligibility, technician ranking, offer, accept/decline, offer TTL, state transition, tracking, and completion machinery.
-- Customer capability-token tracking and the principle that public customers do not access jobs by raw UUID.
-- Existing events/governance-event patterns, service taxonomy, organization capabilities, reviews, arrival verification, and settlement records as foundations to extend.
-- Alembic migrations as the schema authority.
-
-### Extend
-
-- Add a provider-level Network Router above the existing technician candidate and offer engine.
-- Add a versioned Public Platform API that invokes application services and existing domain behavior.
-- Add explicit request origin, external client, consent, dispatch authorization, and acquisition attribution.
-- Add complete routing-decision and external-action audit trails.
-- Add scoped authentication, distributed rate limits, consistent idempotency, and privacy-minimized responses at the public boundary.
-- Add real Postgres-backed integration/security tests before materially changing network dispatch.
-
-### Refactor only where required
-
-- Decompose the large FastAPI entrypoint into domain routers/application services before adding a substantial public surface. Internal route reorganization must preserve behavior.
-- Replace in-process-only rate limiting at the external boundary with a distributed mechanism.
-- Close the current RLS and tenant-isolation gaps before exposing any new external client.
-
-### Do not rebuild
-
-- Do not replace the existing offer/accept engine, tracking lifecycle, technician applications, provider onboarding, or settlement ledger merely to fit new terminology.
-- Do not create a fake "ClueXP provider organization" to own network requests.
-- Do not create a second dispatch engine for the website, partners, or AI agents.
-- Do not expose the existing internal FastAPI routes as the public contract.
-
-## 3. Approved target architecture
+ClueXP is the orchestration and fulfillment infrastructure for urgent local-service demand. Independent participating providers perform physical service through technicians. ClueXP itself must not be modeled as a fake service-provider organization merely to fit network demand into tenancy.
 
 ```text
 www.cluexp.com ───────────┐
-app.cluexp.com ───────────┤
-Partner Websites ─────────┤
-ChatGPT Adapter ──────────┤
-Claude Adapter ───────────┼──► api.cluexp.com/v1
-Gemini Adapter ───────────┤             │
-Apple/Siri Adapter ───────┤             ▼
-Enterprise Partners ──────┘      CLUEXP PLATFORM
+intake.cluexp.com ────────┤
+Provider applications ────┤
+Technician applications ──┤
+Partner websites/systems ─┼──► api.cluexp.com/v1
+ChatGPT / MCP ─────────────┤             │
+Other AI adapters ─────────┤             ▼
+Enterprise clients ────────┘      CLUEXP PLATFORM
                                         │
                              private_partner | network
                                         │
@@ -74,281 +29,214 @@ Enterprise Partners ──────┘      CLUEXP PLATFORM
                             Offer → Accept → Track → Close
 ```
 
-The website, human applications, partner systems, and AI adapters are peer clients. AI integrations must not depend on `www.cluexp.com` being deployed or available. Channel adapters translate their channel's protocol and interaction model; they do not own coverage, pricing, eligibility, consent, dispatch, or tracking business logic.
+Website, human apps, partners, and AI adapters are peer clients/channels. AI, partner, and enterprise transactions must never depend on `www.cluexp.com` being available.
 
-Conceptual domains may be separated as follows even if deployment details evolve:
+## 2. Domain responsibilities
 
-- `www.cluexp.com`: discovery, acquisition, public content, and entry journeys.
-- `app.cluexp.com`: authenticated and human transactional applications.
-- `api.cluexp.com`: controlled machine-accessible Platform interface.
+### `www.cluexp.com`
+Public discovery/acquisition for three first-class audiences: Customers, independent Provider companies, and Technicians. It owns canonical public brand, trust, SEO/GEO/AEO, service/location discovery, and entry CTAs. It does not own dispatch truth.
 
-## 4. Canonical service request model
+### `intake.cluexp.com`
+Human transactional customer UX: request capture, authorization, matching, tracking, and related transaction screens. It should not become a competing marketing/SEO site.
 
-Every demand channel must create or operate on the same canonical service request. Names may be adapted to the existing schema, but the semantics below are mandatory.
+### `api.cluexp.com`
+Canonical public machine interface. This is a stable hostname/façade over the Platform's versioned `/v1` contract, not a second backend. The current `/v1` implementation may remain on the existing Platform deployment behind DNS/gateway/proxy routing during transition. Do not fork business logic to create the hostname.
 
-### Identity and lifecycle
+### MCP / AI adapters
+Agent-friendly adapters over canonical Platform capabilities. They translate tool schemas/conversation context and safe presentation; they do not own coverage, pricing, eligibility, routing, consent, dispatch, cancellation, or tracking rules.
 
-- Platform-generated request ID and safe external reference.
-- Service category and subtype from the canonical taxonomy.
-- Urgency, structured location, contact method, notes, and approved media references.
-- Platform-owned lifecycle state, timestamps, cancellation state, and fulfillment outcome.
-- Idempotency key and external client request ID where applicable.
+### Provider applications
+Business operations, private queues, workforce, dispatch controls, communications, closeout, and network participation settings.
 
-### Dispatch scope
+### Technician applications
+Technician identity/profile, affiliation, availability, offers, acceptance, field lifecycle, location, evidence, and completion.
 
-The public/product contract is:
+## 3. Preserve and extend
+
+Preserve organizations/memberships, global technician identity and affiliations, origin/customer-owner/fulfillment separation, offer TTL, single-offer and atomic acceptance/capacity invariants, lifecycle, arrival verification, tracking privacy, scheduling, communications, closeout, settlements, reviews, governance history, deterministic dispatch calculations, and Alembic schema authority.
+
+Extend the canonical request/origin/authorization/attribution facts, provider-level Network Router, `/v1` Public Platform API, scoped machine clients, idempotency, durable rate limits, audit/observability, and later trust/payment facts.
+
+Do not rebuild the existing dispatch offer/accept engine, provider operations, technician applications, or tracking lifecycle merely to support Website or AI channels.
+
+## 4. Dispatch scope
 
 ```text
 dispatch_scope = private_partner | network
 ```
 
-- `private_partner` is the default for partner-originated demand. Only that partner's eligible resources may fulfill it.
+- `private_partner` is fail-closed/default for partner-originated demand.
+- Private demand may only be fulfilled through that partner's eligible resources.
+- Timeout, failure, operator convenience, Website code, or adapter behavior must never silently widen private demand to network.
 - `network` is used only for demand intentionally authorized for the ClueXP network.
-- A private partner request must never become network-visible or network-routable through timeout, failure, operator convenience, or adapter behavior.
-- Private-to-network overflow is a separate, future, explicit opt-in policy. It must not be inferred from `network` and must not be enabled by default.
+- Private-to-network overflow is a separate future opt-in policy requiring Product Owner approval, recorded consent/configuration, migration, and tests.
+- Map this public semantic contract onto existing internal fields where possible; avoid redundant schema without an ADR.
 
-The current internal `fulfillment_policy` values are a working implementation foundation. The public two-value contract should map to existing behavior rather than introduce a duplicate column without an ADR:
+## 5. Origin, ownership, and fulfillment
 
-- `private_partner` maps to the existing private policy.
-- `network` maps to the existing network-open behavior.
-- Existing network-overflow semantics remain disabled for private demand unless a future Product Owner decision, partner consent model, migration, and tests explicitly authorize them.
+Record independently: `origin_type`, authenticated `origin_client_id`, `origin_org_id` when provider-originated, `customer_owner_org_id` where applicable, nullable `fulfillment_org_id` before network selection, and `fulfillment_technician_id` through existing offer/accept behavior.
 
-### Origin and ownership
+Do not create a fake ClueXP Provider organization for neutral demand.
 
-Record origin independently from ownership and fulfillment:
+Customer relationship rights, marketing consent, fulfillment responsibility, merchant-of-record responsibility, and support responsibility are distinct business concepts and must not be collapsed into one ownership field.
 
-- `origin_type`: first-party website, human app, partner website/widget/API, AI/agent adapter, enterprise partner, or internal operations.
-- `origin_client_id`: the authenticated public-API client/application.
-- `origin_org_id`: the originating provider organization when one exists; nullable for neutral ClueXP/network demand.
-- `customer_owner_org_id`: the organization that owns the customer relationship, when applicable.
-- `fulfillment_org_id`: null before network selection and set only when fulfillment is assigned/accepted.
-- `fulfillment_technician_id`: set through the existing offer/accept lifecycle.
+## 6. Consent and authorization
 
-No provider organization should be fabricated to make nullable network ownership fit a tenant model. Network demand is Platform-governed before provider selection, while provider-private demand remains tenant-owned.
+Request creation may precede dispatch authorization. Platform records authoritative evidence for terms/privacy versions, dispatch authorization, material price/scope changes, paid cancellation/no-show terms, payment authorization, and channel/AI disclosure where required. Website/AI may collect the user's explicit choice; Platform validates, stores, and enforces it.
 
-### Consent and authorization
+## 7. Attribution
 
-Consent is a first-class, auditable boundary, not a conversational assumption.
+Capture immutable acquisition context and connect it through outcome/revenue:
 
-- Record terms/privacy consent and the policy versions shown.
-- Record location, contact, media, and third-party/AI disclosure consent separately where legally or operationally required.
-- Request creation may precede dispatch authorization.
-- `authorize_dispatch` must record who or what obtained authorization, when, through which channel, what price/estimate and material terms were presented, and the authorization evidence/reference.
-- Consequential changes, including material price changes or scope expansion, require reauthorization according to an approved policy.
-- An AI adapter may convey and capture a user's explicit choice, but the Platform validates and stores the authorization.
+```text
+acquisition → request → authorization → routing → offer → acceptance → completion/cancellation → revenue
+```
 
-### Attribution
+Support controlled source/medium/campaign/referrer/landing-page/click-ID/partner/client/channel facts and first/last touch as appropriate. This foundation precedes Google Ads closed-loop integration and savings/ROAS claims.
 
-Attribution must be captured at request creation and preserved through fulfillment:
+## 8. Public Platform API — `api.cluexp.com/v1`
 
-- channel, source, medium, campaign, content, term, referrer, landing page, click identifiers, partner/client ID, and first-touch/last-touch timestamps as applicable;
-- privacy-safe raw payload retention only when justified;
-- immutable original attribution plus auditable corrections/enrichment;
-- links from acquisition → request → authorization → dispatch → acceptance → completion → revenue.
-
-This data foundation precedes Google Ads or other ad-platform integrations.
-
-## 5. Public Platform API (`api.cluexp.com/v1`)
-
-`/v1` is a controlled façade over Platform application services. Internal `/ops/*`, `/provider/*`, technician, admin, raw tracking-token, or current monolithic routes are not the public API.
-
-The minimum proposed capability set is:
+Core capability family:
 
 ```text
 GET  /v1/services
 POST /v1/coverage-checks
-POST /v1/availability-checks
-POST /v1/estimates
+POST /v1/availability-checks       # when production-ready
+POST /v1/estimates                 # when production-ready
 POST /v1/service-requests
-PATCH /v1/service-requests/{request_id}
-POST /v1/service-requests/{request_id}/dispatch-authorizations
-GET  /v1/service-requests/{request_id}
-GET  /v1/service-requests/{request_id}/tracking
-POST /v1/service-requests/{request_id}/cancellations
+PATCH /v1/service-requests/{id}    # only where contract requires
+POST /v1/service-requests/{id}/dispatch-authorizations
+GET  /v1/service-requests/{id}
+GET  /v1/service-requests/{id}/tracking
+POST /v1/service-requests/{id}/cancellations
 ```
 
-Exact resource shapes require an OpenAPI/ADR review, but every public operation must provide:
+Requirements: authenticated clients/least-privilege scopes, request-level ownership, idempotency for consequential writes, durable rate limits, strict versioned schemas, safe errors/trace IDs, immutable audit, privacy-minimized responses, explicit consequential authorization, no direct DB/PostgREST access, and no exposure of internal rosters/offers/ops/console routes.
 
-- client authentication and least-privilege scopes;
-- tenant and request-level authorization;
-- explicit channel/client identity;
-- strict request/response schemas and privacy-minimized fields;
-- idempotency for all create/consequential operations;
-- distributed rate limiting and abuse controls;
-- versioning and backward-compatibility policy;
-- structured errors safe for external callers;
-- trace/correlation IDs and immutable audit events;
-- consent and dispatch-authorization enforcement;
-- no direct database or Supabase PostgREST access by external clients.
+## 9. `api.cluexp.com` rollout
 
-The first-party website may use a same-origin backend-for-frontend for secrets, cookies, anti-abuse controls, or response shaping, but the Platform remains authoritative.
+1. Freeze the minimum existing `/v1` contract required by Website and approved clients.
+2. Publish/review OpenAPI and compatibility policy.
+3. Configure `api.cluexp.com` as the stable public hostname through the selected DNS/edge/gateway/proxy to the existing Platform origin.
+4. Apply API-specific TLS/auth/rate-limit/WAF-abuse/observability/request-size controls as appropriate.
+5. Keep approved old origin paths compatible during controlled transition.
+6. Move clients to canonical hostname.
+7. Never fork business logic solely because the hostname changed.
 
-## 6. Network Router above existing dispatch
-
-The Network Router is additive and sits above the current technician-level selection and offer lifecycle.
+## 10. Network Router
 
 ```text
 Authorized network request
-        ↓
-Provider eligibility
-  subscription/status
-  service capability
-  geographic coverage
-  policy/compliance
-  availability constraints
-        ↓
-Routing decision + audit
-        ↓
-Existing technician ranking
-        ↓
-Existing offer / accept / TTL
-        ↓
-Tracking / completion / outcome
+  → provider eligibility
+  → versioned routing decision + reasons
+  → existing technician candidate/ranking
+  → existing offer / accept / TTL
+  → tracking / completion / outcome
 ```
 
-The router must explain which providers were considered, excluded, and selected, using versioned rules. It must preserve private-partner isolation, prevent cross-tenant visibility, and set fulfillment ownership only through the approved assignment/acceptance lifecycle. Provider ranking, fairness, retries, and automatic redispatch require explicit policies and must not be silently invented.
+Eligibility includes subscription/status, canonical capability, geographic coverage, required compliance, capacity, and policy compatibility. Router records inclusion/exclusion/selection facts. Fairness weights, retry policy, provider acceptance, and automatic re-offer require explicit Product Owner decisions.
 
-## 7. Sprint 0 — security and test foundation (release blocker)
+## 11. Current checkpoint
 
-No Public Platform API, new network-demand surface, partner widget, or AI adapter may ship until Sprint 0 acceptance is met.
+The Platform has advanced beyond the original assessment: security/canonical-boundary hardening, `/v1` foundation, canonical service-request lifecycle, client ownership/scoping, network-routing proof through the existing offer engine, newer production migrations, controlled internal MCP preview, and technical/AI discovery assets.
 
-### Required work
+Therefore the immediate Platform role is now **supporting and stabilizing the first real public transaction**, not broad horizontal feature expansion. Codex must verify current head, migrations, tests, deployed configuration, and endpoint behavior rather than relying on this summary alone.
 
-1. Enable RLS/default-deny protection on every exposed application table, starting with the zero-policy stopgap described in `docs/SUPABASE-RLS-AUDIT.md`.
-2. Verify anon/authenticated PostgREST roles cannot read or mutate protected tables; document any intentional service-role bypass.
-3. Make production authentication secrets fail closed; remove reliance on a known development fallback and verify deployed secret configuration.
-4. Add systematic organization-isolation, private-vs-network visibility, technician authorization, and tracking-token tests.
-5. Add a real Postgres-backed integration tier so production SQL and migrations are executed in CI.
-6. Add a schema/RLS regression guard for every new table.
-7. Review logs, signed media URLs, customer PII, technician locations, and support/admin access against `docs/PRIVACY-SECURITY-REVIEW.md`.
+## 12. Immediate coordinated release
 
-### Sprint 0 acceptance criteria
+### Platform — supporting workstream
 
-- A fresh database at head migration has no unintentionally unprotected application table.
-- Anonymous and ordinary authenticated PostgREST probes are denied unless an explicit, tested policy permits them.
-- Cross-organization reads and mutations fail across API and database tests.
-- A `private_partner` request is invisible and ineligible outside its owner organization.
-- Technician and customer tracking access is self-/token-scoped and non-enumerable.
-- Production refuses to start with placeholder signing or dispatch secrets.
-- CI executes representative `PostgresStore`, migration, RLS, dispatch, and isolation paths.
+1. Re-verify security/RLS/raw-ID/secret/error/rate-limit findings against current head/deployment.
+2. Freeze minimum Website `/v1` schemas for service discovery, coverage, request creation, dispatch authorization, status, and tracking.
+3. Verify scopes, ownership, idempotency, privacy-minimized responses, and private/network invariants.
+4. Publish/update OpenAPI/contract documentation.
+5. Prepare `api.cluexp.com` hostname/gateway/proxy configuration without duplicating services.
+6. Ensure residential-lockout taxonomy and coverage behavior are authoritative/testable.
+7. Provide stable unsupported/unavailable states for Website.
+8. Keep canonical public SEO/service/location content primarily on `www`; Platform may retain technical/API/AI discovery assets.
+9. Preserve regressions and add contract tests for the first vertical slice.
 
-## 8. Phased implementation
+### Website — primary workstream
 
-### Phase 1 — Canonical foundation and contract
+The separate Website rebuild plan governs a from-scratch Customer + Provider + Technician acquisition site and first real Platform-backed residential-lockout journey.
 
-Freeze ADRs for the ownership model, public `dispatch_scope`, origin vocabulary, consent/authorization, attribution, API versioning, and error/idempotency rules. Add attribution capture and any missing canonical request fields. Extract application services and domain routers without changing behavior. Publish a reviewed `/v1` OpenAPI contract and threat model.
-
-**Exit:** the same canonical request can be represented for partner-private, ClueXP-network, website, and agent-originated demand; contract tests exist; no duplicate business logic is introduced.
-
-### Phase 2 — Network Demand MVP
-
-Implement provider eligibility and audited network routing above the existing dispatch engine. Prove one vertical slice for a residential house lockout in one supported market.
+## 13. First real transaction release gate
 
 ```text
-Website or approved test client
-  → coverage check
-  → service request
+REAL CUSTOMER
+  → www.cluexp.com
+  → Get Help Now
+  → House / Residential Lockout
+  → api.cluexp.com/v1 coverage check
+  → canonical service request
   → explicit dispatch authorization
   → dispatch_scope=network
   → Network Router
-  → existing offer/accept
-  → tracking
-  → completion
+  → participating independent provider
+  → technician
+  → scoped tracking
 ```
 
-**Exit:** only eligible providers enter ranking; decisions are explainable; existing offer/accept/tracking tests remain green; private jobs cannot leak into the flow.
+This must use actual Platform state. Fake coverage, sample providers/technicians, or Website-owned routing logic do not satisfy the gate.
 
-### Phase 3 — Website and partner distribution
+## 14. AI/MCP proof after Website proof
 
-Release the website's real consumer entry journey against `/v1`. Define a partner BFF/widget/API pattern for `private_partner` requests with authenticated organization binding, attribution, branding boundaries, and no network overflow.
+After Website vertical slice stability, prove the same canonical transaction through an approved AI/MCP client using `api.cluexp.com/v1`, the same authorization rules, Router, fulfillment, and safe tracking. Website is absent from this runtime path. Keep consequential MCP tools constrained until authorization/cancellation/payment semantics are production-approved.
 
-**Exit:** website and one partner integration create equivalent canonical requests with different authorized scopes and correct ownership.
+## 15. Provider and technician acquisition support
 
-### Phase 4 — Public API production hardening
+Provider onboarding remains organization-centric and qualification/network-policy controlled.
 
-Operationalize client credentials/scopes, quotas, distributed rate limits, idempotency storage, key rotation, webhook signing if needed, audit/support tools, SLOs, monitoring, incident procedures, data retention, and version/deprecation policy.
+Technician acquisition maps to global technician identity and affiliations. A technician joining ClueXP does **not** automatically become an independent provider or gain network-routing eligibility. Dedicated technician onboarding/application boundaries should be exposed/linked when production-ready rather than reusing provider-company registration.
 
-**Exit:** the API meets the security, reliability, observability, and support bar for an external client.
+## 16. Security remains non-negotiable
 
-### Phase 5 — Vendor-neutral agent pilot
+Any unresolved original P0 finding remains a release blocker: database/RLS/grant posture, raw public capability leakage, fail-secure secrets, opaque errors, migration/schema authority, durable external limiting, verification approval semantics, and real Postgres cross-tenant/race/security tests. Codex must verify each at current head.
 
-Build one adapter only after `/v1` is production-ready. The adapter maps conversational tools to canonical operations and requires explicit confirmation for dispatch/cancellation/payment consequences. It contains no coverage, pricing, routing, or fulfillment logic.
+## 17. Subsequent phases
 
-**Exit:** an approved agent test client completes the same house-lockout workflow used by the website, including consent, authorization, attribution, audit, safe status, and cancellation behavior.
+- **P1 — Website + Platform vertical slice:** real residential lockout through Website → API → Router → existing dispatch → tracking.
+- **P2 — Provider + Technician acquisition integration:** distinct authoritative onboarding boundaries plus attribution.
+- **P3 — Partner distribution:** hosted partner flow first, then widget/SDK/API; partner requests remain private unless future explicit overflow policy.
+- **P4 — Public API hardening:** credentials/scopes, quotas, key rotation, monitoring/SLOs, webhooks as needed, support, retention, deprecation.
+- **P5 — Vendor-neutral AI pilot:** promote controlled MCP/agent path after canonical API/consequential authorization readiness; adapters contain no fulfillment logic.
+- **P6 — Payments/pricing:** processor-backed authorization/capture/refund/webhooks, versioned quotes, price-change authorization, cancellation/no-show enforcement, reconciliation.
+- **P7 — Attribution economics/ad spend:** only after immutable attribution and reliable completion/revenue; calculate request/accepted/completed CAC, ROAS, average ticket, cancellation, repeat, blended CAC.
+- **P8 — Trust intelligence:** aggregate verification, reliability, ETA accuracy, price integrity, complaints/disputes, cancellations/no-shows, outcomes; no composite Trust Score until explainability/appeals/data-quality/anti-gaming policy.
+- **P9 — Multi-vertical:** only after canonical taxonomy/routing/compliance supports a second vertical cleanly.
 
-### Phase 6 — Payments and pricing controls
+## 18. Frozen Product Owner decisions
 
-Choose a processor and PCI-minimizing approach; implement authorization/capture/refund, price-change audit and reauthorization, cancellation/no-show enforcement, reconciliation, and failure handling without conflating customer payment capture with the existing settlement ledger.
-
-### Phase 7 — Attribution and commercial analytics
-
-Connect ad/partner cost data only after end-to-end attribution is reliable. Produce cost per request/accepted/completed job, CAC, ROAS, average ticket, cancellation, repeat rate, and blended CAC with documented definitions.
-
-### Phase 8 — Trust and dispatch intelligence
-
-Aggregate verified operational signals already captured. Add missing dispute/complaint and predicted-vs-actual ETA data. Do not publish a composite Trust Score until data quality, explainability, appeals, and anti-gaming policies are approved.
-
-### Phase 9 — Multi-vertical expansion
-
-Expand beyond locksmith only after the canonical taxonomy, policy, routing, provider qualification, pricing, and compliance model can support a second vertical without locksmith-specific branching throughout the core.
-
-## 9. Frozen decisions
-
-- ClueXP Platform is the system of record for requests, consent, dispatch, fulfillment, tracking, and outcomes.
-- `/v1` is the controlled public interface; internal routes are not public contracts.
-- Website, partner systems, AI agents, and enterprise systems are peer Platform clients.
-- `dispatch_scope` has the public meanings `private_partner | network`; partner-private is the safe default.
-- Partner-originated jobs never leak into the network.
-- Overflow is a separate future opt-in policy.
-- Network requests do not require a fake ClueXP provider organization.
-- Network routing sits above and reuses existing offer/accept/tracking machinery.
-- Adapters contain protocol and presentation translation, not Platform business logic.
-- Vendor-specific AI work follows, rather than precedes, a secure canonical `/v1`.
+- Platform is authoritative system of record/fulfillment engine.
+- `api.cluexp.com/v1` is canonical public machine interface and a façade over Platform, not duplicate backend.
+- `www.cluexp.com` is public discovery/acquisition for Customer + Provider + Technician.
+- `intake.cluexp.com` is transactional UX, not canonical marketing site.
+- Website, partners, enterprise clients, and AI agents are peer channels.
+- AI/partner integrations do not depend on `www`.
+- Public dispatch scope is `private_partner | network`; partner-private is fail-closed/default.
+- Private jobs never silently leak to network; overflow is separate future opt-in.
+- Neutral network demand requires no fake ClueXP provider.
+- Existing offer/accept/tracking is reused beneath Network Router.
+- Technician identity is distinct from provider-company identity; technician acquisition does not grant provider status.
+- Public SEO/service/location authority primarily belongs on `www`; operational truth belongs to Platform.
+- AI adapters/MCP wrap canonical Platform operations and own no business logic.
+- Attribution precedes ad-spend integration/savings claims.
 - Alembic remains schema authority.
 
-## 10. Product decisions still required
+## 19. Product decisions still required
 
-- Manual re-queue versus automatic re-offer after offer expiry, including fairness and starvation rules.
-- Provider eligibility/ranking, network economics, and audit visibility.
-- The formal boundary between `ops-web` and `console-web` for network operations.
-- Payment processor, merchant-of-record responsibilities, PCI approach, refunds, cancellations, and no-show policy.
-- Private-to-network overflow terms, consent, timing, and partner controls before any implementation.
-- Customer-relationship and support responsibilities for ClueXP/network-originated demand after assignment.
-- Trust metric visibility, dispute/appeal rights, and data retention.
+Record ADR/product decisions before affected implementation for: network customer relationship/marketing rights; provider-selection vs provider-accept-then-technician; ranking/fairness/retry; private-to-network overflow; exact meaning of verification; technician direct-join/affiliation marketplace policy; network pricing envelope; cancellation/no-show fees; processor/merchant-of-record mechanics; support/complaints; trust visibility/appeals; network fee model.
 
-Unresolved decisions must be captured in ADRs/product decision records before implementation. Technical code must not bury a business-model decision.
+Technical code must not silently settle business-model decisions.
 
-## 11. Platform-wide acceptance criteria
+## 20. Do not build yet
 
-The roadmap is successful when:
+Unless separately approved, do not prioritize multiple AI-vendor adapters, public Trust Score, sophisticated ML ranking replacing explainable rules, ad-spend integration before attribution/revenue reliability, multi-vertical expansion, a Website-specific dispatch engine, a separate API backend merely for `api.cluexp.com`, mass public provider directories with unverified data, duplicate Website/Platform SEO catalogs, or broad payment marketing before real processor integration.
 
-- one canonical request and lifecycle serves website, partner, human-app, and agent channels;
-- ClueXP can accept neutral demand without pre-assigning a provider organization;
-- `private_partner` isolation is enforced in schema, queries, routing, API responses, and tests;
-- network routing selects only eligible providers and records an explainable decision;
-- dispatch requires explicit recorded authorization;
-- origin and attribution survive through completion and revenue reporting;
-- external clients receive only scoped, privacy-minimized data;
-- website or adapter outages do not break other clients or the Platform core;
-- the existing offer/accept/tracking machinery remains protected by regression tests;
-- security, migration, and real-database CI gates block regressions.
+## 21. Current-stage acceptance
 
-## 12. Do not build yet
+Success means a real customer can originate on `www`, use actual Platform coverage, create a canonical network request, explicitly authorize dispatch, route through Network Router, reach an eligible independent provider/technician, and track the job; Website duplicates no routing/coverage/pricing logic; `api.cluexp.com` is the stable machine boundary without forking logic; private demand remains isolated; Customer/Provider/Technician acquisition map to distinct Platform concepts; the same transaction can later run through MCP/AI without Website dependency; and security/audit/idempotency/privacy remain regression-tested.
 
-Until their prerequisites and Product Owner decisions are met, do not build:
+## 22. Immediate Platform Codex instruction
 
-- multiple AI-vendor adapters, MCP as the core architecture, or vendor-specific business logic;
-- an AI path that bypasses explicit dispatch/payment confirmation;
-- public access to internal FastAPI, ops, provider, admin, or raw database interfaces;
-- private-queue overflow to the network;
-- sophisticated ML ranking, dynamic pricing, or automated fairness policy;
-- a public Trust Score;
-- Google Ads or other ad-platform integrations before canonical attribution is reliable;
-- multi-vertical expansion;
-- elaborate provider economics, bidding, or a lead marketplace;
-- a replacement dispatch engine;
-- a full payment architecture before merchant/processor/cancellation decisions are approved.
-
-The next product milestone is intentionally narrow:
-
-> **Prove that ClueXP can accept urgent demand independently of where it originates, safely route authorized network demand, and fulfill it through the existing provider/technician infrastructure without compromising partner-private demand.**
+Treat this roadmap as Product Owner authority. Inspect current head and reconcile implementation against it. Focus the next sprint on the minimum Platform work required for the real Website residential-lockout vertical slice and `api.cluexp.com` boundary. Preserve proven dispatch/operations behavior. Do not expand marketing/SEO surfaces under intake when they belong on `www`. Surface missing Product Owner decisions instead of inventing them. Keep MCP/AI direct to Platform and constrained around consequential actions. Report exact changed files, migrations, tests, deployment dependencies, and acceptance evidence before requesting the next phase.
