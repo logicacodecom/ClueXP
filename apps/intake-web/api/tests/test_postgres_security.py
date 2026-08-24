@@ -510,6 +510,7 @@ def test_smoke_service_request_read_tracking_and_cancel_lifecycle(monkeypatch):
     read = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": creator_key})
     assert read.status_code == 200
     assert read.json()["data"]["status"] == "received"
+    assert read.json()["data"]["created_at"] is not None  # real timestamp against real Postgres
 
     tracking = client.get(f"/v1/service-requests/{reference}/tracking", headers={"X-API-Key": creator_key})
     assert tracking.status_code == 200

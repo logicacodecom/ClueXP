@@ -1964,6 +1964,7 @@ class InMemoryStore(Store):
             "access_type": ticket.access_type.value if ticket.access_type else None,
             "lat": getattr(loc, "lat", None),
             "lng": getattr(loc, "lng", None),
+            "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         }
 
     async def get_organizations_status(self, org_ids: list[str]) -> dict[str, str]:
@@ -6607,7 +6608,7 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select j.id, j.operational_id, j.status, j.customer_owner_org_id, j.access_type,"
-                " j.lat, j.lng, j.origin_client_id, a.authorized_by_client_id"
+                " j.lat, j.lng, j.origin_client_id, a.authorized_by_client_id, j.created_at"
                 " from jobs j"
                 " left join service_request_dispatch_authorizations a on a.job_id = j.id"
                 " where j.operational_id = %s",
@@ -6626,6 +6627,7 @@ class PostgresStore(Store):
             "access_type": row[4],
             "lat": row[5],
             "lng": row[6],
+            "created_at": row[9].isoformat() if row[9] else None,
         }
 
     async def get_organizations_status(self, org_ids: list[str]) -> dict[str, str]:

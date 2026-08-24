@@ -60,6 +60,49 @@
 
 ---
 
+## Open threads
+
+### 2026-08-24 — Claude: `created_at` gap fixed (Codex's non-blocking note from the `0059` review)
+
+Human's next step: close the small gap Codex flagged during the `0059`
+review before adapter/MCP work — `GET /v1/service-requests/{id}` always
+returned `created_at: null` because the shared
+`get_dispatch_authorization_context_by_reference` (both stores) never
+selected it. Also confirmed and adopted the Human's stated sequencing rule
+for future schema-dependent slices: migrate → apply DDL → deploy dependent
+code → enable the feature (not deploy-then-migrate, which is what actually
+happened with `origin_client_id` and briefly broke the shared context query
+in prod, per the prior entry).
+
+**Fix:** both stores now also select/return `created_at` — `ticket.created_at.isoformat()`
+for `InMemoryStore`, `jobs.created_at` for `PostgresStore` (added to the
+existing `SELECT`, no new query). `GET /v1/service-requests/{id}` now
+returns the job's real creation timestamp instead of a hardcoded `None`.
+No schema change — `jobs.created_at` already existed and was already
+populated; this was a read-path gap only.
+
+Verification:
+- `pytest api/tests -q --ignore=api/tests/test_postgres_security.py` →
+  `474 passed, 1 skipped` (same count — one existing test's assertion
+  updated from `created_at: None` to "is not null", not a new test, since
+  this closes a gap in existing coverage rather than adding new surface).
+- Added a `created_at is not None` assertion to the existing Postgres smoke
+  test (`test_smoke_service_request_read_tracking_and_cancel_lifecycle`) so
+  the fix is verified against real Postgres too, not just InMemoryStore.
+- `scripts/export_openapi_v1.py` re-run → **no diff** — the response model
+  already declared `created_at: str | None`; this was a logic fix, not a
+  contract change.
+- `alembic upgrade head --sql` → head unchanged at `0059` (no migration
+  needed), `npx tsc --noEmit`, `python -m py_compile` → all clean.
+
+Also restored this file's `## Open threads` heading, which had been dropped
+somewhere in a prior edit (no content was lost, just the section header).
+
+Files changed: `apps/intake-web/api/main.py`, `apps/intake-web/api/store.py`,
+`apps/intake-web/api/tests/test_public_api_foundation.py`,
+`apps/intake-web/api/tests/test_postgres_security.py`, `docs/HANDOFF.md`
+(this entry, plus the missing header restore). — Claude
+
 ### 2026-08-24 — Claude: `0059` applied to production, migration/apply verification only
 
 Codex review passed (below, `5ca0268`), Human authorized applying exactly

@@ -4747,6 +4747,7 @@ async def public_v1_get_service_request(
         data=PublicServiceRequestDetail(
             request_reference=request_id, dispatch_scope=dispatch_scope,
             status=_public_service_request_status(ctx["status"]),
+            created_at=ctx.get("created_at"),
         ),
         meta=PublicApiMeta(request_id=req_id),
     )

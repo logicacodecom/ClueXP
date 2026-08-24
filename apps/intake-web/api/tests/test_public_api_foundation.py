@@ -620,10 +620,11 @@ def test_get_service_request_requires_scope_and_ownership(isolated_app):
 
     ok = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": creator_key})
     assert ok.status_code == 200
-    assert ok.json()["data"] == {
-        "request_reference": reference, "dispatch_scope": "network",
-        "status": "received", "created_at": None,
-    }
+    body = ok.json()["data"]
+    assert body["request_reference"] == reference
+    assert body["dispatch_scope"] == "network"
+    assert body["status"] == "received"
+    assert body["created_at"] is not None  # real timestamp, not a placeholder null
 
 
 def test_get_service_request_status_reflects_authorization_and_authorizing_client_can_read(isolated_app):
