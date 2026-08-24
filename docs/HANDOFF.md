@@ -60,7 +60,71 @@
 
 ---
 
-## Open threads
+### 2026-08-23 — Claude → Codex: review requested before `0059` production apply
+
+Human held production apply of `0059` pending Codex review, `main@370ebd2`
+(CI green including Postgres tier). Self-check against each requested focus
+point below — please verify independently, not just accept this.
+
+- **`origin_client_id` server-side only:** set in `public_v1_create_service_request`
+  (`api/main.py`) as `origin.get("origin_client_id") = client_id`, where
+  `client_id = context["client"]["id"]` comes from `require_public_api_client`
+  resolving the authenticated API key — never from `PublicServiceRequestCreate`
+  (the request-body Pydantic model has no such field, so FastAPI would reject
+  an extra body field silently ignored, not accepted). Same anti-spoofing
+  shape as ADR-4's `org_id`.
+- **Existing jobs/backfill safety:** `0059` is `ALTER TABLE ... ADD COLUMN IF
+  NOT EXISTS origin_client_id uuid REFERENCES external_clients(id)` — nullable,
+  no default, no backfill statement. Every existing row gets `NULL`, which is
+  the correct/safe value (no historical job has an origin client). No table
+  lock beyond a metadata-only `ADD COLUMN` (Postgres 11+, no full rewrite for
+  a nullable column with no default).
+- **Network read/cancel cannot be bypassed:** `_require_public_service_request_context`
+  is the single shared gate for all three new endpoints (`GET`, `GET
+  .../tracking`, `POST .../cancellations`) — no endpoint calls
+  `get_dispatch_authorization_context_by_reference` directly without routing
+  through it. For `network` (no `customer_owner_org_id`), the check is
+  `client_type == "internal" or caller_id in {origin_client_id,
+  authorized_by_client_id}` — please verify this can't be satisfied by an
+  unrelated client, e.g. confirm `client.get("client_type")` can't be
+  client-supplied (it's resolved server-side from `external_clients.client_type`
+  at key-issuance time, not from the request).
+- **Partner-private stays org-bound:** unchanged from ADR-6/ADR-7 — `owner_org_id`
+  present → `str(client.get("organization_id")) == str(owner_org_id)`, no
+  `network`-branch logic runs at all when an owner org exists.
+- **Cancellation gate/lifecycle reuse:** `POST .../cancellations` calls
+  `store.cancel_job` (the *same* function `/t/{token}/cancel` uses) gated by
+  `status == "draft" or can_customer_cancel(status)` — `can_customer_cancel`
+  is the existing, unmodified function (pending_dispatch through en_route
+  only; `arrived` onward is `409 not_cancellable`). Not reimplemented.
+- **Privacy-minimization:** `GET /{id}` returns exactly `{request_reference,
+  dispatch_scope, status, created_at}` — coarse status vocabulary, no
+  fulfillment-step detail, no `service_skill` echo (see ADR-8 for why
+  omitting is more honest than echoing a lossy re-derived value). `GET
+  .../tracking` returns `store.get_dispatch_status`'s existing output
+  unchanged — same technician-identity-only-at-`matched` guarantee
+  `/tickets/{id}/tracking` already has.
+- **No raw UUID fallback:** all three endpoints take `request_id: str` (the
+  `operational_id`) as the path param and resolve via
+  `get_dispatch_authorization_context_by_reference`, which queries `jobs
+  WHERE operational_id = %s` — there is no code path that also tries the raw
+  UUID as a fallback lookup. `docs/HANDOFF.md`'s prior proof-run entry
+  confirmed this empirically (posting the raw job UUID as the path param
+  against a real deployed instance returned `404`, not `200`).
+- **No early technician-identity leak:** `GET .../tracking` doesn't compute
+  anything itself — it's a pure passthrough to `store.get_dispatch_status`,
+  identical to the internal endpoint, so this is inherited, not
+  re-implemented and therefore not at risk of drifting.
+- **OpenAPI:** `docs/openapi-v1-snapshot.json` regenerated, now 7 `/v1` paths
+  (confirmed in the prior entry).
+- **CI:** green on `370ebd2`, including `Postgres RLS and store integration
+  tests` (11 tests, up from 10, including the new
+  `test_smoke_service_request_read_tracking_and_cancel_lifecycle` HTTP-level
+  smoke test).
+
+Not proceeding to the `0059` apply until this is reviewed — Human's
+instruction was explicit: hold for Codex, proceed only if no blocker is
+found. — Claude
 
 ### 2026-08-23 — Claude: service-request read/tracking/cancel endpoints implemented, per plan above
 
