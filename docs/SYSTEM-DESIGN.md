@@ -922,7 +922,7 @@ Supabase Storage. Managed in `api/storage.py`.
 
 All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
 
-### Public Platform API (`0056`–`0058` production-applied 2026-08-23; `0059` migration added, not yet applied)
+### Public Platform API (`0056`–`0059` production-applied, 2026-08-23/24)
 The versioned public façade is implemented under backend path `/v1/...`, which is served as
 `/api/v1/...` through the existing Vercel `/api` prefix. `api.cluexp.com` DNS/routing remains
 deferred. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
@@ -933,8 +933,10 @@ Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundat
 are `governance_events` rows, not a table, widened to accept them by `0058`). All are default-deny
 RLS protected, zero policies, verified against production after apply. `0059` adds
 `jobs.origin_client_id` (no new table, no RLS-registry change needed) — required for the
-read/tracking/cancel endpoints' `network`-scope ownership check (ADR-8); **not applied to any
-database yet, pending explicit authorization.**
+read/tracking/cancel endpoints' `network`-scope ownership check (ADR-8). Applied to production
+2026-08-24 after Codex review and explicit Human authorization; verified `alembic_version =
+0059_job_origin_client`, the column and its index exist, all 62 public tables retain
+`relrowsecurity = true`, and `/api/healthz` returns `200` post-apply.
 
 Production `alembic_version` is `0058_governance_entity_types` as of 2026-08-23 (applied via
 Supabase MCP after CI went green; migration/apply verification only — no real external client was

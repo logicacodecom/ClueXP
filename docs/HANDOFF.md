@@ -60,6 +60,52 @@
 
 ---
 
+### 2026-08-24 — Claude: `0059` applied to production, migration/apply verification only
+
+Codex review passed (below, `5ca0268`), Human authorized applying exactly
+`0059_job_origin_client`, nothing else. Applied via Supabase MCP
+(`apply_migration`) against the ClueXP project, then synced `alembic_version`
+manually — same path as `0055`–`0058`. No new scope; no real external
+client, service request, or dispatch/offer was created.
+
+**Applied:** `alter table jobs add column if not exists origin_client_id uuid
+references external_clients(id); create index if not exists
+idx_jobs_origin_client on jobs (origin_client_id);`
+
+**Verification (all 6 requested checks):**
+1. `alembic_version = 0059_job_origin_client` (was `0058_governance_entity_types`
+   immediately before this apply — confirmed pre-state).
+2. `jobs.origin_client_id` exists: `uuid`, nullable — confirmed via
+   `information_schema.columns`.
+3. `idx_jobs_origin_client` exists on `jobs(origin_client_id)` — confirmed
+   via `pg_indexes`.
+4. RLS/default-deny coverage intact: `62/62` public tables have
+   `relrowsecurity = true` (checked all tables, not just the new column's
+   table — `0059` doesn't touch RLS at all, and this confirms nothing
+   regressed elsewhere either).
+5. `GET https://intake.cluexp.com/api/healthz` → `200 {"status":"ok"}`
+   after the apply.
+6. Public lifecycle endpoints don't 500 merely because the column exists:
+   ran the exact SQL `get_dispatch_authorization_context_by_reference` uses
+   (the `jobs LEFT JOIN service_request_dispatch_authorizations` query,
+   including `j.origin_client_id`) directly against production with a
+   nonexistent reference — returned cleanly (empty result, no error).
+
+**Worth flagging, not an incident but real:** app code referencing
+`origin_client_id` has been live since `370ebd2` deployed (Vercel
+auto-deploys `main`), which is *before* this migration added the column.
+Between those two points, the shared context query — used by both the new
+endpoints and the already-shipped `dispatch-authorizations` endpoint — would
+have errored (`column does not exist`) on any real call. No real external
+client exists and no real caller hit these endpoints during that window, so
+there was no actual impact, but it's a real ordering gap worth naming:
+schema-adding migrations for columns a shared/already-live code path depends
+on should ideally land *before* the code deploys, not after. Not a new
+process to adopt project-wide unprompted, just flagging the pattern for
+awareness on future slices.
+
+Docs updated: `docs/SYSTEM-DESIGN.md`, `docs/EXECUTION-PLAN.md`, this entry.
+
 ### 2026-08-24 — Codex: review result for `0059` public read/tracking/cancel slice
 
 Reviewed Claude's `main@370ebd2` implementation and `b66f5b6` review request before any
