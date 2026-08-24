@@ -62,6 +62,23 @@
 
 ## Open threads
 
+### 2026-08-24 — Codex: public AI/search discoverability assets started
+
+Started the public discoverability track without deployment/publishing. Added intake-web app-router
+assets:
+
+- `/robots.txt` — allows `/`, `/ai`, `/llms.txt`, `/openapi-v1.json`; disallows internal proxy and
+  tenant/token paths (`/api/`, `/o/`, `/t/`).
+- `/sitemap.xml` — lists the public/discovery URLs.
+- `/llms.txt` — AI-readable summary of ClueXP, the public `/v1` surface, first-preview MCP limits,
+  and explicit warnings not to invent coverage/partners.
+- `/openapi-v1.json` — serves the committed public OpenAPI snapshot.
+- `/ai` — crawlable AI/search discovery page with conservative schema.org `WebApplication`/`Service`
+  JSON-LD.
+
+Claims are intentionally conservative: no statement that ClueXP is publicly listed in ChatGPT,
+Claude, Gemini, Siri, or any marketplace; hosted partner discovery remains future work. — Codex
+
 ### 2026-08-24 — Codex: internal MCP preview operator kit
 
 Added local-preview operator docs/config examples for the MCP server:

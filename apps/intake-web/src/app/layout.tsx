@@ -3,8 +3,19 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "ClueXP Emergency Access",
-  description: "Emergency physical access intake",
+  metadataBase: new URL("https://intake.cluexp.com"),
+  title: {
+    default: "ClueXP Emergency Access",
+    template: "%s | ClueXP"
+  },
+  description: "Emergency physical access intake, dispatch coordination, and service request tracking.",
+  alternates: {
+    canonical: "/"
+  },
+  robots: {
+    index: true,
+    follow: true
+  },
   icons: {
     icon: [
       { url: "/favicon-16.png", sizes: "16x16", type: "image/png" },

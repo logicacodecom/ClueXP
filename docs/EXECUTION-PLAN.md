@@ -87,6 +87,12 @@ unchanged rather than reimplementing it.
 built) and `docs/PUBLIC-API-DEVELOPER-GUIDE.md` (partner-facing `/v1` reference), and a CI
 `public v1 OpenAPI drift check` step so `docs/openapi-v1-snapshot.json` staleness fails the build.
 
+2026-08-24 (AI/search discoverability start, code only, not deployed/published): added static
+intake-web discovery assets `/ai`, `/llms.txt`, `/openapi-v1.json`, `/robots.txt`, and
+`/sitemap.xml`. These make the public API and current agent-integration limits crawlable once
+deployed, but do not submit ClueXP to ChatGPT/Claude/Gemini/Siri marketplaces and do not publish
+hosted partner discovery pages yet.
+
 ## Product Backlog & Release Map
 
 > Folded in from the former `ROADMAP.md`. This is the outcome-based backlog above the

@@ -968,6 +968,12 @@ endpoint mapping, confirmation rules for mutating tools, allowed/not-allowed sur
 — design only, not built: `docs/AGENT-INTEGRATION-MCP-PLAN.md`. `docs/openapi-v1-snapshot.json`
 staleness is enforced in CI (`public v1 OpenAPI drift check` step).
 
+Public crawl/discovery entrypoints, once the intake-web build containing them is deployed:
+`/ai` (human/AI-readable capability and limits page), `/llms.txt` (AI-readable summary),
+`/openapi-v1.json` (served copy of the committed public OpenAPI snapshot), `/robots.txt`, and
+`/sitemap.xml`. These are discovery surfaces only; they do not imply marketplace listing or
+production MCP enablement.
+
 **Ownership (ADR-8, ties `origin_client_id`/`authorized_by_client_id` into the read/tracking/cancel
 gate):** `private_partner` — caller's `organization_id` must equal `customer_owner_org_id`. `network`
 — caller must be the creating client (`jobs.origin_client_id`, migration `0059`), the authorizing
