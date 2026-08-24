@@ -261,6 +261,8 @@ def test_postgres_store_dispatch_authorization_context_and_atomic_insert():
         assert ctx["job_id"] == str(network_ticket.ticket_id)
         assert ctx["status"] == "draft"  # jobs.status is never actually unset
         assert ctx["customer_owner_org_id"] is None
+        assert ctx["origin_client_id"] is None
+        assert ctx["authorized_by_client_id"] is None
 
         private_ctx = await store.get_dispatch_authorization_context_by_reference(private_reference)
         assert private_ctx["customer_owner_org_id"] == str(org_id)
@@ -283,6 +285,17 @@ def test_postgres_store_dispatch_authorization_context_and_atomic_insert():
             channel="partner_api", evidence_reference="evidence-2", terms_version="v1",
         )
         assert duplicate is None
+
+        # After authorization, the context surfaces who authorized it.
+        authorized_ctx = await store.get_dispatch_authorization_context_by_reference(network_reference)
+        assert authorized_ctx["authorized_by_client_id"] == client["id"]
+
+        # origin_client_id (0059) round-trips through save().
+        origin_ticket = Ticket()
+        await store.save(origin_ticket, {"origin_client_id": client["id"]})
+        origin_reference = await store.get_operational_id(origin_ticket.ticket_id)
+        origin_ctx = await store.get_dispatch_authorization_context_by_reference(origin_reference)
+        assert origin_ctx["origin_client_id"] == client["id"]
 
     asyncio.run(exercise())
 
@@ -471,3 +484,57 @@ def test_governance_events_accepts_public_api_entity_types():
             assert event["entity_type"] == entity_type
 
     asyncio.run(exercise())
+
+
+def test_smoke_service_request_read_tracking_and_cancel_lifecycle(monkeypatch):
+    client, store = _pg_app_client(monkeypatch)
+    creator_key = _issue_pg_key(
+        store, ["service_requests:write", "service_requests:read", "service_requests:cancel"],
+    )
+    other_key = _issue_pg_key(store, ["service_requests:read", "service_requests:cancel"])
+
+    created = client.post("/v1/service-requests", headers={"X-API-Key": creator_key}, json={
+        "dispatch_scope": "network",
+        "service_skill": "locksmith.residential_lockout",
+        "location": {"lat": 40.0, "lng": -73.0, "raw_text": "smoke test address"},
+        "consent": {"terms_accepted": True, "policy_version": "v1"},
+    })
+    assert created.status_code == 200, created.text
+    reference = created.json()["data"]["request_reference"]
+
+    # A different client (not the creator) is denied -- proves origin_client_id
+    # actually gates access against real Postgres, not just InMemoryStore.
+    denied = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": other_key})
+    assert denied.status_code == 404
+
+    read = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": creator_key})
+    assert read.status_code == 200
+    assert read.json()["data"]["status"] == "received"
+
+    tracking = client.get(f"/v1/service-requests/{reference}/tracking", headers={"X-API-Key": creator_key})
+    assert tracking.status_code == 200
+    assert tracking.json()["data"]["assignment"] is None
+
+    cancel_denied = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": other_key}, json={"reason": "not mine to cancel"},
+    )
+    assert cancel_denied.status_code == 404
+
+    cancelled = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": creator_key}, json={"reason": "smoke test cancellation"},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["data"] == {"request_reference": reference, "status": "cancelled"}
+
+    # Idempotent against real Postgres too.
+    cancelled_again = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": creator_key}, json={"reason": "still cancelled"},
+    )
+    assert cancelled_again.status_code == 200
+    assert cancelled_again.json()["data"]["status"] == "cancelled"
+
+    read_after_cancel = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": creator_key})
+    assert read_after_cancel.json()["data"]["status"] == "cancelled"

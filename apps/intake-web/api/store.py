@@ -1905,6 +1905,10 @@ class InMemoryStore(Store):
         if owner_org:
             self._job_org = getattr(self, "_job_org", {})
             self._job_org[str(ticket.ticket_id)] = str(owner_org)
+        origin_client_id = origin.get("origin_client_id")
+        if origin_client_id:
+            self._job_origin_client = getattr(self, "_job_origin_client", {})
+            self._job_origin_client[jid] = str(origin_client_id)
         loc = getattr(ticket, "location", None)
         self._job_address = getattr(self, "_job_address", {})
         self._job_loc = getattr(self, "_job_loc", {})
@@ -1949,11 +1953,14 @@ class InMemoryStore(Store):
         # the dispatch-lifecycle status (STATUS_PENDING_DISPATCH et al.) --
         # never actually unset. Default to the ticket's own status, not None.
         dispatch_status = getattr(self, "_job_status", {}).get(jid)
+        authorization = getattr(self, "_dispatch_authorizations", {}).get(jid)
         return {
             "job_id": jid,
             "operational_id": operational_id,
             "status": dispatch_status or ticket.status.value,
             "customer_owner_org_id": owner_org,
+            "origin_client_id": getattr(self, "_job_origin_client", {}).get(jid),
+            "authorized_by_client_id": authorization["authorized_by_client_id"] if authorization else None,
             "access_type": ticket.access_type.value if ticket.access_type else None,
             "lat": getattr(loc, "lat", None),
             "lng": getattr(loc, "lng", None),
@@ -4142,7 +4149,12 @@ class InMemoryStore(Store):
         self._job_status = getattr(self, "_job_status", {})
         self._job_lifecycle_version = getattr(self, "_job_lifecycle_version", {})
         jid = str(job_id)
-        if self._job_status.get(jid) != current_status:
+        # Mirrors PostgresStore: jobs.status is never actually unset -- it starts
+        # at the ticket's own TicketStatus ("draft") before dispatch begins. A
+        # missing _job_status entry means "still draft", not "no status".
+        ticket = self._tickets.get(job_id)
+        current_stored = self._job_status.get(jid) or (ticket.status.value if ticket else None)
+        if current_stored != current_status:
             return None
         self._job_status[jid] = STATUS_CANCELLED
         self._job_lifecycle_version[jid] = self._job_lifecycle_version.get(jid, 1) + 1
@@ -5923,6 +5935,8 @@ class PostgresStore(Store):
                 " on conflict (organization_id, skill_code) do nothing"
             )
             await conn.execute("alter table jobs add column if not exists fulfillment_org_id uuid")
+            # Migration 0059 — additive, same self-heal pattern as fulfillment_org_id above.
+            await conn.execute("alter table jobs add column if not exists origin_client_id uuid")
             # Fulfillment cutover (migration 0010) — additive columns. Repeated here
             # as add-column-if-not-exists so the live API is resilient if it boots
             # before the migration runs (matches the fulfillment_org_id pattern above).
@@ -6453,6 +6467,7 @@ class PostgresStore(Store):
         origin_org_id = _uuid_or_none(origin.get("origin_org_id"))
         customer_owner_org_id = _uuid_or_none(origin.get("customer_owner_org_id"))
         intake_channel_id = _uuid_or_none(origin.get("intake_channel_id"))
+        origin_client_id = _uuid_or_none(origin.get("origin_client_id"))
 
         async with await self._connect() as conn:
             customer_id = None
@@ -6490,14 +6505,14 @@ class PostgresStore(Store):
                 "  situation, urgency, lat, lng, address, detail, price_quote,"
                 "  final_charge, tracking_token, created_at, updated_at,"
                 "  operational_id, operational_year, operational_month,"
-                "  operational_day, operational_sequence"
+                "  operational_day, operational_sequence, origin_client_id"
                 ") values ("
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s, %s, %s, %s, %s,"
                 "  %s, %s, %s, now(),"
-                "  %s, %s, %s, %s, %s"
+                "  %s, %s, %s, %s, %s, %s"
                 ")"
                 # operational_id and its components are intentionally absent from the
                 # SET clause below — assigned once above, immutable on every later save.
@@ -6507,6 +6522,7 @@ class PostgresStore(Store):
                 "  origin_org_id = coalesce(jobs.origin_org_id, excluded.origin_org_id),"
                 "  customer_owner_org_id = coalesce(jobs.customer_owner_org_id, excluded.customer_owner_org_id),"
                 "  intake_channel_id = coalesce(jobs.intake_channel_id, excluded.intake_channel_id),"
+                "  origin_client_id = coalesce(jobs.origin_client_id, excluded.origin_client_id),"
                 "  trust_state = excluded.trust_state,"
                 # Never overwrite an operational status (pending_dispatch and beyond)
                 # with a legacy intake status (draft/partial/complete). Once the job
@@ -6554,6 +6570,7 @@ class PostgresStore(Store):
                     op_month,
                     op_day,
                     op_seq,
+                    origin_client_id,
                 ),
             )
 
@@ -6589,8 +6606,11 @@ class PostgresStore(Store):
     async def get_dispatch_authorization_context_by_reference(self, operational_id: str) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "select id, operational_id, status, customer_owner_org_id, access_type, lat, lng"
-                " from jobs where operational_id = %s",
+                "select j.id, j.operational_id, j.status, j.customer_owner_org_id, j.access_type,"
+                " j.lat, j.lng, j.origin_client_id, a.authorized_by_client_id"
+                " from jobs j"
+                " left join service_request_dispatch_authorizations a on a.job_id = j.id"
+                " where j.operational_id = %s",
                 (operational_id,),
             )
             row = await cur.fetchone()
@@ -6601,6 +6621,8 @@ class PostgresStore(Store):
             "operational_id": row[1],
             "status": row[2],
             "customer_owner_org_id": str(row[3]) if row[3] else None,
+            "origin_client_id": str(row[7]) if row[7] else None,
+            "authorized_by_client_id": str(row[8]) if row[8] else None,
             "access_type": row[4],
             "lat": row[5],
             "lng": row[6],

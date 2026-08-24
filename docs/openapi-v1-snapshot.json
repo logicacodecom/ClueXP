@@ -188,6 +188,53 @@
         "title": "PublicServiceCategory",
         "type": "object"
       },
+      "PublicServiceRequestCancellationRequest": {
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "PublicServiceRequestCancellationRequest",
+        "type": "object"
+      },
+      "PublicServiceRequestCancellationResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicServiceRequestCancellationResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicServiceRequestCancellationResponse",
+        "type": "object"
+      },
+      "PublicServiceRequestCancellationResult": {
+        "properties": {
+          "request_reference": {
+            "title": "Request Reference",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_reference",
+          "status"
+        ],
+        "title": "PublicServiceRequestCancellationResult",
+        "type": "object"
+      },
       "PublicServiceRequestConsent": {
         "description": "Consent must exist at creation time, not deferred to a later\nauthorization step (Tier 1 decision, docs/HANDOFF.md 2026-08-22).",
         "properties": {
@@ -306,6 +353,56 @@
           }
         },
         "title": "PublicServiceRequestCustomer",
+        "type": "object"
+      },
+      "PublicServiceRequestDetail": {
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "dispatch_scope": {
+            "title": "Dispatch Scope",
+            "type": "string"
+          },
+          "request_reference": {
+            "title": "Request Reference",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_reference",
+          "dispatch_scope",
+          "status"
+        ],
+        "title": "PublicServiceRequestDetail",
+        "type": "object"
+      },
+      "PublicServiceRequestDetailResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicServiceRequestDetail"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicServiceRequestDetailResponse",
         "type": "object"
       },
       "PublicServiceRequestLocation": {
@@ -545,6 +642,95 @@
         "summary": "Public V1 Create Service Request"
       }
     },
+    "/v1/service-requests/{request_id}": {
+      "get": {
+        "operationId": "public_v1_get_service_request_v1_service_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicServiceRequestDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Get Service Request"
+      }
+    },
+    "/v1/service-requests/{request_id}/cancellations": {
+      "post": {
+        "description": "Idempotent: an already-cancelled request returns the same success\nshape rather than erroring. Gate: draft (never authorized, nothing to\nundo) or the existing customer-cancel window (pending_dispatch through\nen_route) -- blocked once fulfillment is too far along, exactly matching\nthe existing customer-facing cancel rule.",
+        "operationId": "public_v1_cancel_service_request_v1_service_requests__request_id__cancellations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicServiceRequestCancellationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicServiceRequestCancellationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Cancel Service Request"
+      }
+    },
     "/v1/service-requests/{request_id}/dispatch-authorizations": {
       "post": {
         "operationId": "public_v1_authorize_dispatch_v1_service_requests__request_id__dispatch_authorizations_post",
@@ -592,6 +778,48 @@
           }
         },
         "summary": "Public V1 Authorize Dispatch"
+      }
+    },
+    "/v1/service-requests/{request_id}/tracking": {
+      "get": {
+        "description": "Reuses the exact customer-safe dispatch state machine\n(`store.get_dispatch_status`) the internal `/tickets/{id}/tracking`\nalready uses -- technician identity is revealed only at `matched`, never\nearlier, by construction (one function, not two that could drift).",
+        "operationId": "public_v1_service_request_tracking_v1_service_requests__request_id__tracking_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Public V1 Service Request Tracking V1 Service Requests  Request Id  Tracking Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Service Request Tracking"
       }
     },
     "/v1/services": {

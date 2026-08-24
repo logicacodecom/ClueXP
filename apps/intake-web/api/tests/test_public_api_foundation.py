@@ -597,3 +597,122 @@ def test_network_authorization_excludes_org_ineligible_technician(isolated_app):
     assert routing_events[0]["metadata"]["considered"] == [
         {"technician_id": "suspended-org-tech", "reason_code": "organization_ineligible"}
     ]
+
+
+def test_get_service_request_requires_scope_and_ownership(isolated_app):
+    main, store = isolated_app
+    # Same client, both scopes -- proves the creator (origin_client_id) branch.
+    creator_key = _issue_key(store, ["service_requests:write", "service_requests:read"])
+    other_read_key = _issue_key(store, ["service_requests:read"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, creator_key)
+
+    wrong_scope = client.get(
+        f"/v1/service-requests/{reference}", headers={"X-API-Key": _issue_key(store, ["service_requests:write"])},
+    )
+    assert wrong_scope.status_code == 403
+
+    missing = client.get("/v1/service-requests/not-a-real-reference", headers={"X-API-Key": creator_key})
+    assert missing.status_code == 404
+
+    not_creator = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": other_read_key})
+    assert not_creator.status_code == 404
+
+    ok = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": creator_key})
+    assert ok.status_code == 200
+    assert ok.json()["data"] == {
+        "request_reference": reference, "dispatch_scope": "network",
+        "status": "received", "created_at": None,
+    }
+
+
+def test_get_service_request_status_reflects_authorization_and_authorizing_client_can_read(isolated_app):
+    """The authorizing client is a *different* client than the creator here --
+    proves the ownership check's second branch (authorized_by_client_id), not
+    just the creator (origin_client_id) branch already covered above."""
+    main, store = isolated_app
+    write_key = _issue_key(store, ["service_requests:write"])
+    auth_key = _issue_key(store, ["service_requests:authorize", "service_requests:read"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, write_key)
+
+    client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+    )
+
+    read_by_authorizer = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": auth_key})
+    assert read_by_authorizer.status_code == 200
+    assert read_by_authorizer.json()["data"]["status"] == "authorized"
+
+
+def test_tracking_reuses_customer_safe_dispatch_state_and_enforces_ownership(isolated_app):
+    main, store = isolated_app
+    creator_key = _issue_key(store, ["service_requests:write", "service_requests:read"])
+    other_key = _issue_key(store, ["service_requests:read"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, creator_key)
+
+    denied = client.get(f"/v1/service-requests/{reference}/tracking", headers={"X-API-Key": other_key})
+    assert denied.status_code == 404
+
+    ok = client.get(f"/v1/service-requests/{reference}/tracking", headers={"X-API-Key": creator_key})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert "state" in body["data"]
+    assert body["data"]["assignment"] is None  # never matched -- no technician identity
+
+
+def test_cancellation_is_idempotent_and_gated_by_fulfillment_stage(isolated_app):
+    main, store = isolated_app
+    cancel_key = _issue_key(store, ["service_requests:write", "service_requests:cancel"])
+    other_key = _issue_key(store, ["service_requests:cancel"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, cancel_key)
+
+    wrong_owner = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": other_key}, json={"reason": "no longer needed"},
+    )
+    assert wrong_owner.status_code == 404
+
+    too_short_reason = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": cancel_key}, json={"reason": "x"},
+    )
+    assert too_short_reason.status_code == 422
+
+    first = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": cancel_key}, json={"reason": "no longer needed"},
+    )
+    assert first.status_code == 200
+    assert first.json()["data"] == {"request_reference": reference, "status": "cancelled"}
+
+    job_id = next(iter(store._tickets))
+    assert store._job_status[str(job_id)] == "cancelled"
+
+    # Idempotent: cancelling again succeeds rather than 409ing.
+    second = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": cancel_key}, json={"reason": "still cancelled"},
+    )
+    assert second.status_code == 200
+    assert second.json()["data"]["status"] == "cancelled"
+
+
+def test_cancellation_blocked_once_too_far_into_fulfillment(isolated_app):
+    main, store = isolated_app
+    cancel_key = _issue_key(store, ["service_requests:write", "service_requests:cancel"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, cancel_key)
+    job_id = next(iter(store._tickets))
+    store._job_status = getattr(store, "_job_status", {})
+    store._job_status[str(job_id)] = "arrived"
+
+    blocked = client.post(
+        f"/v1/service-requests/{reference}/cancellations",
+        headers={"X-API-Key": cancel_key}, json={"reason": "too late now"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["error"] == "not_cancellable"

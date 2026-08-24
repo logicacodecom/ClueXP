@@ -922,7 +922,7 @@ Supabase Storage. Managed in `api/storage.py`.
 
 All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
 
-### Public Platform API (`0056`–`0058` production-applied, 2026-08-23)
+### Public Platform API (`0056`–`0058` production-applied 2026-08-23; `0059` migration added, not yet applied)
 The versioned public façade is implemented under backend path `/v1/...`, which is served as
 `/api/v1/...` through the existing Vercel `/api` prefix. `api.cluexp.com` DNS/routing remains
 deferred. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
@@ -931,7 +931,10 @@ Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundat
 `external_api_idempotency_keys`, and `external_api_rate_limits` (`0056`); plus
 `service_request_dispatch_authorizations` (`0057`, authorization evidence only — routing decisions
 are `governance_events` rows, not a table, widened to accept them by `0058`). All are default-deny
-RLS protected, zero policies, verified against production after apply.
+RLS protected, zero policies, verified against production after apply. `0059` adds
+`jobs.origin_client_id` (no new table, no RLS-registry change needed) — required for the
+read/tracking/cancel endpoints' `network`-scope ownership check (ADR-8); **not applied to any
+database yet, pending explicit authorization.**
 
 Production `alembic_version` is `0058_governance_entity_types` as of 2026-08-23 (applied via
 Supabase MCP after CI went green; migration/apply verification only — no real external client was
@@ -953,6 +956,17 @@ key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flig
 | `POST` | `/v1/coverage-checks` | external API key, `coverage:check` scope | Pure read: does the verified network have an available, skilled technician within range of `{lat, lng, service_skill}`? Returns only an aggregate `{ covered: bool, service_skill }` — never a technician identity, roster, or count. No ticket/job is created; no dispatch is triggered. Supports `Idempotency-Key`. |
 | `POST` | `/v1/service-requests` | external API key, `service_requests:write` scope | Creates a canonical service request per ADR-6's `dispatch_scope` (`private_partner` requires an API client bound to a partner `organization_id`; `network` requires none). Returns `{ request_reference, dispatch_scope, status: "received" }` — never the raw job UUID. Requires `consent.terms_accepted=true` at creation. **Never sets `job_status` to `pending_dispatch`** — invisible to the ops queue and dispatch sweep until authorized. Supports `Idempotency-Key`. |
 | `POST` | `/v1/service-requests/{request_id}/dispatch-authorizations` | external API key, `service_requests:authorize` scope | Explicit dispatch authorization gate (ADR-7). `private_partner`: requires the caller's `organization_id` to match the request's owner (403 otherwise), then only sets `job_status=pending_dispatch` — the job enters the owning org's existing `/provider/queue`, no new routing logic. `network`: also sets `pending_dispatch`, then runs the Network Router MVP and, on a selection, sends exactly one offer via the existing `_send_targeted_offer(dispatch_org_id=None)`. `job_id` is unique in `service_request_dispatch_authorizations` — the atomic idempotency gate (a second call is `409 already_authorized`). Already-non-inert requests (assigned/cancelled/completed/previously authorized) are `409 not_in_receivable_state`. Returns `{ request_reference, dispatch_scope, status: "authorized", routing_outcome? }` — `routing_outcome` (`offer_sent` \| `no_eligible_provider`) only for `network`; never a technician identity. |
+| `GET` | `/v1/service-requests/{request_id}` | external API key, `service_requests:read` scope | Privacy-minimized detail read: `{ request_reference, dispatch_scope, status, created_at }`. `status` is a **coarse public vocabulary** (`received \| authorized \| completed \| cancelled`) collapsed from internal dispatch status — no fulfillment-step detail. Ownership-gated (ADR-8); mismatch/not-found both `404`. |
+| `GET` | `/v1/service-requests/{request_id}/tracking` | external API key, `service_requests:read` scope | Reuses `store.get_dispatch_status` **unchanged** — the identical customer-safe state machine `/tickets/{id}/tracking` already uses. Technician identity revealed only at `matched`, never earlier, by construction (one function, not a second one that could drift). |
+| `POST` | `/v1/service-requests/{request_id}/cancellations` | external API key, `service_requests:cancel` scope | Reuses `store.cancel_job` unchanged (atomic, revokes outstanding offers). Cancellable while `draft` (never authorized) or within the existing customer-cancel window (`pending_dispatch` through `en_route`); `409 not_cancellable` once too far into fulfillment (`arrived` onward). **Idempotent** — an already-cancelled request returns the same success shape rather than erroring. Requires a `reason` (min 3 chars). |
+
+**Ownership (ADR-8, ties `origin_client_id`/`authorized_by_client_id` into the read/tracking/cancel
+gate):** `private_partner` — caller's `organization_id` must equal `customer_owner_org_id`. `network`
+— caller must be the creating client (`jobs.origin_client_id`, migration `0059`), the authorizing
+client (`service_request_dispatch_authorizations.authorized_by_client_id`), or a
+`client_type='internal'` platform client. Mismatch and not-found are both `404` — existence-hiding,
+matching `require_intake_ticket`'s convention; never a `403` that would confirm a reference exists
+but belongs to someone else.
 
 No payment, dynamic pricing, bidding, ML ranking, automatic re-offer, private-to-network
 overflow, or AI-adapter-specific behavior is live in this slice.
@@ -1676,3 +1690,60 @@ Tier 2 decision (Human, conservative/manual defaults) — implemented by
   attempted (`409 not_in_receivable_state`).
 - **Explicitly not built, per the Human's guardrails:** private-to-network overflow, payments,
   dynamic pricing, bidding, ML ranking, AI-adapter logic, any platform/ops assignment UI.
+
+### 20.8 ADR-8 — Service-request read/tracking/cancel: ownership and reuse (Accepted 2026-08-23)
+
+Completes the roadmap §5 minimum capability set's remaining lifecycle endpoints: `GET
+/v1/service-requests/{id}`, `GET .../tracking`, `POST .../cancellations`.
+
+- **A real gap ADR-6 explicitly deferred, now closed:** ADR-6 noted `/v1/service-requests` "does not
+  yet surface `origin_client_id`... revisit if a second origin dimension is needed." Read/cancel
+  authorization on a `network`-scope request *is* that second consumer — there is no owner org to
+  check against, so without recording which client created the request, no one could prove
+  entitlement to read or cancel an unauthorized draft network request. Migration `0059` adds
+  `jobs.origin_client_id` (nullable, additive, no new table) to close this.
+- **Ownership rule:** `private_partner` — caller's `organization_id` must equal
+  `customer_owner_org_id` (unchanged from ADR-6/ADR-7). `network` — caller must be the creating
+  client (`origin_client_id`), the client that ran `dispatch-authorizations`
+  (`authorized_by_client_id`, if authorized yet), or a `client_type='internal'` platform client.
+  **Mismatch and not-found are both `404`**, not a `403` — existence-hiding, matching
+  `require_intake_ticket`'s established convention for capability-scoped resources. (This
+  deliberately differs from `dispatch-authorizations`' existing `403
+  not_authorized_for_organization` for a `private_partner` mismatch, shipped before this ADR;
+  not revised here — out of scope, and changing already-shipped behavior without cause was avoided.)
+- **New scopes, not reused:** `service_requests:read` (both `GET` routes),
+  `service_requests:cancel` — consistent with this project's one-scope-per-capability convention
+  (`service_requests:write`/`:authorize` before it).
+- **Everything reuses existing internal machinery unchanged, not reimplemented:**
+  - `GET .../tracking` calls `store.get_dispatch_status` — the *exact* function
+    `/tickets/{id}/tracking` already uses. Technician identity is revealed only at `matched`, never
+    earlier, by construction (one function, not a second one that could drift from the first).
+  - `POST .../cancellations` calls `store.cancel_job` — the same atomic, offer-revoking cancel the
+    customer-facing `/t/{token}/cancel` already uses. The cancellable-status gate is `status ==
+    "draft" or can_customer_cancel(status)`: `draft` (never authorized) is trivially cancellable
+    since nothing has happened yet; everything else follows the *existing* customer-cancel window
+    (`pending_dispatch` through `en_route`, blocked from `arrived` on) — "too far into fulfillment"
+    is not a new rule, it's the one that already exists.
+  - **Bug found and fixed while wiring this up:** `InMemoryStore.cancel_job` compared the caller's
+    `current_status` against the `_job_status` overlay dict directly, which has no entry for a
+    `draft` job — the same "`jobs.status` is never actually unset" divergence already fixed once
+    today in `get_dispatch_authorization_context_by_reference`. Fixed identically: fall back to the
+    ticket's own `TicketStatus` when no dispatch-lifecycle status has been set, matching
+    `PostgresStore`'s real column behavior. No existing caller was affected (`/t/{token}/cancel`
+    already 404s on a `draft` job earlier, via `get_job_lifecycle` returning `None` — it never
+    reached `cancel_job` with `current_status="draft"` before).
+- **`GET .../{id}`'s coarse status vocabulary** (`received | authorized | completed | cancelled`) is
+  deliberately coarser than `/tracking` — no fulfillment-step detail. It does **not** echo back the
+  submitted `service_skill`: the `Ticket` model only ever persisted the coarse `AccessType` bucket
+  `_access_type_for_skill` maps onto (a known, documented lossy approximation from the creation
+  endpoint), and returning that back mislabeled as the original skill would be dishonest rather than
+  privacy-minimized. Omitted rather than faked.
+- **Idempotent cancellation:** an already-`cancelled` request returns the same success shape
+  (`{status: "cancelled"}`) rather than re-running `cancel_job` (which would no-op/409 on a status
+  mismatch) or erroring — checked explicitly before attempting the write.
+- **Audited:** every read/tracking/cancel call writes an `external_api_events` row
+  (`service_requests.read` / `.tracking` / `.cancel`), the same mechanism every other `/v1` action
+  uses.
+- **Explicitly not touched:** payments, private-to-network overflow, automatic re-offer, any
+  MCP/ChatGPT/Claude/Gemini/Siri adapter — none of these three endpoints have a code path near any
+  of them.

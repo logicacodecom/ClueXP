@@ -4452,6 +4452,7 @@ async def public_v1_create_service_request(
     origin = {
         "origin_org_id": org_id,
         "customer_owner_org_id": org_id,
+        "origin_client_id": client_id,
         "customer_name": ticket.customer_name,
         "customer_phone": ticket.customer_phone,
     }
@@ -4666,12 +4667,204 @@ async def public_v1_authorize_dispatch(
     )
 
 
+# --- GET /v1/service-requests/{id}, GET .../tracking, POST .../cancellations ---
+# Ownership: private_partner -> caller's organization_id must equal the job's
+# customer_owner_org_id. network -> caller must be the creating client
+# (origin_client_id), the authorizing client (authorized_by_client_id), or a
+# client_type='internal' platform client. Mismatch/not-found both 404 --
+# existence-hiding, matching require_intake_ticket's convention -- never a 403
+# that would confirm a reference exists but belongs to someone else.
+_PUBLIC_STATUS_COMPLETED = {STATUS_COMPLETED_CONFIRMED, STATUS_COMPLETED_AUTO_CLOSED, STATUS_NO_SHOW}
+
+
+def _public_service_request_status(internal_status: str) -> str:
+    """Coarse external vocabulary, intentionally coarser than /tracking: no
+    fulfillment-step detail (en_route/arrived/etc. all collapse to
+    'authorized')."""
+    if internal_status == "draft":
+        return "received"
+    if internal_status == STATUS_CANCELLED:
+        return "cancelled"
+    if internal_status in _PUBLIC_STATUS_COMPLETED:
+        return "completed"
+    return "authorized"
+
+
+async def _require_public_service_request_context(
+    request_id: str, client: dict[str, Any], req_id: str,
+) -> dict[str, Any]:
+    ctx = await store.get_dispatch_authorization_context_by_reference(request_id)
+    if ctx is None:
+        raise public_api_error(404, "service_request_not_found", req_id)
+    owner_org_id = ctx.get("customer_owner_org_id")
+    if owner_org_id:
+        allowed = str(client.get("organization_id") or "") == str(owner_org_id)
+    else:
+        caller_id = str(client["id"])
+        allowed = (
+            client.get("client_type") == "internal"
+            or caller_id == str(ctx.get("origin_client_id") or "")
+            or caller_id == str(ctx.get("authorized_by_client_id") or "")
+        )
+    if not allowed:
+        raise public_api_error(404, "service_request_not_found", req_id)
+    return ctx
+
+
+class PublicServiceRequestDetail(BaseModel):
+    request_reference: str
+    dispatch_scope: str
+    status: str
+    created_at: str | None = None
+
+
+class PublicServiceRequestDetailResponse(BaseModel):
+    data: PublicServiceRequestDetail
+    meta: PublicApiMeta
+
+
+async def require_public_service_requests_read(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "service_requests:read")
+
+
+@app.get("/v1/service-requests/{request_id}", response_model=PublicServiceRequestDetailResponse)
+async def public_v1_get_service_request(
+    request_id: str,
+    request: Request,
+    response: Response,
+    context: dict[str, Any] = Depends(require_public_service_requests_read),
+) -> PublicServiceRequestDetailResponse:
+    req_id = context["request_id"]
+    response.headers["X-Request-ID"] = req_id
+    ctx = await _require_public_service_request_context(request_id, context["client"], req_id)
+    dispatch_scope = "private_partner" if ctx.get("customer_owner_org_id") else "network"
+    await store.record_external_api_event(
+        client_id=context["client"]["id"], api_key_id=context["api_key"]["id"],
+        action="service_requests.read", path=request.url.path, status_code=200,
+        request_id=req_id, ip=_request_ip(request), metadata={"dispatch_scope": dispatch_scope},
+    )
+    return PublicServiceRequestDetailResponse(
+        data=PublicServiceRequestDetail(
+            request_reference=request_id, dispatch_scope=dispatch_scope,
+            status=_public_service_request_status(ctx["status"]),
+        ),
+        meta=PublicApiMeta(request_id=req_id),
+    )
+
+
+@app.get("/v1/service-requests/{request_id}/tracking")
+async def public_v1_service_request_tracking(
+    request_id: str,
+    request: Request,
+    response: Response,
+    context: dict[str, Any] = Depends(require_public_service_requests_read),
+) -> dict[str, Any]:
+    """Reuses the exact customer-safe dispatch state machine
+    (`store.get_dispatch_status`) the internal `/tickets/{id}/tracking`
+    already uses -- technician identity is revealed only at `matched`, never
+    earlier, by construction (one function, not two that could drift)."""
+    req_id = context["request_id"]
+    response.headers["X-Request-ID"] = req_id
+    ctx = await _require_public_service_request_context(request_id, context["client"], req_id)
+    job_id = UUID(ctx["job_id"])
+    try:
+        status = await store.get_dispatch_status(
+            job_id, max_attempts=config.MAX_REDISPATCH_ROUNDS,
+            total_timeout_seconds=config.TOTAL_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        status = {"state": "error", "terminal": False, "assignment": None}
+    if status is None:
+        raise public_api_error(404, "service_request_not_found", req_id)
+    _mask_customer_service_appointment(status)
+    await store.record_external_api_event(
+        client_id=context["client"]["id"], api_key_id=context["api_key"]["id"],
+        action="service_requests.tracking", path=request.url.path, status_code=200,
+        request_id=req_id, ip=_request_ip(request), metadata={"state": status.get("state")},
+    )
+    return {"data": status, "meta": {"request_id": req_id, "api_version": "v1"}}
+
+
+class PublicServiceRequestCancellationRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_min_length(cls, v: str) -> str:
+        if len(v.strip()) < 3:
+            raise ValueError("reason must be at least 3 characters")
+        return v.strip()
+
+
+class PublicServiceRequestCancellationResult(BaseModel):
+    request_reference: str
+    status: str
+
+
+class PublicServiceRequestCancellationResponse(BaseModel):
+    data: PublicServiceRequestCancellationResult
+    meta: PublicApiMeta
+
+
+async def require_public_service_requests_cancel(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "service_requests:cancel")
+
+
+@app.post(
+    "/v1/service-requests/{request_id}/cancellations",
+    response_model=PublicServiceRequestCancellationResponse,
+)
+async def public_v1_cancel_service_request(
+    request_id: str,
+    request: Request,
+    response: Response,
+    payload: PublicServiceRequestCancellationRequest,
+    context: dict[str, Any] = Depends(require_public_service_requests_cancel),
+) -> PublicServiceRequestCancellationResponse:
+    """Idempotent: an already-cancelled request returns the same success
+    shape rather than erroring. Gate: draft (never authorized, nothing to
+    undo) or the existing customer-cancel window (pending_dispatch through
+    en_route) -- blocked once fulfillment is too far along, exactly matching
+    the existing customer-facing cancel rule."""
+    req_id = context["request_id"]
+    response.headers["X-Request-ID"] = req_id
+    ctx = await _require_public_service_request_context(request_id, context["client"], req_id)
+    current_status = ctx["status"]
+    job_id = UUID(ctx["job_id"])
+
+    if current_status == STATUS_CANCELLED:
+        result_status = "cancelled"
+    else:
+        if not (current_status == "draft" or can_customer_cancel(current_status)):
+            raise public_api_error(
+                409, "not_cancellable", req_id,
+                detail="This service request is too far into fulfillment to cancel.",
+            )
+        updated = await store.cancel_job(job_id, current_status=current_status, reason=payload.reason)
+        if updated is None:
+            raise public_api_error(409, "status_changed_concurrently", req_id)
+        result_status = "cancelled"
+
+    await store.record_external_api_event(
+        client_id=context["client"]["id"], api_key_id=context["api_key"]["id"],
+        action="service_requests.cancel", path=request.url.path, status_code=200,
+        request_id=req_id, ip=_request_ip(request), metadata={"reason": payload.reason},
+    )
+    return PublicServiceRequestCancellationResponse(
+        data=PublicServiceRequestCancellationResult(
+            request_reference=request_id, status=result_status,
+        ),
+        meta=PublicApiMeta(request_id=req_id),
+    )
+
+
 # --- Admin: external API client / key lifecycle (platform_admin only) ---
 # Narrow provisioning surface, not partner self-service. A manual store call
 # (as the tests use) is fine while there are 0-1 real external clients; this
 # is the "safe operational habit" step before that stops being true.
 KNOWN_PUBLIC_API_SCOPES = {
     "services:read", "coverage:check", "service_requests:write", "service_requests:authorize",
+    "service_requests:read", "service_requests:cancel",
 }
 
 

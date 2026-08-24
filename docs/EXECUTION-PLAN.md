@@ -49,7 +49,7 @@
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
-| Public Platform API | `[~]` | Foundation through Tier 2 network routing is merged and production-applied through `0058_governance_entity_types`: external clients/API keys, scoped `GET /api/v1/services`, `POST /v1/service-requests`, `POST /v1/service-requests/{id}/dispatch-authorizations` (private_partner queue-only fork + Network Router MVP for network scope), platform-admin external-client/key provisioning, audit events, and Postgres-backed rate-limit tables. **Schema is applied; no real external client has been created and no real network offer has been triggered in production** — this is migration/apply verification only, not a launch. Partner-facing UI, real client onboarding, provider eligibility/ranking economics beyond the MVP, automatic re-offer, private-to-network overflow, and payments remain deferred |
+| Public Platform API | `[~]` | Foundation through Tier 2 network routing is merged and production-applied through `0058_governance_entity_types`: external clients/API keys, scoped `GET /api/v1/services`, `POST /v1/service-requests`, `POST /v1/service-requests/{id}/dispatch-authorizations` (private_partner queue-only fork + Network Router MVP for network scope), platform-admin external-client/key provisioning, audit events, and Postgres-backed rate-limit tables. A controlled synthetic production proof run (2026-08-23) exercised the full vertical slice end-to-end against real production, then fully cleaned up — no real customers/providers were involved and nothing synthetic remains. `GET /v1/service-requests/{id}`, `GET .../tracking`, `POST .../cancellations` are code-complete (migration `0059` added, **not yet applied to any database**) — read/tracking/cancel with ownership enforcement for both `private_partner` and `network` scope. Partner-facing UI, real client onboarding, provider eligibility/ranking economics beyond the MVP, automatic re-offer, private-to-network overflow, payments, and any MCP/ChatGPT/Claude/Gemini/Siri adapter remain deferred |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
@@ -74,12 +74,15 @@ constraint the Network Router's routing-decision audit and the external-client p
 both need — the latter was live on `main` since `abb252e` without this fix and would have failed on
 every real admin-provisioning action against production).
 
-Current repository migration head: **`0058_governance_entity_types`**. Adds the Tier 2 Network
-Router MVP's `POST /v1/service-requests/{id}/dispatch-authorizations` (private_partner
-queue-only fork; network fork runs deterministic eligibility+ranking and sends at most one offer via
-the existing `_send_targeted_offer(dispatch_org_id=None)` seam, no auto re-offer) and the
-external-client/key admin provisioning surface (`/admin/external-clients/*`, platform_admin only).
-Production application was completed 2026-08-23 after explicit migration authorization.
+Current repository migration head: **`0059_job_origin_client`** (**not yet applied to any
+database** — production remains at `0058_governance_entity_types`, applied 2026-08-23 after
+explicit migration authorization). `0058` and earlier: the Tier 2 Network Router MVP's `POST
+/v1/service-requests/{id}/dispatch-authorizations` (private_partner queue-only fork; network fork
+runs deterministic eligibility+ranking and sends at most one offer via the existing
+`_send_targeted_offer(dispatch_org_id=None)` seam, no auto re-offer) and the external-client/key
+admin provisioning surface (`/admin/external-clients/*`, platform_admin only). `0059` adds
+`jobs.origin_client_id` (ADR-8) for `GET /v1/service-requests/{id}`, `GET .../tracking`, `POST
+.../cancellations` — code-complete, pending explicit production authorization.
 
 ## Product Backlog & Release Map
 

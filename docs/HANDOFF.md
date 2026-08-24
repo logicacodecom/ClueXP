@@ -62,6 +62,97 @@
 
 ## Open threads
 
+### 2026-08-23 — Claude: service-request read/tracking/cancel endpoints implemented, per plan above
+
+Implemented exactly per the plan below (no scope drift). Nothing applied to
+any database — `0059` is committed but not authorized for apply yet.
+
+**Migration `0059_job_origin_client`**: `jobs.origin_client_id uuid
+references external_clients(id)` + index. Threaded through `store.save`
+(both stores) via the existing `origin` dict; `/v1/service-requests` now
+passes `origin_client_id=client_id` always (both `private_partner` and
+`network`). Also added to the legacy runtime self-heal DDL
+(`alter table jobs add column if not exists origin_client_id uuid`),
+matching the existing `fulfillment_org_id` pattern, in case the live API
+boots before the migration runs.
+
+**`get_dispatch_authorization_context_by_reference`** (both stores)
+extended to also return `origin_client_id` and `authorized_by_client_id`
+(the latter via a `LEFT JOIN service_request_dispatch_authorizations` on
+Postgres) — reused across all three new endpoints plus the existing
+`dispatch-authorizations` endpoint, no duplicate lookup logic.
+
+**Three endpoints, all under `/v1/service-requests/{request_id}`:**
+- `GET` (scope `service_requests:read`): `{request_reference, dispatch_scope,
+  status, created_at}`. `status` collapses internal dispatch status to
+  `received | authorized | completed | cancelled` — no fulfillment-step
+  detail. Deliberately does not echo back `service_skill` (see plan below
+  for why — the persisted `AccessType` bucket isn't the same thing).
+- `GET .../tracking` (same scope): calls `store.get_dispatch_status`
+  unchanged — the identical function `/tickets/{id}/tracking` uses.
+- `POST .../cancellations` (scope `service_requests:cancel`): calls
+  `store.cancel_job` unchanged. Idempotent (already-cancelled → same success
+  shape). Requires `reason` (≥3 chars).
+
+**Ownership** (`_require_public_service_request_context`, shared across all
+three): `private_partner` → caller's `organization_id` must match
+`customer_owner_org_id`. `network` → caller must be the creator
+(`origin_client_id`), the authorizer (`authorized_by_client_id`), or
+`client_type='internal'`. Mismatch/not-found both `404` — matches
+`require_intake_ticket`'s existence-hiding convention (deliberately not
+touching `dispatch-authorizations`' existing `403` for its own
+`private_partner` mismatch — that shipped before this ADR, out of scope to
+revise without cause).
+
+**A second instance of today's recurring bug class, found and fixed while
+wiring the cancel endpoint:** `InMemoryStore.cancel_job` compared
+`current_status` against the `_job_status` overlay dict directly — which has
+no entry for a `draft` (never-authorized) job, exactly the same "`jobs.status`
+is never actually unset" divergence from `PostgresStore` fixed once already
+today in `get_dispatch_authorization_context_by_reference`. Fixed the same
+way: fall back to the ticket's own `TicketStatus` when no dispatch-lifecycle
+status has been set. Verified no existing caller was affected —
+`/t/{token}/cancel` already 404s on a `draft` job earlier via
+`get_job_lifecycle` returning `None`, so it never reached `cancel_job` with
+`current_status="draft"` before this endpoint existed. Caught by a failing
+local test, not by CI this time — the InMemory suite runs first and is
+fast to iterate on.
+
+**Also fixed while updating docs:** `EXECUTION-PLAN.md`'s Public API status
+line still said "no real external client has been created... in production,"
+stale since the controlled synthetic proof run (entry further below)
+already did exactly that, then cleaned up. Corrected.
+
+Verification:
+- `pytest api/tests -q --ignore=api/tests/test_postgres_security.py` →
+  `474 passed, 1 skipped` (+5 new tests: scope/ownership gating for GET,
+  authorizing-client-can-read, tracking reuse + ownership, idempotent
+  cancel, and fulfillment-stage cancel gate).
+- `test_postgres_security.py` → extended the existing dispatch-authorization
+  context test with `origin_client_id`/`authorized_by_client_id` assertions,
+  plus one new full HTTP smoke test
+  (`test_smoke_service_request_read_tracking_and_cancel_lifecycle`) covering
+  the whole read→tracking→cancel→idempotent-recancel flow against real
+  Postgres, including the cross-client denial. Not run locally (no
+  `POSTGRES_TEST_URL`), self-skips cleanly (11, up from 10), will run in CI.
+- `python -m py_compile`, `npx tsc --noEmit`, `scripts/generate_types.py`
+  (no diff), `alembic upgrade head --sql` (clean through `0059`),
+  `test_rls_schema_guard.py` (passes — no new table, nothing to register) →
+  all clean.
+- `scripts/export_openapi_v1.py` re-run → snapshot now has 7 `/v1` paths.
+
+Files changed/added: `apps/intake-web/api/main.py`,
+`apps/intake-web/api/store.py`,
+`apps/intake-web/api/tests/test_public_api_foundation.py`,
+`apps/intake-web/api/tests/test_postgres_security.py`,
+`packages/db/alembic/versions/0059_job_origin_client.py` (new),
+`docs/SYSTEM-DESIGN.md` (ADR-8, §13 endpoint table),
+`docs/EXECUTION-PLAN.md`, `docs/HANDOFF.md` (this entry).
+
+**No production DDL applied — `0059` needs explicit authorization for
+staging/prod apply, separately from this code review, per standing rule.**
+— Claude
+
 ### 2026-08-23 — Claude: plan for the remaining service-request lifecycle endpoints (posted before coding)
 
 Human's next slice: `GET /v1/service-requests/{id}`, `GET
