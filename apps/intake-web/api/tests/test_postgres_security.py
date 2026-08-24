@@ -411,10 +411,9 @@ def test_smoke_network_authorization_sends_at_most_one_offer_and_never_auto_rero
             )
 
     asyncio.run(seed_technician())
-    write_key = _issue_pg_key(store, ["service_requests:write"])
-    auth_key = _issue_pg_key(store, ["service_requests:authorize"])
+    website_key = _issue_pg_key(store, ["service_requests:write", "service_requests:authorize"])
 
-    created = client.post("/v1/service-requests", headers={"X-API-Key": write_key}, json={
+    created = client.post("/v1/service-requests", headers={"X-API-Key": website_key}, json={
         "dispatch_scope": "network",
         "service_skill": "locksmith.residential_lockout",
         "location": {"lat": 40.001, "lng": -73.001, "raw_text": "smoke test address"},
@@ -425,8 +424,8 @@ def test_smoke_network_authorization_sends_at_most_one_offer_and_never_auto_rero
 
     authorized = client.post(
         f"/v1/service-requests/{reference}/dispatch-authorizations",
-        headers={"X-API-Key": auth_key},
-        json={"channel": "ai_agent_adapter", "evidence_reference": "smoke-test", "terms_version": "v1"},
+        headers={"X-API-Key": website_key},
+        json={"channel": "first_party_website", "evidence_reference": "smoke-test", "terms_version": "v1"},
     )
     assert authorized.status_code == 200, authorized.text
     assert authorized.json()["data"]["routing_outcome"] == "offer_sent"

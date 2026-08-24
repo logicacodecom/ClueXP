@@ -462,7 +462,7 @@ Customer affordances are driven by `customer_actions(status)`:
 
 ### 7.1 Where Migrations Live
 
-`packages/db/` — Alembic migrations. **Current repository head: `0058_governance_entity_types`; current production head: `0058_governance_entity_types`** (`0058` was applied to production 2026-08-23 after explicit authorization and verified in `docs/HANDOFF.md`). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM; `0054` alert escalation; `0055` default-deny RLS closure; `0056` public API external client foundation; `0057` dispatch authorization evidence; `0058` governance-event entity type widening.
+`packages/db/` — Alembic migrations. **Current repository and verified production head: `0059_job_origin_client`** (`0059` was applied to production 2026-08-24 after explicit authorization and verified in `docs/HANDOFF.md`). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM; `0054` alert escalation; `0055` default-deny RLS closure; `0056` public API external client foundation; `0057` dispatch authorization evidence; `0058` governance-event entity type widening; `0059` external-client request ownership.
 
 The `PostgresStore.startup()` method in `store.py` also runs `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS` guards so the API boots cleanly even if a migration is behind.
 
@@ -923,9 +923,14 @@ Supabase Storage. Managed in `api/storage.py`.
 All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
 
 ### Public Platform API (`0056`–`0059` production-applied, 2026-08-23/24)
-The versioned public façade is implemented under backend path `/v1/...`, which is served as
-`/api/v1/...` through the existing Vercel `/api` prefix. `api.cluexp.com` DNS/routing remains
-deferred. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
+The versioned public façade is implemented under backend path `/v1/...`, reachable directly (not just
+via the legacy `/api/v1/...` alias) through `apps/intake-web/vercel.json` rewrites. `api.cluexp.com`
+is the canonical hostname and is already attached to the same Vercel project as `intake.cluexp.com`;
+a host-aware gate in `api/main.py` (`config.API_ONLY_HOSTNAMES`) restricts that hostname to `/v1/*`
+only, opaque-404ing the website and internal `/api/*` routes. Production env activation
+(`TRUSTED_HOSTS`, `ALLOWED_ORIGINS`, deploy) is still pending Human authorization (see
+`API-HOSTNAME-ROLLOUT.md`). External clients
+authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
 Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundation tables are
 `external_clients`, `external_api_keys`, `external_api_events`,
 `external_api_idempotency_keys`, and `external_api_rate_limits` (`0056`); plus
@@ -938,12 +943,6 @@ read/tracking/cancel endpoints' `network`-scope ownership check (ADR-8). Applied
 0059_job_origin_client`, the column and its index exist, all 62 public tables retain
 `relrowsecurity = true`, and `/api/healthz` returns `200` post-apply.
 
-Production `alembic_version` is `0058_governance_entity_types` as of 2026-08-23 (applied via
-Supabase MCP after CI went green; migration/apply verification only — no real external client was
-created and no real network offer was triggered as part of the apply). Note: the DB schema is ahead
-of the currently-deployed app code — this apply prepares the schema the code on `main` needs; it
-does not itself deploy that code.
-
 Every `/v1` error response (auth, scope, rate limit, validation, or unhandled) uses one documented
 envelope — `{ error, request_id, detail? }` — regardless of route, so an external client parses one
 contract instead of per-route ad hoc bodies. Idempotency is supported gateway-wide for
@@ -955,9 +954,9 @@ key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flig
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `GET` | `/v1/services` | external API key, `services:read` scope | Public active service taxonomy envelope `{ data, meta }`; audits success/failure and enforces a Postgres-backed per-client rate limit |
-| `POST` | `/v1/coverage-checks` | external API key, `coverage:check` scope | Pure read: does the verified network have an available, skilled technician within range of `{lat, lng, service_skill}`? Returns only an aggregate `{ covered: bool, service_skill }` — never a technician identity, roster, or count. No ticket/job is created; no dispatch is triggered. Supports `Idempotency-Key`. |
+| `POST` | `/v1/coverage-checks` | external API key, `coverage:check` scope | Pure read through the same Network Router eligibility used at authorization: does an active/capable provider (or eligible unaffiliated technician) have an available, skilled technician within range of `{lat, lng, service_skill}`? Returns only `{ covered: bool, service_skill }` — never identity, roster, or count. No job or offer is created. Supports `Idempotency-Key`. |
 | `POST` | `/v1/service-requests` | external API key, `service_requests:write` scope | Creates a canonical service request per ADR-6's `dispatch_scope` (`private_partner` requires an API client bound to a partner `organization_id`; `network` requires none). Returns `{ request_reference, dispatch_scope, status: "received" }` — never the raw job UUID. Requires `consent.terms_accepted=true` at creation. **Never sets `job_status` to `pending_dispatch`** — invisible to the ops queue and dispatch sweep until authorized. Supports `Idempotency-Key`. |
-| `POST` | `/v1/service-requests/{request_id}/dispatch-authorizations` | external API key, `service_requests:authorize` scope | Explicit dispatch authorization gate (ADR-7). `private_partner`: requires the caller's `organization_id` to match the request's owner (403 otherwise), then only sets `job_status=pending_dispatch` — the job enters the owning org's existing `/provider/queue`, no new routing logic. `network`: also sets `pending_dispatch`, then runs the Network Router MVP and, on a selection, sends exactly one offer via the existing `_send_targeted_offer(dispatch_org_id=None)`. `job_id` is unique in `service_request_dispatch_authorizations` — the atomic idempotency gate (a second call is `409 already_authorized`). Already-non-inert requests (assigned/cancelled/completed/previously authorized) are `409 not_in_receivable_state`. Returns `{ request_reference, dispatch_scope, status: "authorized", routing_outcome? }` — `routing_outcome` (`offer_sent` \| `no_eligible_provider`) only for `network`; never a technician identity. |
+| `POST` | `/v1/service-requests/{request_id}/dispatch-authorizations` | external API key, `service_requests:authorize` scope | Explicit dispatch authorization gate (ADR-7). `private_partner`: requires the caller's `organization_id` to match the request's owner (403 otherwise), then only sets `job_status=pending_dispatch`. `network`: requires the creating client (or an internal Platform client), sets `pending_dispatch`, then runs the Network Router MVP and sends at most one offer through the existing `_send_targeted_offer(dispatch_org_id=None)`. `job_id` is unique in `service_request_dispatch_authorizations`, the atomic idempotency gate. Returns `{ request_reference, dispatch_scope, status: "authorized", routing_outcome? }`; never a technician identity. |
 | `GET` | `/v1/service-requests/{request_id}` | external API key, `service_requests:read` scope | Privacy-minimized detail read: `{ request_reference, dispatch_scope, status, created_at }`. `status` is a **coarse public vocabulary** (`received \| authorized \| completed \| cancelled`) collapsed from internal dispatch status — no fulfillment-step detail. Ownership-gated (ADR-8); mismatch/not-found both `404`. |
 | `GET` | `/v1/service-requests/{request_id}/tracking` | external API key, `service_requests:read` scope | Reuses `store.get_dispatch_status` **unchanged** — the identical customer-safe state machine `/tickets/{id}/tracking` already uses. Technician identity revealed only at `matched`, never earlier, by construction (one function, not a second one that could drift). |
 | `POST` | `/v1/service-requests/{request_id}/cancellations` | external API key, `service_requests:cancel` scope | Reuses `store.cancel_job` unchanged (atomic, revokes outstanding offers). Cancellable while `draft` (never authorized) or within the existing customer-cancel window (`pending_dispatch` through `en_route`); `409 not_cancellable` once too far into fulfillment (`arrived` onward). **Idempotent** — an already-cancelled request returns the same success shape rather than erroring. Requires a `reason` (min 3 chars). |
@@ -1558,10 +1557,11 @@ Phase 1 (`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` §8) requires a reviewed `/v1` con
 business-logic (network routing, real service-request creation) is added to the public surface.
 This ADR freezes the contract shape only; it authorizes no new dispatch/business logic.
 
-- **Namespace/versioning:** `/v1/...` is the sole public namespace (served as `/api/v1/...` behind
-  Vercel's existing `/api` prefix; `api.cluexp.com` DNS remains deferred, per ADR-4's existing
-  `/v1` decision). A future breaking change gets `/v2`; `/v1` routes never change response shape
-  in place.
+- **Namespace/versioning:** `/v1/...` is the sole public namespace, reachable directly and via the
+  legacy `/api/v1/...` alias behind Vercel's existing `/api` prefix; `api.cluexp.com` is attached to
+  the same Vercel project and repository-routed to `/v1/*` only (production env/deploy activation
+  pending, see `API-HOSTNAME-ROLLOUT.md`), per ADR-4's existing `/v1` decision. A future breaking
+  change gets `/v2`; `/v1` routes never change response shape in place.
 - **Error envelope — one shape, every `/v1` route:** `{ error: string, request_id: string, detail?:
   string }`, **flat, never nested under a `detail` key.** Applies uniformly to
   401/403/404/409/422/429/500 — validation errors, `HTTPException`s raised via `public_api_error()`
@@ -1707,6 +1707,12 @@ Tier 2 decision (Human, conservative/manual defaults) — implemented by
   `begin_or_get_technician_mutation`. A job that already has any `job_status` set (assigned,
   cancelled, completed, or previously authorized) is separately rejected before that insert is even
   attempted (`409 not_in_receivable_state`).
+- **Website contract hardening (2026-08-24):** coverage now calls the same provider-eligibility
+  Router path as authorization, so a suspended or non-capable affiliated provider cannot yield
+  `covered=true` and then be rejected immediately by routing. Network authorization also requires
+  the creating client (or an internal Platform client); an unrelated scoped client receives the
+  same existence-hiding `404` used by the read/tracking/cancel boundary. These are corrections to
+  the accepted ownership/eligibility invariants, not new routing or product policy.
 - **Explicitly not built, per the Human's guardrails:** private-to-network overflow, payments,
   dynamic pricing, bidding, ML ranking, AI-adapter logic, any platform/ops assignment UI.
 

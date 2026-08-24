@@ -62,6 +62,208 @@
 
 ## Open threads
 
+### 2026-08-24 — Claude: `api.cluexp.com` repository routing (Vercel-native, no edge/gateway)
+
+Product Owner attached `api.cluexp.com` directly to the existing `cluexp-intake` Vercel project
+(same project as `intake.cluexp.com`); verified `https://api.cluexp.com/api/v1/services` already
+reaches FastAPI (`401 missing_api_key`), TLS is live, Cloudflare DNS is `CNAME api -> ...vercel-dns...`
+(DNS-only). This supersedes the "external edge/gateway allowlist" plan in Codex's thread above —
+routing is instead repository-native since both hostnames share one Vercel project. Rewrote
+`docs/API-HOSTNAME-ROLLOUT.md` accordingly; the release-check contract (401/200/404s) is unchanged.
+
+**Implemented (repository only — no deploy, no DNS/domain/TLS/WAF change):**
+- `apps/intake-web/vercel.json`: host-conditioned rewrite (`has: [{type: host, value: api.cluexp.com}]`)
+  sends every path on that host to the existing Python function; a second rule makes `/v1/*` reachable
+  directly (not only via legacy `/api/v1/*`) on every host, for local dev too.
+- `api/config.py` + `api/main.py`: `TRUSTED_HOSTS` (env, default `["*"]` — never breaks local/tests)
+  drives a new `enforce_trusted_hosts` middleware (`400` on unrecognized `Host`); `API_ONLY_HOSTNAMES`
+  (env, default `api.cluexp.com`) drives `restrict_api_only_hostnames` (opaque JSON `404` for any
+  non-`/v1` path on a facade host — this is what actually hides the website/internal `/api/*`, since
+  the Vercel rewrite alone would otherwise expose them). `ALLOWED_ORIGINS` (CORS) now fails closed in
+  production: unset/empty + `IS_PRODUCTION` → `[]`, never a wildcard fallback (dev keeps the `["*"]`
+  default for convenience). Used a hand-rolled per-request host check rather than Starlette's
+  `TrustedHostMiddleware` because that middleware freezes `allowed_hosts` at construction time, which
+  is both untestable via monkeypatch and unresponsive to a config reload story.
+- Added tests for all of the above (hostname facade hides `/` and `/api/*` but serves `/v1`, unaffected
+  on other hosts, trusted/untrusted host accept/reject, unset-default permissiveness, CORS
+  missing/empty/explicit × prod/dev) plus a `/v1` vs legacy `/api/v1` reachability parity test.
+- Added `servers` (canonical `https://api.cluexp.com/v1`, legacy `https://intake.cluexp.com/api/v1`)
+  to `scripts/export_openapi_v1.py` and regenerated `docs/openapi-v1-snapshot.json`. Corrected the
+  now-stale "DNS/edge activation pending" framing in `PUBLIC-API-DEVELOPER-GUIDE.md` and
+  `SYSTEM-DESIGN.md` §13/§20.5 to describe the Vercel-native routing above.
+- MCP server (`apps/cluexp-mcp-server`) and Website integration required **no change** — the MCP
+  client already takes `CLUEXP_API_BASE_URL` with no hardcoded host, and the Website repo is out of
+  scope (not touched).
+
+**Verification:** focused test file `apps/intake-web/api/tests/test_public_api_foundation.py`
+`42 passed`; full non-Postgres suite `api/tests -k "not postgres"` `469 passed`; OpenAPI
+`--check` clean; `vercel.json` valid JSON; `python -m py_compile` clean on changed files. Postgres
+tests **not run** — `POSTGRES_TEST_URL` is unset locally; CI remains the required Postgres gate. No
+migration, DDL, deploy, DNS, domain, TLS, or WAF change was made.
+
+**Risks / unresolved:** (1) `restrict_api_only_hostnames` currently 404s the Vercel/ACME domain
+validation paths too if Vercel ever needs a non-`/v1` HTTP-01 challenge path on `api.cluexp.com` —
+unlikely (TLS is already issued and DNS-only per Cloudflare), but worth a smoke check on the first
+real deploy. (2) `ALLOWED_ORIGINS` production fail-closed means the Website's browser cannot call
+`api.cluexp.com` directly unless/until an explicit origin is configured — intended, since the roadmap
+says the Website should use a server-side BFF, not direct browser CORS.
+
+**Next action for Codex/Human:** review this diff against the frozen architecture, then (only after
+review) authorize the manual rollout checklist in `docs/API-HOSTNAME-ROLLOUT.md` — set
+`TRUSTED_HOSTS`/`ALLOWED_ORIGINS`/`API_ONLY_HOSTNAMES` on the Vercel project, deploy, and run the
+release checks before pointing the Website BFF at the new hostname.
+
+**Update 2026-08-24 (Codex review response) — 10 findings fixed, no infra/deploy change:**
+
+1. **OpenAPI URL composition bug** — exported `servers` already ended in `/v1`/`/api/v1`, but exported
+   path keys also started with `/v1`, resolving to `.../v1/v1/services`. Fixed
+   `scripts/export_openapi_v1.py` (`_strip_v1_prefix`) to strip the leading `/v1` from path keys;
+   regenerated `docs/openapi-v1-snapshot.json` (now has `/services`, not `/v1/services`). Added
+   `api/tests/test_openapi_export.py`: pins `_strip_v1_prefix`, resolves the `services` operation to
+   exactly `https://api.cluexp.com/v1/services`, and asserts the *committed snapshot* (not just the
+   function) resolves correctly.
+2. **Missing local-dev `/v1` rewrite** — added `{"source": "/v1/:path*", "destination":
+   "${localApiBase}/v1/:path*"}` to `next.config.mjs`, alongside the existing `/api/:path*` rule.
+3. **Loose `/v1` boundary check** — `restrict_api_only_hostnames` used `startswith("/v1")`, which
+   wrongly admits `/v10` or `/v1evil`. Replaced with the existing exact-boundary helper
+   `_is_public_api_path` (`path == "/v1" or path.startswith("/v1/")`), moved earlier in `main.py` so
+   both the facade gate and the error-envelope logic share one definition. Added parametrized tests
+   for `/v10`, `/v1evil`, `/v1evil/services` — all correctly 404 through the gate.
+4. **Vercel/ACME validation paths — resolved by research, not speculation.** Vercel's own docs
+   ([Working with SSL Certificates](https://vercel.com/docs/domains/working-with-ssl),
+   [Troubleshooting domains](https://vercel.com/docs/domains/troubleshooting)) confirm: non-wildcard
+   domains use ACME HTTP-01, intercepted by Vercel's platform *before* project routing, and
+   `/.well-known/*` is a reserved path that project rewrites cannot touch. No repository exception
+   is needed or was made; documented verified behavior (with citations) in
+   `docs/API-HOSTNAME-ROLLOUT.md`.
+5. **CORS preflight integration tests** — added real `OPTIONS` preflight requests through an actual
+   `CORSMiddleware` instance (not just asserting on the helper's return value): approved origin (200
+   + matching `Access-Control-Allow-Origin`), denied origin (400, header absent), production
+   missing/empty config (400, header absent), dev default (200, `*`).
+6. **Fragile Host parsing** — replaced `header.split(":")[0]` with `request.url.hostname` (Starlette's
+   own URL parsing), which correctly handles a port (`host:443`) and an IPv6 literal (`[::1]:8000` ->
+   `::1`). Added tests for both.
+7. **Untrusted-host rejection on `/v1` now uses the public envelope** — `enforce_trusted_hosts` returns
+   `{"error": "untrusted_host", "request_id": ..., "detail": ...}` with a matching `X-Request-ID`
+   header for `/v1/*` and the legacy `/api/v1/*` alias; internal (non-`/v1`) paths keep the plain
+   `{"detail": ...}` shape since they're not part of the public contract. Added tests for the `/v1`
+   envelope, the `/api/v1` alias, and confirmation that internal paths still get the plain shape.
+8. **Middleware-order comment** — corrected (see the 2nd Codex-review round below: this round's
+   documented order was itself still wrong; the actual verified order is the reverse).
+9. **`docs/API-HOSTNAME-ROLLOUT.md` corrections** — status line now says DNS/domain/TLS are already
+   active and only repository deploy/env activation is pending (was ambiguous); rollback section no
+   longer suggests domain detachment as a routine step (reworded: routine rollback is client-side
+   only, detaching the domain is a separate higher-impact action requiring explicit Human
+   instruction); added the verified ACME/`.well-known` section from finding 4. Also annotated the
+   stale "DNS currently has no `api.cluexp.com` record" line in Codex's thread below as superseded,
+   pointing here, rather than deleting Codex's record.
+10. **Build/config validation run** (see Verification below).
+
+**Verification (this update):**
+- `python scripts/export_openapi_v1.py --check` -> clean (exit 0).
+- `python -m py_compile` on all changed/added Python files -> clean.
+- `python -c "import json; json.load(open('vercel.json'))"` -> valid JSON (no `vercel` CLI installed
+  in this environment to run `vercel build`/`vercel dev --confirm`; JSON-schema + manual rewrite-order
+  review is the validation available here — flagged as a residual gap below).
+- `npm run build` (`next build`, Turbopack) in `apps/intake-web` -> **succeeded**, all 14 routes
+  compiled/prerendered, including `/openapi-v1.json` (serves the regenerated snapshot) and the
+  service-discovery pages. No warnings/errors from the `next.config.mjs` rewrite change.
+- `pytest api/tests -k "not postgres"` -> **499 passed**, 19 deselected (Postgres tier). Postgres
+  tests **not run** — `POSTGRES_TEST_URL` unset locally; CI remains the required Postgres gate.
+
+**Remaining risks:** (1) No `vercel` CLI available locally to run an actual `vercel build`/config
+lint — JSON validity + manual review is the ceiling of local Vercel-config validation here; recommend
+Codex or CI run `vercel build` if available before the real deploy. (2) `ALLOWED_ORIGINS` production
+fail-closed still means the Website's browser cannot call `api.cluexp.com` directly until an explicit
+origin is configured — intended (BFF model), noted again for visibility.
+
+**Update 2 2026-08-24 (2nd Codex review round) — 5 more findings fixed, one pre-deployment blocker
+recorded (not fixed, out of scope):**
+
+1. **Middleware-order comment was still wrong.** Codex ran `app.build_middleware_stack()` at runtime;
+   actual order is `restrict_api_only_hostnames -> strip_vercel_api_prefix -> enforce_trusted_hosts ->
+   CORSMiddleware` — the *reverse* of the three `@app.middleware("http")` functions' definition order
+   in `api/main.py` (and the reverse of `CORSMiddleware`'s earlier `add_middleware` call). Verified
+   this independently (`app.build_middleware_stack()` + walking `.app` down to the router) before
+   touching anything — confirmed. Root cause: Starlette's `add_middleware` inserts at the *front* of
+   its list, so the last-added/last-defined middleware ends up outermost and runs first; source order
+   and execution order are inverted by design, not by mistake. Rewrote the docstrings on all three
+   middleware functions plus a block comment above them stating the verified order and why it's
+   load-bearing (see finding 2). Removed the now-provably-dead `_is_public_api_request_path` helper —
+   `enforce_trusted_hosts` runs *after* `strip_vercel_api_prefix` in the real order, so the path it
+   sees is already normalized and the separate legacy-`/api/v1`-alias check it did was unreachable;
+   replaced with a plain `_is_public_api_path` call.
+2. **Preserved (already-correct) behavior, now tested and documented:** because
+   `restrict_api_only_hostnames` runs *before* `strip_vercel_api_prefix`, it sees the raw path, so
+   `GET /api/v1/services` with `Host: api.cluexp.com` is rejected with the opaque 404 (not silently
+   served under the legacy alias) — added
+   `test_api_only_hostname_rejects_legacy_api_v1_alias` proving exactly that, with matching
+   `X-Request-ID`. Added `test_non_facade_hostname_still_serves_legacy_api_v1_alias` proving the
+   legacy `/api/v1/*` alias keeps working on a non-facade hostname (`intake.cluexp.com`) during the
+   migration — only the `api.cluexp.com` facade restricts itself to canonical `/v1/*`.
+3. **`_strip_v1_prefix("/v1")` now returns `"/"`, not `""`.** The OpenAPI Paths Object requires every
+   key to start with `/`; `""` was invalid. `.../v1` + `/` still resolves to the correct `.../v1` root
+   (no route in this app is actually bare `/v1`, so this had no effect on the current snapshot's
+   content beyond the fixed key itself). Updated `test_strip_v1_prefix` accordingly and regenerated
+   `docs/openapi-v1-snapshot.json`.
+4. **Vercel packaging blocker recorded, not fixed.** Codex ran `npx vercel build --yes`: Next.js
+   compilation succeeded, but Vercel's packaging step failed with `Unable to find lambda for route:
+   /services/locksmith`. That route was added in commit `71dd0c1` (service/partner discovery pages),
+   predates this Platform diff entirely, and is marketing/discovery page routing — not touched by any
+   change in this thread, and explicitly out of scope for this sprint (roadmap: "Do not redesign the
+   product," "Implement Platform changes only"). **Recording this as a pre-deployment blocker
+   requiring separate diagnosis** (likely an App Router route-group/dynamic-segment vs. static-export
+   interaction for `/services/[category]`) — not resolving it here. Whoever picks it up should confirm
+   whether it reproduces in CI/a real Vercel deploy before assuming it's a local-toolchain artifact.
+5. Re-ran focused tests, `OpenAPI --check`, and `git diff --check` (see Verification below). Did not
+   deploy or commit.
+
+**Verification (update 2):**
+- `pytest api/tests/test_public_api_foundation.py api/tests/test_openapi_export.py -q` -> **61
+  passed**.
+- `pytest api/tests -k "not postgres" -q` -> **501 passed**, 19 deselected. Postgres tests **not
+  run** — `POSTGRES_TEST_URL` unset locally.
+- `python scripts/export_openapi_v1.py --check` -> clean (exit 0).
+- `python -m py_compile` on all changed files -> clean.
+- `git diff --check` -> clean (only line-ending warnings, no conflict markers/trailing whitespace
+  errors).
+- Did **not** re-run `npx vercel build --yes` myself in this environment (no `vercel` CLI installed
+  here, per the residual gap noted in update 1) — relying on Codex's run for finding 4, recorded
+  above rather than re-verified independently.
+
+**Remaining risks (update 2):** (1) The `/services/locksmith` Vercel packaging failure is unresolved
+and blocks a real deploy of *this whole project* (not just the `api.cluexp.com` work), since Vercel
+packaging is all-or-nothing per project — needs separate diagnosis before any deploy, Platform or
+otherwise. (2) Still no local `vercel` CLI to independently reproduce/bisect that failure; whoever
+diagnoses it needs Vercel CLI access or a real preview deploy. — Claude
+
+### 2026-08-24 — Codex: Website transaction contract freeze and API-hostname preparation
+
+Reconciled `CLUEXP-PLATFORM-PRODUCT-ROADMAP.md`, `SYSTEM-DESIGN.md` ADR-1–ADR-8, current migrations,
+public handlers/stores/tests, and live DNS before implementation. No architecture or migration
+change was required. Found and corrected two frozen-invariant defects: coverage now uses the same
+provider status/capability + technician eligibility path as the Network Router, and an unrelated
+scoped client can no longer authorize another client's network request. `/v1` request models now
+reject unknown fields and all `/v1` errors include the matching `X-Request-ID` header.
+
+Frozen the first Website profile around `locksmith.residential_lockout`, `dispatch_scope=network`,
+explicit `first_party_website` authorization evidence, server-side API-key use, idempotent creation,
+and scoped request/tracking reads. Corrected stale developer-guide examples and per-client rate-limit
+wording; regenerated the OpenAPI snapshot. The contract test now exercises Website creation through
+an eligible provider-affiliated technician, existing-offer acceptance, and matched tracking. Added
+`docs/API-HOSTNAME-ROLLOUT.md`: DNS currently has no
+`api.cluexp.com` record, and activation must use a `/v1`-only edge allowlist over the existing
+Platform origin rather than a broad intake-project alias. **[Superseded 2026-08-24 by Claude, below:
+the Product Owner has since attached `api.cluexp.com` to the same Vercel project as
+`intake.cluexp.com` and DNS/TLS are live — see the Claude thread above for the corrected,
+Vercel-native routing plan and the rewritten `API-HOSTNAME-ROLLOUT.md`.]**
+
+Verification: focused contract/router tests `35 passed`; full non-Postgres API suite `476 passed, 1
+skipped`; OpenAPI drift check, Python compile, migration offline render, and `git diff --check`
+passed. The 11 real-Postgres tests self-skipped locally because `POSTGRES_TEST_URL` is not configured;
+CI remains the required Postgres execution gate. No DNS, deployment, secret, production data, or DDL
+was changed. — Codex
+
 ### 2026-08-24 — Codex: service and hosted-partner discovery pages
 
 Human chose public discoverability track. Added crawlable service discovery pages:

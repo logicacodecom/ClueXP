@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from starlette.testclient import TestClient
@@ -63,8 +63,10 @@ def test_public_services_requires_api_key_and_audits_failures(isolated_app):
 
     assert missing.status_code == 401
     assert missing.json()["error"] == "missing_api_key"
+    assert missing.headers["X-Request-ID"] == missing.json()["request_id"]
     assert invalid.status_code == 401
     assert invalid.json()["error"] == "invalid_api_key"
+    assert invalid.headers["X-Request-ID"] == invalid.json()["request_id"]
     assert [event["action"] for event in store._external_api_events] == [
         "auth_missing",
         "auth_invalid",
@@ -161,6 +163,10 @@ def test_coverage_check_requires_scope_and_api_key(isolated_app):
 def test_coverage_check_reports_true_only_when_a_verified_technician_is_in_range(isolated_app):
     main, store = isolated_app
     store._technicians = [_tech("near-tech", lat=40.0, lng=-73.0)]
+    store._organizations["some-org"] = {
+        "id": "some-org", "display_name": "Eligible Provider", "status": "active",
+    }
+    store._organization_capabilities["some-org"] = {"locksmith.residential_lockout"}
     api_key = _issue_key(store, ["coverage:check"])
     client = TestClient(main.app)
 
@@ -186,6 +192,33 @@ def test_coverage_check_reports_true_only_when_a_verified_technician_is_in_range
     assert last_event["metadata"] == {"covered": False, "service_skill": "locksmith.residential_lockout"}
 
 
+def test_coverage_check_uses_provider_eligibility_from_network_router(isolated_app):
+    main, store = isolated_app
+    store._technicians = [_tech("near-tech")]
+    store._organizations["some-org"] = {
+        "id": "some-org", "display_name": "Suspended Provider", "status": "suspended",
+    }
+    store._organization_capabilities["some-org"] = {"locksmith.residential_lockout"}
+    api_key = _issue_key(store, ["coverage:check"])
+    client = TestClient(main.app)
+
+    suspended = client.post(
+        "/v1/coverage-checks",
+        headers={"X-API-Key": api_key},
+        json={"lat": 40.0, "lng": -73.0, "service_skill": "locksmith.residential_lockout"},
+    )
+    store._organizations["some-org"]["status"] = "active"
+    store._organization_capabilities["some-org"] = set()
+    not_capable = client.post(
+        "/v1/coverage-checks",
+        headers={"X-API-Key": api_key},
+        json={"lat": 40.0, "lng": -73.0, "service_skill": "locksmith.residential_lockout"},
+    )
+
+    assert suspended.json()["data"]["covered"] is False
+    assert not_capable.json()["data"]["covered"] is False
+
+
 def test_coverage_check_rejects_out_of_range_coordinates(isolated_app):
     main, store = isolated_app
     api_key = _issue_key(store, ["coverage:check"])
@@ -200,6 +233,7 @@ def test_coverage_check_rejects_out_of_range_coordinates(isolated_app):
     assert response.status_code == 422
     assert response.json()["error"] == "invalid_request"
     assert "request_id" in response.json()
+    assert response.headers["X-Request-ID"] == response.json()["request_id"]
 
 
 def test_coverage_check_idempotency_key_replays_then_rejects_conflicting_body(isolated_app):
@@ -254,6 +288,11 @@ def test_service_request_requires_scope_and_consent(isolated_app):
     no_consent = dict(_VALID_SERVICE_REQUEST, consent={"terms_accepted": False, "policy_version": "2026-08-01"})
     rejected = client.post("/v1/service-requests", headers={"X-API-Key": write_key}, json=no_consent)
     assert rejected.status_code == 422
+
+    extra_field = dict(_VALID_SERVICE_REQUEST, origin_client_id=str(uuid4()))
+    strict = client.post("/v1/service-requests", headers={"X-API-Key": write_key}, json=extra_field)
+    assert strict.status_code == 422
+    assert strict.json()["error"] == "invalid_request"
 
 
 def test_network_service_request_is_created_but_invisible_until_authorized(isolated_app):
@@ -527,21 +566,26 @@ def _network_tech(tech_id: str, *, org_ids: list[str] | None = None) -> dict:
     }
 
 
-def test_network_authorization_sends_offer_to_unaffiliated_eligible_technician(isolated_app):
+def test_residential_lockout_website_transaction_routes_accepts_and_tracks(isolated_app):
     main, store = isolated_app
-    solo_tech_id = str(uuid4())
-    store._technicians = [_network_tech(solo_tech_id)]
-    write_key = _issue_key(store, ["service_requests:write"])
-    auth_key = _issue_key(store, ["service_requests:authorize"])
+    technician_id = str(uuid4())
+    store._technicians = [_network_tech(technician_id, org_ids=["eligible-provider"])]
+    store._organizations["eligible-provider"] = {
+        "id": "eligible-provider", "display_name": "Eligible Provider", "status": "active",
+    }
+    store._organization_capabilities["eligible-provider"] = {"locksmith.residential_lockout"}
+    website_key = _issue_key(
+        store, ["service_requests:write", "service_requests:authorize", "service_requests:read"],
+    )
     client = TestClient(main.app)
     reference = _create_service_request(
-        client, write_key,
+        client, website_key,
         location={"lat": 40.001, "lng": -73.001, "raw_text": "near"},
     )
 
     authorized = client.post(
         f"/v1/service-requests/{reference}/dispatch-authorizations",
-        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+        headers={"X-API-Key": website_key}, json=_VALID_AUTHORIZATION,
     )
 
     assert authorized.status_code == 200
@@ -549,26 +593,37 @@ def test_network_authorization_sends_offer_to_unaffiliated_eligible_technician(i
     assert body["dispatch_scope"] == "network"
     assert body["routing_outcome"] == "offer_sent"
     # Never leaks which technician was selected.
-    assert solo_tech_id not in authorized.text
+    assert technician_id not in authorized.text
 
     job_id = next(iter(store._tickets))
     assert store._job_status[str(job_id)] == "pending_dispatch"
     routing_events = [e for e in store.governance_events if e["action"] == "network_routing_decision"]
     assert len(routing_events) == 1
-    assert routing_events[0]["metadata"]["selected_technician_id"] == solo_tech_id
+    assert routing_events[0]["metadata"]["selected_technician_id"] == technician_id
+
+    offer = next(iter(store._offers.values()))
+    accepted = asyncio.run(store.accept_dispatch_offer(UUID(offer["id"]), UUID(technician_id)))
+    assert accepted is not None
+
+    tracking = client.get(
+        f"/v1/service-requests/{reference}/tracking",
+        headers={"X-API-Key": website_key},
+    )
+    assert tracking.status_code == 200
+    assert tracking.json()["data"]["state"] == "matched"
+    assert tracking.json()["data"]["assignment"] is not None
 
 
 def test_network_authorization_reports_no_eligible_provider(isolated_app):
     main, store = isolated_app
     store._technicians = []  # nobody available anywhere
-    write_key = _issue_key(store, ["service_requests:write"])
-    auth_key = _issue_key(store, ["service_requests:authorize"])
+    website_key = _issue_key(store, ["service_requests:write", "service_requests:authorize"])
     client = TestClient(main.app)
-    reference = _create_service_request(client, write_key)
+    reference = _create_service_request(client, website_key)
 
     authorized = client.post(
         f"/v1/service-requests/{reference}/dispatch-authorizations",
-        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+        headers={"X-API-Key": website_key}, json=_VALID_AUTHORIZATION,
     )
 
     assert authorized.status_code == 200
@@ -581,14 +636,13 @@ def test_network_authorization_excludes_org_ineligible_technician(isolated_app):
     store._organizations["org-suspended"] = {
         "id": "org-suspended", "display_name": "Suspended Co", "status": "suspended",
     }
-    write_key = _issue_key(store, ["service_requests:write"])
-    auth_key = _issue_key(store, ["service_requests:authorize"])
+    website_key = _issue_key(store, ["service_requests:write", "service_requests:authorize"])
     client = TestClient(main.app)
-    reference = _create_service_request(client, write_key)
+    reference = _create_service_request(client, website_key)
 
     authorized = client.post(
         f"/v1/service-requests/{reference}/dispatch-authorizations",
-        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+        headers={"X-API-Key": website_key}, json=_VALID_AUTHORIZATION,
     )
 
     assert authorized.status_code == 200
@@ -597,6 +651,25 @@ def test_network_authorization_excludes_org_ineligible_technician(isolated_app):
     assert routing_events[0]["metadata"]["considered"] == [
         {"technician_id": "suspended-org-tech", "reason_code": "organization_ineligible"}
     ]
+
+
+def test_network_authorization_requires_request_level_ownership(isolated_app):
+    main, store = isolated_app
+    creator_key = _issue_key(store, ["service_requests:write", "service_requests:authorize"])
+    unrelated_key = _issue_key(store, ["service_requests:authorize"])
+    client = TestClient(main.app)
+    reference = _create_service_request(client, creator_key)
+
+    denied = client.post(
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        headers={"X-API-Key": unrelated_key},
+        json=_VALID_AUTHORIZATION,
+    )
+
+    assert denied.status_code == 404
+    assert denied.json()["error"] == "service_request_not_found"
+    context = asyncio.run(store.get_dispatch_authorization_context_by_reference(reference))
+    assert context["status"] == "draft"
 
 
 def test_get_service_request_requires_scope_and_ownership(isolated_app):
@@ -627,22 +700,22 @@ def test_get_service_request_requires_scope_and_ownership(isolated_app):
     assert body["created_at"] is not None  # real timestamp, not a placeholder null
 
 
-def test_get_service_request_status_reflects_authorization_and_authorizing_client_can_read(isolated_app):
-    """The authorizing client is a *different* client than the creator here --
-    proves the ownership check's second branch (authorized_by_client_id), not
-    just the creator (origin_client_id) branch already covered above."""
+def test_get_service_request_status_reflects_creator_authorization(isolated_app):
     main, store = isolated_app
-    write_key = _issue_key(store, ["service_requests:write"])
-    auth_key = _issue_key(store, ["service_requests:authorize", "service_requests:read"])
+    website_key = _issue_key(
+        store, ["service_requests:write", "service_requests:authorize", "service_requests:read"],
+    )
     client = TestClient(main.app)
-    reference = _create_service_request(client, write_key)
+    reference = _create_service_request(client, website_key)
 
     client.post(
         f"/v1/service-requests/{reference}/dispatch-authorizations",
-        headers={"X-API-Key": auth_key}, json=_VALID_AUTHORIZATION,
+        headers={"X-API-Key": website_key}, json=_VALID_AUTHORIZATION,
     )
 
-    read_by_authorizer = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": auth_key})
+    read_by_authorizer = client.get(
+        f"/v1/service-requests/{reference}", headers={"X-API-Key": website_key},
+    )
     assert read_by_authorizer.status_code == 200
     assert read_by_authorizer.json()["data"]["status"] == "authorized"
 
@@ -717,3 +790,352 @@ def test_cancellation_blocked_once_too_far_into_fulfillment(isolated_app):
     )
     assert blocked.status_code == 409
     assert blocked.json()["error"] == "not_cancellable"
+
+
+# --- api.cluexp.com hostname facade (docs/API-HOSTNAME-ROLLOUT.md) ---
+
+def test_v1_reachable_directly_and_via_legacy_api_prefix(isolated_app):
+    main, store = isolated_app
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app)
+
+    direct = client.get("/v1/services", headers={"X-API-Key": api_key})
+    legacy = client.get("/api/v1/services", headers={"X-API-Key": api_key})
+
+    assert direct.status_code == 200
+    assert legacy.status_code == 200
+    assert direct.json()["data"] == legacy.json()["data"]
+
+
+def test_api_only_hostname_hides_internal_api_routes(isolated_app, monkeypatch):
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    client = TestClient(main.app, base_url="https://api.cluexp.com")
+
+    blocked = client.get("/api/healthz")
+
+    assert blocked.status_code == 404
+    assert blocked.json()["error"] == "not_found"
+    assert blocked.headers["X-Request-ID"] == blocked.json()["request_id"]
+
+
+def test_api_only_hostname_hides_website_root(isolated_app, monkeypatch):
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    client = TestClient(main.app, base_url="https://api.cluexp.com")
+
+    blocked = client.get("/")
+
+    assert blocked.status_code == 404
+    assert blocked.json()["error"] == "not_found"
+
+
+def test_api_only_hostname_still_serves_v1(isolated_app, monkeypatch):
+    main, store = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app, base_url="https://api.cluexp.com")
+
+    allowed = client.get("/v1/services", headers={"X-API-Key": api_key})
+
+    assert allowed.status_code == 200
+
+
+def test_api_only_hostname_rejects_legacy_api_v1_alias(isolated_app, monkeypatch):
+    """api.cluexp.com must expose canonical /v1/* only, never the legacy
+    /api/v1/* alias (which restrict_api_only_hostnames sees un-normalized,
+    since it runs before strip_vercel_api_prefix -- see the middleware-order
+    note above those functions in api/main.py)."""
+    main, store = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app, base_url="https://api.cluexp.com")
+
+    blocked = client.get("/api/v1/services", headers={"X-API-Key": api_key})
+
+    assert blocked.status_code == 404
+    assert blocked.json()["error"] == "not_found"
+    assert blocked.headers["X-Request-ID"] == blocked.json()["request_id"]
+
+
+def test_non_facade_hostname_unaffected_by_api_only_gate(isolated_app, monkeypatch):
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    client = TestClient(main.app, base_url="https://intake.cluexp.com")
+
+    not_gated = client.get("/api/healthz")
+
+    assert not_gated.status_code != 404 or not_gated.json().get("error") != "not_found"
+
+
+def test_non_facade_hostname_still_serves_legacy_api_v1_alias(isolated_app, monkeypatch):
+    """The legacy /api/v1/* alias must keep working on a non-facade hostname
+    (e.g. intake.cluexp.com) during the migration -- only the api.cluexp.com
+    facade restricts itself to canonical /v1/*."""
+    main, store = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app, base_url="https://intake.cluexp.com")
+
+    allowed = client.get("/api/v1/services", headers={"X-API-Key": api_key})
+
+    assert allowed.status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/v10", "/v1evil", "/v1evil/services"])
+def test_api_only_hostname_gate_uses_exact_v1_boundary(isolated_app, monkeypatch, path):
+    """A bare `startswith("/v1")` would wrongly let `/v10` or `/v1evil` through
+    the facade gate. The boundary must be exact: `/v1` or `/v1/...` only."""
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "API_ONLY_HOSTNAMES", {"api.cluexp.com"})
+    client = TestClient(main.app, base_url="https://api.cluexp.com")
+
+    blocked = client.get(path)
+
+    assert blocked.status_code == 404
+    assert blocked.json()["error"] == "not_found"
+
+
+def test_trusted_host_rejects_unknown_host(isolated_app, monkeypatch):
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com", "intake.cluexp.com"])
+    client = TestClient(main.app, base_url="https://evil.example.com")
+
+    response = client.get("/v1/services")
+
+    assert response.status_code == 400
+
+
+def test_trusted_host_accepts_configured_host(isolated_app, monkeypatch):
+    main, store = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com", "intake.cluexp.com"])
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app, base_url="https://api.cluexp.com")
+
+    response = client.get("/v1/services", headers={"X-API-Key": api_key})
+
+    assert response.status_code == 200
+
+
+def test_trusted_hosts_unset_permits_local_and_test_hosts(isolated_app):
+    main, store = isolated_app
+    assert main.config.TRUSTED_HOSTS == ["*"]
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app)
+
+    response = client.get("/v1/services", headers={"X-API-Key": api_key})
+
+    assert response.status_code == 200
+
+
+def test_untrusted_host_rejection_on_v1_follows_public_error_envelope(isolated_app, monkeypatch):
+    """/v1 requests must get the same {error, request_id} envelope + matching
+    X-Request-ID as every other public error, not a bare Starlette {detail}."""
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com"])
+    client = TestClient(main.app, base_url="https://evil.example.com")
+
+    response = client.get("/v1/services")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "untrusted_host"
+    assert "request_id" in body
+    assert response.headers["X-Request-ID"] == body["request_id"]
+
+
+def test_untrusted_host_rejection_on_legacy_v1_alias_follows_public_error_envelope(
+    isolated_app, monkeypatch,
+):
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com"])
+    client = TestClient(main.app, base_url="https://evil.example.com")
+
+    response = client.get("/api/v1/services")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "untrusted_host"
+    assert response.headers["X-Request-ID"] == body["request_id"]
+
+
+def test_untrusted_host_rejection_on_internal_route_keeps_plain_detail_shape(isolated_app, monkeypatch):
+    """Internal (non-/v1) routes are not part of the public contract, so they
+    keep the plain {detail} shape rather than the public envelope."""
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com"])
+    client = TestClient(main.app, base_url="https://evil.example.com")
+
+    response = client.get("/api/healthz")
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid host header"}
+
+
+def test_request_hostname_strips_port_before_matching(isolated_app, monkeypatch):
+    main, store = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com"])
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/v1/services", headers={"host": "api.cluexp.com:443", "X-API-Key": api_key},
+    )
+
+    assert response.status_code == 200
+
+
+def test_request_hostname_handles_ipv6_literal(isolated_app, monkeypatch):
+    main, store = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["::1"])
+    api_key = _issue_key(store, ["services:read"])
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/v1/services", headers={"host": "[::1]:8000", "X-API-Key": api_key},
+    )
+
+    assert response.status_code == 200
+
+
+def test_request_hostname_ipv6_literal_rejected_when_not_trusted(isolated_app, monkeypatch):
+    main, _ = isolated_app
+    monkeypatch.setattr(main.config, "TRUSTED_HOSTS", ["api.cluexp.com"])
+    client = TestClient(main.app)
+
+    response = client.get("/v1/services", headers={"host": "[::1]:8000"})
+
+    assert response.status_code == 400
+
+
+# --- CORS config resolution (ALLOWED_ORIGINS, requirement 4) ---
+# resolve_allowed_origins is a pure function of (env value, is_production), so
+# these call it directly rather than reloading api.main/api.config -- reloading
+# those modules mutates shared global state (e.g. the module-level `store`)
+# for the rest of the pytest session and corrupts unrelated test files.
+
+def test_cors_missing_config_defaults_to_wildcard_in_dev(isolated_app):
+    main, _ = isolated_app
+    assert main.resolve_allowed_origins("", is_production=False) == ["*"]
+
+
+def test_cors_missing_config_in_production_does_not_become_wildcard(isolated_app):
+    main, _ = isolated_app
+    result = main.resolve_allowed_origins("", is_production=True)
+    assert result == []
+    assert "*" not in result
+
+
+def test_cors_empty_config_in_production_does_not_become_wildcard(isolated_app):
+    main, _ = isolated_app
+    assert main.resolve_allowed_origins("   ", is_production=True) == []
+
+
+def test_cors_explicit_config_is_used_in_production(isolated_app):
+    main, _ = isolated_app
+    result = main.resolve_allowed_origins(
+        "https://www.cluexp.com,https://cluexp.com", is_production=True
+    )
+    assert result == ["https://www.cluexp.com", "https://cluexp.com"]
+
+
+def test_cors_explicit_config_is_used_in_dev(isolated_app):
+    main, _ = isolated_app
+    result = main.resolve_allowed_origins("http://localhost:3000", is_production=False)
+    assert result == ["http://localhost:3000"]
+
+
+# --- CORS preflight integration tests (real CORSMiddleware, real OPTIONS) ---
+# api.main's own CORSMiddleware is fixed at import time from the process env,
+# so these build a throwaway app the same way main.py does -- same
+# CORSMiddleware, same resolve_allowed_origins() -- and issue a real preflight
+# request through it, rather than only asserting on the helper's return value.
+
+def _cors_probe_app(allowed_origins: list[str]):
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    probe = FastAPI()
+    probe.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @probe.get("/v1/services")
+    def _services():
+        return {"ok": True}
+
+    return probe
+
+
+def test_cors_preflight_allows_approved_origin(isolated_app):
+    main, _ = isolated_app
+    origins = main.resolve_allowed_origins("https://www.cluexp.com", is_production=True)
+    client = TestClient(_cors_probe_app(origins))
+
+    response = client.options(
+        "/v1/services",
+        headers={"Origin": "https://www.cluexp.com", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://www.cluexp.com"
+
+
+def test_cors_preflight_denies_unapproved_origin(isolated_app):
+    main, _ = isolated_app
+    origins = main.resolve_allowed_origins("https://www.cluexp.com", is_production=True)
+    client = TestClient(_cors_probe_app(origins))
+
+    response = client.options(
+        "/v1/services",
+        headers={"Origin": "https://evil.example.com", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_preflight_production_missing_config_denies_all_origins(isolated_app):
+    main, _ = isolated_app
+    origins = main.resolve_allowed_origins("", is_production=True)
+    client = TestClient(_cors_probe_app(origins))
+
+    response = client.options(
+        "/v1/services",
+        headers={"Origin": "https://www.cluexp.com", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_preflight_production_empty_config_denies_all_origins(isolated_app):
+    main, _ = isolated_app
+    origins = main.resolve_allowed_origins("   ", is_production=True)
+    client = TestClient(_cors_probe_app(origins))
+
+    response = client.options(
+        "/v1/services",
+        headers={"Origin": "https://www.cluexp.com", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_preflight_dev_default_allows_any_origin(isolated_app):
+    main, _ = isolated_app
+    origins = main.resolve_allowed_origins("", is_production=False)
+    client = TestClient(_cors_probe_app(origins))
+
+    response = client.options(
+        "/v1/services",
+        headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"

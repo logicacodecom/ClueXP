@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from api.geocode import geocode, places_autocomplete, reverse_geocode
@@ -95,12 +95,24 @@ from api.schema import (
 store = make_store()
 logger = logging.getLogger(__name__)
 
-# Env-driven CORS. Set ALLOWED_ORIGINS to a comma-separated list in production;
-# unset falls back to "*" for local dev. (In prod the Next.js rewrite proxies
-# /api server-side, so cross-origin CORS is rarely exercised — this is belt-and-
-# suspenders for any direct API calls.)
-_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
-ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()] or ["*"]
+def resolve_allowed_origins(origins_env: str, *, is_production: bool) -> list[str]:
+    """Env-driven CORS. Set ALLOWED_ORIGINS to a comma-separated list in
+    production; unset falls back to "*" for local dev only. (In prod the
+    Next.js rewrite proxies /api server-side, so cross-origin CORS is rarely
+    exercised — this is belt-and-suspenders for any direct API calls.) In
+    production, missing/empty config must NOT silently become a wildcard --
+    fail closed to no allowed origins instead."""
+    origins_env = origins_env.strip()
+    if origins_env:
+        return [o.strip() for o in origins_env.split(",") if o.strip()]
+    if is_production:
+        return []
+    return ["*"]
+
+
+ALLOWED_ORIGINS = resolve_allowed_origins(
+    os.environ.get("ALLOWED_ORIGINS", ""), is_production=config.IS_PRODUCTION
+)
 
 
 @asynccontextmanager
@@ -119,13 +131,107 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PUBLIC_API_PREFIX = "/v1"
+
+
+def _is_public_api_path(path: str) -> bool:
+    """Exact-boundary match: `/v1` or `/v1/...` only -- NOT `/v10` or
+    `/v1evil`, which a bare `startswith("/v1")` would wrongly admit."""
+    return path == PUBLIC_API_PREFIX or path.startswith(PUBLIC_API_PREFIX + "/")
+
+
+def _request_hostname(request: Request) -> str:
+    """Safe hostname extraction: `request.url.hostname` parses the Host header
+    through Starlette's URL/urllib machinery, so a port (`host:443`) or an
+    IPv6 literal (`[::1]:8000` -> `::1`) is handled correctly instead of the
+    naive/wrong `header.split(":")[0]` (which mangles IPv6 addresses).
+    Lower-cased already by urllib; falls back to "" if Host is absent/unparsable."""
+    return request.url.hostname or ""
+
+
+def _host_allowed(host: str, patterns: list[str]) -> bool:
+    host = host.lower()
+    for pattern in patterns:
+        pattern = pattern.lower()
+        if pattern == "*" or pattern == host:
+            return True
+        if pattern.startswith("*.") and host.endswith(pattern[1:]):
+            return True
+    return False
+
+
+# Actual runtime middleware order (outermost/runs-first to innermost/runs-last),
+# verified via app.build_middleware_stack():
+#
+#   restrict_api_only_hostnames -> strip_vercel_api_prefix -> enforce_trusted_hosts -> CORSMiddleware -> router
+#
+# This is the REVERSE of the order these three `@app.middleware("http")` functions
+# are defined below (enforce_trusted_hosts, then strip_vercel_api_prefix, then
+# restrict_api_only_hostnames) and of CORSMiddleware's `add_middleware` call above
+# them. That inversion isn't a mistake: Starlette's `add_middleware` inserts each
+# new middleware at the FRONT of its list, so the LAST one added/defined ends up
+# OUTERMOST and runs FIRST. Do not reorder these definitions without re-verifying
+# the resulting stack -- moving one changes execution order for all of them.
+#
+# This order is deliberate and load-bearing: restrict_api_only_hostnames running
+# BEFORE strip_vercel_api_prefix means it sees the raw, un-normalized path, so on
+# an api.cluexp.com-class facade host, `GET /api/v1/services` is rejected (opaque
+# 404) exactly like any other non-canonical path -- api.cluexp.com must expose
+# canonical /v1/* only, never the legacy /api/v1/* alias. (Non-facade hosts, e.g.
+# intake.cluexp.com, are unaffected and keep serving /api/v1/* via the alias.)
+
+
+@app.middleware("http")
+async def enforce_trusted_hosts(request, call_next):
+    """Reads config.TRUSTED_HOSTS on every request (not just at startup) so it
+    stays configurable/testable without an app rebuild. Unset -> ["*"], so
+    local dev and tests are never broken by this; production sets it
+    explicitly (see docs/API-HOSTNAME-ROLLOUT.md). Runs AFTER
+    strip_vercel_api_prefix (see the middleware-order note above), so the path
+    seen here is already normalized -- a bare `_is_public_api_path` check is
+    enough; no separate legacy-/api/v1-alias check is needed."""
+    host = _request_hostname(request)
+    if not _host_allowed(host, config.TRUSTED_HOSTS):
+        path = request.scope.get("path", "")
+        if _is_public_api_path(path):
+            request_id = request.headers.get("X-Request-ID", "").strip()[:128] or secrets.token_hex(12)
+            return JSONResponse(
+                {"error": "untrusted_host", "request_id": request_id, "detail": "Host header not recognized."},
+                status_code=400,
+                headers={"X-Request-ID": request_id},
+            )
+        return JSONResponse({"detail": "Invalid host header"}, status_code=400)
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def strip_vercel_api_prefix(request, call_next):
-    """Let the same FastAPI routes work locally and behind Vercel's /api path."""
+    """Let the same FastAPI routes work locally and behind Vercel's /api path.
+    Runs BETWEEN restrict_api_only_hostnames (before) and enforce_trusted_hosts
+    (after) -- see the middleware-order note above."""
     request.scope.setdefault("state", {})["original_path"] = request.scope["path"]
     if request.scope["path"].startswith("/api/"):
         request.scope["path"] = request.scope["path"][4:]
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def restrict_api_only_hostnames(request, call_next):
+    """`api.cluexp.com` (config.API_ONLY_HOSTNAMES) is the public machine API
+    facade: it must expose /v1/* only, never the intake website, internal
+    /api/* routes, or the legacy /api/v1/* alias. Runs FIRST/outermost, BEFORE
+    strip_vercel_api_prefix normalizes the path -- see the middleware-order
+    note above -- so this check sees the raw path and a legacy `/api/v1/...`
+    request on a facade host is correctly rejected (it isn't `/v1` or
+    `/v1/...` yet)."""
+    host = _request_hostname(request)
+    if host in config.API_ONLY_HOSTNAMES and not _is_public_api_path(request.scope["path"]):
+        request_id = str(uuid4())
+        return JSONResponse(
+            {"error": "not_found", "request_id": request_id},
+            status_code=404,
+            headers={"X-Request-ID": request_id},
+        )
     return await call_next(request)
 
 
@@ -133,13 +239,8 @@ async def strip_vercel_api_prefix(request, call_next):
 # and then renders `body.detail`. So any error body that isn't JSON-with-a-detail
 # reaches the browser as a blank generic message. These two handlers guarantee the
 # shape for the cases FastAPI/Starlette would otherwise answer differently.
-PUBLIC_API_PREFIX = "/v1"
-
-
-def _is_public_api_path(path: str) -> bool:
-    return path == PUBLIC_API_PREFIX or path.startswith(PUBLIC_API_PREFIX + "/")
-
-
+# (PUBLIC_API_PREFIX / _is_public_api_path are defined earlier, alongside the
+# hostname-facade middleware that also needs them.)
 class PublicApiError(BaseModel):
     """Documented `/v1` error envelope. Every `/v1` error response — validation,
     auth, scope, rate-limit, or unhandled — takes this shape so external clients
@@ -148,6 +249,12 @@ class PublicApiError(BaseModel):
     error: str
     request_id: str
     detail: str | None = None
+
+
+class PublicApiRequest(BaseModel):
+    """Strict public input base: `/v1` never silently ignores unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def public_api_error(
@@ -172,6 +279,7 @@ async def validation_error_detail(request: Request, exc: RequestValidationError)
         return JSONResponse(
             {"error": "invalid_request", "request_id": request_id, "detail": detail},
             status_code=422,
+            headers={"X-Request-ID": request_id},
         )
     return JSONResponse({"detail": detail}, status_code=422)
 
@@ -183,7 +291,9 @@ async def http_exception_detail(request: Request, exc: HTTPException) -> JSONRes
     docstring above). `/v1` instead promises the flat `PublicApiError` envelope
     (ADR-5), so unwrap here for `/v1` only; internal routes keep the default."""
     if _is_public_api_path(request.url.path) and isinstance(exc.detail, dict) and "error" in exc.detail:
-        return JSONResponse(exc.detail, status_code=exc.status_code, headers=exc.headers)
+        headers = dict(exc.headers or {})
+        headers["X-Request-ID"] = str(exc.detail["request_id"])
+        return JSONResponse(exc.detail, status_code=exc.status_code, headers=headers)
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
 
@@ -202,6 +312,7 @@ async def unhandled_error_detail(request: Request, exc: Exception) -> JSONRespon
         return JSONResponse(
             {"error": "internal_error", "request_id": error_id},
             status_code=500,
+            headers={"X-Request-ID": error_id},
         )
     return JSONResponse(
         {"detail": "An unexpected error occurred.", "error_id": error_id},
@@ -266,7 +377,7 @@ def _validate_lng(v: float) -> float:
     return v
 
 
-class PublicCoverageCheckRequest(BaseModel):
+class PublicCoverageCheckRequest(PublicApiRequest):
     lat: float
     lng: float
     service_skill: str
@@ -296,9 +407,8 @@ class PublicCoverageCheckResponse(BaseModel):
 # Creates a canonical service-request record only. Never sets job_status to
 # "pending_dispatch", so the job is invisible to the ops queue and the dispatch
 # sweep -- both already gate strictly on that status. It only becomes
-# dispatchable through a future, separate authorize_dispatch step (Tier 2,
-# not implemented yet; see docs/HANDOFF.md 2026-08-22 decision log).
-class PublicServiceRequestLocation(BaseModel):
+# dispatchable through the separate dispatch-authorization endpoint below.
+class PublicServiceRequestLocation(PublicApiRequest):
     lat: float
     lng: float
     raw_text: str | None = None
@@ -314,12 +424,12 @@ class PublicServiceRequestLocation(BaseModel):
         return _validate_lng(v)
 
 
-class PublicServiceRequestCustomer(BaseModel):
+class PublicServiceRequestCustomer(PublicApiRequest):
     name: str | None = None
     phone: str | None = None
 
 
-class PublicServiceRequestConsent(BaseModel):
+class PublicServiceRequestConsent(PublicApiRequest):
     """Consent must exist at creation time, not deferred to a later
     authorization step (Tier 1 decision, docs/HANDOFF.md 2026-08-22)."""
 
@@ -341,7 +451,7 @@ class PublicServiceRequestConsent(BaseModel):
         return v
 
 
-class PublicServiceRequestCreate(BaseModel):
+class PublicServiceRequestCreate(PublicApiRequest):
     dispatch_scope: Literal["private_partner", "network"]
     service_skill: str
     location: PublicServiceRequestLocation
@@ -4295,6 +4405,33 @@ async def require_public_coverage_check(request: Request) -> dict[str, Any]:
     return await require_public_api_client(request, "coverage:check")
 
 
+async def _network_routing_snapshot(
+    job: dict[str, Any], *, skill_needed: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load provider eligibility once and run the canonical Network Router.
+
+    Coverage and dispatch authorization deliberately share this path so a
+    suspended/non-capable provider cannot produce a positive coverage answer
+    that the Router would immediately reject.
+    """
+    technicians = await store.list_available_technicians()
+    org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
+    org_status = await store.get_organizations_status(org_ids)
+    org_capabilities = {
+        oid: set(await store.list_organization_capabilities(oid))
+        for oid, status in org_status.items()
+        if status == "active"
+    }
+    routed = route_network_request(
+        job,
+        technicians,
+        skill_needed=skill_needed,
+        org_status=org_status,
+        org_capabilities=org_capabilities,
+    )
+    return technicians, routed
+
+
 @app.post("/v1/coverage-checks", response_model=PublicCoverageCheckResponse)
 async def public_v1_coverage_checks(
     request: Request,
@@ -4315,6 +4452,15 @@ async def public_v1_coverage_checks(
     client_id = context["client"]["id"]
     idempotency_key = request.headers.get("Idempotency-Key")
     request_hash = hashlib.sha256(payload.model_dump_json().encode("utf-8")).hexdigest()
+    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
+    catalog = await store.list_service_catalog(active_only=True)
+    if skill not in active_skill_codes(catalog):
+        raise public_api_error(
+            422,
+            "unknown_service_skill",
+            request_id,
+            detail=f"Unknown service_skill: {payload.service_skill!r}",
+        )
 
     if idempotency_key:
         reservation = await store.begin_or_get_external_api_mutation(
@@ -4333,10 +4479,9 @@ async def public_v1_coverage_checks(
         if reservation["state"] == "done":
             return PublicCoverageCheckResponse.model_validate(reservation["response"])
 
-    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
-    technicians = await store.list_available_technicians()
     job = {"access_type": skill, "lat": payload.lat, "lng": payload.lng}
-    covered = bool(rank_candidates(job, technicians, top_n=1))
+    _, routed = await _network_routing_snapshot(job, skill_needed=skill)
+    covered = routed["selected_technician_id"] is not None
 
     body = PublicCoverageCheckResponse(
         data=PublicCoverageCheckResult(covered=covered, service_skill=skill),
@@ -4402,11 +4547,17 @@ async def public_v1_create_service_request(
     client_id = client["id"]
     idempotency_key = request.headers.get("Idempotency-Key")
     request_hash = hashlib.sha256(payload.model_dump_json().encode("utf-8")).hexdigest()
+    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
+    catalog = await store.list_service_catalog(active_only=True)
 
     if payload.dispatch_scope == "private_partner" and not client.get("organization_id"):
         raise public_api_error(
             422, "dispatch_scope_requires_partner_client", request_id,
             detail="dispatch_scope=private_partner requires an API client bound to a partner organization.",
+        )
+    if skill not in active_skill_codes(catalog):
+        raise public_api_error(
+            422, "unknown_service_skill", request_id, detail=f"Unknown service_skill: {payload.service_skill!r}",
         )
 
     if idempotency_key:
@@ -4427,13 +4578,6 @@ async def public_v1_create_service_request(
             return PublicServiceRequestResponse.model_validate(reservation["response"])
 
     org_id = str(client["organization_id"]) if payload.dispatch_scope == "private_partner" else None
-    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
-    catalog = await store.list_service_catalog(active_only=True)
-    if skill not in active_skill_codes(catalog):
-        raise public_api_error(
-            422, "unknown_service_skill", request_id, detail=f"Unknown service_skill: {payload.service_skill!r}",
-        )
-
     ticket = Ticket(
         channel="mobile_web",
         status=TicketStatus.DRAFT,
@@ -4509,7 +4653,7 @@ DISPATCH_AUTHORIZATION_CHANNELS = {
 }
 
 
-class PublicDispatchAuthorizationRequest(BaseModel):
+class PublicDispatchAuthorizationRequest(PublicApiRequest):
     channel: str
     evidence_reference: str
     terms_version: str
@@ -4591,6 +4735,14 @@ async def public_v1_authorize_dispatch(
             403, "not_authorized_for_organization", req_id,
             detail="This API client is not bound to the organization that owns this request.",
         )
+    if dispatch_scope == "network" and not (
+        client.get("client_type") == "internal"
+        or str(client_id) == str(ctx.get("origin_client_id") or "")
+    ):
+        # Network requests have no owner org, so the creating client is the
+        # request-level authority until authorization exists. Hide existence
+        # from unrelated clients, matching the read/tracking/cancel boundary.
+        raise public_api_error(404, "service_request_not_found", req_id)
 
     authorization = await store.create_dispatch_authorization(
         job_id, client_id=client_id, dispatch_scope=dispatch_scope,
@@ -4611,16 +4763,8 @@ async def public_v1_authorize_dispatch(
     else:
         job_for_routing = {"access_type": ctx.get("access_type"), "lat": ctx.get("lat"), "lng": ctx.get("lng")}
         skill_needed = required_skill_for_job(job_for_routing)
-        technicians = await store.list_available_technicians()
-        org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
-        org_status = await store.get_organizations_status(org_ids)
-        org_capabilities = {
-            oid: set(await store.list_organization_capabilities(oid))
-            for oid, status in org_status.items() if status == "active"
-        }
-        routed = route_network_request(
-            job_for_routing, technicians, skill_needed=skill_needed,
-            org_status=org_status, org_capabilities=org_capabilities,
+        technicians, routed = await _network_routing_snapshot(
+            job_for_routing, skill_needed=skill_needed,
         )
         await store.record_governance_event(
             entity_type="service_request", entity_id=job_id, action="network_routing_decision",
@@ -4786,7 +4930,7 @@ async def public_v1_service_request_tracking(
     return {"data": status, "meta": {"request_id": req_id, "api_version": "v1"}}
 
 
-class PublicServiceRequestCancellationRequest(BaseModel):
+class PublicServiceRequestCancellationRequest(PublicApiRequest):
     reason: str
 
     @field_validator("reason")

@@ -33,6 +33,7 @@
         "type": "object"
       },
       "PublicCoverageCheckRequest": {
+        "additionalProperties": false,
         "properties": {
           "lat": {
             "title": "Lat",
@@ -90,6 +91,7 @@
         "type": "object"
       },
       "PublicDispatchAuthorizationRequest": {
+        "additionalProperties": false,
         "properties": {
           "channel": {
             "title": "Channel",
@@ -189,6 +191,7 @@
         "type": "object"
       },
       "PublicServiceRequestCancellationRequest": {
+        "additionalProperties": false,
         "properties": {
           "reason": {
             "title": "Reason",
@@ -236,6 +239,7 @@
         "type": "object"
       },
       "PublicServiceRequestConsent": {
+        "additionalProperties": false,
         "description": "Consent must exist at creation time, not deferred to a later\nauthorization step (Tier 1 decision, docs/HANDOFF.md 2026-08-22).",
         "properties": {
           "policy_version": {
@@ -255,6 +259,7 @@
         "type": "object"
       },
       "PublicServiceRequestCreate": {
+        "additionalProperties": false,
         "properties": {
           "consent": {
             "$ref": "#/components/schemas/PublicServiceRequestConsent"
@@ -328,6 +333,7 @@
         "type": "object"
       },
       "PublicServiceRequestCustomer": {
+        "additionalProperties": false,
         "properties": {
           "name": {
             "anyOf": [
@@ -406,6 +412,7 @@
         "type": "object"
       },
       "PublicServiceRequestLocation": {
+        "additionalProperties": false,
         "properties": {
           "lat": {
             "title": "Lat",
@@ -518,13 +525,6 @@
       },
       "ValidationError": {
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
           "loc": {
             "items": {
               "anyOf": [
@@ -564,7 +564,7 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/v1/coverage-checks": {
+    "/coverage-checks": {
       "post": {
         "description": "Public coverage lookup: does the verified network have an available,\nskilled technician near this location? Pure read over existing\n`list_available_technicians()` \u2014 no ticket/job is created, no dispatch is\ntriggered, and no technician identity or roster is ever returned, only an\naggregate boolean. Safe against Phase 2 network-routing business logic:\nthis answers \"is coverage plausible\" the same way an unauthenticated\ncustomer's own eligibility question would, using the same rule engine\n(`rank_candidates`) the existing dispatch flow already trusts.",
         "operationId": "public_v1_coverage_checks_v1_coverage_checks_post",
@@ -603,7 +603,7 @@
         "summary": "Public V1 Coverage Checks"
       }
     },
-    "/v1/service-requests": {
+    "/service-requests": {
       "post": {
         "description": "Create a canonical service-request record only (ADR-6). Deliberately\nnever calls `store.set_job_status(..., \"pending_dispatch\")` -- the ops\nqueue and dispatch sweep both gate strictly on that status already, so an\nunauthorized external request stays invisible and un-dispatched by\nconstruction, not by an extra flag. `origin_org_id`/`customer_owner_org_id`\nare resolved server-side from the authenticated client, never from the\nrequest body, mirroring ADR-4's existing anti-spoofing rule for\nbrowser-supplied `org_id`.",
         "operationId": "public_v1_create_service_request_v1_service_requests_post",
@@ -642,7 +642,7 @@
         "summary": "Public V1 Create Service Request"
       }
     },
-    "/v1/service-requests/{request_id}": {
+    "/service-requests/{request_id}": {
       "get": {
         "operationId": "public_v1_get_service_request_v1_service_requests__request_id__get",
         "parameters": [
@@ -681,7 +681,7 @@
         "summary": "Public V1 Get Service Request"
       }
     },
-    "/v1/service-requests/{request_id}/cancellations": {
+    "/service-requests/{request_id}/cancellations": {
       "post": {
         "description": "Idempotent: an already-cancelled request returns the same success\nshape rather than erroring. Gate: draft (never authorized, nothing to\nundo) or the existing customer-cancel window (pending_dispatch through\nen_route) -- blocked once fulfillment is too far along, exactly matching\nthe existing customer-facing cancel rule.",
         "operationId": "public_v1_cancel_service_request_v1_service_requests__request_id__cancellations_post",
@@ -731,7 +731,7 @@
         "summary": "Public V1 Cancel Service Request"
       }
     },
-    "/v1/service-requests/{request_id}/dispatch-authorizations": {
+    "/service-requests/{request_id}/dispatch-authorizations": {
       "post": {
         "operationId": "public_v1_authorize_dispatch_v1_service_requests__request_id__dispatch_authorizations_post",
         "parameters": [
@@ -780,7 +780,7 @@
         "summary": "Public V1 Authorize Dispatch"
       }
     },
-    "/v1/service-requests/{request_id}/tracking": {
+    "/service-requests/{request_id}/tracking": {
       "get": {
         "description": "Reuses the exact customer-safe dispatch state machine\n(`store.get_dispatch_status`) the internal `/tickets/{id}/tracking`\nalready uses -- technician identity is revealed only at `matched`, never\nearlier, by construction (one function, not two that could drift).",
         "operationId": "public_v1_service_request_tracking_v1_service_requests__request_id__tracking_get",
@@ -822,7 +822,7 @@
         "summary": "Public V1 Service Request Tracking"
       }
     },
-    "/v1/services": {
+    "/services": {
       "get": {
         "operationId": "public_v1_services_v1_services_get",
         "responses": {
@@ -840,5 +840,15 @@
         "summary": "Public V1 Services"
       }
     }
-  }
+  },
+  "servers": [
+    {
+      "description": "Canonical public machine API",
+      "url": "https://api.cluexp.com/v1"
+    },
+    {
+      "description": "Legacy origin, available during migration",
+      "url": "https://intake.cluexp.com/api/v1"
+    }
+  ]
 }

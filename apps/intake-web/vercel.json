@@ -7,6 +7,12 @@
     }
   },
   "rewrites": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "api.cluexp.com" }],
+      "destination": "/api/main"
+    },
+    { "source": "/v1/(.*)", "destination": "/api/main" },
     { "source": "/api/(.*)", "destination": "/api/main" }
   ],
   "crons": [

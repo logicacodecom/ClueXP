@@ -1,8 +1,10 @@
 # ClueXP Public API (`/v1`) — Developer Guide
 
-Status: internal preview. No partner self-service yet — API keys are issued by ClueXP staff via internal admin endpoints. No production traffic from real external clients has been onboarded; this is the reference contract for when that happens.
+Status: frozen Website transaction contract. API keys are issued by ClueXP staff via internal admin endpoints; there is no partner self-service.
 
-Base URL: `https://intake.cluexp.com` (production). All public endpoints are under `/v1/`. Everything outside `/v1/` (`/ops`, `/provider`, technician routes, admin routes, tracking-token routes) is internal and not part of this contract — do not build against it.
+Canonical base URL: `https://api.cluexp.com/v1` (repository routing implemented; production deploy/env activation pending, see `API-HOSTNAME-ROLLOUT.md`). During the controlled transition, `https://intake.cluexp.com/api/v1` remains available as the legacy origin — do not remove it. All public endpoints are under `/v1/`. Everything outside `/v1/` (`/ops`, `/provider`, technician routes, admin routes, tracking-token routes) is internal and must not be reachable through the canonical hostname; requests to `api.cluexp.com` for any non-`/v1` path get an opaque JSON `404`, never the intake website or an internal route.
+
+Website integrations must call this API from a server-side/BFF boundary. Never put an external API key in browser JavaScript, HTML, analytics, URLs, or client logs.
 
 ## Authentication
 
@@ -59,7 +61,7 @@ Every `/v1` error, regardless of cause, has this shape:
 
 ## Rate limits
 
-Enforced per API key, per scope, per minute (`external_api_keys.rate_limit_per_minute`, default 60/min). Exceeding it returns `429 rate_limited`. There is no burst-tolerant retry built into the API — back off and retry later; do not hot-loop.
+Enforced per external client, per scope, per minute (`external_clients.rate_limit_per_minute`, default 60/min). Multiple keys for one client share the same budget. Exceeding it returns `429 rate_limited`. There is no burst-tolerant retry built into the API — back off and retry later; do not hot-loop.
 
 ## Service catalog
 
@@ -153,9 +155,9 @@ Authorization: Bearer <key>
 Content-Type: application/json
 
 {
-  "channel": "customer_confirmed",
-  "evidence_reference": "call-log-id-or-similar",
-  "terms_version": "2026-01"
+  "channel": "first_party_website",
+  "evidence_reference": "website-consent-event-id",
+  "terms_version": "2026-08-01"
 }
 ```
 
@@ -217,7 +219,20 @@ Cancellation is gated by fulfillment stage — a request too far into fulfillmen
 
 ## Ownership and visibility
 
-You can only read, authorize, or cancel a service request you created or are otherwise entitled to act on (the client that authorized dispatch, or the request's originating client). Any other case returns `404 service_request_not_found` — not `403` — so no external caller can distinguish "not yours" from "doesn't exist."
+For a `network` request, only its creating client (or an internal Platform client) may authorize dispatch. Read and cancellation remain available to the originating/authorizing client or an internal Platform client. `private_partner` requests remain organization-bound. An unrelated client receives `404 service_request_not_found`, so it cannot distinguish "not yours" from "doesn't exist."
+
+## First Website transaction profile
+
+The first approved Website flow is deliberately narrow:
+
+1. Provision one first-party Website server client with `services:read`, `coverage:check`, `service_requests:write`, `service_requests:authorize`, and `service_requests:read`. Do not grant provider, ops, admin, or cancellation access unless separately required.
+2. Discover and submit only the active canonical skill `locksmith.residential_lockout` for this release.
+3. Call `POST /v1/coverage-checks`. `covered: false` is the stable unsupported/unavailable state; do not fabricate coverage or disclose provider/technician counts.
+4. Create with `dispatch_scope: "network"`, explicit terms consent, and a unique `Idempotency-Key` retained for retries.
+5. Present a final dispatch summary and collect an explicit customer choice before calling dispatch authorization with `channel: "first_party_website"` and a durable consent-event reference.
+6. Poll the request and tracking endpoints using the opaque `request_reference`. Never use or request a raw job UUID.
+
+Coverage and authorization both use the Network Router's provider eligibility rules (active provider, residential-lockout capability, and existing technician availability/skill/radius rules). A positive coverage result is a point-in-time answer, not a reservation; authorization can still return `no_eligible_provider` if eligibility changes.
 
 ## What this API does not do (current limitations)
 

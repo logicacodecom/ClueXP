@@ -43,14 +43,36 @@ def _referenced_schemas(paths: dict, all_schemas: dict) -> dict:
     return {k: v for k, v in all_schemas.items() if k in seen}
 
 
+def _strip_v1_prefix(path: str) -> str:
+    """Servers already end in `/v1` (or the legacy `/api/v1`), so exported path
+    keys must NOT also start with `/v1` -- otherwise clients resolve
+    `.../v1` + `/v1/services` = `.../v1/v1/services`. `/v1` alone becomes `/`
+    (never `""`) -- the OpenAPI Paths Object requires every key to start with
+    `/`, and `.../v1` + `/` still resolves to the correct `.../v1` root."""
+    if path == "/v1":
+        return "/"
+    return path[len("/v1"):]
+
+
 def main() -> None:
     check = "--check" in sys.argv
     spec = app.openapi()
-    v1_paths = {p: v for p, v in spec["paths"].items() if p == "/v1" or p.startswith("/v1/")}
+    v1_paths = {
+        _strip_v1_prefix(p): v
+        for p, v in spec["paths"].items()
+        if p == "/v1" or p.startswith("/v1/")
+    }
     all_schemas = spec.get("components", {}).get("schemas", {})
     out = {
         "openapi": spec["openapi"],
         "info": {"title": "ClueXP Public API", "version": "v1"},
+        "servers": [
+            {"url": "https://api.cluexp.com/v1", "description": "Canonical public machine API"},
+            {
+                "url": "https://intake.cluexp.com/api/v1",
+                "description": "Legacy origin, available during migration",
+            },
+        ],
         "paths": v1_paths,
         "components": {"schemas": _referenced_schemas(v1_paths, all_schemas)},
     }

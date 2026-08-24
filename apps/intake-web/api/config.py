@@ -126,3 +126,16 @@ CUSTOMER_INTAKE_BASE_URL = (
     or os.environ.get("NEXT_PUBLIC_INTAKE_BASE_URL")
     or "https://intake.cluexp.com"
 ).rstrip("/")
+
+# --- api.cluexp.com hostname facade ---
+# Host header allowlist for Starlette's TrustedHostMiddleware. Unset -> "*"
+# (allow all) so local dev and tests are never broken by this; production sets
+# it explicitly (see docs/API-HOSTNAME-ROLLOUT.md).
+_trusted_hosts_env = os.environ.get("TRUSTED_HOSTS", "").strip()
+TRUSTED_HOSTS = [h.strip() for h in _trusted_hosts_env.split(",") if h.strip()] or ["*"]
+
+# Hostnames that must serve ONLY the public /v1 API surface -- no website "/",
+# no internal "/api/*" routes. Requests to these hosts for any other path get
+# an opaque JSON 404 instead of reaching internal routes or the Next.js app.
+_api_only_hosts_env = os.environ.get("API_ONLY_HOSTNAMES", "api.cluexp.com").strip()
+API_ONLY_HOSTNAMES = {h.strip().lower() for h in _api_only_hosts_env.split(",") if h.strip()}
