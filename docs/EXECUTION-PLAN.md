@@ -93,6 +93,12 @@ intake-web discovery assets `/ai`, `/llms.txt`, `/openapi-v1.json`, `/robots.txt
 deployed, but do not submit ClueXP to ChatGPT/Claude/Gemini/Siri marketplaces and do not publish
 hosted partner discovery pages yet.
 
+2026-08-24 (service/partner discovery pages, code only, not deployed/published): added crawlable
+static service pages `/services`, `/services/locksmith`, `/services/locksmith/residential-lockout`,
+`/services/locksmith/vehicle-lockout`, `/services/locksmith/rekey`, plus `/partners` as a truthful
+hosted-partner discovery entry point. `/partners` intentionally lists no partners until approved
+partner metadata/pages exist.
+
 ## Product Backlog & Release Map
 
 > Folded in from the former `ROADMAP.md`. This is the outcome-based backlog above the

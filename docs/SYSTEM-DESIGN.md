@@ -974,6 +974,11 @@ Public crawl/discovery entrypoints, once the intake-web build containing them is
 `/sitemap.xml`. These are discovery surfaces only; they do not imply marketplace listing or
 production MCP enablement.
 
+Service discovery pages are static/SSG intake-web routes backed by `src/app/discovery.ts`:
+`/services`, `/services/{category}`, and `/services/{category}/{skill}`. Hosted partner discovery
+starts at `/partners`; partner-specific pages must not be published until real approved partner
+metadata exists.
+
 **Ownership (ADR-8, ties `origin_client_id`/`authorized_by_client_id` into the read/tracking/cancel
 gate):** `private_partner` — caller's `organization_id` must equal `customer_owner_org_id`. `network`
 — caller must be the creating client (`jobs.origin_client_id`, migration `0059`), the authorizing

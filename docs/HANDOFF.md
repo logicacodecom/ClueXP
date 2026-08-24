@@ -62,6 +62,22 @@
 
 ## Open threads
 
+### 2026-08-24 — Codex: service and hosted-partner discovery pages
+
+Human chose public discoverability track. Added crawlable service discovery pages:
+
+- `/services`
+- `/services/locksmith`
+- `/services/locksmith/residential-lockout`
+- `/services/locksmith/vehicle-lockout`
+- `/services/locksmith/rekey`
+- `/partners`
+
+The service pages include schema.org `Service`/`CollectionPage` JSON-LD and point agents toward the
+coverage-check/request/read/tracking API flow. `/partners` is intentionally truthful: it is a
+hosted-partner discovery entry point but lists no partners until approved partner metadata/pages
+exist. Updated `/sitemap.xml`, `/llms.txt`, and `/ai` to link these pages. — Codex
+
 ### 2026-08-24 — Claude: local MCP internal-preview smoke — passed, one local/dev record, fully within guardrails
 
 Ran the smoke procedure from `apps/cluexp-mcp-server/INTERNAL-PREVIEW-RUNBOOK.md` against a real

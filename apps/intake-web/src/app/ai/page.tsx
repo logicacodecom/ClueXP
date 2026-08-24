@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
-import { PUBLIC_API_PATHS, PUBLIC_SERVICE_SKILLS, SITE_URL, WITHHELD_AGENT_TOOLS } from "../discovery";
+import {
+  PUBLIC_API_PATHS,
+  PUBLIC_SERVICE_SKILLS,
+  SITE_URL,
+  WITHHELD_AGENT_TOOLS,
+  serviceSkillUrl
+} from "../discovery";
 
 export const metadata: Metadata = {
   title: "ClueXP for AI Agents and Service Discovery",
@@ -74,6 +80,8 @@ export default function AiDiscoveryPage() {
             <li><a href="/llms.txt">/llms.txt</a> — AI-readable summary and crawl guidance.</li>
             <li><a href="/openapi-v1.json">/openapi-v1.json</a> — public <code>/v1</code> OpenAPI snapshot.</li>
             <li><a href="/sitemap.xml">/sitemap.xml</a> — crawlable site map.</li>
+            <li><a href="/services">/services</a> — crawlable service discovery index.</li>
+            <li><a href="/partners">/partners</a> — hosted partner discovery entry point.</li>
           </ul>
         </div>
 
@@ -105,6 +113,7 @@ export default function AiDiscoveryPage() {
             {PUBLIC_SERVICE_SKILLS.map((skill) => (
               <li key={skill.code}>
                 <strong>{skill.name}</strong> — <code>{skill.code}</code>. {skill.description}
+                {" "}<a href={serviceSkillUrl(skill.categorySlug, skill.slug).replace(SITE_URL, "")}>Service page</a>.
               </li>
             ))}
           </ul>

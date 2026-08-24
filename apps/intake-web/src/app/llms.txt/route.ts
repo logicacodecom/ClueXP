@@ -1,4 +1,12 @@
-import { PUBLIC_API_PATHS, PUBLIC_SERVICE_SKILLS, SITE_URL, WITHHELD_AGENT_TOOLS } from "../discovery";
+import {
+  PUBLIC_API_PATHS,
+  PUBLIC_SERVICE_CATEGORIES,
+  PUBLIC_SERVICE_SKILLS,
+  SITE_URL,
+  WITHHELD_AGENT_TOOLS,
+  serviceCategoryUrl,
+  serviceSkillUrl
+} from "../discovery";
 
 export const dynamic = "force-static";
 
@@ -20,6 +28,9 @@ Base URL: ${SITE_URL}
 ## Human-readable pages
 
 - ${SITE_URL}/ai — AI/search discovery page for ClueXP capabilities, limits, and integration links.
+- ${SITE_URL}/services — public service discovery index.
+- ${PUBLIC_SERVICE_CATEGORIES.map((category) => `${serviceCategoryUrl(category.slug)} — ${category.name}.`).join("\n- ")}
+- ${SITE_URL}/partners — hosted partner discovery entry point. No partner pages are published yet unless listed there.
 
 ## Machine-readable resources
 
@@ -37,7 +48,7 @@ ${WITHHELD_AGENT_TOOLS.map((path) => `- ${path}`).join("\n")}
 
 ## Service skills currently described for discovery
 
-${PUBLIC_SERVICE_SKILLS.map((skill) => `- ${skill.code}: ${skill.name} (${skill.category}) — ${skill.description}`).join("\n")}
+${PUBLIC_SERVICE_SKILLS.map((skill) => `- ${skill.code}: ${skill.name} (${skill.category}) — ${skill.description} URL: ${serviceSkillUrl(skill.categorySlug, skill.slug)}`).join("\n")}
 
 ## Integration notes for AI systems
 
