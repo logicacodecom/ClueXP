@@ -62,6 +62,56 @@
 
 ## Open threads
 
+### 2026-08-24 — Claude: overnight agent-integration prep, slice 1 (design + docs + drift guard)
+
+Human authorized overnight work under the ClueXP Agent Operating Contract: advance toward
+AI-agent discoverability and usable public-platform integration, no production DDL/deploy, no
+real external clients/dispatch, no MCP publishing. Working the suggested priority order.
+
+Slice 1, done:
+
+1. **`docs/AGENT-INTEGRATION-MCP-PLAN.md`** (new) — durable design doc for the future MCP
+   adapter. Covers all 7 tools (`list_services`, `check_coverage`, `create_service_request`,
+   `authorize_dispatch`, `get_service_request`, `get_tracking`, `cancel_service_request`) with
+   exact `/v1` endpoint mapping, required scope, idempotency behavior, mandatory confirmation
+   rules for mutating tools, error mapping to the real `/v1` envelope shape
+   (`{error, request_id, detail?}`, not a nested object — checked against `main.py`), audit/rate
+   limit notes (both fully server-side already, no adapter-side reimplementation), and an explicit
+   allowed/not-allowed list per platform (ChatGPT/Claude/Gemini/Siri treated identically — no
+   platform gets a wider surface). Flags two open product decisions rather than guessing: package
+   location for a future MCP server, and whether `authorize_dispatch`/`cancel_service_request`
+   should be excluded from a first internal-preview tool set given blast radius. **This is a
+   design doc only — no server code, no scope expansion, nothing runnable.**
+
+2. **`docs/PUBLIC-API-DEVELOPER-GUIDE.md`** (new) — partner-facing reference for the shipped
+   `/v1` contract: auth (`Authorization: Bearer` or `X-Api-Key`), scope table, request-id/error
+   envelope shape, idempotency-key guidance, rate limits, and a worked example for every endpoint
+   (services, coverage-checks, service-requests create, dispatch-authorizations, get, tracking,
+   cancellations), pulled directly from the current Pydantic models in `main.py` so examples match
+   the real request/response shapes (not guessed). Ends with an explicit non-launch limitations
+   section (no partner self-service keys yet, no payments, no overflow/re-offer, links to the MCP
+   plan for what's still design-only). No secrets or real keys included.
+
+3. **OpenAPI drift guard** — `apps/intake-web/scripts/export_openapi_v1.py` gained a `--check`
+   mode: renders the spec in memory and diffs it against the committed
+   `docs/openapi-v1-snapshot.json` without writing, exiting 1 with a clear message if stale.
+   Wired into `.github/workflows/ci.yml` as a new `public v1 OpenAPI drift check` step, right
+   after the existing `schema-types drift check` step, so a future `/v1` change that forgets to
+   re-export the snapshot fails CI instead of silently drifting. Verified locally: `python
+   scripts/export_openapi_v1.py --check` exits 0 against the current snapshot (no existing drift).
+
+Verification: full local suite `uv run pytest api/tests -q --ignore=api/tests/test_postgres_security.py`
+-> `474 passed, 1 skipped` (unchanged — this slice touched no runtime code paths, only docs and a
+new CI-only script mode). `python -m py_compile` on the modified script passed.
+
+Not started yet: developer-docs is complete but the MCP server skeleton itself (priority 4) is
+explicitly gated on this design doc being reviewed — not building it without a review pass, per
+the overnight instructions' own sequencing ("MCP skeleton only if the contract is clear"). Next
+slice: check for small public-API hardening gaps (priority 5) while this design doc waits for
+review, since it's independent, safe, and doesn't require a product decision.
+
+---
+
 ### 2026-08-24 — Claude: `created_at` gap fixed (Codex's non-blocking note from the `0059` review)
 
 Human's next step: close the small gap Codex flagged during the `0059`

@@ -57,6 +57,9 @@ jobs:
         run: |
           uv run --with pydantic python scripts/generate_types.py
           git diff --exit-code src/types/schema.generated.ts
+      - name: public v1 OpenAPI drift check
+        working-directory: apps/intake-web
+        run: uv run --with-requirements requirements.txt python scripts/export_openapi_v1.py --check
       - name: api unit tests (dispatch tracking contract)
         working-directory: apps/intake-web
         run: uv run --with-requirements requirements.txt --with pytest pytest api/tests -q --ignore=api/tests/test_postgres_security.py

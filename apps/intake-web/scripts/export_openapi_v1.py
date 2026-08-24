@@ -44,6 +44,7 @@ def _referenced_schemas(paths: dict, all_schemas: dict) -> dict:
 
 
 def main() -> None:
+    check = "--check" in sys.argv
     spec = app.openapi()
     v1_paths = {p: v for p, v in spec["paths"].items() if p == "/v1" or p.startswith("/v1/")}
     all_schemas = spec.get("components", {}).get("schemas", {})
@@ -53,7 +54,17 @@ def main() -> None:
         "paths": v1_paths,
         "components": {"schemas": _referenced_schemas(v1_paths, all_schemas)},
     }
-    OUT.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rendered = json.dumps(out, indent=2, sort_keys=True) + "\n"
+    if check:
+        current = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
+        if current != rendered:
+            print(
+                f"{OUT} is stale — run `python scripts/export_openapi_v1.py` and commit the diff.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
+    OUT.write_text(rendered, encoding="utf-8")
 
 
 if __name__ == "__main__":

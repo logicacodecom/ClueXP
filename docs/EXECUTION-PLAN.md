@@ -82,6 +82,11 @@ only), and the public lifecycle endpoints (`GET /v1/service-requests/{id}`, `GET
 `POST .../cancellations`) that reuse the existing `get_dispatch_status`/`cancel_job` machinery
 unchanged rather than reimplementing it.
 
+2026-08-24 (overnight slice 1, docs/CI only, no schema/runtime change): added
+`docs/AGENT-INTEGRATION-MCP-PLAN.md` (design-only MCP/agent tool contract, not yet reviewed or
+built) and `docs/PUBLIC-API-DEVELOPER-GUIDE.md` (partner-facing `/v1` reference), and a CI
+`public v1 OpenAPI drift check` step so `docs/openapi-v1-snapshot.json` staleness fails the build.
+
 ## Product Backlog & Release Map
 
 > Folded in from the former `ROADMAP.md`. This is the outcome-based backlog above the

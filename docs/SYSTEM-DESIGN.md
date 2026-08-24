@@ -962,6 +962,12 @@ key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flig
 | `GET` | `/v1/service-requests/{request_id}/tracking` | external API key, `service_requests:read` scope | Reuses `store.get_dispatch_status` **unchanged** — the identical customer-safe state machine `/tickets/{id}/tracking` already uses. Technician identity revealed only at `matched`, never earlier, by construction (one function, not a second one that could drift). |
 | `POST` | `/v1/service-requests/{request_id}/cancellations` | external API key, `service_requests:cancel` scope | Reuses `store.cancel_job` unchanged (atomic, revokes outstanding offers). Cancellable while `draft` (never authorized) or within the existing customer-cancel window (`pending_dispatch` through `en_route`); `409 not_cancellable` once too far into fulfillment (`arrived` onward). **Idempotent** — an already-cancelled request returns the same success shape rather than erroring. Requires a `reason` (min 3 chars). |
 
+Partner-facing usage reference (auth, scopes, curl examples per endpoint, current non-launch
+limitations): `docs/PUBLIC-API-DEVELOPER-GUIDE.md`. Planned AI-agent/MCP adapter design (tool-to-
+endpoint mapping, confirmation rules for mutating tools, allowed/not-allowed surface per platform)
+— design only, not built: `docs/AGENT-INTEGRATION-MCP-PLAN.md`. `docs/openapi-v1-snapshot.json`
+staleness is enforced in CI (`public v1 OpenAPI drift check` step).
+
 **Ownership (ADR-8, ties `origin_client_id`/`authorized_by_client_id` into the read/tracking/cancel
 gate):** `private_partner` — caller's `organization_id` must equal `customer_owner_org_id`. `network`
 — caller must be the creating client (`jobs.origin_client_id`, migration `0059`), the authorizing
