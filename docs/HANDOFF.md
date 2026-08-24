@@ -62,6 +62,64 @@
 
 ## Open threads
 
+### 2026-08-24 — Claude: MCP server skeleton built — `apps/cluexp-mcp-server/` (internal preview, local-only)
+
+Per Codex's `f14f5ef` review and go-ahead, built the local-only standalone MCP server skeleton,
+scoped to exactly the five tools recommended in `docs/AGENT-INTEGRATION-MCP-PLAN.md` §9's
+first-pass list. `authorize_dispatch` and `cancel_service_request` are held back — there is no
+code path in this package that reaches either endpoint.
+
+Files added (all new, nothing existing touched except CI):
+- `apps/cluexp-mcp-server/mcp_server/client.py` — thin `httpx`-based wrapper, one function per
+  `/v1` endpoint (`list_services`, `check_coverage`, `create_service_request`,
+  `get_service_request`, `get_tracking`). Reads `CLUEXP_API_BASE_URL`/`CLUEXP_API_KEY` from env
+  with no defaults (in particular no default pointing at production) and raises `ClueXPApiError`
+  parsed from the real flat `{error, request_id, detail?}` envelope on any non-2xx response. No
+  internal store/dispatch import, no non-`/v1` route.
+- `apps/cluexp-mcp-server/mcp_server/server.py` — `mcp.server.fastmcp.FastMCP` server registering
+  exactly those 5 tools as MCP tools. `create_service_request` takes a required `confirm: bool`
+  parameter (no default) — `confirm=False` returns a `confirmation_required` error and the
+  wrapped API call is never invoked, verified by test. Every tool catches `ClueXPApiError` and
+  returns a structured error dict rather than raising, matching the plan doc's error-mapping
+  section.
+- `apps/cluexp-mcp-server/tests/test_client.py`, `tests/test_server_tools.py` — 10 tests total,
+  all against `httpx.MockTransport` or monkeypatched module functions; zero real sockets, zero
+  production traffic. Notably `test_exactly_five_tools_registered` asserts the exact tool-name set
+  and explicitly asserts `authorize_dispatch`/`cancel_service_request` are absent, and
+  `test_create_service_request_requires_confirm_true` asserts the underlying API call is never
+  reached when `confirm=False`.
+- `apps/cluexp-mcp-server/requirements.txt` (`mcp>=1.9.0,<2.0.0`, `httpx>=0.27.0`),
+  `requirements-dev.txt` (adds `pytest`, `pytest-asyncio`), `pytest.ini` (`asyncio_mode = auto`),
+  `README.md` (env var contract, how to run locally over stdio, confirmation policy, explicit
+  "not published/listed/submitted anywhere" statement).
+- `.github/workflows/ci.yml` — new `mcp-server` job (no Postgres service, independent of `api`):
+  `python -m compileall` then `pytest tests -q`.
+
+Verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `10 passed`.
+- `uv run --with-requirements requirements.txt python -c "from mcp_server import server; ..."`
+  confirmed the registered tool set is exactly `{list_services, check_coverage,
+  create_service_request, get_service_request, get_tracking}` — no more, no less.
+- `python -m compileall mcp_server` clean.
+- No `__pycache__`/`.pytest_cache` committed (already covered by root `.gitignore`).
+
+Risks / open items:
+- This is stdio-transport only, run manually (`python -m mcp_server.server`) — nothing listens on
+  a network port, nothing is deployed, nothing is connected to any agent platform.
+- `CLUEXP_API_KEY` must be a real (but non-production, non-real-customer) key to do anything
+  beyond the mocked tests — no key is committed here or anywhere in this change.
+- Confirmation is enforced only inside `create_service_request`'s own tool function. If a future
+  slice adds `authorize_dispatch`/`cancel_service_request` tools, each needs the same explicit,
+  no-default `confirm` parameter — this is not a shared decorator, so it must be applied per tool
+  deliberately, not assumed.
+
+Next action for Codex/Human: decide whether/when to exercise this against a local dev instance of
+the `/v1` API (still no production traffic), and whether `authorize_dispatch`/
+`cancel_service_request` get a second reviewed pass as tools, or stay excluded longer-term.
+
+---
+
 ### 2026-08-24 — Codex: review result for overnight agent-integration prep
 
 Reviewed Claude's overnight commits `6c28a37`, `df90fce`, and `f8e61e3`.

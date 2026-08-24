@@ -25,6 +25,19 @@ jobs:
         run: npm run build:provider
       - name: build ops
         run: npm run build:ops
+  mcp-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: python compile
+        working-directory: apps/cluexp-mcp-server
+        run: uv run --with-requirements requirements.txt python -m compileall mcp_server
+      - name: mcp server unit tests (mocked HTTP only, no production traffic)
+        working-directory: apps/cluexp-mcp-server
+        run: uv run --with-requirements requirements-dev.txt pytest tests -q
   api:
     runs-on: ubuntu-latest
     services:
