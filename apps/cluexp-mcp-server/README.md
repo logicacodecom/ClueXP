@@ -51,6 +51,10 @@ This starts the MCP server over stdio, for a local MCP-speaking client (e.g. an 
 MCP integration) to connect to. It does not open a network port and is not reachable
 remotely.
 
+For a safer step-by-step internal preview procedure, see
+[`INTERNAL-PREVIEW-RUNBOOK.md`](INTERNAL-PREVIEW-RUNBOOK.md). Placeholder-only MCP client
+config examples live under [`examples/`](examples/).
+
 ## Tests
 
 ```
@@ -60,6 +64,10 @@ uv run --with-requirements requirements-dev.txt pytest tests -q
 
 All tests use `httpx.MockTransport` (no real sockets) or monkeypatch the client module
 directly — nothing here talks to production or any real service.
+
+`tests/test_local_v1_integration.py` additionally proves the five MCP tools against the
+real local FastAPI `/v1` app via `httpx.ASGITransport`; it still opens no socket and uses
+only an in-memory external API client/key fixture.
 
 ## Confirmation policy
 

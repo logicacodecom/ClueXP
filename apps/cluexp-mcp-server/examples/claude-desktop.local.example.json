@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "cluexp-local-preview": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with-requirements",
+        "requirements.txt",
+        "python",
+        "-m",
+        "mcp_server.server"
+      ],
+      "cwd": "C:\\__CODE__\\ClueXP\\intake\\apps\\cluexp-mcp-server",
+      "env": {
+        "CLUEXP_API_BASE_URL": "http://127.0.0.1:8000",
+        "CLUEXP_API_KEY": "replace-with-local-dev-api-key"
+      }
+    }
+  }
+}

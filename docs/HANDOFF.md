@@ -62,6 +62,19 @@
 
 ## Open threads
 
+### 2026-08-24 — Codex: internal MCP preview operator kit
+
+Added local-preview operator docs/config examples for the MCP server:
+
+- `apps/cluexp-mcp-server/INTERNAL-PREVIEW-RUNBOOK.md`
+- `apps/cluexp-mcp-server/.env.example`
+- `apps/cluexp-mcp-server/examples/claude-desktop.local.example.json`
+- `apps/cluexp-mcp-server/examples/generic-mcp-client.local.example.json`
+
+These are placeholder-only and keep the same boundary: local/dev URL, non-production key, five
+tools only, no dispatch/cancel, no production traffic, no deployment, no marketplace submission.
+README now points to the runbook and notes the local FastAPI/ASGI proof test. — Codex
+
 ### 2026-08-24 — Codex: local MCP proof run
 
 Human asked Codex to run the proof directly. Added a repeatable local integration proof under
