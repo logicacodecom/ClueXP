@@ -144,6 +144,33 @@ no-op change. Next: priority 6 (docs) is effectively done as part of slice 1; th
 written, per the overnight instructions' explicit sequencing. Stopping here rather than building
 ungated MCP server code.
 
+### 2026-08-24 — Claude: overnight session stopping point — MCP skeleton is a product decision, not a build task
+
+Evaluated whether to scaffold the MCP server skeleton (priority 4) tonight. Decided **not to**,
+and this is a stop-and-escalate, not a skipped task:
+
+- `docs/AGENT-INTEGRATION-MCP-PLAN.md` §9 already flags two open product decisions: package
+  location, and whether `authorize_dispatch`/`cancel_service_request` belong in a first preview
+  tool set given their blast radius. Scaffolding now would mean guessing both.
+- No `mcp` (Model Context Protocol) SDK dependency exists anywhere in this repo yet. Picking one
+  (language/SDK, transport, packaging) is itself an architecture choice, not a mechanical step —
+  exactly the kind of "material architecture change" this contract says to hand back rather than
+  decide unilaterally.
+- The overnight brief's own sequencing note says "MCP skeleton only if the contract is clear" —
+  the tool-to-endpoint contract is clear (the plan doc), but the two flagged product decisions are
+  not, so the precondition isn't actually satisfied yet.
+
+Recommendation for Codex/Human: review `docs/AGENT-INTEGRATION-MCP-PLAN.md`, resolve the two §9
+decisions, and greenlight explicitly — at which point the skeleton (read-only tools +
+`create_service_request` only, per the plan's own first-pass recommendation) is a same-session
+build.
+
+Session summary for tonight: `docs/AGENT-INTEGRATION-MCP-PLAN.md` (new, design-only),
+`docs/PUBLIC-API-DEVELOPER-GUIDE.md` (new), OpenAPI drift-guard CI step (new), hardening audit
+(no gaps found). Three commits (`6c28a37`, `df90fce`, this one), CI green throughout. No
+production DDL, no production deploy, no real external clients/requests/dispatch, no MCP server
+code, no scope expansion beyond docs/CI. All guardrails from the overnight authorization held.
+
 ---
 
 ### 2026-08-24 — Claude: `created_at` gap fixed (Codex's non-blocking note from the `0059` review)
