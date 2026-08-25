@@ -23,7 +23,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_server import client
 from mcp_server.client import ClueXPApiError
 
-mcp = FastMCP("cluexp-mcp-server")
+mcp = FastMCP("cluexp-mcp-server", stateless_http=True)
 
 
 def _error_result(exc: ClueXPApiError) -> dict[str, Any]:

@@ -49,13 +49,17 @@ export const PUBLIC_API_PATHS = [
   "GET /v1/services",
   "POST /v1/coverage-checks",
   "POST /v1/service-requests",
+  "POST /v1/service-requests/{id}/dispatch-authorizations",
   "GET /v1/service-requests/{id}",
-  "GET /v1/service-requests/{id}/tracking"
+  "GET /v1/service-requests/{id}/tracking",
+  "POST /v1/service-requests/{id}/cancellations"
 ] as const;
 
 export const WITHHELD_AGENT_TOOLS = [
-  "POST /v1/service-requests/{id}/dispatch-authorizations",
-  "POST /v1/service-requests/{id}/cancellations"
+  "payment authorization/capture/refund tools",
+  "private-to-network overflow tools",
+  "provider ranking override tools",
+  "internal roster, admin, ops, technician, raw tracking-token, or database tools"
 ] as const;
 
 export function serviceCategoryUrl(slug: string) {

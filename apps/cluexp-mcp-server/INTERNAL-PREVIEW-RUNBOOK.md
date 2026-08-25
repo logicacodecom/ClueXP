@@ -1,6 +1,6 @@
-# ClueXP MCP — internal local preview runbook
+# ClueXP MCP — controlled preview / launch runbook
 
-Status: local/internal preview only. This is not a marketplace listing, public connector, production deployment, or permission to use production credentials.
+Status: controlled preview / launch candidate. This is not by itself a marketplace listing or public connector; external platform submission and production credential wiring are separate launch steps.
 
 ## Safety boundary
 
@@ -8,6 +8,7 @@ Status: local/internal preview only. This is not a marketplace listing, public c
 - Use only a non-production external API key.
 - Do not point `CLUEXP_API_BASE_URL` at `https://intake.cluexp.com` unless Human + Codex separately authorize a production MCP preview.
 - Do not commit a real `CLUEXP_API_KEY`.
+- Do not expose `/mcp` publicly without setting `CLUEXP_MCP_BEARER_TOKEN`.
 - Internal preview exposes seven tools:
   - `list_services`
   - `check_coverage`
@@ -38,6 +39,7 @@ Start from `.env.example`, but keep real values in your shell or local MCP clien
 ```sh
 CLUEXP_API_BASE_URL=http://127.0.0.1:8000
 CLUEXP_API_KEY=<local-dev-api-key>
+CLUEXP_MCP_BEARER_TOKEN=<local-mcp-client-token-for-http-mode>
 ```
 
 The key should have only these scopes:
@@ -60,6 +62,20 @@ uv run --with-requirements requirements.txt python -m mcp_server.server
 ```
 
 This starts a stdio MCP server. It does not listen on a network port.
+
+For remote HTTP mode:
+
+```sh
+uv run --with-requirements requirements.txt uvicorn mcp_server.asgi:app --host 0.0.0.0 --port 8000
+```
+
+Expected checks:
+
+```text
+GET  /healthz -> 200 {"status":"ok"}
+POST /mcp without Authorization -> 401, or 503 if CLUEXP_MCP_BEARER_TOKEN is not configured
+POST /mcp with Authorization: Bearer <CLUEXP_MCP_BEARER_TOKEN> -> reaches the MCP app
+```
 
 ## 4. Connect a local MCP client
 

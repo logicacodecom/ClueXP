@@ -1,6 +1,6 @@
 # Agent Integration / MCP Plan
 
-Status: internal-preview implementation. `apps/cluexp-mcp-server` implements the approved local preview slice, including confirmation-gated mutating tools, but no MCP server is published, listed, or connected to production by default. Human approval is still required before any external platform connection or production traffic.
+Status: controlled-preview implementation / launch candidate. `apps/cluexp-mcp-server` implements the approved MCP slice, including confirmation-gated mutating tools and a remote Streamable HTTP entrypoint, but no MCP server is published, listed, or connected to production by default. Human approval is still required before external platform submission and production credential wiring.
 
 Scope: how AI agents (ChatGPT, Claude, Gemini, Siri, or any MCP-speaking client) call ClueXP's public `/v1` API. This document governs the adapter boundary; it does not authorize publishing or connecting an adapter externally.
 
@@ -70,6 +70,7 @@ An MCP tool is a thin, typed wrapper over an existing `/v1` HTTP endpoint. A too
 ## 3. Auth model for the adapter
 
 - The MCP server holds one external API key (client credential) per deployment/environment, configured via env var, never committed.
+- A remotely deployed MCP server also requires inbound bearer auth (`CLUEXP_MCP_BEARER_TOKEN`) before requests can reach `/mcp`; missing token configuration fails closed.
 - The MCP server does not implement its own auth scheme for the calling agent platform beyond whatever that platform requires (e.g. ChatGPT connector auth) — that is a separate, later concern and out of scope for this doc.
 - Scopes are enforced server-side by `/v1` exactly as today; the MCP layer does not re-implement or bypass scope checks.
 
@@ -118,5 +119,6 @@ Not allowed, explicitly, until separately re-scoped by Human/Codex:
 ## 9. Implementation status and remaining stop points
 
 - The MCP server ships as a standalone package under `apps/cluexp-mcp-server/`.
-- The local preview now exposes all seven tools in §2. Mutating tools (`create_service_request`, `authorize_dispatch`, `cancel_service_request`) require `confirm=true` in the MCP tool implementation before any API request is sent.
-- Remaining stop points: production credentials, production traffic, remotely reachable deployment, external connector/marketplace submission, and any live dispatch/cancel smoke still require explicit Human + Codex authorization.
+- The preview now exposes all seven tools in §2. Mutating tools (`create_service_request`, `authorize_dispatch`, `cancel_service_request`) require `confirm=true` in the MCP tool implementation before any API request is sent.
+- The remote launch candidate exposes Streamable HTTP at `/mcp` via `mcp_server.asgi:app`, with a public `/healthz` and fail-closed bearer auth on MCP traffic.
+- Remaining stop points: production credentials, production traffic, external connector/marketplace submission, and any live dispatch/cancel smoke still require explicit Human + Codex authorization.

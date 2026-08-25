@@ -1,10 +1,9 @@
-# ClueXP MCP Server — internal preview
+# ClueXP MCP Server — controlled preview
 
-**Status: internal preview only.** Not published, listed, or submitted to any external
-agent platform (ChatGPT, Claude, Gemini, Siri, or otherwise). Not connected to production
-by default, and never should be without a separate, explicit decision. See
-`docs/AGENT-INTEGRATION-MCP-PLAN.md` for the full design and open decisions this skeleton
-implements for local/internal preview.
+**Status: controlled preview / launch candidate.** The server supports local stdio and remote
+Streamable HTTP deployment, but it is not published, listed, or submitted to any external
+agent platform (ChatGPT, Claude, Gemini, Siri, or otherwise) until the external platform
+submission step is completed. See `docs/AGENT-INTEGRATION-MCP-PLAN.md` for the full design.
 
 ## What this is
 
@@ -24,7 +23,7 @@ Tools exposed:
 
 ## Configuration
 
-Two required environment variables, no defaults, no committed secrets:
+Required environment variables, no defaults, no committed secrets:
 
 - `CLUEXP_API_BASE_URL` — base URL of the `/v1` API to call (e.g. a local dev server).
   There is no default, and in particular no default pointing at production — pointing
@@ -34,6 +33,9 @@ Two required environment variables, no defaults, no committed secrets:
   to use (`services:read`, `coverage:check`, `service_requests:write`,
   `service_requests:authorize`, `service_requests:read`, `service_requests:cancel`).
   Never commit a real key.
+- `CLUEXP_MCP_BEARER_TOKEN` — required for the remote HTTP `/mcp` endpoint. `/healthz`
+  remains public for hosting checks. If this token is missing, remote MCP calls fail closed
+  with `503 mcp_auth_not_configured`.
 
 ## Running locally
 
@@ -45,6 +47,24 @@ uv run --with-requirements requirements.txt python -m mcp_server.server
 This starts the MCP server over stdio, for a local MCP-speaking client (e.g. an editor's
 MCP integration) to connect to. It does not open a network port and is not reachable
 remotely.
+
+## Running as a remote HTTP MCP server
+
+```
+cd apps/cluexp-mcp-server
+uv run --with-requirements requirements.txt uvicorn mcp_server.asgi:app --host 0.0.0.0 --port 8000
+```
+
+The remote endpoint is:
+
+```
+GET  /healthz  -> public health check
+POST /mcp      -> Streamable HTTP MCP endpoint, requires Authorization: Bearer <CLUEXP_MCP_BEARER_TOKEN>
+```
+
+A Dockerfile is included for container hosts. Production deployment must set
+`CLUEXP_API_BASE_URL=https://api.cluexp.com`, a scoped production `CLUEXP_API_KEY`, and
+`CLUEXP_MCP_BEARER_TOKEN` in the hosting platform's secret manager.
 
 For a safer step-by-step internal preview procedure, see
 [`INTERNAL-PREVIEW-RUNBOOK.md`](INTERNAL-PREVIEW-RUNBOOK.md). Placeholder-only MCP client

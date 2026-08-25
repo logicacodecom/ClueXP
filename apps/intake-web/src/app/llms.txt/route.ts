@@ -19,11 +19,10 @@ Base URL: ${SITE_URL}
 
 ## AI and agent integration status
 
-- Public API: internal preview contract exists under /v1.
-- MCP adapter: internal local-preview package exists in the repository; it is not publicly listed or connected to marketplace agent platforms yet.
+- Public API: approved client contract exists under /v1.
+- MCP adapter: controlled-preview package exists in the repository; it is not publicly listed or connected to marketplace agent platforms yet.
 - Production marketplace status: not submitted/listed for ChatGPT, Claude, Gemini, Siri, or other public agent stores.
-- Mutating agent calls require explicit user confirmation before request creation.
-- Dispatch authorization and cancellation are intentionally withheld from the first MCP preview.
+- Mutating agent calls require explicit user confirmation before service-request creation, dispatch authorization, or cancellation.
 
 ## Human-readable pages
 
@@ -42,7 +41,7 @@ Base URL: ${SITE_URL}
 
 ${PUBLIC_API_PATHS.map((path) => `- ${path}`).join("\n")}
 
-## Explicitly withheld from first public/agent preview
+## Explicitly withheld from public/agent tools
 
 ${WITHHELD_AGENT_TOOLS.map((path) => `- ${path}`).join("\n")}
 

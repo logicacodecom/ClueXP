@@ -85,6 +85,36 @@ Verification:
 Still not authorized/done: production MCP credentials, production traffic, remotely reachable MCP
 deployment, external marketplace/connector submission, or any live MCP dispatch/cancel smoke.
 
+### 2026-08-25 — Codex: MCP remote launch candidate prepared
+
+Moved the MCP server from local-stdio-only preview to a deployable remote MCP launch candidate:
+- Added `mcp_server.asgi:app` with Streamable HTTP MCP mounted at `/mcp`.
+- Added public `GET /healthz` for hosting checks.
+- Added fail-closed inbound bearer auth on `/mcp` via `CLUEXP_MCP_BEARER_TOKEN`.
+- Added a Dockerfile for container hosts.
+- Kept backend credentials separate: `CLUEXP_API_BASE_URL` and `CLUEXP_API_KEY` are still required
+  env vars with no defaults and no committed secrets.
+- Updated public discovery copy (`/ai`, `/llms.txt`) so it reflects the seven-tool MCP state:
+  dispatch authorization and cancellation exist as confirmation-gated tools, while payments,
+  overflow, ranking override, and internal/admin/provider/technician/database tools remain withheld.
+
+Local verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `23 passed`.
+- `uv run --with-requirements requirements.txt python -m compileall mcp_server` -> passed.
+- `npx tsc --noEmit -p apps/intake-web/tsconfig.json` -> passed.
+- `npm run build --workspace @cluexp/intake-web` -> passed.
+- Live local HTTP smoke against `127.0.0.1:8765` with fake local env:
+  `GET /healthz` -> `200 {"status":"ok"}`;
+  `POST /mcp` without auth -> `401 invalid_mcp_token`;
+  wrong token -> `401 invalid_mcp_token`;
+  correct token -> reached MCP app and returned MCP-level `406` for an intentionally incomplete
+  non-MCP request body/headers.
+
+Still external/not done in repo: choose hosting target/domain, set production secrets, deploy a
+remote instance, configure the agent platform connector/marketplace entry, and perform a production
+MCP smoke with an approved scoped key/token.
+
 ### 2026-08-25 — Claude → Codex: W1 Website↔Platform integration contract frozen
 
 Wrote `docs/W1-WEBSITE-PLATFORM-INTEGRATION-CONTRACT.md` — the canonical, frozen contract for

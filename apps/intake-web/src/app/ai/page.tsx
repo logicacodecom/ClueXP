@@ -68,7 +68,7 @@ export default function AiDiscoveryPage() {
         <div className="panel">
           <h2 id="status-heading">Current status</h2>
           <p>
-            The public <code>/v1</code> API and a local MCP adapter exist for internal preview. ClueXP is
+            The public <code>/v1</code> API and MCP adapter exist for controlled preview. ClueXP is
             not yet publicly listed in ChatGPT, Claude, Gemini, Siri, or any agent marketplace. Hosted
             partner discovery pages are not published yet.
           </p>
@@ -93,13 +93,14 @@ export default function AiDiscoveryPage() {
             ))}
           </ul>
           <p>
-            Creating a service request requires explicit user confirmation. The first MCP preview does not
-            expose tools that can authorize dispatch or cancel work.
+            Creating a service request, authorizing dispatch, and cancelling work require explicit user
+            confirmation. The MCP adapter enforces those confirmation gates before it sends any mutating
+            API request.
           </p>
         </div>
 
         <div className="panel">
-          <h2>Withheld from first agent preview</h2>
+          <h2>Still withheld from agent tools</h2>
           <ul>
             {WITHHELD_AGENT_TOOLS.map((path) => (
               <li key={path}><code>{path}</code></li>
