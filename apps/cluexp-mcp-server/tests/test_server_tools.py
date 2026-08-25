@@ -1,6 +1,4 @@
-"""Tests for the MCP tool layer: confirmation enforcement, and proof that the
-two withheld capabilities (dispatch authorization, cancellation) are not
-reachable through any registered tool."""
+"""Tests for the MCP tool layer: confirmation enforcement and error mapping."""
 from __future__ import annotations
 
 import pytest
@@ -13,7 +11,7 @@ def _tool_fn(name: str):
 
 
 @pytest.mark.asyncio
-async def test_exactly_five_tools_registered():
+async def test_exactly_seven_tools_registered():
     names = {t.name for t in server.mcp._tool_manager.list_tools()}
     assert names == {
         "list_services",
@@ -21,9 +19,9 @@ async def test_exactly_five_tools_registered():
         "create_service_request",
         "get_service_request",
         "get_tracking",
+        "authorize_dispatch",
+        "cancel_service_request",
     }
-    assert "authorize_dispatch" not in names
-    assert "cancel_service_request" not in names
 
 
 @pytest.mark.asyncio
@@ -65,6 +63,78 @@ async def test_create_service_request_calls_api_when_confirmed(monkeypatch):
         confirm=True,
     )
     assert result["data"]["request_reference"] == "SR-1"
+
+
+@pytest.mark.asyncio
+async def test_authorize_dispatch_requires_confirm_true(monkeypatch):
+    called = False
+
+    async def fake_authorize(**kwargs):
+        nonlocal called
+        called = True
+        return {"data": {"request_reference": kwargs["request_reference"], "status": "authorized"}}
+
+    monkeypatch.setattr(server.client, "authorize_dispatch", fake_authorize)
+    fn = _tool_fn("authorize_dispatch")
+
+    result = await fn(
+        request_reference="SR-1",
+        channel="first_party_website",
+        evidence_reference="consent-event-1",
+        terms_version="2026-08-01",
+        confirm=False,
+    )
+    assert result["error"] == "confirmation_required"
+    assert called is False, "confirm=False must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_authorize_dispatch_calls_api_when_confirmed(monkeypatch):
+    async def fake_authorize(**kwargs):
+        return {"data": {"request_reference": kwargs["request_reference"], "status": "authorized"}}
+
+    monkeypatch.setattr(server.client, "authorize_dispatch", fake_authorize)
+    fn = _tool_fn("authorize_dispatch")
+
+    result = await fn(
+        request_reference="SR-1",
+        channel="first_party_website",
+        evidence_reference="consent-event-1",
+        terms_version="2026-08-01",
+        confirm=True,
+    )
+    assert result["data"]["request_reference"] == "SR-1"
+    assert result["data"]["status"] == "authorized"
+
+
+@pytest.mark.asyncio
+async def test_cancel_service_request_requires_confirm_true(monkeypatch):
+    called = False
+
+    async def fake_cancel(**kwargs):
+        nonlocal called
+        called = True
+        return {"data": {"request_reference": kwargs["request_reference"], "status": "cancelled"}}
+
+    monkeypatch.setattr(server.client, "cancel_service_request", fake_cancel)
+    fn = _tool_fn("cancel_service_request")
+
+    result = await fn(request_reference="SR-1", reason="Customer requested cancellation", confirm=False)
+    assert result["error"] == "confirmation_required"
+    assert called is False, "confirm=False must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_cancel_service_request_calls_api_when_confirmed(monkeypatch):
+    async def fake_cancel(**kwargs):
+        return {"data": {"request_reference": kwargs["request_reference"], "status": "cancelled"}}
+
+    monkeypatch.setattr(server.client, "cancel_service_request", fake_cancel)
+    fn = _tool_fn("cancel_service_request")
+
+    result = await fn(request_reference="SR-1", reason="Customer requested cancellation", confirm=True)
+    assert result["data"]["request_reference"] == "SR-1"
+    assert result["data"]["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

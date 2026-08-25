@@ -62,6 +62,29 @@
 
 ## Open threads
 
+### 2026-08-25 — Codex: MCP internal preview completed to seven tools
+
+Implemented the second MCP preview pass in `apps/cluexp-mcp-server`: the server now exposes all
+seven approved `/v1` wrapper tools — `list_services`, `check_coverage`, `create_service_request`,
+`get_service_request`, `get_tracking`, `authorize_dispatch`, and `cancel_service_request`.
+
+Safety boundary preserved:
+- The MCP server still has no default production URL or key.
+- It still calls only `/v1` endpoints; no internal store/dispatch/admin/provider/technician routes.
+- Mutating tools (`create_service_request`, `authorize_dispatch`, `cancel_service_request`) require
+  `confirm=true` in code before any HTTP request is sent. `confirm=false` returns
+  `confirmation_required` and never reaches the API.
+- Local integration proof still avoids real dispatch/cancel by exercising the confirmation-required
+  path for the new high-blast-radius tools.
+
+Verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `19 passed`.
+- `uv run --with-requirements requirements.txt python -m compileall mcp_server` -> passed.
+
+Still not authorized/done: production MCP credentials, production traffic, remotely reachable MCP
+deployment, external marketplace/connector submission, or any live MCP dispatch/cancel smoke.
+
 ### 2026-08-25 — Claude → Codex: W1 Website↔Platform integration contract frozen
 
 Wrote `docs/W1-WEBSITE-PLATFORM-INTEGRATION-CONTRACT.md` — the canonical, frozen contract for

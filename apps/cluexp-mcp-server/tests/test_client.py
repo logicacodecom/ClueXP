@@ -129,3 +129,51 @@ async def test_request_reference_path_segments_are_escaped(monkeypatch):
         "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra",
         "http://local-test-api.invalid/v1/service-requests/SR-2%2Fextra/tracking",
     ]
+
+
+@pytest.mark.asyncio
+async def test_authorize_dispatch_path_and_payload(monkeypatch):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["payload"] = request.read().decode()
+        return httpx.Response(
+            200,
+            json={"data": {"request_reference": "SR-1", "status": "authorized"}, "meta": {"request_id": "r6"}},
+        )
+
+    _patch_async_client(monkeypatch, handler)
+    result = await client.authorize_dispatch(
+        request_reference="SR-1/extra",
+        channel="first_party_website",
+        evidence_reference="consent-event-1",
+        terms_version="2026-08-01",
+    )
+    assert seen["url"] == "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra/dispatch-authorizations"
+    assert '"channel":"first_party_website"' in seen["payload"]
+    assert '"evidence_reference":"consent-event-1"' in seen["payload"]
+    assert '"terms_version":"2026-08-01"' in seen["payload"]
+    assert result["data"]["status"] == "authorized"
+
+
+@pytest.mark.asyncio
+async def test_cancel_service_request_path_and_payload(monkeypatch):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["payload"] = request.read().decode()
+        return httpx.Response(
+            200,
+            json={"data": {"request_reference": "SR-1", "status": "cancelled"}, "meta": {"request_id": "r7"}},
+        )
+
+    _patch_async_client(monkeypatch, handler)
+    result = await client.cancel_service_request(
+        request_reference="SR-1/extra",
+        reason="Customer requested cancellation",
+    )
+    assert seen["url"] == "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra/cancellations"
+    assert '"reason":"Customer requested cancellation"' in seen["payload"]
+    assert result["data"]["status"] == "cancelled"

@@ -1,16 +1,13 @@
 """ClueXP MCP server -- internal preview.
 
-Exposes exactly five tools, each a thin wrapper over one `/v1` endpoint
+Exposes seven tools, each a thin wrapper over one `/v1` endpoint
 (see `mcp_server.client` and `docs/AGENT-INTEGRATION-MCP-PLAN.md`):
 list_services, check_coverage, create_service_request, get_service_request,
-get_tracking.
+get_tracking, authorize_dispatch, cancel_service_request.
 
-Deliberately does NOT expose `authorize_dispatch` or `cancel_service_request`
--- those stay out of this first internal-preview tool set per the plan doc's
-own §9 recommendation (highest blast-radius actions, held back for a
-separate reviewed pass). There is no code path in this module that can
-reach `/v1/service-requests/{id}/dispatch-authorizations` or
-`/v1/service-requests/{id}/cancellations`.
+The mutating tools require an explicit `confirm=true` argument enforced in
+this module before any HTTP request is sent. This is defense-in-depth over
+whatever confirmation UX the calling agent platform may or may not provide.
 
 This server is not published, listed, or connected to any external agent
 platform. It talks to whatever `/v1` API `CLUEXP_API_BASE_URL` points at --
@@ -114,6 +111,64 @@ async def get_tracking(request_reference: str) -> dict[str, Any]:
     """Read a service request's privacy-minimized tracking state. Read-only."""
     try:
         return await client.get_tracking(request_reference)
+    except ClueXPApiError as exc:
+        return _error_result(exc)
+
+
+@mcp.tool()
+async def authorize_dispatch(
+    request_reference: str,
+    channel: str,
+    evidence_reference: str,
+    terms_version: str,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Authorize dispatch for a service request. This can trigger a real technician offer.
+
+    `confirm` MUST be explicitly set to true. Before calling with confirm=true, show the
+    caller the request reference, dispatch consequence, consent evidence, and terms version,
+    then get an explicit yes. This check is enforced here, in code, not left to the
+    calling agent's own UX.
+    """
+    if not confirm:
+        return {
+            "error": "confirmation_required",
+            "detail": (
+                "Set confirm=true only after showing the caller the request reference, "
+                "dispatch consequence, consent evidence, and terms version, and getting "
+                "explicit yes. This call was not sent to the API."
+            ),
+        }
+    try:
+        return await client.authorize_dispatch(
+            request_reference=request_reference,
+            channel=channel,
+            evidence_reference=evidence_reference,
+            terms_version=terms_version,
+        )
+    except ClueXPApiError as exc:
+        return _error_result(exc)
+
+
+@mcp.tool()
+async def cancel_service_request(request_reference: str, reason: str, confirm: bool) -> dict[str, Any]:
+    """Cancel a service request when the public API still allows cancellation.
+
+    `confirm` MUST be explicitly set to true. Before calling with confirm=true, show the
+    caller the request reference and cancellation reason, then get an explicit yes. This
+    check is enforced here, in code, not left to the calling agent's own UX.
+    """
+    if not confirm:
+        return {
+            "error": "confirmation_required",
+            "detail": (
+                "Set confirm=true only after showing the caller the request reference "
+                "and cancellation reason, and getting explicit yes. This call was not "
+                "sent to the API."
+            ),
+        }
+    try:
+        return await client.cancel_service_request(request_reference=request_reference, reason=reason)
     except ClueXPApiError as exc:
         return _error_result(exc)
 

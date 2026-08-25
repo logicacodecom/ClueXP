@@ -120,3 +120,31 @@ async def get_service_request(request_reference: str) -> dict[str, Any]:
 async def get_tracking(request_reference: str) -> dict[str, Any]:
     reference = quote(request_reference, safe="")
     return await _request("GET", f"/v1/service-requests/{reference}/tracking")
+
+
+async def authorize_dispatch(
+    *,
+    request_reference: str,
+    channel: str,
+    evidence_reference: str,
+    terms_version: str,
+) -> dict[str, Any]:
+    reference = quote(request_reference, safe="")
+    return await _request(
+        "POST",
+        f"/v1/service-requests/{reference}/dispatch-authorizations",
+        json={
+            "channel": channel,
+            "evidence_reference": evidence_reference,
+            "terms_version": terms_version,
+        },
+    )
+
+
+async def cancel_service_request(*, request_reference: str, reason: str) -> dict[str, Any]:
+    reference = quote(request_reference, safe="")
+    return await _request(
+        "POST",
+        f"/v1/service-requests/{reference}/cancellations",
+        json={"reason": reason},
+    )

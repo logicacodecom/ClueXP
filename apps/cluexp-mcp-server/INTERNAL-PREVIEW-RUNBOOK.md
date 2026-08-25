@@ -8,13 +8,17 @@ Status: local/internal preview only. This is not a marketplace listing, public c
 - Use only a non-production external API key.
 - Do not point `CLUEXP_API_BASE_URL` at `https://intake.cluexp.com` unless Human + Codex separately authorize a production MCP preview.
 - Do not commit a real `CLUEXP_API_KEY`.
-- First preview exposes exactly five tools:
+- Internal preview exposes seven tools:
   - `list_services`
   - `check_coverage`
   - `create_service_request`
   - `get_service_request`
   - `get_tracking`
-- `authorize_dispatch` and `cancel_service_request` are intentionally absent.
+  - `authorize_dispatch`
+  - `cancel_service_request`
+- `create_service_request`, `authorize_dispatch`, and `cancel_service_request` require
+  `confirm=true`; with `confirm=false`, the tool must return `confirmation_required` and
+  must not call the API.
 
 ## 1. Verify the package locally
 
@@ -43,6 +47,8 @@ services:read
 coverage:check
 service_requests:write
 service_requests:read
+service_requests:authorize
+service_requests:cancel
 ```
 
 ## 3. Run the MCP server manually
@@ -75,8 +81,14 @@ In the connected MCP client, use this order:
 5. Only after explicit yes, call `create_service_request` with `confirm=true`.
 6. Call `get_service_request` with the returned request reference.
 7. Call `get_tracking` with the returned request reference.
+8. Call `authorize_dispatch` with `confirm=false`; verify it returns `confirmation_required`
+   and creates no dispatch authorization/offer.
+9. Call `cancel_service_request` with `confirm=false`; verify it returns
+   `confirmation_required` and does not cancel the request.
 
-Expected result: one local/dev service request record is created. No dispatch authorization, cancellation, technician offer, production DB write, or real customer/provider action occurs.
+Expected result: one local/dev service request record is created. No dispatch authorization,
+cancellation, technician offer, production DB write, or real customer/provider action occurs unless
+Human + Codex separately approve a live MCP dispatch/cancel smoke.
 
 ## 6. Stop conditions
 
@@ -84,5 +96,5 @@ Stop and ask Human + Codex before doing any of these:
 
 - Using production API base URL or production API key.
 - Publishing/submitting the MCP server to ChatGPT, Claude, Gemini, Siri, or any marketplace.
-- Adding `authorize_dispatch` or `cancel_service_request`.
 - Deploying the MCP server as a remotely reachable service.
+- Calling `authorize_dispatch` or `cancel_service_request` with `confirm=true` against production.

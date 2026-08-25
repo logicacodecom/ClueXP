@@ -123,12 +123,30 @@ async def test_mcp_tools_exercise_real_local_v1_api_without_dispatch_or_producti
     assert "state" in tracking["data"]
     assert tracking["data"]["assignment"] is None
 
+    blocked_authorize = await _tool_fn("authorize_dispatch")(
+        request_reference=reference,
+        channel="first_party_website",
+        evidence_reference="local-mcp-proof-consent",
+        terms_version="2026-08-01",
+        confirm=False,
+    )
+    assert blocked_authorize["error"] == "confirmation_required"
+
+    blocked_cancel = await _tool_fn("cancel_service_request")(
+        request_reference=reference,
+        reason="Local proof cancellation was not confirmed",
+        confirm=False,
+    )
+    assert blocked_cancel["error"] == "confirmation_required"
+
     assert {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()} == {
         "list_services",
         "check_coverage",
         "create_service_request",
         "get_service_request",
         "get_tracking",
+        "authorize_dispatch",
+        "cancel_service_request",
     }
     assert not getattr(store, "_dispatch_authorizations", {})
     assert not getattr(store, "_offers", {})

@@ -1,6 +1,6 @@
 # Agent Integration / MCP Plan
 
-Status: internal-preview design. `apps/cluexp-mcp-server` implements the approved first-pass local preview slice, but no MCP server is published, listed, or connected to production by default. Human approval is still required before any external platform connection or production traffic.
+Status: internal-preview implementation. `apps/cluexp-mcp-server` implements the approved local preview slice, including confirmation-gated mutating tools, but no MCP server is published, listed, or connected to production by default. Human approval is still required before any external platform connection or production traffic.
 
 Scope: how AI agents (ChatGPT, Claude, Gemini, Siri, or any MCP-speaking client) call ClueXP's public `/v1` API. This document governs the adapter boundary; it does not authorize publishing or connecting an adapter externally.
 
@@ -110,12 +110,13 @@ Not allowed, explicitly, until separately re-scoped by Human/Codex:
 - No tool that reads or writes internal-only data (organization directories, technician PII, raw tracking tokens, admin/provisioning endpoints).
 - No production traffic through an unreviewed MCP server build — all testing happens against local/test clients per §8.
 
-## 8. Testing approach (for the future skeleton, §9)
+## 8. Testing approach
 
 - Tools are tested against a local FastAPI test client or a mocked HTTP layer, never against production `intake.cluexp.com`.
 - Confirmation-gated tools (§2.3, §2.4, §2.7) get explicit unit tests asserting the confirmation step cannot be bypassed programmatically.
 
-## 9. Open product decisions (stop points — do not guess)
+## 9. Implementation status and remaining stop points
 
-- Whether the MCP server ships as a standalone package (`apps/cluexp-mcp-server/`) or as a mode of an existing service — recommend standalone package per repo convention (each app is its own deployable unit), but this is Codex's call if there's a reason to colocate.
-- Whether `authorize_dispatch` should be exposed as a tool at all in a first MCP release, given it's the highest-blast-radius action — recommend excluding it from the first internal-preview tool set and shipping only §2.1, §2.2, §2.3 (create, no dispatch), §2.5, §2.6 first, adding §2.4/§2.7 in a second reviewed pass. Flagging as a decision point rather than assuming.
+- The MCP server ships as a standalone package under `apps/cluexp-mcp-server/`.
+- The local preview now exposes all seven tools in §2. Mutating tools (`create_service_request`, `authorize_dispatch`, `cancel_service_request`) require `confirm=true` in the MCP tool implementation before any API request is sent.
+- Remaining stop points: production credentials, production traffic, remotely reachable deployment, external connector/marketplace submission, and any live dispatch/cancel smoke still require explicit Human + Codex authorization.
