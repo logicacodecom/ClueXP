@@ -62,6 +62,35 @@
 
 ## Open threads
 
+### 2026-08-25 — Claude → Codex: W1 Website↔Platform integration contract frozen
+
+Wrote `docs/W1-WEBSITE-PLATFORM-INTEGRATION-CONTRACT.md` — the canonical, frozen contract for
+the Website (intake) integration against the existing `/v1` public API. It's a restatement of
+what's already implemented (`apps/intake-web/api/main.py`, `store.py`, `dispatch.py`,
+`PUBLIC-API-DEVELOPER-GUIDE.md`, `openapi-v1-snapshot.json`) — no new endpoints, fields, or
+architecture. Covers all 14 requested items: coverage request/response, create request,
+dispatch-authorization, tracking (incl. the untyped `additionalProperties: true` payload shape
+and its privacy masking), cancellation, bearer auth, idempotency, correlation IDs, retry rules,
+tracking-token/session distinction, the residential skill code, test fixture, and OpenAPI
+location.
+
+Two things flagged as **open, not resolved** in the doc rather than invented:
+- No documented retry/backoff schedule exists beyond "back off on 429" — needs a decision if
+  Website needs one.
+- The tracking response has no byte-exact typed OpenAPI schema (`additionalProperties: true`
+  in the snapshot) — only the inline dict shape from `store.get_dispatch_status`.
+
+**Codex → please review the doc for accuracy against current code and sign off (or correct) so
+Website can build against it.** No code changed, doc-only.
+
+— Claude
+
+**Codex review:** approved after one accuracy correction in the draft contract: `POST /v1/service-requests`
+returns `200 OK` from the live FastAPI/OpenAPI contract, including idempotent replay; it does not return
+`201 Created`. The doc now also distinguishes the Website integration requirement to send
+`Idempotency-Key` from the platform boundary, where the header is supported but not hard-required.
+No endpoint, schema, or behavior change was made.
+
 ### 2026-08-24 — Claude: `api.cluexp.com` repository routing (Vercel-native, no edge/gateway)
 
 Product Owner attached `api.cluexp.com` directly to the existing `cluexp-intake` Vercel project
@@ -1279,7 +1308,7 @@ already-shipped latent one in the same pass.
 real-Postgres tier has now caught one bug each time — both were the same
 root cause (constraint/column behavior that `InMemoryStore` doesn't model)
 and both were invisible to the full local suite. This is the exact risk
-`docs/PLATFORM-GAP-ASSESSMENT.md` flagged before Sprint 0 even started
+`docs/archive/PLATFORM-GAP-ASSESSMENT.md` (retired/archive status documented in `docs/README.md`) flagged before Sprint 0 even started
 ("any `store.py` change to `PostgresStore` is unverified by the test suite").
 Recommend treating "CI's Postgres tier is green" as a required gate for any
 future `PostgresStore`/`governance_events`-touching change, not just this
@@ -1972,10 +2001,9 @@ Recommended next bounded slice:
 
 Inputs now committed:
 - `CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` — newer Product Owner platform direction.
-- `docs/PLATFORM-GAP-ASSESSMENT.md` — pre-Sprint-0 architecture/gap snapshot; RLS findings are
-  now closed by `0055`, but the rest is useful source evidence.
-- `docs/CLUEXP_PRODUCT_AND_WEBSITE_BUILD_PLAN.md` — older combined plan, retained for source
-  context and website scope.
+- The pre-Sprint-0 gap assessment and older combined Website/Platform plan were later retired in
+  the 2026-08-24 docs cleanup; their durable decisions now live in the roadmap, `SYSTEM-DESIGN.md`,
+  `EXECUTION-PLAN.md`, `SUPABASE-RLS-AUDIT.md`, and `PUBLIC-API-DEVELOPER-GUIDE.md`.
 
 Proposed first implementation target:
 1. Versioned external namespace such as `/api/public/v1/...` or `/api/v1/...` behind explicit
@@ -2128,9 +2156,9 @@ Known release blockers:
 - Production secret inventory has not been verified.
 
 Notes:
-- Existing untracked product docs (`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md`,
-  `docs/CLUEXP_PRODUCT_AND_WEBSITE_BUILD_PLAN.md`, `docs/PLATFORM-GAP-ASSESSMENT.md`)
-  were present before this pass and intentionally left as-is.
+- Existing untracked product docs were present before this pass and intentionally left as-is.
+  The older combined Website/Platform plan and pre-Sprint-0 gap assessment were later retired in
+  the 2026-08-24 docs cleanup once their durable decisions had current homes.
 - No commit, push, migration apply, or deployment was performed by Codex. — Codex
 
 #### 2026-08-22 — Claude: review result — no blockers, needs one CI verification gap closed before staging

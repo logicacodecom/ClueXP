@@ -2,7 +2,8 @@
 
 > **Who this is for:** Engineers, on-call humans, and AI agents working in this codebase.
 > It is a living document — update it when the system changes.
-> Last updated: 2026-06-19 — folded in the database/storage reference, DevOps/CI, the four
+> Last updated: 2026-08-24 — folded in the live public API hostname boundary, production migration head, and current `/v1` contract.
+> Earlier 2026-06-19 consolidation folded in the database/storage reference, DevOps/CI, the four
 > **subsystem specs** (§18), and the **architecture decisions** (§20, formerly `docs/adr/`).
 > Dispatch model is **provider-managed** (the earlier "ops-controlled" framing was superseded).
 >
@@ -19,7 +20,7 @@
 11. Storage · 12. Packages · 13. Complete API Endpoint Reference · 14. Pilot Techs ·
 15. Key Invariants · 16. Common Failure Modes · 17. File Quick-Reference · **18. Subsystems**
 (18.1 intake · 18.2 technician · 18.3 partner/provider · 18.4 ops) · **19. DevOps & CI** ·
-**20. Architecture Decisions** (ADR-1…ADR-4).
+**20. Architecture Decisions** (ADR-1…ADR-8).
 
 ---
 
@@ -740,7 +741,9 @@ All environment variables for `intake-web`. Set in Vercel project dashboard unde
 | `SUPABASE_URL` | — | Supabase project URL for storage signed URLs. |
 | `SUPABASE_SERVICE_ROLE_KEY` | — | Service-role key for storage operations. Legacy fallback `SUPABASE_SERVICE_KEY` is still read if the role-key name is absent. Server-only — never expose to the browser. |
 | `CRON_SECRET` | `""` outside production | Bearer secret for `POST /cron/dispatch-sweep`. Because production declares the sweep cron, production refuses missing, short, and known-placeholder values. |
-| `ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set explicitly in prod. |
+| `ALLOWED_ORIGINS` | `*` outside production, closed in production when unset | Comma-separated list of allowed CORS origins. Set explicitly for approved browser clients; leave empty to keep production browser CORS closed. |
+| `TRUSTED_HOSTS` | `*` | Comma-separated host allowlist. Production should include `api.cluexp.com`, `intake.cluexp.com`, the Vercel app host, and approved preview hosts. |
+| `API_ONLY_HOSTNAMES` | `api.cluexp.com` | Comma-separated hostnames that may serve only `/v1` and must opaque-404 website/internal paths. |
 | `DEMO_SEED` | `true` | If true, seeds demo technicians/orgs on startup. Applies to **both** the in-memory store and a Postgres store: `PostgresStore._seed_demo_auth` idempotently upserts the demo accounts and calls `demo_seed.seed_florida_locksmith` so the Tampa demo provider is always present in a fresh demo DB. Set `false` to disable. |
 | `DEMO_SEED_PASSWORD` | `123456` | Login password for the seeded demo accounts. Intentionally simple for demos; the JWT signing secret (`AUTH_SECRET`) is separate and must still be strong. |
 
@@ -920,17 +923,10 @@ Supabase Storage. Managed in `api/storage.py`.
 
 ## 13. Complete API Endpoint Reference
 
-All routes are on `intake.cluexp.com/api/` in production. In `apps/intake-web/api/main.py`.
+Internal app routes are on `intake.cluexp.com/api/` in production. The canonical public machine API is `https://api.cluexp.com/v1`. Both surfaces route to `apps/intake-web/api/main.py`.
 
 ### Public Platform API (`0056`–`0059` production-applied, 2026-08-23/24)
-The versioned public façade is implemented under backend path `/v1/...`, reachable directly (not just
-via the legacy `/api/v1/...` alias) through `apps/intake-web/vercel.json` rewrites. `api.cluexp.com`
-is the canonical hostname and is already attached to the same Vercel project as `intake.cluexp.com`;
-a host-aware gate in `api/main.py` (`config.API_ONLY_HOSTNAMES`) restricts that hostname to `/v1/*`
-only, opaque-404ing the website and internal `/api/*` routes. Production env activation
-(`TRUSTED_HOSTS`, `ALLOWED_ORIGINS`, deploy) is still pending Human authorization (see
-`API-HOSTNAME-ROLLOUT.md`). External clients
-authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
+The versioned public façade is implemented under backend path `/v1/...`, reachable directly through `api.cluexp.com` and via the legacy `/api/v1/...` alias on `intake.cluexp.com`. `api.cluexp.com` is attached to the same Vercel project as `intake.cluexp.com`; `apps/intake-web/src/proxy.ts` and `api/main.py` (`config.API_ONLY_HOSTNAMES`) restrict that hostname to `/v1/*` only, opaque-404ing the website, the legacy `/api/v1/*` alias, and internal `/api/*` routes. Production deploy `ffac6a8` verified the live boundary; see `API-HOSTNAME-ROLLOUT.md` for checks and rollback. External clients authenticate with `Authorization: Bearer <api-key>` or `X-API-Key`.
 Keys are high-entropy opaque values; only SHA-256 hashes are stored. The foundation tables are
 `external_clients`, `external_api_keys`, `external_api_events`,
 `external_api_idempotency_keys`, and `external_api_rate_limits` (`0056`); plus
@@ -962,16 +958,20 @@ key + a different body returns `409 idempotency_key_reuse`; a concurrent in-flig
 | `POST` | `/v1/service-requests/{request_id}/cancellations` | external API key, `service_requests:cancel` scope | Reuses `store.cancel_job` unchanged (atomic, revokes outstanding offers). Cancellable while `draft` (never authorized) or within the existing customer-cancel window (`pending_dispatch` through `en_route`); `409 not_cancellable` once too far into fulfillment (`arrived` onward). **Idempotent** — an already-cancelled request returns the same success shape rather than erroring. Requires a `reason` (min 3 chars). |
 
 Partner-facing usage reference (auth, scopes, curl examples per endpoint, current non-launch
-limitations): `docs/PUBLIC-API-DEVELOPER-GUIDE.md`. Planned AI-agent/MCP adapter design (tool-to-
-endpoint mapping, confirmation rules for mutating tools, allowed/not-allowed surface per platform)
-— design only, not built: `docs/AGENT-INTEGRATION-MCP-PLAN.md`. `docs/openapi-v1-snapshot.json`
-staleness is enforced in CI (`public v1 OpenAPI drift check` step).
+limitations): `docs/PUBLIC-API-DEVELOPER-GUIDE.md`. AI-agent/MCP adapter policy and the first-pass
+local preview slice (`apps/cluexp-mcp-server`) are documented in
+`docs/AGENT-INTEGRATION-MCP-PLAN.md`; the adapter is not published, listed, or connected to
+production by default. `docs/openapi-v1-snapshot.json` staleness is enforced in CI (`public v1
+OpenAPI drift check` step).
 
-Public crawl/discovery entrypoints, once the intake-web build containing them is deployed:
+Public crawl/discovery entrypoints:
 `/ai` (human/AI-readable capability and limits page), `/llms.txt` (AI-readable summary),
 `/openapi-v1.json` (served copy of the committed public OpenAPI snapshot), `/robots.txt`, and
-`/sitemap.xml`. These are discovery surfaces only; they do not imply marketplace listing or
-production MCP enablement.
+`/sitemap.xml`. The limited `/services` and `/partners` pages in `intake-web` are technical
+AI/agent-crawl stopgaps for the Platform/API boundary; they are not the canonical human marketing,
+SEO/GEO/AEO, service-location, or acquisition site, which belongs to the separate `www.cluexp.com`
+Website workstream. These discovery surfaces do not imply marketplace listing or production MCP
+enablement.
 
 Service discovery pages are static/SSG intake-web routes backed by `src/app/discovery.ts`:
 `/services`, `/services/{category}`, and `/services/{category}/{skill}`. Hosted partner discovery
@@ -1557,11 +1557,7 @@ Phase 1 (`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md` §8) requires a reviewed `/v1` con
 business-logic (network routing, real service-request creation) is added to the public surface.
 This ADR freezes the contract shape only; it authorizes no new dispatch/business logic.
 
-- **Namespace/versioning:** `/v1/...` is the sole public namespace, reachable directly and via the
-  legacy `/api/v1/...` alias behind Vercel's existing `/api` prefix; `api.cluexp.com` is attached to
-  the same Vercel project and repository-routed to `/v1/*` only (production env/deploy activation
-  pending, see `API-HOSTNAME-ROLLOUT.md`), per ADR-4's existing `/v1` decision. A future breaking
-  change gets `/v2`; `/v1` routes never change response shape in place.
+- **Namespace/versioning:** `/v1/...` is the sole public namespace. `api.cluexp.com` serves canonical `/v1/*` only; `intake.cluexp.com/api/v1/*` remains the approved legacy origin during transition. A future breaking change gets `/v2`; `/v1` routes never change response shape in place.
 - **Error envelope — one shape, every `/v1` route:** `{ error: string, request_id: string, detail?:
   string }`, **flat, never nested under a `detail` key.** Applies uniformly to
   401/403/404/409/422/429/500 — validation errors, `HTTPException`s raised via `public_api_error()`

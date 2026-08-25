@@ -42,21 +42,21 @@
 
 | Capability | State | Notes |
 |---|---|---|
-| Intake app | `[x]` | Live on `intake.cluexp.com` and currently also `www.cluexp.com` |
+| Intake app | `[x]` | Live on `intake.cluexp.com`; `www.cluexp.com` is governed by the separate Website workstream |
 | Technician app | `[~]` | Auth, offers, active fulfillment, issue reporting, profile editing and finished-job history are wired to the backend; production pilot verification remains |
-| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired **and deployed** (production migrations through `0058` applied); production pilot verification remains |
+| Provider app | `[~]` | Provider-managed dispatch, recovery, notes, timeline, completed-job history, financial closeout settings, settlement reporting, agreement management, scheduling/partnership controls, and CRM are wired and deployed; production migration head is `0059_job_origin_client`; production pilot verification remains |
 | Ops app | `[~]` | Auth, registration/compliance administration and read-only dispatch oversight are wired; production pilot verification remains |
 | Authentication | `[x]` | First-party FastAPI/Postgres auth with JWT bridged through same-site httpOnly cookies; Clerk is not planned |
 | Localization | `[x]` foundation | EN/ES, English fallback; intake uses browser preference first plus explicit toggle; authenticated apps persist user preference |
 | Multi-tenancy | `[x]` | Trusted channel resolution; origin/customer-owner/fulfillment model; tenant-aware onboarding |
-| Public Platform API | `[~]` | Foundation through Tier 2 network routing plus the public lifecycle endpoints is merged and production-applied through `0059_job_origin_client`: external clients/API keys, scoped `GET /api/v1/services`, `POST /v1/service-requests`, `POST .../dispatch-authorizations` (private_partner queue-only fork + Network Router MVP for network scope), `GET /v1/service-requests/{id}`, `GET .../tracking`, `POST .../cancellations` (ownership-gated for both `private_partner` and `network` scope), platform-admin external-client/key provisioning, audit events, and Postgres-backed rate-limit tables. A controlled synthetic production proof run (2026-08-23) exercised the full vertical slice end-to-end against real production, then fully cleaned up — no real customers/providers were involved and nothing synthetic remains; no real external client/request/dispatch has been created since. Partner-facing UI, real client onboarding, provider eligibility/ranking economics beyond the MVP, automatic re-offer, private-to-network overflow, payments, and any MCP/ChatGPT/Claude/Gemini/Siri adapter remain deferred |
+| Public Platform API | `[x]` boundary / `[~]` client rollout | `https://api.cluexp.com/v1` is live as the canonical public machine boundary. Foundation through Tier 2 network routing plus public lifecycle endpoints is merged, deployed, and production-applied through `0059_job_origin_client`: external clients/API keys, scoped `GET /v1/services`, `POST /v1/coverage-checks`, `POST /v1/service-requests`, `POST .../dispatch-authorizations`, `GET /v1/service-requests/{id}`, `GET .../tracking`, `POST .../cancellations`, platform-admin external-client/key provisioning, audit events, and Postgres-backed rate-limit tables. The hostname hides the intake website, the legacy `/api/v1/*` alias, and internal routes on `api.cluexp.com`; `intake.cluexp.com/api/v1` remains the legacy origin during transition. A controlled synthetic production proof run (2026-08-23) exercised the full vertical slice end-to-end, then cleaned up. Real Website client cutover, partner-facing UI, provider eligibility/ranking economics beyond the MVP, automatic re-offer, private-to-network overflow, payments, and public MCP/agent platform listing remain deferred |
 | Dispatch engine | `[x]` code / `[~]` operational | Provider-managed, isolated-tenant, single-targeted-offer dispatch and tenant-scoped recovery are implemented (`/provider/*`); ClueXP Ops is read-only oversight; production promotion and pilot proof remain |
 | Customer dispatch tracking | `[x]` read contract | Customer sees: `waiting` (in the owning company's provider queue or offer active), `matched` (accepted), `expired_retry` (offer lapsed, back in queue), `cancelled`. `no_eligible` is a **derived tracking state, not a `jobs.status`**; it was emitted only by the legacy auto-dispatch path (driven by `dispatch_attempts`), which is gated off in the provider-managed model — so the current cutover flow does **not** produce it. Reserved (see SYSTEM-DESIGN §6) |
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
 | Notifications | `[~]` | Operations/customer messaging, masked calls, Twilio SMS/voice, Expo push registration/receipts, and native background-location foundations are implemented; production alert ownership, monitoring, provider configuration, and native device acceptance remain |
-| CI | `[x]` | CI is green on `main@675bcb9`, including clean PostgreSQL 16 migration and `Postgres RLS and store integration tests`; earlier local 2026-08 verification covered the full API suite, root typecheck, console/native tests, and app builds |
+| CI | `[x]` | CI includes PostgreSQL 16 migration checks, Postgres RLS/store integration tests, and public `/v1` OpenAPI drift checks; latest local verification for the API-hostname work passed the focused public API suite, full non-Postgres API suite, OpenAPI check, TypeScript check, and Next production build |
 
 Current production migration head: **`0059_job_origin_client`** (applied 2026-08-24 after Codex
 review found no blocker and explicit Human authorization — no separate Supabase staging environment
@@ -83,17 +83,14 @@ only), and the public lifecycle endpoints (`GET /v1/service-requests/{id}`, `GET
 unchanged rather than reimplementing it.
 
 2026-08-24 (overnight slice 1, docs/CI only, no schema/runtime change): added
-`docs/AGENT-INTEGRATION-MCP-PLAN.md` (design-only MCP/agent tool contract, not yet reviewed or
-built) and `docs/PUBLIC-API-DEVELOPER-GUIDE.md` (partner-facing `/v1` reference), and a CI
+`docs/AGENT-INTEGRATION-MCP-PLAN.md` (MCP/agent tool contract; internal-preview server now exists under `apps/cluexp-mcp-server`) and `docs/PUBLIC-API-DEVELOPER-GUIDE.md` (partner-facing `/v1` reference), and a CI
 `public v1 OpenAPI drift check` step so `docs/openapi-v1-snapshot.json` staleness fails the build.
 
-2026-08-24 (AI/search discoverability start, code only, not deployed/published): added static
+2026-08-24 (AI/search discoverability start): added static
 intake-web discovery assets `/ai`, `/llms.txt`, `/openapi-v1.json`, `/robots.txt`, and
-`/sitemap.xml`. These make the public API and current agent-integration limits crawlable once
-deployed, but do not submit ClueXP to ChatGPT/Claude/Gemini/Siri marketplaces and do not publish
-hosted partner discovery pages yet.
+`/sitemap.xml`. These make the public API and current agent-integration limits crawlable, but do not submit ClueXP to ChatGPT/Claude/Gemini/Siri marketplaces.
 
-2026-08-24 (service/partner discovery pages, code only, not deployed/published): added crawlable
+2026-08-24 (service/partner discovery pages): added crawlable
 static service pages `/services`, `/services/locksmith`, `/services/locksmith/residential-lockout`,
 `/services/locksmith/vehicle-lockout`, `/services/locksmith/rekey`, plus `/partners` as a truthful
 hosted-partner discovery entry point. `/partners` intentionally lists no partners until approved
@@ -626,14 +623,7 @@ affiliation foundation; model in [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3.)
 
 Provider-managed dispatch (§3.4), the field-integrity core (§4), the tenant-scoped
 recovery workspace (§5), the operational financial closeout/settlement records (§6),
-communications foundations, scheduling/partnership controls, technician reservations, and
-provider CRM are **code-complete** and merged. Production migration head is
-`0058_governance_entity_types` per the 2026-08-23 Tier 2 network-routing apply; the Sprint 0 security
-foundation commit is `500d61b` (`feat(security): add Sprint 0 foundation`), the Public API
-foundation commit is `675bcb9` (`feat(api): add public API foundation`), and the Tier 2 network
-routing commits are `f7d6e83`/`14249e4`/`741a144`/`0192205`/`6b60997`/`5620d6e` (dispatch
-authorizations + Network Router MVP, plus the three CI-caught fixes described in `docs/HANDOFF.md`).
-Remaining work to widen the pilot is release readiness and operations, not a large new feature slice:
+communications foundations, scheduling/partnership controls, technician reservations, provider CRM, and the first Website `/v1` transaction contract are code-complete and merged. Production migration head is `0059_job_origin_client`; `api.cluexp.com/v1` is live as the canonical machine boundary. Remaining work to widen the pilot is release readiness and operations, not a large new feature slice:
 
 1. **Runtime-smoke the advisory-payment / live-tracking work:** PR #39 (merge `808f108`, tip
    commit `cfb0b4d`: technician-reported/customer-acknowledged payment, customer live tracking,

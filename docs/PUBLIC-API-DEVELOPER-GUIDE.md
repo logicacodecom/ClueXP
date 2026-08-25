@@ -2,7 +2,7 @@
 
 Status: frozen Website transaction contract. API keys are issued by ClueXP staff via internal admin endpoints; there is no partner self-service.
 
-Canonical base URL: `https://api.cluexp.com/v1` (repository routing implemented; production deploy/env activation pending, see `API-HOSTNAME-ROLLOUT.md`). During the controlled transition, `https://intake.cluexp.com/api/v1` remains available as the legacy origin — do not remove it. All public endpoints are under `/v1/`. Everything outside `/v1/` (`/ops`, `/provider`, technician routes, admin routes, tracking-token routes) is internal and must not be reachable through the canonical hostname; requests to `api.cluexp.com` for any non-`/v1` path get an opaque JSON `404`, never the intake website or an internal route.
+Canonical base URL: `https://api.cluexp.com/v1`. During the controlled transition, `https://intake.cluexp.com/api/v1` remains available as the legacy origin. All public endpoints are under `/v1/`. Everything outside `/v1/` (`/ops`, `/provider`, technician routes, admin routes, tracking-token routes) is internal and must not be reachable through the canonical hostname; requests to `api.cluexp.com` for any non-`/v1` path get an opaque JSON `404`, never the intake website or an internal route.
 
 Website integrations must call this API from a server-side/BFF boundary. Never put an external API key in browser JavaScript, HTML, analytics, URLs, or client logs.
 
@@ -240,7 +240,7 @@ Coverage and authorization both use the Network Router's provider eligibility ru
 - No payments capability.
 - No private-to-network overflow or automatic re-offer.
 - No provider ranking/bidding control exposed to callers — ranking is internal and deterministic.
-- No public marketplace/agent-platform listing yet (see `docs/AGENT-INTEGRATION-MCP-PLAN.md` for the planned agent/MCP integration, still in design).
+- No public marketplace/agent-platform listing yet. An internal MCP preview exists, but it is not published, listed, or connected to production by default.
 - No bulk/list endpoints — every read is by `request_reference`.
 
 Do not build integrations assuming any of the above will ship on a specific date; treat this guide as the current contract only.

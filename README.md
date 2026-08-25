@@ -4,20 +4,20 @@ Mobile-web-first emergency access intake for ClueXP: a Next.js + TypeScript fron
 
 ## Canonical docs
 
-The project is documented by four canonical docs (plus a pilot runbook):
+Start with [`CLUEXP-PLATFORM-PRODUCT-ROADMAP.md`](CLUEXP-PLATFORM-PRODUCT-ROADMAP.md) for Product Owner direction. Use [`docs/README.md`](docs/README.md) for the docs map.
 
-- [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) — tech stack, database + storage, infrastructure, and the four subsystem specs (intake / technician / partner / ops). **Architecture source of truth.**
-- [`docs/TECHNICIAN-APP-REDESIGN.md`](docs/TECHNICIAN-APP-REDESIGN.md) — approved active-job-first technician experience, native/PWA boundaries, development workstreams, testing, and rollout gates.
-- [`docs/EXECUTION-PLAN.md`](docs/EXECUTION-PLAN.md) — product backlog, releases, sprints, tasks, and **Canonical Status**.
-- [`docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md`](docs/SCHEDULING-AND-PARTNER-DISPATCH-MVP.md) — implemented customer booking, technician scheduling, and approved-partner overflow MVP; production pilot verification and broader-launch gates remain.
-- [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) — the UI Guide (visual tokens, components); `docs/design-ref/` holds reference assets only.
-- [`docs/HANDOFF.md`](docs/HANDOFF.md) — the multi-agent communication channel.
-- Architecture decisions (why/rejected alternatives) live in `SYSTEM-DESIGN.md` §20 · [`docs/PILOT-OPERATIONS.md`](docs/PILOT-OPERATIONS.md) — pilot gates, cutover, matrix, rollback.
+- [`docs/EXECUTION-PLAN.md`](docs/EXECUTION-PLAN.md) — current backlog, release gates, sprint status, and operational risks.
+- [`docs/SYSTEM-DESIGN.md`](docs/SYSTEM-DESIGN.md) — architecture, database, deployment, API references, invariants, and Architecture Decision Records.
+- [`docs/PUBLIC-API-DEVELOPER-GUIDE.md`](docs/PUBLIC-API-DEVELOPER-GUIDE.md) — public `/v1` client contract.
+- [`docs/API-HOSTNAME-ROLLOUT.md`](docs/API-HOSTNAME-ROLLOUT.md) — live `api.cluexp.com` hostname boundary and release checks.
+- [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) — UI tokens, components, and visual guidance.
+- [`docs/PILOT-OPERATIONS.md`](docs/PILOT-OPERATIONS.md) — pilot gates, cutover, smoke matrix, and rollback.
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — multi-agent working log, not product authority.
 
 ## Project Shape
 
 - `apps/intake-web/api/schema.py` - canonical Pydantic ticket schema. Do not duplicate it by hand.
-- `apps/intake-web/api/main.py` - FastAPI backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Routes are served under `/api`. Trust-state guards travel on every response.
+- `apps/intake-web/api/main.py` - FastAPI backend; tickets persist in Supabase Postgres (`DATABASE_URL`) with an in-memory fallback for local dev. Internal app routes are served under `/api`; the public machine contract is served at `https://api.cluexp.com/v1`. Trust-state guards travel on every response.
 - `apps/intake-web/src/app/page.tsx` - mobile-first intake and fulfillment flow.
 - `apps/intake-web/src/types/schema.generated.ts` - generated TypeScript contract derived from `api/schema.py`.
 - `apps/intake-web/scripts/generate_types.py` - local schema-to-TypeScript generator.
@@ -106,10 +106,7 @@ technician-reported collection is advisory only. The accepted real-payment direc
 provider-owned Stripe Connect direct charges: each provider is merchant of record and ClueXP does
 not hold or settle provider funds.
 
-Scheduling, partner overflow, technician reservations, and provider CRM are implemented on `main`
-and production migrations are documented through `0053_provider_crm`. Scheduling confirmation
-currently records `confirmed_unassigned`; named future technician reservation remains deferred
-until a real technician offer/accept flow exists for scheduled work.
+Scheduling, partner overflow, technician reservations, provider CRM, alerting, and the public `/v1` API foundation are implemented on `main`; production migrations are documented through `0059_job_origin_client`. Scheduling confirmation currently records `confirmed_unassigned`; named future technician reservation remains deferred until scheduled-work offer/accept semantics are implemented.
 
 The first Twilio communications slice is implemented behind `COMMUNICATIONS_PROVIDER`.
 Default `noop` mode records honest `skipped_no_provider` outcomes. Twilio mode supports
@@ -118,7 +115,7 @@ masked outbound calls, provider call history, transactional SMS delivery records
 STOP/START opt-out handling. Real SMS sends require the provider's communications settings
 to have both `sms_enabled` and `a2p_registered` enabled.
 
-Vercel production traffic should call the API through the same deployment at `/api/...`. Local development rewrites `/api/...` to `LOCAL_API_BASE_URL`, which defaults to `http://127.0.0.1:8000`.
+Production machine clients should call `https://api.cluexp.com/v1`. The legacy `https://intake.cluexp.com/api/v1` origin remains available during the controlled transition. Local development rewrites `/api/...` and `/v1/...` to `LOCAL_API_BASE_URL`, which defaults to `http://127.0.0.1:8000`.
 
 Use Supabase's transaction pooler connection string for Vercel serverless Python:
 

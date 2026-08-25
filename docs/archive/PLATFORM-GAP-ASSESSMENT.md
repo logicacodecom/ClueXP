@@ -7,7 +7,7 @@
 
 **Prepared by:** Senior Technical Architect review (read-only assessment, no code changes)
 **Scope:** ClueXP Platform repository only (`c:\__CODE__\ClueXP\intake`). `cluexp.com` marketing site is confirmed absent from this repo — see §14.
-**Compared against:** `docs/CLUEXP_PRODUCT_AND_WEBSITE_BUILD_PLAN.md`
+**Compared against:** `docs/archive/CLUEXP_PRODUCT_AND_WEBSITE_BUILD_PLAN.md`
 **Method:** direct repository inspection — migrations, route handlers, store implementations, tests, CI config. Documentation was treated as a claim, not evidence; findings below are anchored to code.
 
 ---

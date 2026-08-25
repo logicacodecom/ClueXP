@@ -1,8 +1,8 @@
 # Agent Integration / MCP Plan
 
-Status: DRAFT — design only, no code shipped from this doc yet. Requires Codex + Human review before any MCP server is built or connected externally.
+Status: internal-preview design. `apps/cluexp-mcp-server` implements the approved first-pass local preview slice, but no MCP server is published, listed, or connected to production by default. Human approval is still required before any external platform connection or production traffic.
 
-Scope: how AI agents (ChatGPT, Claude, Gemini, Siri, or any MCP-speaking client) would call ClueXP's public `/v1` API. This document is the contract; it does not authorize building or publishing an adapter.
+Scope: how AI agents (ChatGPT, Claude, Gemini, Siri, or any MCP-speaking client) call ClueXP's public `/v1` API. This document governs the adapter boundary; it does not authorize publishing or connecting an adapter externally.
 
 ## 1. Principle
 
