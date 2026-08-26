@@ -1,9 +1,10 @@
-# ClueXP MCP Server — controlled preview
+# ClueXP MCP Server — controlled production endpoint
 
-**Status: controlled preview / launch candidate.** The server supports local stdio and remote
-Streamable HTTP deployment, but it is not published, listed, or submitted to any external
-agent platform (ChatGPT, Claude, Gemini, Siri, or otherwise) until the external platform
-submission step is completed. See `docs/AGENT-INTEGRATION-MCP-PLAN.md` for the full design.
+**Status: live controlled production endpoint.** The remote Streamable HTTP endpoint is deployed at
+`https://mcp.cluexp.com/mcp` with public health at `https://mcp.cluexp.com/healthz`. It is still not
+published, listed, or submitted to any external agent platform (ChatGPT, Claude, Gemini, Siri, or
+otherwise) until the external platform submission step is completed. See
+`docs/AGENT-INTEGRATION-MCP-PLAN.md` for the full design.
 
 ## What this is
 
@@ -41,6 +42,13 @@ Required environment variables, no defaults, no committed secrets:
   Vercel's `VERCEL_URL` / `VERCEL_PROJECT_PRODUCTION_URL` runtime hosts are also accepted
   automatically when present. Do not use wildcard values such as `*.vercel.app`; the SDK
   matches exact hosts only, plus `host:*` port wildcards.
+- `OPENAI_APPS_CHALLENGE_TOKEN` — optional domain-verification token for OpenAI plugin
+  submission. When set, `GET /.well-known/openai-apps-challenge` returns the exact token
+  as `text/plain`; when unset, it returns `404`.
+
+Production is currently hosted on Vercel project `cluexp-mcp-server` under
+`logicacode-projects`. Production secret values live only in Vercel's environment store; rotate them
+there and redeploy if access changes.
 
 ## Running locally
 
@@ -64,6 +72,7 @@ The remote endpoint is:
 
 ```
 GET  /healthz  -> public health check
+GET  /.well-known/openai-apps-challenge -> optional OpenAI plugin domain verification
 POST /mcp      -> Streamable HTTP MCP endpoint, requires Authorization: Bearer <CLUEXP_MCP_BEARER_TOKEN>
 ```
 

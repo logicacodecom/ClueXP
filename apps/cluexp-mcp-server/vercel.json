@@ -8,6 +8,7 @@
   },
   "rewrites": [
     { "source": "/healthz", "destination": "/api/healthz" },
+    { "source": "/.well-known/openai-apps-challenge", "destination": "/api/openai_apps_challenge" },
     { "source": "/mcp", "destination": "/api/mcp" },
     { "source": "/mcp/(.*)", "destination": "/api/mcp/$1" }
   ]

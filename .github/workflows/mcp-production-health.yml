@@ -1,0 +1,46 @@
+name: mcp-production-health
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check public health endpoint
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error --max-time 15 https://mcp.cluexp.com/healthz)"
+          test "$response" = '{"status":"ok"}'
+
+      - name: Check MCP auth boundary without token
+        run: |
+          set -euo pipefail
+          status="$(
+            curl --silent --show-error --max-time 15 \
+              --output /tmp/mcp-no-token.json \
+              --write-out "%{http_code}" \
+              -X POST https://mcp.cluexp.com/mcp \
+              -H "Content-Type: application/json" \
+              -d '{}'
+          )"
+          test "$status" = "401"
+          grep -q '"invalid_mcp_token"' /tmp/mcp-no-token.json
+
+      - name: Check MCP auth boundary with wrong token
+        run: |
+          set -euo pipefail
+          status="$(
+            curl --silent --show-error --max-time 15 \
+              --output /tmp/mcp-wrong-token.json \
+              --write-out "%{http_code}" \
+              -X POST https://mcp.cluexp.com/mcp \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer definitely-not-the-production-token" \
+              -d '{}'
+          )"
+          test "$status" = "401"
+          grep -q '"invalid_mcp_token"' /tmp/mcp-wrong-token.json

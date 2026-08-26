@@ -56,6 +56,24 @@ npm run build --workspace @cluexp/ops-web
 - Recovery owners know how to cancel, release, no-show, recall, and resolve jobs.
 - Rollback owner has Vercel and database access.
 
+## MCP endpoint (`mcp.cluexp.com`)
+
+Before treating the MCP server as publicly launched/listed in any assistant platform:
+
+- Confirm `https://mcp.cluexp.com/healthz` returns `200 {"status":"ok"}`.
+- Confirm `POST https://mcp.cluexp.com/mcp` without a bearer token and with a wrong bearer token both
+  return `401 invalid_mcp_token`.
+- Confirm the scheduled GitHub Actions workflow `mcp-production-health` is enabled on `main`; it runs
+  every 30 minutes and checks only public health plus negative auth-boundary behavior, so it does not
+  require storing the production MCP bearer token in GitHub.
+- Keep `CLUEXP_MCP_BEARER_TOKEN` and `CLUEXP_API_KEY` only in Vercel's environment store unless a
+  reviewed platform/reviewer credential plan exists.
+- For OpenAI plugin submission, set `OPENAI_APPS_CHALLENGE_TOKEN` only after the submission portal
+  provides the exact token, redeploy, and verify
+  `https://mcp.cluexp.com/.well-known/openai-apps-challenge` returns only that token as `text/plain`.
+- Do not run `confirm=true` MCP dispatch/cancel smoke against production unless the Human explicitly
+  authorizes a scoped live proof run.
+
 ## Alerting (migration 0054)
 
 Before enabling real customer traffic for a company whose dispatcher relies on the alert inbox

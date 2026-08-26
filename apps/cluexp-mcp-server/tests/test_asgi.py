@@ -49,6 +49,40 @@ async def test_vercel_rewritten_healthz_path_is_public(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_apps_challenge_is_public_and_exact_when_configured(monkeypatch):
+    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(asgi.OPENAI_APPS_CHALLENGE_TOKEN_ENV, "openai-domain-proof-token")
+    transport = httpx.ASGITransport(app=asgi.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
+        response = await client.get("/.well-known/openai-apps-challenge")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "openai-domain-proof-token"
+
+
+@pytest.mark.asyncio
+async def test_vercel_rewritten_openai_apps_challenge_path(monkeypatch):
+    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(asgi.OPENAI_APPS_CHALLENGE_TOKEN_ENV, "openai-domain-proof-token")
+    transport = httpx.ASGITransport(app=asgi.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
+        response = await client.get("/api/openai_apps_challenge")
+    assert response.status_code == 200
+    assert response.text == "openai-domain-proof-token"
+
+
+@pytest.mark.asyncio
+async def test_openai_apps_challenge_404_when_unconfigured(monkeypatch):
+    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(asgi.OPENAI_APPS_CHALLENGE_TOKEN_ENV, raising=False)
+    transport = httpx.ASGITransport(app=asgi.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
+        response = await client.get("/.well-known/openai-apps-challenge")
+    assert response.status_code == 404
+    assert response.text == "not configured"
+
+
+@pytest.mark.asyncio
 async def test_mcp_endpoint_fails_closed_without_bearer_token_configured(monkeypatch):
     monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
     transport = httpx.ASGITransport(app=asgi.app)

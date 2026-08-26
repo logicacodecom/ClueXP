@@ -1,6 +1,11 @@
 # Agent Integration / MCP Plan
 
-Status: controlled-preview implementation / launch candidate. `apps/cluexp-mcp-server` implements the approved MCP slice, including confirmation-gated mutating tools and a remote Streamable HTTP entrypoint, but no MCP server is published, listed, or connected to production by default. Human approval is still required before external platform submission and production credential wiring.
+Status: controlled production endpoint live. `apps/cluexp-mcp-server` implements the approved MCP
+slice, including confirmation-gated mutating tools and a remote Streamable HTTP entrypoint. The
+production MCP endpoint is live at `https://mcp.cluexp.com/mcp`, with public health at
+`https://mcp.cluexp.com/healthz`. The server is not yet published/listed in any external agent
+platform directory. Human approval is still required before external platform submission, public
+listing, OAuth conversion, or any live `confirm=true` dispatch/cancel smoke.
 
 Scope: how AI agents (ChatGPT, Claude, Gemini, Siri, or any MCP-speaking client) call ClueXP's public `/v1` API. This document governs the adapter boundary; it does not authorize publishing or connecting an adapter externally.
 
@@ -71,6 +76,9 @@ An MCP tool is a thin, typed wrapper over an existing `/v1` HTTP endpoint. A too
 
 - The MCP server holds one external API key (client credential) per deployment/environment, configured via env var, never committed.
 - A remotely deployed MCP server also requires inbound bearer auth (`CLUEXP_MCP_BEARER_TOKEN`) before requests can reach `/mcp`; missing token configuration fails closed.
+- The production bearer token is an operational secret stored in Vercel. If access needs to be shared
+  with a platform, reviewer, or internal tester, create a scoped distribution plan first; if custody is
+  unclear, rotate the token in Vercel and redeploy.
 - The MCP server does not implement its own auth scheme for the calling agent platform beyond whatever that platform requires (e.g. ChatGPT connector auth) — that is a separate, later concern and out of scope for this doc.
 - Scopes are enforced server-side by `/v1` exactly as today; the MCP layer does not re-implement or bypass scope checks.
 
@@ -97,28 +105,50 @@ Mapping to MCP tool errors:
 
 ## 7. What is allowed vs not allowed, per platform
 
-Applies uniformly to ChatGPT, Claude, Gemini, Siri, or any other MCP/agent client — this plan does not differentiate by platform.
+The safety rules apply uniformly, but the integration/discovery path is not identical by platform.
 
 Allowed (once a reviewed, tested MCP server exists and is explicitly authorized for connection):
 - Read-only tools (`list_services`, `check_coverage`, `get_service_request`, `get_tracking`) may be exposed with only the confirmation rules above.
 - Mutating tools (`create_service_request`, `authorize_dispatch`, `cancel_service_request`) may be exposed only with the mandatory confirmation step enforced in the tool implementation itself, not left to the calling platform's own confirmation UX (defense in depth — some platforms' confirmation UX is not guaranteed or auditable).
 
 Not allowed, explicitly, until separately re-scoped by Human/Codex:
-- No public marketplace listing or submission of the MCP server to any platform's plugin/action store.
+- No public marketplace listing or submission of the MCP server to any platform's plugin/action store
+  without a human-held publisher account, verified domain/identity where required, final listing copy,
+  and reviewer/demo auth plan.
 - No partner self-service provisioning via an agent conversation (an agent cannot create its own external API key).
 - No payments capability of any kind.
 - No private-to-network overflow, automatic re-offer, or ranking override exposed as a tool parameter.
 - No tool that reads or writes internal-only data (organization directories, technician PII, raw tracking tokens, admin/provisioning endpoints).
-- No production traffic through an unreviewed MCP server build — all testing happens against local/test clients per §8.
+- No live `confirm=true` dispatch/cancel smoke without a separate human authorization.
+
+### 7.1 Platform launch/discovery matrix
+
+| Platform | Current ClueXP state | What is possible now | What still requires owner/action |
+| --- | --- | --- | --- |
+| ChatGPT / OpenAI plugins | Production MCP endpoint is live and HTTPS-reachable. | Submit an MCP-backed plugin using the universal URL `https://mcp.cluexp.com/mcp` once publisher identity, domain challenge, listing assets, tool annotations, and reviewer/demo auth are ready. | OpenAI Platform publisher verification, `api.apps.write`/`api.apps.read` permissions, domain challenge at `/.well-known/openai-apps-challenge`, final terms/privacy/support URLs, demo/reviewer credentials or an OAuth plan. |
+| Claude / Anthropic | Remote MCP endpoint is compatible with Claude's URL-based MCP connector shape. | Internal/API consumers can connect by providing the MCP URL and authorization token in Anthropic's `mcp_servers`/`mcp_toolset` request config. | Any Anthropic directory/listing path, connector publishing, or customer-facing distribution still needs an Anthropic account/operator workflow; do not assume ChatGPT plugin submission also lists it in Claude. |
+| Gemini / Google | Remote MCP endpoint is Streamable HTTP, which matches Gemini's documented Remote MCP transport requirement. | Gemini API / Interactions API callers can register the MCP server URL and pass auth headers. | Public Gemini/Spark/Antigravity listing, if desired, is a separate Google-side configuration/submission path; Siri-style native discovery is not achieved by MCP alone. |
+| Siri / Apple Intelligence | MCP endpoint does not make ClueXP discoverable to Siri. | Website SEO and web discovery can still help general search-like assistants. | Native Siri/Apple Intelligence discovery requires an Apple app path using App Intents/App Schemas/Shortcuts and App Store/TestFlight/developer-account work. This is a separate product surface, not an MCP deployment task. |
 
 ## 8. Testing approach
 
 - Tools are tested against a local FastAPI test client or a mocked HTTP layer, never against production `intake.cluexp.com`.
 - Confirmation-gated tools (§2.3, §2.4, §2.7) get explicit unit tests asserting the confirmation step cannot be bypassed programmatically.
+- Production endpoint monitoring is limited to public health and negative auth-boundary probes unless a
+  separate secret custody plan is approved. Scheduled monitoring must not store the production MCP
+  bearer token just to prove the positive initialize path.
 
 ## 9. Implementation status and remaining stop points
 
 - The MCP server ships as a standalone package under `apps/cluexp-mcp-server/`.
 - The preview now exposes all seven tools in §2. Mutating tools (`create_service_request`, `authorize_dispatch`, `cancel_service_request`) require `confirm=true` in the MCP tool implementation before any API request is sent.
-- The remote launch candidate exposes Streamable HTTP at `/mcp` via `mcp_server.asgi:app`, with a public `/healthz` and fail-closed bearer auth on MCP traffic.
-- Remaining stop points: production credentials, production traffic, external connector/marketplace submission, and any live dispatch/cancel smoke still require explicit Human + Codex authorization.
+- The production deployment exposes Streamable HTTP at `https://mcp.cluexp.com/mcp`, with public
+  `GET https://mcp.cluexp.com/healthz` and fail-closed bearer auth on MCP traffic.
+- `GET https://mcp.cluexp.com/.well-known/openai-apps-challenge` is implemented for OpenAI plugin
+  domain verification. It returns `404` until `OPENAI_APPS_CHALLENGE_TOKEN` is set in the Vercel
+  environment, then returns that exact token as `text/plain`.
+- A scheduled GitHub Actions workflow (`mcp-production-health`) checks `/healthz` and verifies no-token
+  / wrong-token requests to `/mcp` remain rejected.
+- Remaining stop points: external connector/marketplace submission, OAuth/user-auth conversion if a
+  platform requires it, positive production MCP initialize monitoring with real bearer custody, and any
+  live dispatch/cancel smoke still require explicit Human + Codex authorization.

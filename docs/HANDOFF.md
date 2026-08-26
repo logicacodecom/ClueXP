@@ -62,6 +62,48 @@
 
 ## Open threads
 
+### 2026-08-26 — Codex: MCP post-launch monitoring and platform-submission prep
+
+After Claude's production deployment confirmation, completed the next repo-side launch tasks:
+
+- Added scheduled GitHub Actions workflow `.github/workflows/mcp-production-health.yml`.
+  - Runs every 30 minutes plus manual `workflow_dispatch`.
+  - Checks `https://mcp.cluexp.com/healthz` returns `{"status":"ok"}`.
+  - Checks `POST https://mcp.cluexp.com/mcp` with no bearer and wrong bearer both stay at
+    `401 invalid_mcp_token`.
+  - Does not store or require the production MCP bearer token in GitHub.
+- Added OpenAI plugin domain-verification route:
+  - `GET /.well-known/openai-apps-challenge`
+  - Vercel rewrite to `/api/openai_apps_challenge`
+  - returns `404` until `OPENAI_APPS_CHALLENGE_TOKEN` is set, then returns that exact token as
+    `text/plain`.
+- Updated MCP docs/readiness:
+  - `apps/cluexp-mcp-server/README.md` now says the endpoint is live controlled production, not just
+    launch candidate.
+  - `docs/AGENT-INTEGRATION-MCP-PLAN.md` now separates ChatGPT/OpenAI, Claude/Anthropic,
+    Gemini/Google, and Siri/Apple launch paths instead of pretending all four have the same discovery
+    mechanism.
+  - `docs/PRODUCTION-READINESS.md` now has an MCP endpoint checklist covering health, auth boundary,
+    GitHub scheduled monitoring, bearer-token custody, OpenAI domain verification, and the
+    no-`confirm=true` rule.
+
+Verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `30 passed`.
+- `uv run --with-requirements requirements.txt python -m compileall mcp_server api` -> passed.
+- `python -c "import json; json.load(open('vercel.json')); print('vercel.json valid')"` from
+  `apps/cluexp-mcp-server` -> passed.
+- `git diff --check` -> only CRLF normalization warnings.
+
+Remaining human/platform steps:
+- Enable/confirm GitHub scheduled workflow after push.
+- For OpenAI/ChatGPT plugin listing: owner must have verified publisher identity and the required
+  plugin submission permissions, then use the portal's exact challenge token in
+  `OPENAI_APPS_CHALLENGE_TOKEN`, redeploy, scan tools, and submit.
+- Claude/Gemini can consume the remote MCP URL through their API/tool configuration paths, but public
+  directory/listing workflows are separate platform-side tasks.
+- Siri/Apple discovery requires a native Apple/App Intents product path, not MCP.
+
 ### 2026-08-26 — Codex: MCP Vercel host allowlist fix prepared
 
 Reviewed Claude's second stopped Vercel preview attempt. The routing fix was correct, and Claude's

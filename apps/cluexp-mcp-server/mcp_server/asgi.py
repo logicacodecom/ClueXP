@@ -22,10 +22,24 @@ from starlette.routing import Mount, Route
 from mcp_server.server import mcp
 
 MCP_BEARER_TOKEN_ENV = "CLUEXP_MCP_BEARER_TOKEN"
+OPENAI_APPS_CHALLENGE_TOKEN_ENV = "OPENAI_APPS_CHALLENGE_TOKEN"
+PUBLIC_PATHS = {
+    "/healthz",
+    "/api/healthz",
+    "/.well-known/openai-apps-challenge",
+    "/api/openai_apps_challenge",
+}
 
 
 async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
+
+
+async def openai_apps_challenge(request: Request) -> Response:
+    token = os.environ.get(OPENAI_APPS_CHALLENGE_TOKEN_ENV)
+    if not token:
+        return Response("not configured", status_code=404, media_type="text/plain")
+    return Response(token, media_type="text/plain")
 
 
 class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
@@ -36,7 +50,7 @@ class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        if request.url.path in {"/healthz", "/api/healthz"}:
+        if request.url.path in PUBLIC_PATHS:
             return await call_next(request)
 
         expected = os.environ.get(MCP_BEARER_TOKEN_ENV)
@@ -63,6 +77,8 @@ app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
         Route("/api/healthz", healthz, methods=["GET"]),
+        Route("/.well-known/openai-apps-challenge", openai_apps_challenge, methods=["GET"]),
+        Route("/api/openai_apps_challenge", openai_apps_challenge, methods=["GET"]),
         Mount("/api", app=mcp_app),
         Mount("/", app=mcp_app),
     ],
