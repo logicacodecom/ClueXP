@@ -36,6 +36,11 @@ Required environment variables, no defaults, no committed secrets:
 - `CLUEXP_MCP_BEARER_TOKEN` — required for the remote HTTP `/mcp` endpoint. `/healthz`
   remains public for hosting checks. If this token is missing, remote MCP calls fail closed
   with `503 mcp_auth_not_configured`.
+- `CLUEXP_MCP_ALLOWED_HOSTS` — optional comma-separated exact Host values for the MCP
+  SDK DNS-rebinding guard. Defaults already include local/test hosts and `mcp.cluexp.com`;
+  Vercel's `VERCEL_URL` / `VERCEL_PROJECT_PRODUCTION_URL` runtime hosts are also accepted
+  automatically when present. Do not use wildcard values such as `*.vercel.app`; the SDK
+  matches exact hosts only, plus `host:*` port wildcards.
 
 ## Running locally
 
@@ -64,7 +69,10 @@ POST /mcp      -> Streamable HTTP MCP endpoint, requires Authorization: Bearer <
 
 A Dockerfile is included for container hosts. Production deployment must set
 `CLUEXP_API_BASE_URL=https://api.cluexp.com`, a scoped production `CLUEXP_API_KEY`, and
-`CLUEXP_MCP_BEARER_TOKEN` in the hosting platform's secret manager.
+`CLUEXP_MCP_BEARER_TOKEN` in the hosting platform's secret manager. On Vercel,
+`CLUEXP_MCP_ALLOWED_HOSTS=mcp.cluexp.com` is sufficient for production; preview
+deployments can rely on Vercel's runtime `VERCEL_URL` or add an exact preview alias if
+needed for smoke testing.
 
 For a safer step-by-step internal preview procedure, see
 [`INTERNAL-PREVIEW-RUNBOOK.md`](INTERNAL-PREVIEW-RUNBOOK.md). Placeholder-only MCP client

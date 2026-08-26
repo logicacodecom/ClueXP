@@ -16,14 +16,71 @@ deliberately, not a default of this code.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from mcp_server import client
 from mcp_server.client import ClueXPApiError
 
-mcp = FastMCP("cluexp-mcp-server", stateless_http=True)
+MCP_ALLOWED_HOSTS_ENV = "CLUEXP_MCP_ALLOWED_HOSTS"
+DEFAULT_ALLOWED_HOSTS = (
+    "localhost",
+    "localhost:*",
+    "127.0.0.1",
+    "127.0.0.1:*",
+    "testserver",
+    "mcp.cluexp.com",
+)
+VERCEL_HOST_ENV_VARS = ("VERCEL_URL", "VERCEL_PROJECT_PRODUCTION_URL")
+
+
+def _split_hosts(value: str | None) -> list[str]:
+    if not value:
+        return []
+    hosts: list[str] = []
+    for raw_host in value.split(","):
+        host = raw_host.strip()
+        if not host:
+            continue
+        parsed = urlsplit(host if "://" in host else f"//{host}")
+        hosts.append(parsed.netloc or parsed.path.split("/", maxsplit=1)[0])
+    return hosts
+
+
+def _allowed_hosts() -> list[str]:
+    """Return exact Host values accepted by the MCP SDK DNS-rebinding guard.
+
+    The MCP SDK intentionally does not support domain wildcards such as
+    `*.vercel.app`; Vercel preview deployments therefore rely on Vercel's own
+    runtime host env vars or on an explicit comma-separated override.
+    """
+
+    hosts: list[str] = []
+    for host in DEFAULT_ALLOWED_HOSTS:
+        if host not in hosts:
+            hosts.append(host)
+
+    for env_var in VERCEL_HOST_ENV_VARS:
+        for host in _split_hosts(os.environ.get(env_var)):
+            if host not in hosts:
+                hosts.append(host)
+
+    for host in _split_hosts(os.environ.get(MCP_ALLOWED_HOSTS_ENV)):
+        if host not in hosts:
+            hosts.append(host)
+
+    return hosts
+
+
+mcp = FastMCP(
+    "cluexp-mcp-server",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(allowed_hosts=_allowed_hosts()),
+)
 
 
 def _error_result(exc: ClueXPApiError) -> dict[str, Any]:

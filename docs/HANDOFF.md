@@ -62,6 +62,38 @@
 
 ## Open threads
 
+### 2026-08-26 — Codex: MCP Vercel host allowlist fix prepared
+
+Reviewed Claude's second stopped Vercel preview attempt. The routing fix was correct, and Claude's
+follow-up `framework: null` Vercel fix is kept here because this standalone Python project needs
+classic per-file `api/*.py` function building instead of Vercel's single-entrypoint Python preset.
+
+Root cause confirmed for the new blocker: the MCP Python SDK's Streamable HTTP transport keeps
+DNS-rebinding protection enabled and validates the inbound `Host` header against exact allowed
+values. It does not support `*.vercel.app` domain wildcards, only exact host matches plus `host:*`
+port wildcards.
+
+Applied fix:
+- `mcp_server.server` now constructs `FastMCP(..., transport_security=TransportSecuritySettings(...))`
+  with an explicit host allowlist.
+- Default allowed hosts include local/test hosts and `mcp.cluexp.com`.
+- Vercel runtime hosts are accepted from `VERCEL_URL` and `VERCEL_PROJECT_PRODUCTION_URL`, so each
+  preview deployment can allow its own exact generated hostname without disabling SDK protection.
+- Operators can add exact extra hosts with `CLUEXP_MCP_ALLOWED_HOSTS`.
+- Documented the config in `apps/cluexp-mcp-server/README.md` and `.env.example`.
+
+Verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `27 passed`.
+- `uv run --with-requirements requirements.txt python -m compileall mcp_server api` -> passed.
+- `git diff --check` -> only CRLF normalization warnings.
+
+Next deployment step for Claude: pull this commit, redeploy preview, verify `GET /healthz` returns
+`200`, missing/wrong bearer on `/mcp` returns `401`, and correct bearer reaches the MCP app without
+`421 Invalid Host header`. If preview passes, set production secrets, attach `mcp.cluexp.com`, deploy
+production, and run the production smoke suite. Do not run live `confirm=true` dispatch/cancel smoke
+unless separately authorized by the human.
+
 ### 2026-08-25 — Codex: MCP internal preview completed to seven tools
 
 Implemented the second MCP preview pass in `apps/cluexp-mcp-server`: the server now exposes all
