@@ -85,7 +85,8 @@ needed for smoke testing.
 
 For a safer step-by-step internal preview procedure, see
 [`INTERNAL-PREVIEW-RUNBOOK.md`](INTERNAL-PREVIEW-RUNBOOK.md). Placeholder-only MCP client
-config examples live under [`examples/`](examples/).
+config examples live under [`examples/`](examples/). External platform listing/submission prep lives
+in [`docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md`](../../docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md).
 
 ## Tests
 

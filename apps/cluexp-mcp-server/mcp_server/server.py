@@ -1,4 +1,4 @@
-"""ClueXP MCP server -- internal preview.
+"""ClueXP MCP server -- controlled production endpoint.
 
 Exposes seven tools, each a thin wrapper over one `/v1` endpoint
 (see `mcp_server.client` and `docs/AGENT-INTEGRATION-MCP-PLAN.md`):
@@ -9,10 +9,11 @@ The mutating tools require an explicit `confirm=true` argument enforced in
 this module before any HTTP request is sent. This is defense-in-depth over
 whatever confirmation UX the calling agent platform may or may not provide.
 
-This server is not published, listed, or connected to any external agent
-platform. It talks to whatever `/v1` API `CLUEXP_API_BASE_URL` points at --
-pointing it at production is a deployment decision for someone else to make
-deliberately, not a default of this code.
+The production endpoint is live at https://mcp.cluexp.com/mcp, but it is not
+published/listed in any external agent-platform directory until the separate
+submission step is complete. It talks to whatever `/v1` API
+`CLUEXP_API_BASE_URL` points at -- pointing it at production is an explicit
+deployment decision, not a code default.
 """
 from __future__ import annotations
 
@@ -94,7 +95,11 @@ def _error_result(exc: ClueXPApiError) -> dict[str, Any]:
 
 @mcp.tool()
 async def list_services() -> dict[str, Any]:
-    """List the active ClueXP service catalog. Read-only, no confirmation needed."""
+    """List ClueXP service types that an assistant can offer to a user.
+
+    Use this first when a user asks what ClueXP can help with. Read-only; no
+    customer record is created and no confirmation is needed.
+    """
     try:
         return await client.list_services()
     except ClueXPApiError as exc:
@@ -103,7 +108,11 @@ async def list_services() -> dict[str, Any]:
 
 @mcp.tool()
 async def check_coverage(lat: float, lng: float, service_skill: str) -> dict[str, Any]:
-    """Check whether a service skill is coverable at a location. Read-only, no side effects."""
+    """Check whether ClueXP may be able to serve a requested skill near a location.
+
+    Use before creating a request when the user gives a service location. Read-only;
+    it does not reserve capacity, contact a technician, or dispatch anyone.
+    """
     try:
         return await client.check_coverage(lat, lng, service_skill)
     except ClueXPApiError as exc:
@@ -123,11 +132,13 @@ async def create_service_request(
     notes: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """Create a ClueXP service request. This creates a real record -- never dispatches by itself.
+    """Create a real ClueXP service request, but do not dispatch it.
 
-    `confirm` MUST be explicitly set to true. Before calling with confirm=true, show the
-    caller a summary of dispatch_scope, service_skill, and location, and get an explicit
-    yes. This check is enforced here, in code, not left to the calling agent's own UX.
+    Use only after the user chooses the service, location, and contact details.
+    This creates a real record in ClueXP. It does not authorize fulfillment or send
+    a technician offer. `confirm` MUST be explicitly set to true after showing the
+    caller a summary of dispatch_scope, service_skill, and location and getting a
+    clear yes. This check is enforced here, in code.
     """
     if not confirm:
         return {
@@ -156,7 +167,11 @@ async def create_service_request(
 
 @mcp.tool()
 async def get_service_request(request_reference: str) -> dict[str, Any]:
-    """Read a service request's current status by its opaque reference. Read-only."""
+    """Read a ClueXP service request's current status by opaque request reference.
+
+    Read-only; use when the user asks for request status or wants to verify what
+    was created.
+    """
     try:
         return await client.get_service_request(request_reference)
     except ClueXPApiError as exc:
@@ -165,7 +180,11 @@ async def get_service_request(request_reference: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def get_tracking(request_reference: str) -> dict[str, Any]:
-    """Read a service request's privacy-minimized tracking state. Read-only."""
+    """Read privacy-minimized tracking state for a ClueXP service request.
+
+    Read-only; returns only what the public tracking endpoint exposes, not raw
+    internal dispatch data or technician PII.
+    """
     try:
         return await client.get_tracking(request_reference)
     except ClueXPApiError as exc:
@@ -180,12 +199,13 @@ async def authorize_dispatch(
     terms_version: str,
     confirm: bool,
 ) -> dict[str, Any]:
-    """Authorize dispatch for a service request. This can trigger a real technician offer.
+    """Authorize dispatch for a ClueXP service request.
 
-    `confirm` MUST be explicitly set to true. Before calling with confirm=true, show the
-    caller the request reference, dispatch consequence, consent evidence, and terms version,
-    then get an explicit yes. This check is enforced here, in code, not left to the
-    calling agent's own UX.
+    This can trigger a real technician offer for eligible network requests or move
+    a private-partner request into its provider queue. `confirm` MUST be explicitly
+    set to true after showing the caller the request reference, dispatch consequence,
+    consent evidence, and terms version, then getting a clear yes. This check is
+    enforced here, in code.
     """
     if not confirm:
         return {
@@ -209,11 +229,11 @@ async def authorize_dispatch(
 
 @mcp.tool()
 async def cancel_service_request(request_reference: str, reason: str, confirm: bool) -> dict[str, Any]:
-    """Cancel a service request when the public API still allows cancellation.
+    """Cancel a ClueXP service request when the public API still allows cancellation.
 
-    `confirm` MUST be explicitly set to true. Before calling with confirm=true, show the
-    caller the request reference and cancellation reason, then get an explicit yes. This
-    check is enforced here, in code, not left to the calling agent's own UX.
+    `confirm` MUST be explicitly set to true after showing the caller the request
+    reference and cancellation reason, then getting a clear yes. This check is
+    enforced here, in code.
     """
     if not confirm:
         return {

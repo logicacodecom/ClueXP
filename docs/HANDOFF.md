@@ -62,6 +62,48 @@
 
 ## Open threads
 
+### 2026-08-26 — Codex: agent platform submission package prepared
+
+Prepared the next launch tranche after production MCP monitoring:
+
+- Added `docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md` with:
+  - stable endpoint URLs;
+  - ChatGPT/OpenAI listing copy;
+  - safety/review note;
+  - reviewer test plan;
+  - ChatGPT/OpenAI submission checklist;
+  - Claude/Anthropic remote MCP config notes;
+  - Gemini/Google remote MCP config notes;
+  - Siri/Apple App Intents path.
+- Added placeholder-only remote config examples:
+  - `apps/cluexp-mcp-server/examples/anthropic-remote-mcp.example.json`
+  - `apps/cluexp-mcp-server/examples/gemini-remote-mcp.example.json`
+- Updated MCP tool docstrings so MCP tool scanning/selection sees clearer user-facing descriptions
+  and stricter confirmation language.
+- Updated stale module status text from "internal preview" to controlled production endpoint.
+- Linked the submission package from `apps/cluexp-mcp-server/README.md` and `docs/README.md`.
+
+Sources checked on 2026-08-26:
+- OpenAI plugin submission / review / connect-and-test docs.
+- Anthropic MCP connector and remote MCP server docs.
+- Gemini function-calling / MCP server docs.
+- Apple Intelligence / App Intents docs.
+
+Verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `30 passed`.
+- `uv run --with-requirements requirements.txt python -m compileall mcp_server api` -> passed.
+- JSON validation for `vercel.json` and all `examples/*.json` -> passed.
+
+Remaining:
+- OpenAI/ChatGPT submission itself still requires owner-side OpenAI Platform access, verified
+  publisher identity, plugin submission permissions, and any challenge token shown by the portal.
+- Positive production MCP initialize monitoring still requires a bearer-token custody decision; current
+  GitHub monitoring deliberately avoids storing the production bearer token.
+- Claude/Gemini integration can be configured by platform consumers using the endpoint and placeholder
+  examples, but public directory/listing is platform-side.
+- Siri/Apple is a separate native App Intents/App Store path, not something MCP completes.
+
 ### 2026-08-26 — Codex: MCP post-launch monitoring and platform-submission prep
 
 After Claude's production deployment confirmation, completed the next repo-side launch tasks:
