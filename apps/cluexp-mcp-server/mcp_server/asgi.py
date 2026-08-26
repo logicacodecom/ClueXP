@@ -2,7 +2,10 @@
 
 This is intentionally small: `/mcp` is the Streamable HTTP MCP endpoint,
 `/healthz` is a public hosting health check, and every MCP request requires a
-separate bearer token before it can reach the tool layer.
+separate bearer token before it can reach the tool layer. Vercel's Python
+runtime presents rewritten function destinations such as `/api/mcp` to ASGI,
+so this app also accepts `/api/healthz` and mounts the same MCP app under
+`/api` for the deployed function path.
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        if request.url.path == "/healthz":
+        if request.url.path in {"/healthz", "/api/healthz"}:
             return await call_next(request)
 
         expected = os.environ.get(MCP_BEARER_TOKEN_ENV)
@@ -59,6 +62,8 @@ mcp_app = mcp.streamable_http_app()
 app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/api/healthz", healthz, methods=["GET"]),
+        Mount("/api", app=mcp_app),
         Mount("/", app=mcp_app),
     ],
     lifespan=lambda app: mcp.session_manager.run(),

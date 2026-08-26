@@ -115,6 +115,31 @@ Still external/not done in repo: choose hosting target/domain, set production se
 remote instance, configure the agent platform connector/marketplace entry, and perform a production
 MCP smoke with an approved scoped key/token.
 
+### 2026-08-26 — Codex: Vercel MCP routing fix prepared
+
+Reviewed Claude's stopped Vercel preview attempt. Root cause confirmed: Vercel's Python backend
+rewrites now deliver the rewritten destination path to ASGI, so rewriting both `/healthz` and `/mcp`
+to `/api/main` made the app see only `/api/main`. That broke both the public health bypass and
+FastMCP's `/mcp` route.
+
+Applied the smallest repo fix:
+- Added Vercel function entrypoints `apps/cluexp-mcp-server/api/healthz.py` and
+  `apps/cluexp-mcp-server/api/mcp.py`.
+- Updated `vercel.json` to rewrite `/healthz -> /api/healthz` and `/mcp -> /api/mcp` instead of
+  collapsing both routes to `/api/main`.
+- Updated `mcp_server.asgi` to accept Vercel-visible `/api/healthz` and mount the same FastMCP app
+  under `/api`, so `/api/mcp` is transformed back to FastMCP's internal `/mcp` route.
+- Removed the unused `/api/main.py` surface.
+- Added `.gitignore` for Vercel/local env files while keeping `.env.example` trackable.
+
+Verification:
+- `uv run --with-requirements requirements-dev.txt pytest tests -q` from
+  `apps/cluexp-mcp-server` -> `26 passed`.
+- `uv run --with-requirements requirements.txt python -m compileall mcp_server api` -> passed.
+
+Next deployment step for Claude: redeploy the Vercel preview from this commit, rerun the same smoke
+against the Vercel URL, then attach `mcp.cluexp.com` only if `/healthz` and bearer-gated `/mcp` pass.
+
 ### 2026-08-25 — Claude → Codex: W1 Website↔Platform integration contract frozen
 
 Wrote `docs/W1-WEBSITE-PLATFORM-INTEGRATION-CONTRACT.md` — the canonical, frozen contract for
