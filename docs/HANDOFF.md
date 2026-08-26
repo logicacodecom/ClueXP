@@ -7472,3 +7472,83 @@ Files added/changed by this increment:
 - `apps/provider-web/src/app/api/provider/alerts/[alertId]/resolve/route.ts`
 - `apps/provider-web/src/app/messages/page.tsx`
 - `docs/HANDOFF.md`
+
+---
+
+### 2026-08-26 — Claude: ClueXP MCP server deployed to production on Vercel
+
+Deployed `apps/cluexp-mcp-server` (launch-candidate commits `831e085`, `37721d8`, `e5aac2e`)
+as a live production MCP endpoint. **Production is now live and serving real traffic
+potential** — this is a customer/agent-facing surface, not just infra scaffolding.
+
+Deployment target:
+- Vercel project `cluexp-mcp-server`, team `logicacode-projects` (new project, not
+  previously existing).
+- Python framework preset explicitly disabled (`"framework": null` in
+  `apps/cluexp-mcp-server/vercel.json`) — required because this project has no wrapping
+  Next.js app (unlike `apps/intake-web`), and Vercel's unified "Python framework" build
+  model only supports a single entrypoint, which breaks the two-function
+  (`api/healthz.py` + `api/mcp.py`) layout Codex's routing fix depends on. With
+  `framework: null`, both files build as independent Python serverless functions again.
+- Canonical endpoint: `https://mcp.cluexp.com/mcp`
+- Health check: `https://mcp.cluexp.com/healthz`
+- Custom domain: **attached and verified**. DNS already pointed correctly (Cloudflare-managed
+  `mcp` CNAME → Vercel), `vercel domains verify` returned `configured-correctly` immediately,
+  TLS is issued and serving (`curl https://mcp.cluexp.com/healthz` → `200` over HTTPS).
+
+Two additional real bugs were found and fixed by Codex during this rollout (both were
+caught via preview smoke tests before touching production):
+1. Vercel injects the **rewritten destination path** into the ASGI scope, not the original
+   request path — broke the original single-rewrite-target routing design. Fixed with
+   separate `api/healthz.py` / `api/mcp.py` entrypoints and matching route table in
+   `mcp_server/asgi.py` (commit `37721d8`).
+2. The `mcp` SDK's Streamable HTTP transport has DNS-rebinding protection (`Host` header
+   allowlist) that rejected both the Vercel preview hostname and would have rejected
+   `mcp.cluexp.com`. Fixed by explicitly configuring `TransportSecuritySettings` with
+   `mcp.cluexp.com` as a default allowed host, plus `VERCEL_URL` /
+   `VERCEL_PROJECT_PRODUCTION_URL` read at runtime for preview/prod Vercel hostnames, and
+   an optional `CLUEXP_MCP_ALLOWED_HOSTS` env var for extra hosts (commit `e5aac2e`).
+
+Env vars configured in Vercel (Production environment), **names only, values never printed
+or committed**:
+- `CLUEXP_API_BASE_URL` = `https://api.cluexp.com`
+- `CLUEXP_API_KEY` — scoped production external API key, supplied directly by Human/Codex
+  through this chat and piped straight into `vercel env add` without echoing.
+- `CLUEXP_MCP_BEARER_TOKEN` — generated locally with `secrets.token_urlsafe(32)`, written
+  only to a session-scoped scratchpad file for smoke testing, then deleted after use.
+- `CLUEXP_MCP_ALLOWED_HOSTS` = `mcp.cluexp.com`
+
+Production smoke test (all passed):
+- `GET https://mcp.cluexp.com/healthz` → `200 {"status":"ok"}`
+- `POST https://mcp.cluexp.com/mcp` no token → `401 {"error":"invalid_mcp_token"}`
+- `POST https://mcp.cluexp.com/mcp` wrong token → `401 {"error":"invalid_mcp_token"}`
+- `POST https://mcp.cluexp.com/mcp` correct token → `200`, real MCP `initialize` JSON-RPC
+  response (`serverInfo.name: cluexp-mcp-server`, `version: 1.29.1`), no `421`/`503`.
+
+Same suite was run and passed on the Vercel preview deployment first, using throwaway
+non-production credentials, before any production secret was touched.
+
+Not done / explicitly deferred (per task safety constraints):
+- No live `authorize_dispatch(confirm=true)` or `cancel_service_request(confirm=true)` was
+  run against production, and no real customer/provider/technician record was created.
+- No external agent-platform submission/listing was performed — this is still an unlisted,
+  bearer-gated endpoint, reachable only by whoever holds the token.
+
+Cleanup:
+- The temporary Vercel deployment-protection automation-bypass secret (added earlier during
+  preview troubleshooting, when Vercel's SSO wall blocked curl-based smoke tests) was
+  **removed** via `vercel project protection disable --protection-bypass`.
+
+Files changed: none by this session — `"framework": null` in
+`apps/cluexp-mcp-server/vercel.json` was already committed by Codex in `e5aac2e`, along
+with the routing/host-allowlist fixes. Only `docs/HANDOFF.md` (this entry) was changed here.
+
+Risks / open items:
+- This server is now live at a stable, real hostname. Anyone with the bearer token can
+  reach real production `/v1` endpoints (read tools are harmless; the three mutating tools
+  are confirm-gated in code, but that gate lives in this server, not the platform in front
+  of it).
+- No monitoring/alerting was set up for this new endpoint or its error rates.
+- Bearer token was generated and set once by this session; it is not recorded anywhere
+  outside Vercel's env var store. If it needs rotation later, no one else currently has a
+  copy.
