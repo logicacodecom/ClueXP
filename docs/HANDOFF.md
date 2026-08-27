@@ -62,6 +62,31 @@
 
 ## Open threads
 
+### 2026-08-27 — Codex: OpenAI plugin submission blocked on Platform app permissions
+
+Attempted to start the ChatGPT/OpenAI plugin submission through the official portal:
+`https://platform.openai.com/plugins`.
+
+Result: the current logged-in OpenAI Platform organization/session cannot view or create plugin
+drafts. The portal shows: "To manage plugins, ask an organization admin to assign you a role with
+the `api.apps.read` permission."
+
+Needed human/admin action:
+- In OpenAI Platform, select the organization that should publish ClueXP.
+- Go to Organization settings -> People/Roles.
+- Ensure the submitting user has Apps Management / plugin permissions:
+  - `api.apps.read` to view/manage plugin drafts/status.
+  - `api.apps.write` to create/edit/submit plugin drafts.
+- Confirm the publisher identity is verified for the ClueXP/business name.
+- Return to `https://platform.openai.com/plugins`.
+
+Once permissions are fixed, use:
+- MCP server URL: `https://mcp.cluexp.com/mcp`
+- Challenge base host if prompted: `https://mcp.cluexp.com`
+- Submission package: `docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md`
+
+No submission was created, no platform settings were changed, and no secrets were entered.
+
 ### 2026-08-26 — Codex: agent platform submission package prepared
 
 Prepared the next launch tranche after production MCP monitoring:
