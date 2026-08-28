@@ -62,6 +62,38 @@
 
 ## Open threads
 
+### 2026-08-28 — Codex: OpenAI plugin draft started, Info page partially filled
+
+OpenAI organization validation/access appears to be resolved. Started the ClueXP plugin draft in
+the OpenAI Platform plugin portal.
+
+Draft URL visible in browser:
+`https://platform.openai.com/plugins/edit/asdk_app_6a91ec3a6f4481918fc6a4690016be81/asdk_app_v_6a91ec3b1ef88191a782e3135a374665?section=App%20Info`
+
+Fields filled and auto-saved on the Info page:
+- Name: `ClueXP`
+- Version: `1.0.0`
+- Subtitle: `Find local service help`
+- Description: ClueXP service-request / coverage / tracking / dispatch authorization description,
+  with confirmation-gated write language.
+- Category: `Business & Operations`
+- Developer Identity: `Business — logicacode`
+- Plugin Author: `logicacode`
+- Website URL: `https://cluexp.com`
+- Customer support URL: `https://cluexp.com/contact`
+- Privacy policy URL: `https://cluexp.com/privacy`
+- Terms of Service URL: `https://cluexp.com/terms`
+- Commerce checkbox: left unchecked.
+
+Blocked before continuing:
+- Directory icon and ChatGPT composer icon still need manual upload through the browser's native
+  file picker. Use `C:\__CODE__\ClueXP\intake\apps\intake-web\public\icon.png` for both; it is
+  1024x1024 and satisfies the 256x256 and 48x48 requirements.
+- Demo Recording URL is required. Need a URL to a screen recording demonstrating the plugin in
+  Developer Mode; OpenAI says this is used for review and not shown externally.
+
+No final submission was made.
+
 ### 2026-08-27 — Codex: OpenAI plugin submission blocked on Platform app permissions
 
 Attempted to start the ChatGPT/OpenAI plugin submission through the official portal:
