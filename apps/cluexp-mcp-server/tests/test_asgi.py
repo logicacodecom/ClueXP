@@ -5,6 +5,8 @@ has an open health check and a fail-closed MCP auth boundary.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from starlette.testclient import TestClient
@@ -80,6 +82,30 @@ async def test_openai_apps_challenge_404_when_unconfigured(monkeypatch):
         response = await client.get("/.well-known/openai-apps-challenge")
     assert response.status_code == 404
     assert response.text == "not configured"
+
+
+@pytest.mark.asyncio
+async def test_vercel_rewritten_oauth_metadata_path(monkeypatch):
+    monkeypatch.setattr(
+        asgi,
+        "oauth_config",
+        SimpleNamespace(
+            resource_server_url="https://mcp.cluexp.com/mcp",
+            issuer="https://tenant.example.auth0.com/",
+            required_scope="cluexp:use",
+        ),
+    )
+    transport = httpx.ASGITransport(app=asgi.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
+        response = await client.get("/api/oauth_protected_resource")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "resource": "https://mcp.cluexp.com/mcp",
+        "authorization_servers": ["https://tenant.example.auth0.com/"],
+        "scopes_supported": ["cluexp:use"],
+        "bearer_methods_supported": ["header"],
+    }
 
 
 @pytest.mark.asyncio

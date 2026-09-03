@@ -34,9 +34,17 @@ Required environment variables, no defaults, no committed secrets:
   to use (`services:read`, `coverage:check`, `service_requests:write`,
   `service_requests:authorize`, `service_requests:read`, `service_requests:cancel`).
   Never commit a real key.
-- `CLUEXP_MCP_BEARER_TOKEN` — required for the remote HTTP `/mcp` endpoint. `/healthz`
-  remains public for hosting checks. If this token is missing, remote MCP calls fail closed
-  with `503 mcp_auth_not_configured`.
+- `CLUEXP_MCP_OAUTH_ISSUER` — production OAuth authorization-server issuer, including its
+  HTTPS tenant or custom-domain origin. For the public ChatGPT plugin this is the Auth0 issuer.
+- `CLUEXP_MCP_OAUTH_RESOURCE_SERVER_URL` — public MCP resource identifier. Production uses
+  `https://mcp.cluexp.com/mcp`.
+- `CLUEXP_MCP_OAUTH_AUDIENCE` — expected JWT audience; defaults to the resource-server URL.
+- `CLUEXP_MCP_OAUTH_SCOPE` — scope required on every MCP access token; defaults to `cluexp:use`.
+- `CLUEXP_MCP_OAUTH_JWKS_URL` — optional JWKS override. When omitted, the standard
+  `<issuer>/.well-known/jwks.json` URL is used.
+- `CLUEXP_MCP_BEARER_TOKEN` — internal-preview compatibility token used only when OAuth is
+  not configured. `/healthz` remains public. If neither OAuth nor this fallback token is
+  configured, remote MCP calls fail closed with `503 mcp_auth_not_configured`.
 - `CLUEXP_MCP_ALLOWED_HOSTS` — optional comma-separated exact Host values for the MCP
   SDK DNS-rebinding guard. Defaults already include local/test hosts and `mcp.cluexp.com`;
   Vercel's `VERCEL_URL` / `VERCEL_PROJECT_PRODUCTION_URL` runtime hosts are also accepted
@@ -73,12 +81,16 @@ The remote endpoint is:
 ```
 GET  /healthz  -> public health check
 GET  /.well-known/openai-apps-challenge -> optional OpenAI plugin domain verification
-POST /mcp      -> Streamable HTTP MCP endpoint, requires Authorization: Bearer <CLUEXP_MCP_BEARER_TOKEN>
+GET  /.well-known/oauth-protected-resource/mcp -> OAuth protected-resource metadata
+POST /mcp      -> Streamable HTTP MCP endpoint, requires an OAuth access token in production
 ```
 
 A Dockerfile is included for container hosts. Production deployment must set
 `CLUEXP_API_BASE_URL=https://api.cluexp.com`, a scoped production `CLUEXP_API_KEY`, and
-`CLUEXP_MCP_BEARER_TOKEN` in the hosting platform's secret manager. On Vercel,
+the OAuth issuer/resource settings in the hosting platform's environment store. The Auth0
+tenant issues RS256 access tokens for audience `https://mcp.cluexp.com/mcp` with the
+`cluexp:use` scope; the MCP server validates issuer, audience, signature, expiry, and scope
+against Auth0's JWKS. On Vercel,
 `CLUEXP_MCP_ALLOWED_HOSTS=mcp.cluexp.com` is sufficient for production; preview
 deployments can rely on Vercel's runtime `VERCEL_URL` or add an exact preview alias if
 needed for smoke testing.
@@ -109,3 +121,17 @@ The mutating tools — `create_service_request`, `authorize_dispatch`, and
 Calling any of them with `confirm=false` returns a `confirmation_required` error and
 **never reaches the API**. A calling agent must show the end user a summary of what will
 happen and get explicit consent before setting `confirm=true`.
+
+## ChatGPT OAuth setup boundary
+
+The repository implements only the OAuth resource server. It does not contain an authorization
+server, login page, client secret, or tenant credentials. Before enabling OAuth in production:
+
+1. Create/configure the Auth0 API whose identifier is `https://mcp.cluexp.com/mcp` and add the
+   `cluexp:use` permission.
+2. Configure the OpenAI client registration and callback URL shown by the plugin portal using
+   Auth0's authorization-code flow with PKCE.
+3. Set `CLUEXP_MCP_OAUTH_ISSUER`, `CLUEXP_MCP_OAUTH_RESOURCE_SERVER_URL`, and the matching
+   audience/scope in Vercel, then redeploy only after Human authorization.
+4. Verify protected-resource metadata and complete an end-to-end login in a non-production
+   Auth0 tenant before changing the production plugin draft to OAuth and scanning tools.

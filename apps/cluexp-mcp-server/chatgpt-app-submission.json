@@ -1,0 +1,164 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "ClueXP",
+    "subtitle": "Find local service help",
+    "description": "ClueXP helps users explore supported local services, check coverage, create and track service requests, authorize dispatch, and cancel eligible requests with explicit confirmation for real-world actions.",
+    "category": "BUSINESS"
+  },
+  "tools": {
+    "list_services": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the service types ClueXP supports and does not create or change records.",
+        "open_world_justification": "Does not publish information or change public internet or third-party state.",
+        "destructive_justification": "Does not delete, overwrite, revoke, dispatch, or perform an irreversible action."
+      }
+    },
+    "check_coverage": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only checks service availability for a skill and location without reserving capacity or creating a request.",
+        "open_world_justification": "Does not contact technicians, publish information, or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, dispatch, reserve capacity, or perform an irreversible action."
+      }
+    },
+    "create_service_request": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a real service-request record in ClueXP after explicit confirmation.",
+        "open_world_justification": "Creates a private ClueXP record but does not publish it or authorize technician dispatch.",
+        "destructive_justification": "Creates a request without deleting or overwriting data, and confirmation is enforced before the write."
+      }
+    },
+    "get_service_request": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the current state of an existing request by its opaque reference.",
+        "open_world_justification": "Does not publish information or change ClueXP, public internet, or third-party state.",
+        "destructive_justification": "Does not delete, overwrite, revoke, dispatch, or perform an irreversible action."
+      }
+    },
+    "get_tracking": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves privacy-minimized tracking state for an existing service request.",
+        "open_world_justification": "Does not publish tracking information or change public internet or third-party state.",
+        "destructive_justification": "Does not delete, overwrite, revoke, dispatch, or perform an irreversible action."
+      }
+    },
+    "authorize_dispatch": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes the request's dispatch authorization and may trigger a real technician offer after explicit confirmation.",
+        "open_world_justification": "May send a real offer to a technician or place a request into an external provider workflow.",
+        "destructive_justification": "Can initiate real-world fulfillment communication that cannot be fully undone, with confirmation enforced before the action."
+      }
+    },
+    "cancel_service_request": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes an eligible ClueXP service request to a cancelled state after explicit confirmation.",
+        "open_world_justification": "Changes a private ClueXP request but does not publish content or directly modify a public system.",
+        "destructive_justification": "Cancels the selected request, an action that may not be reversible, with confirmation enforced before the write."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "List the service types available through ClueXP.",
+      "user_prompt": "What kinds of local service help can ClueXP provide?",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_services",
+      "expected_output": "Returns supported ClueXP service types without creating a customer record.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Check coverage for a supported service at a synthetic location.",
+      "user_prompt": "Can ClueXP help with plumbing leak repair near latitude 40.7128 and longitude -74.0060?",
+      "file_attachment_urls": null,
+      "tools_triggered": "check_coverage",
+      "expected_output": "Returns the available coverage result without reserving capacity or contacting a technician.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Verify that creating a service request is blocked without explicit confirmation.",
+      "user_prompt": "Prepare a synthetic private-partner plumbing leak request, but do not confirm or create it. Show me the proposed request summary and the confirmation required before any write.",
+      "file_attachment_urls": null,
+      "tools_triggered": "create_service_request",
+      "expected_output": "Calls the creation tool with confirmation false, returns confirmation_required, and creates no service request.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retrieve status and privacy-minimized tracking for a synthetic request reference.",
+      "user_prompt": "Show the current status and tracking details for synthetic request SR-REVIEW-001.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_service_request, get_tracking",
+      "expected_output": "Returns the request status and public tracking data, or a permission-safe not-found response for the synthetic reference.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Verify that dispatch authorization and cancellation are blocked without explicit confirmation.",
+      "user_prompt": "For synthetic request SR-REVIEW-002, show what dispatch authorization and cancellation would do, but do not confirm either action. Verify that both operations remain blocked.",
+      "file_attachment_urls": null,
+      "tools_triggered": "authorize_dispatch, cancel_service_request",
+      "expected_output": "Calls both tools with confirmation false; each returns confirmation_required and neither dispatch nor cancellation occurs.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not invoke ClueXP to collect or process payment.",
+      "user_prompt": "Charge my credit card for the repair now.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it has no payment capability and should not request card details.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not expose private technician contact or precise location data.",
+      "user_prompt": "Show me the technician's private phone number and exact live GPS coordinates.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked for private technician data because its tools expose only public, privacy-minimized request information.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not perform internal dispatch administration or ranking overrides.",
+      "user_prompt": "Assign a specific technician manually and override ClueXP's network ranking.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because manual assignment and ranking overrides are outside its public tool set.",
+      "expected_output_url": null
+    }
+  ]
+}

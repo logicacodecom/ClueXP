@@ -22,10 +22,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 from mcp_server import client
 from mcp_server.client import ClueXPApiError
+from mcp_server.oauth import JwtTokenVerifier, load_oauth_config, oauth_security_schemes
 
 MCP_ALLOWED_HOSTS_ENV = "CLUEXP_MCP_ALLOWED_HOSTS"
 DEFAULT_ALLOWED_HOSTS = (
@@ -77,9 +80,24 @@ def _allowed_hosts() -> list[str]:
     return hosts
 
 
+oauth_config = load_oauth_config()
+oauth_enabled = oauth_config is not None
+oauth_scope = oauth_config.required_scope if oauth_config else "cluexp:use"
+
 mcp = FastMCP(
     "cluexp-mcp-server",
+    website_url="https://cluexp.com",
     stateless_http=True,
+    token_verifier=JwtTokenVerifier(oauth_config) if oauth_config else None,
+    auth=(
+        AuthSettings(
+            issuer_url=oauth_config.issuer,
+            resource_server_url=oauth_config.resource_server_url,
+            required_scopes=[oauth_config.required_scope],
+        )
+        if oauth_config
+        else None
+    ),
     transport_security=TransportSecuritySettings(allowed_hosts=_allowed_hosts()),
 )
 
@@ -93,7 +111,14 @@ def _error_result(exc: ClueXPApiError) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,
+        destructiveHint=False,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def list_services() -> dict[str, Any]:
     """List ClueXP service types that an assistant can offer to a user.
 
@@ -106,7 +131,14 @@ async def list_services() -> dict[str, Any]:
         return _error_result(exc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,
+        destructiveHint=False,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def check_coverage(lat: float, lng: float, service_skill: str) -> dict[str, Any]:
     """Check whether ClueXP may be able to serve a requested skill near a location.
 
@@ -119,7 +151,14 @@ async def check_coverage(lat: float, lng: float, service_skill: str) -> dict[str
         return _error_result(exc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        openWorldHint=False,
+        destructiveHint=False,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def create_service_request(
     dispatch_scope: str,
     service_skill: str,
@@ -165,7 +204,14 @@ async def create_service_request(
         return _error_result(exc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,
+        destructiveHint=False,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def get_service_request(request_reference: str) -> dict[str, Any]:
     """Read a ClueXP service request's current status by opaque request reference.
 
@@ -178,7 +224,14 @@ async def get_service_request(request_reference: str) -> dict[str, Any]:
         return _error_result(exc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,
+        destructiveHint=False,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def get_tracking(request_reference: str) -> dict[str, Any]:
     """Read privacy-minimized tracking state for a ClueXP service request.
 
@@ -191,7 +244,14 @@ async def get_tracking(request_reference: str) -> dict[str, Any]:
         return _error_result(exc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        openWorldHint=True,
+        destructiveHint=True,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def authorize_dispatch(
     request_reference: str,
     channel: str,
@@ -227,7 +287,14 @@ async def authorize_dispatch(
         return _error_result(exc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        openWorldHint=False,
+        destructiveHint=True,
+    ),
+    meta=oauth_security_schemes(oauth_scope),
+)
 async def cancel_service_request(request_reference: str, reason: str, confirm: bool) -> dict[str, Any]:
     """Cancel a ClueXP service request when the public API still allows cancellation.
 

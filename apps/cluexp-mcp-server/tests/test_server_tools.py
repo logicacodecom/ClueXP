@@ -25,6 +25,31 @@ async def test_exactly_seven_tools_registered():
 
 
 @pytest.mark.asyncio
+async def test_tools_declare_explicit_review_annotations():
+    expected = {
+        "list_services": (True, False, False),
+        "check_coverage": (True, False, False),
+        "create_service_request": (False, False, False),
+        "get_service_request": (True, False, False),
+        "get_tracking": (True, False, False),
+        "authorize_dispatch": (False, True, True),
+        "cancel_service_request": (False, False, True),
+    }
+
+    for tool in server.mcp._tool_manager.list_tools():
+        annotations = tool.annotations
+        assert annotations is not None
+        assert (
+            annotations.readOnlyHint,
+            annotations.openWorldHint,
+            annotations.destructiveHint,
+        ) == expected[tool.name]
+        assert tool.meta == {
+            "securitySchemes": [{"type": "oauth2", "scopes": [server.oauth_scope]}]
+        }
+
+
+@pytest.mark.asyncio
 async def test_create_service_request_requires_confirm_true(monkeypatch):
     called = False
 

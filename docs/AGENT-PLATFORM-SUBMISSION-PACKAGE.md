@@ -63,7 +63,9 @@ Update the URLs above if the public website uses different canonical paths befor
 
 Run these with test/synthetic data only unless the Human separately approves a live proof run.
 
-1. Connect to `https://mcp.cluexp.com/mcp` with the approved bearer token.
+1. Connect to `https://mcp.cluexp.com/mcp` through the configured OAuth authorization-code
+   flow using a synthetic reviewer account. The legacy shared bearer token is for internal
+   preview only and is not supported by the public ChatGPT plugin flow.
 2. Initialize/list tools and confirm exactly the seven tools above are visible.
 3. Ask: "What services can ClueXP help with?" Expected: `list_services`.
 4. Ask: "Can ClueXP help with [supported service] near [test location]?" Expected: `check_coverage`.
@@ -83,7 +85,10 @@ Current official OpenAI plugin submission docs require a public MCP server URL, 
 
 - Verify the OpenAI Platform organization/publisher identity for the name ClueXP will publish under.
 - Confirm the submitting user has `api.apps.write`; reviewers/status viewers need `api.apps.read`.
-- Create the plugin draft with MCP server URL `https://mcp.cluexp.com/mcp`.
+- Create the plugin draft with MCP server URL `https://mcp.cluexp.com/mcp` and select OAuth.
+- Configure the Auth0 authorization server and reviewer account before scanning tools. The MCP
+  resource identifier/audience is `https://mcp.cluexp.com/mcp`; every tool requires
+  `cluexp:use`. Do not put an Auth0 secret or access token in this package.
 - If asked for a challenge base URL, use `https://mcp.cluexp.com`.
 - When the portal provides the challenge token:
   1. Set `OPENAI_APPS_CHALLENGE_TOKEN` in the Vercel project `cluexp-mcp-server`.
