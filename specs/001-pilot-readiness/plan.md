@@ -36,7 +36,7 @@ No application code changes. This slice is: (a) a one-time production data-state
 
 ## Rollout And Rollback
 
-- **Flags/config**: `NEXT_PUBLIC_DISPATCH_PHONE` (Vercel env var, `intake-web`, Production) — no redeploy required to change (Vercel env var update requires redeploy or next build to take effect; note that if correcting rather than only verifying).
+- **Flags/config**: `NEXT_PUBLIC_DISPATCH_PHONE` (Vercel env var, `intake-web`, Production) — verification-only (confirming the current value) needs no deployment. If the value is wrong and must be corrected, the fix requires the normal authorized production env update through Vercel plus a redeploy/rebuild of `intake-web`; the browser-visible `NEXT_PUBLIC_*` value does not change until that rebuild completes.
 - **Production approval needed**: `yes` — both the job resolve action and any env var change require explicit Human authorization for that exact target, per `CLAUDE.md`/AGENTS.md.
 - **Rollback path**: not applicable to the stale-job resolution (terminal state). For the env var, revert to the prior value if a correction turns out wrong.
 
