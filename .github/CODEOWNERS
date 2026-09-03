@@ -1,0 +1,30 @@
+# GitHub requires account/team identities here; Codex and Claude Code are workflow roles,
+# not GitHub accounts. These repository collaborators route Human/code-owner review while
+# the SDLC policy gate separately verifies the required secondary-agent review markers.
+
+/.github/ @logicacodecom @ferrybarbarossa
+/.specify/ @logicacodecom @ferrybarbarossa
+/specs/ @logicacodecom @ferrybarbarossa
+/.env.example @logicacodecom @ferrybarbarossa
+
+/packages/db/ @logicacodecom @ferrybarbarossa
+/packages/api-client/ @logicacodecom @ferrybarbarossa
+/apps/intake-web/api/ @logicacodecom @ferrybarbarossa
+/apps/intake-web/scripts/ @logicacodecom @ferrybarbarossa
+/apps/intake-web/vercel.json @logicacodecom @ferrybarbarossa
+/apps/cluexp-mcp-server/ @logicacodecom @ferrybarbarossa
+/apps/*/vercel.json @logicacodecom @ferrybarbarossa
+
+/apps/technician-web/src/app/api/ @logicacodecom @ferrybarbarossa
+/apps/technician-web/src/app/offer/ @logicacodecom @ferrybarbarossa
+/apps/technician-web/src/components/live-offers.tsx @logicacodecom @ferrybarbarossa
+/apps/provider-web/src/app/api/provider/ @logicacodecom @ferrybarbarossa
+/apps/provider-web/src/app/financial/ @logicacodecom @ferrybarbarossa
+
+/docs/openapi-v1-snapshot.json @logicacodecom @ferrybarbarossa
+/docs/SUPABASE-RLS-AUDIT.md @logicacodecom @ferrybarbarossa
+/docs/PRODUCTION-READINESS.md @logicacodecom @ferrybarbarossa
+/docs/PILOT-OPERATIONS.md @logicacodecom @ferrybarbarossa
+/docs/PRIVACY-SECURITY-REVIEW.md @logicacodecom @ferrybarbarossa
+/docs/AGENT-INTEGRATION-MCP-PLAN.md @logicacodecom @ferrybarbarossa
+/docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md @logicacodecom @ferrybarbarossa
