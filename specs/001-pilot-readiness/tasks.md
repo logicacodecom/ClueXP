@@ -39,6 +39,15 @@ Product Owner asked to clean up "associated stale demo jobs" related to this blo
   - **Do not** run `scripts/reset_demo_providers.py`/`npm run demo:reset` against production unless the Human has independently confirmed (outside this repo) that it will not touch any real pilot customer job, and has given explicit authorization for that exact run.
   - Record the outcome here ("cleaned: yes/no, method: resolve-per-job | demo:reset --dry-run reviewed | declined, date: ___") without job IDs, PII, or evidence-log content.
 
+**2026-09-03 update — PO authorized Codex/Claude to clean stale demo jobs if required; execution attempted from this worktree.**
+
+- Re-checked this worktree for a credentialed, tenant-safe path to identify and resolve/close confirmed demo stale jobs.
+- **Found**: `MIGRATION_DATABASE_URL` is present as an environment variable in this worktree — a raw Postgres connection intended for schema migrations (per `docs/HANDOFF.md`/prior session notes), not an application-level credential.
+- **Not found**: no `platform_admin`/dispatcher API session token, JWT, or logged-in credential that would let this worktree call the audited `POST /admin/jobs/{id}/resolve` endpoint as an authorized actor. No exact confirmed-demo job identifier is available either (see findings above).
+- **Decision: cleanup not executed from this worktree.** Using `MIGRATION_DATABASE_URL` to hand-edit a `jobs` row directly would bypass the resolve endpoint's authorization checks, business-logic validation, and audit-timeline logging — an unaudited raw mutation, which is the class of action the PO asked to avoid even though the letter of "no SQL DELETE" wouldn't technically forbid an `UPDATE`. It is not the audited per-job path this task requires. `scripts/reset_demo_providers.py` was **not** run — this worktree has no way to demonstrate the target database is demo-only rather than the live pilot database, and the docs explicitly warn against running it on real pilot data.
+- **Remaining operational blocker**: cleanup needs either (a) a Human/Codex session with an authenticated `platform_admin`/dispatcher credential to call `POST /admin/jobs/{id}/resolve` per confirmed demo job, or (b) a Human independently confirming a target database is demo-only before `scripts/reset_demo_providers.py` (with `--dry-run` reviewed first) is considered, plus (c) exact demo job identifier(s) in both cases. None of the three are available in this worktree today.
+- No SQL, resolve, delete, or `reset_demo_providers.py` action was executed. No job IDs, PII, secrets, or phone values were read or printed.
+
 ## Verification
 
 - [ ] `tasks.md` T002 and T003 both show recorded evidence lines before this spec's `Status` moves to `accepted`.
