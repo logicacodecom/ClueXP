@@ -44,8 +44,7 @@ Add repository-native Markdown policy files and a small Python CI script. Keep t
 ## Open Questions
 
 - Whether Mohamed wants `enforce_admins` enabled or prefers the current emergency administrator bypass.
-- A repository administrator must enable required code-owner review and the `secret-scan` status check after this branch lands.
 - GitHub Production environments still need required reviewers or equivalent approval protection.
 - Four redacted historical Gitleaks findings need Human/security triage before full-history scanning can become a required gate.
 
-Settled decisions: keep `.ai-orchestrator/*` as legacy reference; use `specs/001-dispatch-alert-escalation/` as the next product spec; require dedicated specs for MCP platform submission and the first real Website/API transaction; do not require a spec for a technician-native QA pass unless it produces a risky-path code fix.
+Settled decisions: keep `.ai-orchestrator/*` as legacy reference; use `specs/001-dispatch-alert-escalation/` as the next product spec; require dedicated specs for MCP platform submission and the first real Website/API transaction; do not require a spec for a technician-native QA pass unless it produces a risky-path code fix. Required code-owner review and the `secret-scan` branch check are enabled.

@@ -87,11 +87,17 @@ RISKY_PATTERNS = {
         ".vercel*.json",
     ],
     "GitHub Actions or SDLC policy enforcement": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".specify/memory/constitution.md",
+        ".specify/templates/**",
         ".github/workflows/**",
         ".github/scripts/check-sdlc-policy.py",
         ".github/scripts/test_check_sdlc_policy.py",
         ".github/pull_request_template.md",
+        ".github/copilot-instructions.md",
         ".github/CODEOWNERS",
+        "docs/AI-SDLC-WORKFLOW.md",
     ],
     "production runbook, deployment, or external platform": [
         "docs/PRODUCTION-READINESS.md",

@@ -64,7 +64,7 @@ Review result: approve
 
 A `changes-requested` result blocks merge until findings are resolved and a secondary reviewer records `approve`.
 
-Team policy forbids direct pushes to `main`. GitHub branch protection enforces pull requests, one approval, conversation resolution, and the required `sdlc-policy`, `web`, `api`, and `mcp-server` checks for non-admin contributors. Organization admins retain an emergency bypass pending a Human decision on `enforce_admins`. New required checks, including `secret-scan`, must be added to branch protection after their workflow lands.
+Team policy forbids direct pushes to `main`. GitHub branch protection enforces pull requests, code-owner review, one approval, conversation resolution, and the required `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server` checks for non-admin contributors. Organization admins retain an emergency bypass pending a Human decision on `enforce_admins`.
 
 Human approval is required before merging or executing changes that alter product scope, production DDL, production deployment/promotion, external app listing submission, public policy, payment handling, or real-world dispatch authority.
 
