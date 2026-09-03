@@ -5,14 +5,15 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 
-MATERIAL_PATTERNS = {
+RISKY_PATTERNS = {
     "database migration": [
         "packages/db/alembic/versions/**",
         "packages/db/**/*.sql",
@@ -21,6 +22,8 @@ MATERIAL_PATTERNS = {
         "apps/intake-web/api/auth.py",
         "apps/**/auth/**",
         "**/*auth*.py",
+        "**/*auth*.js",
+        "**/*auth*.jsx",
         "**/*auth*.ts",
         "**/*auth*.tsx",
         "apps/cluexp-mcp-server/mcp_server/oauth.py",
@@ -37,33 +40,83 @@ MATERIAL_PATTERNS = {
         "apps/cluexp-mcp-server/mcp_server/client.py",
         "apps/cluexp-mcp-server/mcp_server/server.py",
     ],
-    "tenant, dispatch, privacy, or real-world action": [
+    "RLS, tenant isolation, or cross-tenant data": [
+        "**/*tenant*",
+        "**/*TENANT*",
+        "**/*rls*",
+        "**/*RLS*",
         "apps/intake-web/api/store.py",
-        "apps/intake-web/api/dispatch.py",
-        "apps/intake-web/api/communications.py",
-        "apps/intake-web/api/push.py",
         "apps/intake-web/api/storage.py",
         "apps/intake-web/api/settings.py",
         "apps/intake-web/api/closeout_catalog.py",
         "apps/intake-web/api/tests/test_postgres_security.py",
         "apps/intake-web/api/tests/test_rls_schema_guard.py",
     ],
-    "production workflow or external platform": [
+    "dispatch routing, state, or offer lifecycle": [
+        "apps/**/dispatch/**",
+        "apps/intake-web/api/dispatch.py",
+        "apps/intake-web/api/communications.py",
+        "apps/intake-web/api/push.py",
+        "apps/technician-web/src/components/live-offers.tsx",
+        "apps/technician-web/src/app/api/offers/**",
+        "apps/technician-web/src/app/offer/**",
+        "apps/provider-web/src/app/api/provider/jobs/*/recall-offer/**",
+        "apps/provider-web/src/app/api/provider/settings/dispatch/**",
+    ],
+    "payments or billing semantics": [
+        "apps/**/billing/**",
+        "apps/**/payments/**",
+        "apps/**/settlements/**",
+        "apps/**/*billing*.py",
+        "apps/**/*billing*.js",
+        "apps/**/*billing*.jsx",
+        "apps/**/*billing*.ts",
+        "apps/**/*billing*.tsx",
+        "apps/**/*payment*.py",
+        "apps/**/*payment*.ts",
+        "apps/**/*payment*.tsx",
+        "apps/**/*settlement*.py",
+        "apps/**/*settlement*.ts",
+        "apps/**/*settlement*.tsx",
+    ],
+    "secrets, environment, or production security config": [
+        ".env*",
+        "**/.env*",
+        "apps/intake-web/api/config.py",
+        "apps/**/vercel.json",
+        ".vercel*.json",
+    ],
+    "GitHub Actions or SDLC policy enforcement": [
         ".github/workflows/**",
+        ".github/scripts/check-sdlc-policy.py",
+        ".github/scripts/test_check_sdlc_policy.py",
+        ".github/pull_request_template.md",
+        ".github/CODEOWNERS",
+    ],
+    "production runbook, deployment, or external platform": [
         "docs/PRODUCTION-READINESS.md",
         "docs/PILOT-OPERATIONS.md",
         "docs/PRIVACY-SECURITY-REVIEW.md",
         "docs/AGENT-INTEGRATION-MCP-PLAN.md",
         "docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md",
-        "apps/**/vercel.json",
-        ".vercel*.json",
+        "**/*RUNBOOK*.md",
+        "**/*runbook*.md",
     ],
 }
+
+MATERIAL_PATTERNS = RISKY_PATTERNS
 
 SPEC_MD_PATTERN = "specs/*/spec.md"
 PLAN_MD_PATTERN = "specs/*/plan.md"
 TASKS_MD_PATTERN = "specs/*/tasks.md"
 CHECKLIST_PATTERN = "specs/*/checklists/*.md"
+
+REVIEW_MARKERS = {
+    "secondary-agent review required": "yes",
+    "secondary-agent review completed": "yes",
+    "reviewer agent": {"claude code", "codex", "other"},
+    "review result": "approve",
+}
 
 
 @dataclass(frozen=True)
@@ -85,15 +138,19 @@ def matches(path: str, pattern: str) -> bool:
 
 def changed_files_from_git(args: argparse.Namespace) -> list[str]:
     if args.working_tree:
-        output = subprocess.check_output(
+        unstaged = subprocess.check_output(
             ["git", "diff", "--name-only", "--diff-filter=ACMR"],
+            text=True,
+        )
+        staged = subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
             text=True,
         )
         untracked = subprocess.check_output(
             ["git", "ls-files", "--others", "--exclude-standard"],
             text=True,
         )
-        return output.splitlines() + untracked.splitlines()
+        return unstaged.splitlines() + staged.splitlines() + untracked.splitlines()
 
     if args.base and args.head:
         diff_range = f"{args.base}...{args.head}" if args.merge_base else f"{args.base}..{args.head}"
@@ -129,6 +186,53 @@ def classify(paths: list[str]) -> list[Match]:
     return found
 
 
+def parse_review_markers(text: str) -> dict[str, str]:
+    markers: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("-* ").replace("**", "").replace("`", "")
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        normalized_key = " ".join(key.strip().lower().split())
+        if normalized_key in REVIEW_MARKERS:
+            markers[normalized_key] = " ".join(value.strip().lower().split())
+    return markers
+
+
+def secondary_review_errors(text: str) -> list[str]:
+    markers = parse_review_markers(text)
+    errors: list[str] = []
+    for key, expected in REVIEW_MARKERS.items():
+        actual = markers.get(key)
+        if actual is None:
+            errors.append(f"missing marker: {key}")
+        elif isinstance(expected, set) and actual not in expected:
+            errors.append(f"invalid {key}: expected one of {', '.join(sorted(expected))}")
+        elif isinstance(expected, str) and actual != expected:
+            errors.append(f"invalid {key}: expected {expected}")
+    return errors
+
+
+def pull_request_body() -> str | None:
+    if os.environ.get("GITHUB_EVENT_NAME") not in {"pull_request", "pull_request_target"}:
+        return None
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return ""
+    with open(event_path, encoding="utf-8") as event_file:
+        event = json.load(event_file)
+    return (event.get("pull_request") or {}).get("body") or ""
+
+
+def checklist_review_evidence(complete_dirs: set[str]) -> list[tuple[str, str]]:
+    evidence: list[tuple[str, str]] = []
+    for directory in sorted(complete_dirs):
+        checklist = Path(directory) / "checklists" / "sdlc-policy.md"
+        if checklist.is_file():
+            evidence.append((checklist.as_posix(), checklist.read_text(encoding="utf-8")))
+    return evidence
+
+
 def artifact_dirs(paths: list[str], pattern: str) -> set[str]:
     directories: set[str] = set()
     for raw_path in paths:
@@ -149,6 +253,7 @@ def main() -> int:
     parser.add_argument("--head", help="head git ref")
     parser.add_argument("--merge-base", action="store_true", help="use base...head instead of base..head")
     parser.add_argument("--working-tree", action="store_true", help="check unstaged, staged, and untracked local files")
+    parser.add_argument("--pr-body-file", help="read pull-request review markers from this file (for local validation)")
     args = parser.parse_args()
 
     paths = sorted(set(normalize_path(path) for path in changed_files_from_git(args) if path.strip()))
@@ -189,10 +294,42 @@ def main() -> int:
         print("\nCreate/update a feature directory under specs/<###-feature-slug>/, or split the policy-exempt change into a docs-only PR.")
         return 1
 
-    print("SDLC policy: material changes covered by Spec Kit artifacts.")
+    if args.pr_body_file:
+        evidence = [(args.pr_body_file, Path(args.pr_body_file).read_text(encoding="utf-8"))]
+    else:
+        body = pull_request_body()
+        evidence = [("pull request body", body)] if body is not None else checklist_review_evidence(complete_dirs)
+
+    approved_source: str | None = None
+    evidence_errors: list[tuple[str, list[str]]] = []
+    for source, text in evidence:
+        errors = secondary_review_errors(text)
+        if not errors:
+            approved_source = source
+            break
+        evidence_errors.append((source, errors))
+
+    if approved_source is None:
+        print("SDLC policy: risky changes require a completed, approving secondary-agent review.")
+        print("\nRequired markers:")
+        print("  Secondary-agent review required: yes")
+        print("  Secondary-agent review completed: yes")
+        print("  Reviewer agent: Claude Code|Codex|Other")
+        print("  Review result: approve")
+        if not evidence:
+            print("\nNo review evidence was found in a changed Spec Kit checklist.")
+        else:
+            print("\nReview evidence errors:")
+            for source, errors in evidence_errors:
+                print(f"  - {source}: {', '.join(errors)}")
+        print("\nPull requests must put the markers in the PR body. Local and non-PR checks must put them in specs/<feature>/checklists/sdlc-policy.md.")
+        return 1
+
+    print("SDLC policy: risky changes covered by Spec Kit artifacts and approved secondary-agent review.")
     print("Complete Spec Kit directories:")
     for directory in sorted(complete_dirs):
         print(f"  - {directory}")
+    print(f"Secondary-agent review evidence: {approved_source}")
     return 0
 
 

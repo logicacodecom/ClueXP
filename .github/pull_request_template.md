@@ -17,7 +17,10 @@
 - Owner: 
 - Delegated agent work: none
 - Codex final review needed: yes
-- Claude review needed: no
+- Secondary-agent review required: no
+- Secondary-agent review completed: no
+- Reviewer agent:
+- Review result:
 - Human approval needed: no
 
 ## Verification

@@ -40,3 +40,7 @@ For material feature, API, database, production policy, launch, or AI-agent inte
 work, require Spec Kit artifacts under `specs/` before implementation. Preserve ClueXP
 tenant isolation, trust-state/API-contract rules, and production authorization gates.
 Never add secrets, production credentials, or private customer evidence to the repository.
+Risky changes defined by the constitution require an independent secondary-agent review
+with completed approval markers in the PR body or local feature checklist. Use Orca
+worktrees as the active coordination surface for parallel work; `.ai-orchestrator/*` is
+legacy reference only. Never push directly to `main`.

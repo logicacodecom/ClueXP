@@ -4,6 +4,11 @@
 **Reviewer**: `[Human | Codex | Claude]`  
 **Date**: `[YYYY-MM-DD]`
 
+Secondary-agent review required: no
+Secondary-agent review completed: no
+Reviewer agent:
+Review result:
+
 ## Requirements Quality
 
 - [ ] Requirements are testable and observable.
