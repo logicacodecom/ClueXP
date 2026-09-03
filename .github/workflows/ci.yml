@@ -4,6 +4,29 @@ on:
   push:
     branches: [main]
 jobs:
+  sdlc-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: verify Spec Kit and AI SDLC policy files
+        run: |
+          set -euo pipefail
+          test -s .specify/memory/constitution.md
+          test -s .specify/templates/spec-template.md
+          test -s .specify/templates/plan-template.md
+          test -s .specify/templates/tasks-template.md
+          test -s .specify/templates/checklist-template.md
+          test -s docs/AI-SDLC-WORKFLOW.md
+          test -s AGENTS.md
+          test -s CLAUDE.md
+          grep -q "Human approval" .specify/memory/constitution.md
+          grep -q "Codex" AGENTS.md
+          grep -q "Claude" CLAUDE.md
+      - name: enforce Spec Kit coverage for material changes
+        run: python .github/scripts/check-sdlc-policy.py
+
   web:
     runs-on: ubuntu-latest
     steps:

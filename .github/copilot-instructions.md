@@ -32,3 +32,11 @@ device sizes rather than treating the Console as desktop-only.
    or decorative operational chrome.
 5. Isolate failures so one unavailable feed cannot suppress other usable data or block
    an entire review surface.
+
+## AI SDLC Policy
+
+Follow `AGENTS.md`, `.specify/memory/constitution.md`, and `docs/AI-SDLC-WORKFLOW.md`.
+For material feature, API, database, production policy, launch, or AI-agent integration
+work, require Spec Kit artifacts under `specs/` before implementation. Preserve ClueXP
+tenant isolation, trust-state/API-contract rules, and production authorization gates.
+Never add secrets, production credentials, or private customer evidence to the repository.

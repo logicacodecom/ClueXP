@@ -18,6 +18,7 @@ This directory separates current operating docs from historical handoff notes an
 - `JOB-COMMUNICATION-HUB.md`: job messaging and calling contracts
 - `AGENT-INTEGRATION-MCP-PLAN.md`: agent/MCP adapter policy over the public `/v1` API
 - `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`: listing copy, review plan, and per-platform submission/configuration checklist for ChatGPT/OpenAI, Claude/Anthropic, Gemini/Google, and Siri/Apple
+- `AI-SDLC-WORKFLOW.md`: Orca + Spec Kit workflow, AI ownership, CI gates, and approval rules
 
 ## Reference and implementation notes
 

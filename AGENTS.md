@@ -12,11 +12,12 @@
 
 1. Codex interprets the requested engineering outcome and owns the implementation plan.
 2. Codex classifies tasks by risk, context, dependency, and expected effort.
-3. Codex may execute directly or delegate a bounded task to Claude.
-4. For important design decisions Codex may invoke a controlled discussion/critique loop with Claude.
-5. Claude returns findings/work plus assumptions, files touched, tests run, unresolved risks, and recommended next action.
-6. Codex reviews delegated output, resolves disagreements, integrates/fixes as needed, and performs final technical review.
-7. Human approval remains mandatory where existing ClueXP rules require it, especially production DDL/deployments and product-scope decisions.
+3. For material feature, API, database, production policy, launch, or AI-agent integration work, Codex creates or verifies Spec Kit artifacts under `specs/` before implementation, following `.specify/memory/constitution.md`.
+4. Codex may execute directly or delegate a bounded task to Claude.
+5. For important design decisions Codex may invoke a controlled discussion/critique loop with Claude.
+6. Claude returns findings/work plus assumptions, files touched, tests run, unresolved risks, and recommended next action.
+7. Codex reviews delegated output, resolves disagreements, integrates/fixes as needed, and performs final technical review.
+8. Human approval remains mandatory where existing ClueXP rules require it, especially production DDL/deployments and product-scope decisions.
 
 ## Discussion modes
 
@@ -43,6 +44,8 @@ Do not run open-ended agent debates.
 - `.ai-orchestrator/state.json` is runtime scheduler state and is intentionally not committed.
 - `.ai-orchestrator/checkpoints/` stores resumable task checkpoints; only durable examples/templates belong in Git.
 - Durable architecture decisions belong in the existing canonical ClueXP design docs, not only in agent transcripts.
+- Spec-driven work lives under `specs/<###-feature-slug>/` with `spec.md`, `plan.md`, `tasks.md`, and optional `checklists/`.
+- Project-wide Spec Kit policy and templates live under `.specify/`; do not treat generated specs as higher authority than `docs/EXECUTION-PLAN.md` or `docs/SYSTEM-DESIGN.md`.
 
 ## Safety and repository rules
 
@@ -51,3 +54,4 @@ Do not run open-ended agent debates.
 - No production DDL, production promotion, or deployment without explicit Human authorization.
 - Use isolated branches/worktrees for concurrent agents. One writer per surface at a time.
 - Delegated work is not complete until Codex has reviewed it and required tests/CI are green.
+- Do not merge agent-authored implementation until the pull request links the relevant Spec Kit artifacts or explains why the change is exempt.
