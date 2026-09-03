@@ -43,7 +43,6 @@ Still-open work is not copied wholesale into this SDLC setup spec. Product backl
 These items need Mohamed or repository-admin direction before changing files outside this SDLC scaffolding:
 
 - Decide whether organization admins retain the current emergency branch-protection bypass or enable `enforce_admins`.
-- Add `secret-scan` and code-owner review to branch protection after the corresponding workflow and CODEOWNERS file land.
 - Configure required reviewers or equivalent approval protection on the GitHub Production environments; branch protection does not configure deployment-environment approvals.
 - Triage the redacted historical Gitleaks findings and decide which credentials require restriction or rotation before enabling a full-history required scan.
 
@@ -135,7 +134,7 @@ Reviewer agent: Claude Code|Codex|Other
 Review result: approve
 ```
 
-For `--working-tree` or local base/head checks where a PR body is unavailable, put the same completed markers in `specs/<feature>/checklists/sdlc-policy.md`. A `changes-requested` result is valid review status but does not satisfy the merge gate; resolve the findings and obtain `approve`. CI verifies the markers, but reviewer independence remains an auditable team-policy assertion because Codex and Claude Code are workflow roles rather than GitHub identities. CODEOWNERS routes the repository's valid Human accounts; its branch-protection rule must still be enabled after the file lands.
+For `--working-tree` or local base/head checks where a PR body is unavailable, put the same completed markers in `specs/<feature>/checklists/sdlc-policy.md`. A `changes-requested` result is valid review status but does not satisfy the merge gate; resolve the findings and obtain `approve`. CI verifies the markers, but reviewer independence remains an auditable team-policy assertion because Codex and Claude Code are workflow roles rather than GitHub identities. CODEOWNERS routes the repository's valid Human accounts, and required code-owner review is enabled in branch protection.
 
 Human approval is mandatory before:
 
@@ -156,9 +155,9 @@ Required GitHub Actions jobs for ordinary PRs:
 - `api`
 - `mcp-server`
 
-GitHub branch protection currently requires strict/up-to-date `sdlc-policy`, `web`, `api`, and `mcp-server` checks, one approving PR review with stale approvals dismissed, and conversation resolution. It blocks force pushes, branch deletion, and direct/unrestricted pushes for non-admin contributors. Organization admins retain an emergency bypass because `enforce_admins` is off.
+GitHub branch protection currently requires strict/up-to-date `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server` checks, code-owner review, one approving PR review with stale approvals dismissed, and conversation resolution. It blocks force pushes, branch deletion, and direct/unrestricted pushes for non-admin contributors. Organization admins retain an emergency bypass because `enforce_admins` is off.
 
-The repository also defines `secret-scan`, which scans only commits introduced by the PR or push with the official Gitleaks v8.30.1 container. GitHub native secret scanning and push protection are enabled. Add `secret-scan` to required status checks after this workflow lands. Full-history Gitleaks is not yet a merge gate because a redacted baseline scan found four historical findings requiring Human triage; do not expose their values in docs or agent output.
+The required `secret-scan` job scans only commits introduced by the PR or push with the official Gitleaks v8.30.1 container. GitHub native secret scanning and push protection are also enabled. Full-history Gitleaks is not yet a merge gate because a redacted baseline scan found four historical findings requiring Human triage; do not expose their values in docs or agent output.
 
 Scheduled production health is informative for operations and should not be the only merge gate:
 
@@ -206,15 +205,16 @@ Current `main` protection includes:
 
 - require pull request before merge;
 - require at least one approving review;
+- require code-owner review;
 - dismiss stale approvals when new commits are pushed;
 - require conversation resolution;
-- require status checks: `sdlc-policy`, `web`, `api`, and `mcp-server`;
+- require status checks: `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server`;
 - require branches to be up to date before merge;
 - block force pushes and deletions;
 - restrict direct pushes to `main`;
 - leave `enforce_admins` off for the current emergency admin bypass.
 
-After this branch lands, a repository administrator should also require `secret-scan` and code-owner reviews. Production environments currently have no GitHub protection rules; configure required reviewers or equivalent manual approval before treating GitHub Environments as a production deployment gate. Contributors and agents must always treat `main` as PR-only, including when an admin account technically permits bypass.
+Production environments currently have no GitHub protection rules; configure required reviewers or equivalent manual approval before treating GitHub Environments as a production deployment gate. Contributors and agents must always treat `main` as PR-only, including when an admin account technically permits bypass.
 
 ## Secrets And Blockers
 

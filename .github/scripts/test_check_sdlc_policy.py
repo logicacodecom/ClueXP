@@ -43,6 +43,11 @@ class PolicyTests(unittest.TestCase):
             "apps/intake-web/api/config.py": "secrets, environment, or production security config",
             ".github/workflows/ci.yml": "GitHub Actions or SDLC policy enforcement",
             ".github/CODEOWNERS": "GitHub Actions or SDLC policy enforcement",
+            ".github/copilot-instructions.md": "GitHub Actions or SDLC policy enforcement",
+            ".specify/templates/spec-template.md": "GitHub Actions or SDLC policy enforcement",
+            ".specify/memory/constitution.md": "GitHub Actions or SDLC policy enforcement",
+            "AGENTS.md": "GitHub Actions or SDLC policy enforcement",
+            "docs/AI-SDLC-WORKFLOW.md": "GitHub Actions or SDLC policy enforcement",
             "apps/cluexp-mcp-server/INTERNAL-PREVIEW-RUNBOOK.md": "production runbook, deployment, or external platform",
         }
         matches = {match.path: match.category for match in POLICY.classify(list(cases))}

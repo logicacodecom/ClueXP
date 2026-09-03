@@ -57,6 +57,6 @@ Do not run open-ended agent debates.
 - Never commit secrets or provider credentials.
 - No production DDL, production promotion, or deployment without explicit Human authorization.
 - Use isolated branches/worktrees for concurrent agents. One writer per surface at a time.
-- Team policy forbids direct pushes to `main`. GitHub branch protection enforces pull requests, one approval, conversation resolution, and the required `sdlc-policy`, `web`, `api`, and `mcp-server` checks for non-admin contributors. Organization admins retain an emergency bypass until the Human chooses to enable `enforce_admins`.
+- Team policy forbids direct pushes to `main`. GitHub branch protection enforces pull requests, code-owner review, one approval, conversation resolution, and the required `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server` checks for non-admin contributors. Organization admins retain an emergency bypass until the Human chooses to enable `enforce_admins`.
 - Delegated work is not complete until Codex has reviewed it and required tests/CI are green.
 - Do not merge agent-authored implementation until the pull request links the relevant Spec Kit artifacts or explains why the change is exempt.
