@@ -65,7 +65,46 @@ const SESSION_KEY = "cluexp_session";
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 const TERMINAL_SCREENS: Screen[] = ["review", "handoff"];
 const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
-const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
+// Build-time floor only. This placeholder ships whenever NEXT_PUBLIC_DISPATCH_PHONE
+// is unset at build time, so it must never be handed to a customer as a tel: link —
+// a locked-out caller dialling it reaches nothing. `safetyPhone()` below is the only
+// sanctioned way to turn these into a call affordance.
+const PLACEHOLDER_DISPATCH_PHONE = "+18005551234";
+const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || PLACEHOLDER_DISPATCH_PHONE;
+
+/** The provider's own dispatch line, else a real configured floor, else nothing.
+ *  Returns null when the only number available is the unconfigured placeholder. */
+function safetyPhone(providerPhone: string | null): string | null {
+  if (providerPhone) return providerPhone;
+  return DISPATCH_PHONE === PLACEHOLDER_DISPATCH_PHONE ? null : DISPATCH_PHONE;
+}
+
+/** Renders a call affordance, or honest guidance when no number is trustworthy.
+ *  Never emits a tel: to an unverified number. */
+function CallDispatch({
+  phone,
+  className,
+  style,
+  children
+}: {
+  phone: string | null;
+  className: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  if (!phone) {
+    return (
+      <p className="fine" style={{ textAlign: "center" }}>
+        Please call your service provider directly — no dispatch number is configured for this channel.
+      </p>
+    );
+  }
+  return (
+    <a className={className} href={`tel:${phone}`} style={style}>
+      {children}
+    </a>
+  );
+}
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
 
 type DispatchState = "waiting" | "matched" | "no_eligible" | "expired_retry" | "error";
@@ -512,8 +551,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   }
 
   // Branded channel → the owning provider's own dispatch number for every
-  // "call dispatch" affordance (each provider has its own line). Public intake
-  // keeps the NEXT_PUBLIC_DISPATCH_PHONE fallback.
+  // "call dispatch" affordance (each provider has its own line). On failure we
+  // fall through to `safetyPhone()`, which yields null unless a real build-time
+  // number was configured — the customer is told to call their provider rather
+  // than handed a tel: to the placeholder.
   useEffect(() => {
     if (!organizationSlug) return;
     api<{ dispatch_phone: string | null; show_estimate?: boolean }>(`/channels/${organizationSlug}`)
@@ -521,7 +562,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
         if (info.dispatch_phone) setDispatchPhone(info.dispatch_phone);
         setShowEstimate(info.show_estimate !== false);
       })
-      .catch(() => {}); // unknown channel / offline — keep the global fallback
+      .catch((err) => {
+        // Unknown channel / offline. Surfaced so a misconfigured channel is
+        // diagnosable instead of silently degrading the safety-call path.
+        console.warn("channel lookup failed; dispatch number unresolved", err);
+      });
   }, [organizationSlug]);
 
   // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket —
@@ -632,9 +677,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
             <p className="panel-title">This direct intake page is closed.</p>
             <p className="fine">Please use the intake link from your service provider, or call customer service.</p>
           </div>
-          <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`}>
+          <CallDispatch phone={safetyPhone(dispatchPhone)} className="secondary">
             <Phone size={18} aria-hidden="true" /> Call customer service
-          </a>
+          </CallDispatch>
         </>
       );
     }
@@ -1227,9 +1272,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 If your provider uses a partner, the partner first sees a masked job offer. Customer details appear only after the provider-approved team accepts and assigns a technician.
               </p>
             </div>
-            <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+            <CallDispatch phone={safetyPhone(dispatchPhone)} className="secondary" style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
               <Phone size={18} aria-hidden="true" /> Call dispatch
-            </a>
+            </CallDispatch>
           </div>
         </>
       );
@@ -1277,9 +1322,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 Contact dispatch
               </button>
             ) : (
-              <a className="ghost" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+              <CallDispatch phone={safetyPhone(dispatchPhone)} className="ghost" style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
                 Need help? Call dispatch
-              </a>
+              </CallDispatch>
             )}
           </div>
         </>
@@ -1491,9 +1536,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <div className="big-number">Sam Reyes</div>
           <p className="fine">Plain-language support for this request. No app install required.</p>
         </div>
-        <a className="primary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+        <CallDispatch phone={safetyPhone(dispatchPhone)} className="primary" style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
           Call now
-        </a>
+        </CallDispatch>
       </>
     );
   })();

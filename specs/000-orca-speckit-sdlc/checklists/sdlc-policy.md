@@ -9,7 +9,16 @@ Secondary-agent review completed: yes
 Reviewer agent: Other
 Review result: approve
 
-The `mcp-production-health` auth-mode fix (T027) was authored by Claude Code and has NOT yet received an independent secondary review; Codex must record the approving markers in the PR body before merge. The markers above describe the earlier merged work only.
+The `mcp-production-health` auth-mode fix (T027) was authored by Claude Code and received a retrospective independent Codex review in the PR #76 body after merge. The markers above describe the earlier merged SDLC work only.
+
+## T029 follow-up review
+
+Secondary-agent review required: yes
+Secondary-agent review completed: yes
+Reviewer agent: Other
+Review result: approve
+
+Codex authored the workflow and Spec Kit follow-up changes. Independent secondary Codex agent `secondary_review_pr76_followups` found and verified fixes for a Bash trailing-newline normalization edge case and invalid YAML heredoc indentation, then approved the corrected diff with no remaining findings.
 
 The original SDLC branch received independent approval and merged as PR #73. This post-merge governance-state sync also received independent approval after adding complete policy-entrypoint classifier coverage.
 

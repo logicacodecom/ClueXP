@@ -13,7 +13,14 @@ npm run build --workspace @cluexp/intake-web
 npm run build --workspace @cluexp/provider-web
 npm run build --workspace @cluexp/technician-web
 npm run build --workspace @cluexp/ops-web
+npm run build --workspace @cluexp/console-web
 ```
+
+> ⚠️ There are **five** deployed web apps, not four. `console-web` (Vercel project
+> `cluexp-console`) shares the same Next.js dependency as the other four but is **not built by
+> `.github/workflows/ci.yml`**, so a green CI run does not prove it compiles. Build it locally as
+> part of this checklist, and treat it as in scope for any dependency upgrade or auth/tenant
+> regression pass, until CI covers it (`npm run build:console`).
 
 ## Production environment
 
@@ -62,10 +69,26 @@ Before treating the MCP server as publicly launched/listed in any assistant plat
 
 - Confirm `https://mcp.cluexp.com/healthz` returns `200 {"status":"ok"}`.
 - Confirm `POST https://mcp.cluexp.com/mcp` without a bearer token and with a wrong bearer token both
-  return `401 invalid_mcp_token`.
-- Confirm the scheduled GitHub Actions workflow `mcp-production-health` is enabled on `main`; it runs
-  every 30 minutes and checks only public health plus negative auth-boundary behavior, so it does not
-  require storing the production MCP bearer token in GitHub.
+  return `401`. **The body depends on which auth mode the deployment is in, so assert against the
+  mode you are actually running:**
+  - Compatibility (bearer) mode — `CLUEXP_MCP_BEARER_TOKEN` set, OAuth not configured:
+    `{"error":"invalid_mcp_token"}` (`mcp_server/asgi.py`, `MCPBearerAuthMiddleware`).
+  - OAuth mode — when OAuth is configured, `MCPBearerAuthMiddleware` short-circuits
+    (`if oauth_enabled: return await call_next(request)`) and the MCP app's own OAuth layer
+    answers, emitting the OAuth-style `{"error":"invalid_token","error_description":...}`.
+  Record which mode production is in as part of preflight. A change of auth mode that nobody
+  records will silently invalidate whatever the health monitor asserts.
+- Confirm the scheduled GitHub Actions workflow `mcp-production-health` is enabled on `main` **and
+  green**; it runs every 30 minutes and checks only public health plus negative auth-boundary
+  behavior, so it does not require storing the production MCP bearer token in GitHub. A persistently
+  red monitor means the auth boundary is unverified, not that the check is noisy — the workflow's
+  expected error body must match the deployment's current auth mode (see above).
+- **The MCP server exposes mutating tools** (`create_service_request`, `authorize_dispatch`,
+  `cancel_service_request` in `mcp_server/server.py`). Their `confirm=true` argument is a
+  caller-supplied agent-UX convention, **not** an authorization control. Before any pilot, confirm
+  the production external client's organization binding and scopes, and prove it cannot reach the
+  pilot tenant — or disable the mutating tools for the window. Note also that the server calls the
+  API with a single shared `CLUEXP_API_KEY`, so every MCP caller shares one audit identity.
 - Keep `CLUEXP_MCP_BEARER_TOKEN` and `CLUEXP_API_KEY` only in Vercel's environment store unless a
   reviewed platform/reviewer credential plan exists.
 - For OpenAI plugin submission, set `OPENAI_APPS_CHALLENGE_TOKEN` only after the submission portal
@@ -87,20 +110,34 @@ Before enabling real customer traffic for a company whose dispatcher relies on t
 - `sms_enabled` correctness matches what the org actually pays for/has agreed to.
 - Opt-out behavior verified: a `STOP` reply is honored (`communication_opt_outs`) and does not
   itself generate a `delivery_failure` alert (it is a deliberate customer choice, not a failure).
-- `staffed_fallback_phone` (added on `organization_phone_settings` in `0054`) is configured for
-  the org if `critical`-severity alerts (currently `safety_flag`) are expected to reach a human
-  outside the dispatcher inbox — provisioning the actual number is an operational task per org,
-  not something migration `0054` or this code does for you.
+- ⚠️ **`staffed_fallback_phone` is an unimplemented column — do not treat it as a gate.** Migration
+  `0054` adds it to `organization_phone_settings`, but **no application code reads or writes it**
+  (the only repository references are that migration and documentation). Provisioning a value
+  satisfies a checkbox and delivers nothing. Until a consumer exists, the escalation destination for
+  `critical`-severity alerts (currently `safety_flag`) must be named in the pilot runbook as a
+  **specific human and phone number**, not a database column.
 - Cron wired with correct secret handling: `apps/intake-web/vercel.json` declares
   `{ "path": "/api/cron/dispatch-sweep", "schedule": "0 8 * * *" }`, and `CRON_SECRET` is set
   in the Vercel project's Production environment variables. Vercel automatically sends
   `Authorization: Bearer $CRON_SECRET` on cron-triggered invocations of a route when an env var
   named exactly `CRON_SECRET` exists in the project — which is what `/cron/dispatch-sweep`
   already checks via `hmac.compare_digest`. Outside production, an unset `CRON_SECRET` leaves the sweep at `503`;
-  production refuses to start without a valid value. The current Vercel plan supports daily cron,
-  not the earlier five-minute schedule; provider/ops queue reads still perform lazy cleanup, so
-  the daily cron is a safety net. Confirm a real cron invocation returns `200` with an `"alerts"`
-  count in the response body, don't just trust the cron entry exists.
+  production refuses to start without a valid value. Confirm a real cron invocation returns `200`
+  with an `"alerts"` count in the response body, don't just trust the cron entry exists.
+- ⚠️ **The cron runs once per day (`0 8 * * *`), and lazy cleanup does not cover most of what it
+  does.** The current Vercel plan supports daily cron, not the earlier five-minute schedule.
+  `GET /ops/queue` and `GET /provider/queue` call only `expire_stale_offers` and
+  `auto_close_pending` inline. Everything else in `/cron/dispatch-sweep` has the cron as its **only**
+  caller, so each runs at most once per 24h:
+  - `_evaluate_dispatch_alerts` — `stalled_job` and `stuck_offer` alert rows are not created
+    intraday. **The alert inbox is not a live monitoring surface during a staffed window; poll the
+    queue endpoints instead.**
+  - `activate_due_scheduled_jobs` — a confirmed scheduled appointment is not auto-dispatched until
+    the next 08:00 UTC run (up to ~24h late). Dispatchers must activate due appointments manually
+    via `POST /provider/queue/{job_id}/activate-schedule`; such jobs are visible in the provider
+    queue. See `PILOT-OPERATIONS.md` for the required polling cadence.
+  - `reap_stale_technicians` — a technician whose heartbeat died stays offerable for up to 24h.
+  - `poll_push_receipts` — push delivery state resolves at most daily.
 - No demo/fake number fallback for any org taking real traffic — `TWILIO_DEFAULT_FROM_NUMBER`
   should only ever be hit for orgs that are explicitly still in the internal/synthetic pilot.
 
