@@ -38,6 +38,7 @@
 - [ ] T024 [H] Mohamed/security owner: triage four redacted historical Gitleaks findings, determine false positives versus credentials requiring restriction/rotation, and establish a reviewed baseline before any full-history required scan.
 - [ ] T025 [H] Mohamed: decide whether to keep `enforce_admins` off for emergency bypass or enable it so administrators cannot bypass branch protection.
 - [ ] T026 [H] Mohamed/repo admin: configure required reviewers or equivalent approval rules on all GitHub Production environments; API verification on 2026-09-03 showed no environment protection rules.
+- [x] T027 Claude Code: make the `mcp-production-health` auth-boundary probe assert the deployed auth mode instead of one hardcoded rejection literal. Production is in OAuth mode (`invalid_token`); the monitor asserted the bearer-mode literal (`invalid_mcp_token`) and had been red since 2026-09-19, so the auth boundary silently stopped being checked. Both probes must now agree and the detected mode is surfaced.
 - [ ] T027 Codex: create `specs/001-dispatch-alert-escalation/` from the Spec Kit templates before implementing the selected backlog slice.
 
 ## Verification

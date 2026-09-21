@@ -82,5 +82,6 @@ Prepare ClueXP for a repeatable Orca + GitHub Spec Kit workflow so future AI-ass
 
 - **Risks**: CI can enforce artifact presence and path triggers, but cannot prove semantic tenant isolation without targeted tests and review.
 - **Assumptions**: GitHub Actions runs with enough history for PR diffs after `actions/checkout` uses `fetch-depth: 0`.
+- **Risks**: scheduled production-health monitors that assert a single response literal break on a deployment mode switch and then stop asserting anything; they must accept every known contract and fail loudly on an unrecognized one.
 - **Settled decisions**: `main` branch protection is configured with required code-owner review and `secret-scan`; `.ai-orchestrator/*` stays as legacy reference; dispatcher alert acknowledgement/escalation is the first dedicated product spec; MCP platform submission and the first real Website/API transaction require dedicated specs; technician-native QA alone does not.
 - **Human decisions needed**: Mohamed must decide whether to enable `enforce_admins`. A repository administrator must configure GitHub Production-environment approvals and coordinate security triage for four redacted historical Gitleaks findings.

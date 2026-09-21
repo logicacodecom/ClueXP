@@ -9,6 +9,8 @@ Secondary-agent review completed: yes
 Reviewer agent: Other
 Review result: approve
 
+The `mcp-production-health` auth-mode fix (T027) was authored by Claude Code and has NOT yet received an independent secondary review; Codex must record the approving markers in the PR body before merge. The markers above describe the earlier merged work only.
+
 The original SDLC branch received independent approval and merged as PR #73. This post-merge governance-state sync also received independent approval after adding complete policy-entrypoint classifier coverage.
 
 ## Requirements Quality
