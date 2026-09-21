@@ -56,3 +56,56 @@ Product Owner asked to clean up "associated stale demo jobs" related to this blo
 - [ ] No production DDL, live dispatch/cancel action, or deployment was performed by Claude Code while producing this spec.
 - [ ] T006 stop condition is satisfied (exact demo job identity + environment + explicit Human authorization recorded) before any cleanup/delete/resolve action is taken on a "stale demo job."
 - [ ] `scripts/reset_demo_providers.py`/`npm run demo:reset` is not run against production without independent Human confirmation it excludes real pilot customer jobs.
+
+---
+
+## Independent critique pass (Claude Code, 2026-09-20/21)
+
+Claude Code reviewed `CLAUDE-CRITIQUE-HANDOFF.md` as independent critic, then — on explicit PO
+instruction — fixed the repository-side findings. Commits: `386a6dd` (code + docs), `8f046aa` (CI
+auth-boundary monitor). Recommendation remains **conditional go**; see the critique for the full
+condition list. No production mutation, deployment, migration, or data action was taken.
+
+### Closed in-repo
+
+- [x] T007 **Demo reset could hard-delete the live pilot tenant.** `clean_metro_key_demo` selected
+  by organization, not by marker, while `metro-key` is also the live pilot channel — and it
+  hard-deletes jobs *and* customer rows. Now gated on `detail->>'demo_seed_ref'` (matching the
+  Florida path) with two regression tests. **This also answers T006:** demo-vs-real is not
+  programmatically decidable for that tenant because no seeder ever wrote the marker, so bulk
+  cleanup remains unsafe by construction. A legacy demo job must be closed per-job via
+  `POST /admin/jobs/{id}/resolve`. T006's stop condition stands.
+- [x] T008 **Safety phone silently degraded to the placeholder.** The branded path resolves the
+  provider line from `/channels/{slug}`, but the failure handler was `.catch(() => {})` and
+  `organizations.phone` is nullable. Added `safetyPhone()` + `CallDispatch`: guidance is rendered
+  instead of a `tel:` when no trustworthy number exists. **Does not close T003** — a Human with
+  Vercel access must still set the production value and redeploy.
+- [x] T009 **Next.js 16.2.6 → 16.3.5** across all five web apps. Production audit 1 critical + 11
+  high → 0 critical + 9 high, `next` clear; remainder is Expo/metro/xmldom RN build tooling.
+- [x] T010 **MCP monitor asserted the wrong auth contract.** Production is in OAuth mode
+  (`asgi.py`: `if oauth_enabled: return await call_next(request)`), so the workflow's
+  `invalid_mcp_token` assertion had been red for 10+ runs and the auth boundary was effectively
+  unmonitored. Monitor now accepts either contract, requires both probes to agree, and reports the
+  detected mode. Verified green by `workflow_dispatch`; run confirmed **OAuth mode**.
+- [x] T011 **Canonical docs corrected** where they were false rather than stale: the lazy-cleanup
+  claim (the once-daily cron is the only caller of alert evaluation, scheduled-job activation,
+  technician reaping, push receipts), the MCP negative-auth contract, `staffed_fallback_phone` as a
+  gate, the 0053/0054 migration gate, and the capacity-lock drift. Added `PILOT-OPERATIONS.md` §3.1
+  staffed-window polling contract.
+
+### Open — cannot be closed from this repo
+
+- [ ] T012 [H] **MCP mutating surface.** `create_service_request`, `authorize_dispatch`, and
+  `cancel_service_request` are exposed publicly; `confirm=true` is caller-supplied and is not an
+  authorization control. The server calls the API with a single shared `CLUEXP_API_KEY`, so all
+  callers share one audit identity. Confirm that client's org binding and scopes and prove it
+  cannot reach the pilot tenant, or disable the mutating tools for the window.
+- [ ] T013 [H] **Operator recovery credentials.** `POST /admin/jobs/{id}/resolve` is tenant-scoped
+  with no platform override by design, so `platform_admin` cannot recover a pilot job. Primary and
+  backup dispatchers must each demonstrate an owning-org sign-in and a successful resolve against a
+  synthetic job before the window opens.
+- [ ] T014 [R] **`console-web` has no CI build coverage.** It is a real deployed app (Vercel project
+  `cluexp-console`) sharing the same Next.js dependency, but `.github/workflows/ci.yml` builds only
+  intake/tech/provider/ops. A green CI run does not prove it compiles. One-line fix
+  (`npm run build:console`) deferred — Claude Code does not edit workflow files without an explicit
+  CI/CD instruction. Documented as a manual step in `PRODUCTION-READINESS.md` meanwhile.

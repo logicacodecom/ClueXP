@@ -13,7 +13,14 @@ npm run build --workspace @cluexp/intake-web
 npm run build --workspace @cluexp/provider-web
 npm run build --workspace @cluexp/technician-web
 npm run build --workspace @cluexp/ops-web
+npm run build --workspace @cluexp/console-web
 ```
+
+> ⚠️ There are **five** deployed web apps, not four. `console-web` (Vercel project
+> `cluexp-console`) shares the same Next.js dependency as the other four but is **not built by
+> `.github/workflows/ci.yml`**, so a green CI run does not prove it compiles. Build it locally as
+> part of this checklist, and treat it as in scope for any dependency upgrade or auth/tenant
+> regression pass, until CI covers it (`npm run build:console`).
 
 ## Production environment
 
