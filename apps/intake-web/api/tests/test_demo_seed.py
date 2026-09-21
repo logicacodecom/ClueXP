@@ -9,6 +9,8 @@ These guard the demo brief's hard requirements without a live DB:
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from api import demo_seed
@@ -97,3 +99,71 @@ def test_seed_identifiers_are_stable():
     emails = [t["email"] for t in demo_seed.FLORIDA_TECHNICIANS]
     assert len(set(emails)) == len(emails)  # unique → upsert, no dupes
     assert all(e.endswith("@florida-locksmith.demo") for e in emails)
+
+
+# --- clean_metro_key_demo must never hard-delete an unmarked job -------------
+#
+# `metro-key` is a live pilot channel as well as a legacy demo tenant, and this
+# cleanup hard-deletes jobs AND their customers. Org-reachability alone cannot
+# tell a synthetic job from a real customer job, so the `demo_seed_ref` marker
+# is the only safe discriminator. These guard that it stays in the query.
+
+
+class _FakeCursor:
+    def __init__(self, rows: list[tuple]):
+        self._rows = rows
+        self.rowcount = len(rows)
+
+    async def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    """Records every statement; answers the org lookup, then the job selection."""
+
+    def __init__(self, selected_jobs: list[tuple]):
+        self.statements: list[str] = []
+        self._selected_jobs = selected_jobs
+
+    async def execute(self, sql: str, params: tuple = ()):  # noqa: ARG002
+        self.statements.append(sql)
+        if "from organizations" in sql:
+            return _FakeCursor([("metro-org-id",)])
+        if "from jobs j" in sql:
+            return _FakeCursor(self._selected_jobs)
+        return _FakeCursor([])
+
+
+def _metro_job_selection_sql(conn: _FakeConn) -> str:
+    return next(s for s in conn.statements if "from jobs j" in s)
+
+
+def test_metro_cleanup_selects_only_marked_demo_jobs():
+    conn = _FakeConn(selected_jobs=[])
+    result = asyncio.run(demo_seed.clean_metro_key_demo(conn))
+
+    sql = _metro_job_selection_sql(conn)
+    assert "demo_seed_ref" in sql, (
+        "metro cleanup must filter on the demo_seed_ref marker — without it this "
+        "hard-deletes real pilot jobs and their customers"
+    )
+    # Marker absent from every Metro Key job today → cleanup is a deliberate no-op.
+    assert result["metro_org_found"] is True
+    assert result["jobs_cleaned"] == 0
+    assert result["customers_cleaned"] == 0
+    # Nothing reached a DELETE.
+    assert not any(s.lstrip().lower().startswith("delete") for s in conn.statements)
+
+
+def test_metro_cleanup_marker_filter_is_not_optional():
+    """The marker predicate must gate the org-reachability clause, not sit
+    beside it as another OR branch (which would delete everything again)."""
+    conn = _FakeConn(selected_jobs=[])
+    asyncio.run(demo_seed.clean_metro_key_demo(conn))
+    sql = _metro_job_selection_sql(conn)
+    marker_at = sql.index("demo_seed_ref")
+    assert " and (" in sql[marker_at:], "org clause must be AND-ed under the marker guard"
+    assert "or j.origin_org_id" not in sql[:marker_at], "marker must be checked first"

@@ -3787,7 +3787,10 @@ async def _evaluate_dispatch_alerts() -> dict[str, int]:
     return counts
 
 
-@app.api_route("/cron/dispatch-sweep", methods=["GET", "POST"])
+# Not in the OpenAPI schema: a CRON_SECRET-protected internal endpoint is not part
+# of any client contract, and publishing it under two methods produced colliding
+# operation IDs (one operation is generated per method, sharing the function name).
+@app.api_route("/cron/dispatch-sweep", methods=["GET", "POST"], include_in_schema=False)
 async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     """Cleanup-only sweep — no re-dispatch. Secret-protected via
     ``Authorization: Bearer ${CRON_SECRET}``. Expires stale offers (returning
