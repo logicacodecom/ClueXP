@@ -257,12 +257,20 @@ Skills matching is shown as a highlight but is **not** a hard filter. The dispat
 
 ### 4.4 Cleanup-Only Cron (`POST /cron/dispatch-sweep`)
 
-The cron endpoint no longer re-dispatches. It performs only maintenance:
+The cron endpoint no longer re-dispatches. It performs maintenance only:
 ```
-1. expire_stale_offers() — marks all offers past expires_at as "expired"
-2. auto_close_pending() — completed_pending_customer jobs older than AUTO_CLOSE_WINDOW_SECONDS → completed_auto_closed
+1. expire_stale_offers()          — offers past expires_at → "expired"          [also lazy on queue read]
+2. auto_close_pending()           — completed_pending_customer past window      [also lazy on queue read]
+3. reap_stale_technicians()       — signs off technicians with a dead heartbeat  CRON ONLY
+4. activate_due_scheduled_jobs()  — scheduled_confirmed → pending_dispatch       CRON ONLY
+5. poll_push_receipts()           — resolves push delivery, retires dead tokens  CRON ONLY
+6. _evaluate_dispatch_alerts()    — creates stalled_job / stuck_offer alerts     CRON ONLY
 ```
-The cron is also no longer strictly necessary — both operations run inline on every `GET /provider/queue` (and the read-only `GET /ops/queue`) as lazy cleanup on read. It may be retained as a safety net or removed entirely.
+⚠️ **Only (1) and (2) run inline on queue reads.** Items (3)-(6) have the cron as their *only*
+caller, so on the current daily schedule each runs at most once per 24h. The cron is **not**
+optional and must not be described as one: without it, time-threshold alerts are never generated,
+due scheduled appointments are not auto-activated, offline technicians stay offerable, and push
+receipts never resolve. See §8.2 for the operational consequences.
 
 ### 4.5 Partial Unique Index (Race Protection)
 
@@ -698,14 +706,29 @@ Production refuses to start if it is missing, short, or a known placeholder; out
 unset value leaves the endpoint disabled with 503.
 
 **Current schedule:** daily at 08:00 UTC in `apps/intake-web/vercel.json`. The current Vercel plan
-rejects sub-daily cron schedules; provider/ops queue reads still perform lazy cleanup, so this cron
-is a safety net rather than the only cleanup path.
+rejects sub-daily cron schedules.
 
 **What it does (cleanup only):**
 1. `expire_stale_offers()` — marks past-`expires_at` offers as `expired`; returns jobs with no remaining active offer to `pending_dispatch`
 2. `auto_close_pending()` — closes `completed_pending_customer` jobs past `AUTO_CLOSE_WINDOW_SECONDS`
+3. `reap_stale_technicians()` — signs off technicians whose presence heartbeat has gone stale
+4. `activate_due_scheduled_jobs()` — `scheduled_confirmed` → `pending_dispatch` within a 90-minute horizon
+5. `poll_push_receipts()` — resolves outstanding push receipts, retires dead device tokens
+6. `_evaluate_dispatch_alerts()` — creates `stalled_job` / `stuck_offer` alert rows
 
-**Note:** Both operations also run inline on every `GET /provider/queue` (and the read-only `GET /ops/queue`) as lazy cleanup on read, so the cron is a safety net rather than a hard requirement. It can be disabled without breaking dispatch — the queue reads keep themselves clean.
+⚠️ **Note (corrected):** only (1) and (2) also run inline on `GET /provider/queue` and
+`GET /ops/queue`. Operations (3)-(6) run **only** here, so on a daily schedule they occur at most
+once per 24h and the cron cannot be disabled without breaking them. Operational consequences:
+
+- `stalled_job` / `stuck_offer` alerts are not produced intraday, so **the dispatcher alert inbox is
+  not a live monitoring surface** — poll the queue endpoints instead.
+- A due scheduled appointment is not auto-dispatched until the next 08:00 UTC run (up to ~24h late).
+  Dispatchers must activate it manually via `POST /provider/queue/{job_id}/activate-schedule`;
+  `scheduled_confirmed` jobs are visible in the provider queue.
+- A technician whose heartbeat died stays offerable for up to 24h.
+
+Inline-fired alert types (`new_job`, `safety_flag`, `customer_help_request`, `delivery_failure`) are
+unaffected. See `PILOT-OPERATIONS.md` §3.1 for the staffed-window polling contract.
 
 ### 8.3 Supabase
 
