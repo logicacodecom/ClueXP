@@ -16,31 +16,58 @@ jobs:
           response="$(curl --fail --silent --show-error --max-time 15 https://mcp.cluexp.com/healthz)"
           test "$response" = '{"status":"ok"}'
 
-      - name: Check MCP auth boundary without token
+      # The rejection body depends on which auth mode the deployment is in:
+      #   compatibility (bearer) -> {"error":"invalid_mcp_token"}   (MCPBearerAuthMiddleware)
+      #   oauth                  -> {"error":"invalid_token",...}   (middleware short-circuits;
+      #                                                              the MCP app's OAuth layer answers)
+      # Asserting one literal means a mode switch turns the monitor red and the auth
+      # boundary silently stops being checked. Accept either known contract, require
+      # both probes to agree, and surface the detected mode so a switch is visible
+      # rather than invisible.
+      - name: Check MCP auth boundary (missing and wrong token)
         run: |
           set -euo pipefail
-          status="$(
-            curl --silent --show-error --max-time 15 \
-              --output /tmp/mcp-no-token.json \
-              --write-out "%{http_code}" \
-              -X POST https://mcp.cluexp.com/mcp \
-              -H "Content-Type: application/json" \
-              -d '{}'
-          )"
-          test "$status" = "401"
-          grep -q '"invalid_mcp_token"' /tmp/mcp-no-token.json
 
-      - name: Check MCP auth boundary with wrong token
-        run: |
-          set -euo pipefail
-          status="$(
-            curl --silent --show-error --max-time 15 \
-              --output /tmp/mcp-wrong-token.json \
-              --write-out "%{http_code}" \
-              -X POST https://mcp.cluexp.com/mcp \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer definitely-not-the-production-token" \
-              -d '{}'
-          )"
-          test "$status" = "401"
-          grep -q '"invalid_mcp_token"' /tmp/mcp-wrong-token.json
+          probe() {
+            local label="$1" out="$2"; shift 2
+            local status
+            status="$(
+              curl --silent --show-error --max-time 15 \
+                --output "$out" \
+                --write-out "%{http_code}" \
+                -X POST https://mcp.cluexp.com/mcp \
+                -H "Content-Type: application/json" \
+                "$@" \
+                -d '{}'
+            )"
+            if [ "$status" != "401" ]; then
+              # stderr: probe runs inside $( ), so stdout is the return value.
+              echo "::error::$label: expected 401, got $status" >&2
+              cat "$out" >&2 || true
+              exit 1
+            fi
+            if grep -q '"invalid_mcp_token"' "$out"; then
+              echo "bearer"
+            elif grep -q '"invalid_token"' "$out"; then
+              echo "oauth"
+            else
+              echo "::error::$label: 401 with an unrecognized error body — the auth contract changed" >&2
+              cat "$out" >&2 || true
+              exit 1
+            fi
+          }
+
+          no_token_mode="$(probe 'missing token' /tmp/mcp-no-token.json)"
+          wrong_token_mode="$(probe 'wrong token' /tmp/mcp-wrong-token.json \
+            -H "Authorization: Bearer definitely-not-the-production-token")"
+
+          if [ "$no_token_mode" != "$wrong_token_mode" ]; then
+            echo "::error::auth mode disagreement: missing-token=$no_token_mode wrong-token=$wrong_token_mode"
+            exit 1
+          fi
+
+          echo "MCP auth boundary OK — both probes rejected with 401 (\`$no_token_mode\` mode)." \
+            >> "$GITHUB_STEP_SUMMARY"
+          if [ "$no_token_mode" = "oauth" ]; then
+            echo "::notice::MCP is in OAuth mode; PRODUCTION-READINESS preflight should record this."
+          fi
