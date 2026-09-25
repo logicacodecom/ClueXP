@@ -1,5 +1,7 @@
 # Tasks: Twilio Production Configuration
 
+> **Superseded 2026-09-24:** T006 through T011 must not be executed. The shared number is now reserved for ClueXP-owned digital verification SMS and must not be assigned to a provider. No deployment, voice/webhook activation, or live traffic is authorized. Replacement work is tracked in [`../002-cluexp-digital-verification-sms/tasks.md`](../002-cluexp-digital-verification-sms/tasks.md).
+
 **Spec**: [`spec.md`](spec.md)
 **Plan**: [`plan.md`](plan.md)
 **Owner**: `Codex lead; delegated reviewer per task`

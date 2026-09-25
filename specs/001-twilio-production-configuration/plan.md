@@ -1,5 +1,7 @@
 # Implementation Plan: Twilio Production Configuration
 
+> **Superseded 2026-09-24:** Do not execute this rollout. The Human selected a digital-only communications scope: ClueXP-owned verification/intake-link SMS, no provider call-center operation, no shared-number tenant assignment, and no voice activation. See [`../002-cluexp-digital-verification-sms/plan.md`](../002-cluexp-digital-verification-sms/plan.md). Preserve `COMMUNICATIONS_PROVIDER=noop`.
+
 **Spec**: [`spec.md`](spec.md)
 **Branch**: `ops/twilio-production-configuration`
 **Owner**: `Codex`

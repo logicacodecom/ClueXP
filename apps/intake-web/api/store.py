@@ -1629,6 +1629,39 @@ class Store:
     async def is_sms_opted_out(self, phone_e164: str) -> bool:  # pragma: no cover
         raise NotImplementedError
 
+    async def create_intake_phone_verification(
+        self, *, job_id: UUID, phone_e164: str, token_hash: str,
+        intake_channel_slug: str, expires_at: datetime, consent_version: str,
+        since: datetime, job_limit: int, phone_limit: int,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def count_recent_intake_phone_verifications(
+        self, *, job_id: UUID, phone_e164: str, since: datetime,
+    ) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_intake_phone_verification_status(
+        self, *, job_id: UUID, phone_e164: str,
+    ) -> dict:  # pragma: no cover
+        raise NotImplementedError
+
+    async def consume_intake_phone_verification(
+        self, token_hash: str,
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def supersede_intake_phone_verification(self, token_hash: str) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def supersede_other_intake_phone_verifications(
+        self, *, job_id: UUID, keep_token_hash: str,
+    ) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_intake_activation_context(self, job_id: UUID) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def list_job_events(self, job_id: UUID) -> list[dict]:  # pragma: no cover
         raise NotImplementedError
 
@@ -1909,6 +1942,12 @@ class InMemoryStore(Store):
         if origin_client_id:
             self._job_origin_client = getattr(self, "_job_origin_client", {})
             self._job_origin_client[jid] = str(origin_client_id)
+        if origin.get("intake_channel_slug"):
+            self._job_intake_channel_slug = getattr(self, "_job_intake_channel_slug", {})
+            self._job_intake_channel_slug[jid] = str(origin["intake_channel_slug"])
+        if "dispatch_cutover_enabled" in origin:
+            self._job_dispatch_cutover = getattr(self, "_job_dispatch_cutover", {})
+            self._job_dispatch_cutover[jid] = bool(origin["dispatch_cutover_enabled"])
         loc = getattr(ticket, "location", None)
         self._job_address = getattr(self, "_job_address", {})
         self._job_loc = getattr(self, "_job_loc", {})
@@ -3996,6 +4035,135 @@ class InMemoryStore(Store):
     async def is_sms_opted_out(self, phone_e164: str) -> bool:
         return phone_e164 in getattr(self, "_sms_opt_outs", {})
 
+    async def create_intake_phone_verification(
+        self, *, job_id: UUID, phone_e164: str, token_hash: str,
+        intake_channel_slug: str, expires_at: datetime, consent_version: str,
+        since: datetime, job_limit: int, phone_limit: int,
+    ) -> dict | None:
+        rows = self._intake_phone_verifications = getattr(
+            self, "_intake_phone_verifications", []
+        )
+        now = datetime.now(timezone.utc)
+        jid = str(job_id)
+        recent_for_phone = [
+            row for row in rows
+            if row["phone_e164"] == phone_e164 and row["created_at"] >= since
+        ]
+        if len(recent_for_phone) >= phone_limit or sum(
+            1 for row in recent_for_phone if row["job_id"] == jid
+        ) >= job_limit:
+            return None
+        created = {
+            "id": str(uuid4()),
+            "job_id": jid,
+            "phone_e164": phone_e164,
+            "token_hash": token_hash,
+            "intake_channel_slug": intake_channel_slug,
+            "consent_version": consent_version,
+            "consented_at": now,
+            "expires_at": expires_at,
+            "send_succeeded_at": None,
+            "consumed_at": None,
+            "superseded_at": None,
+            "created_at": now,
+        }
+        rows.append(created)
+        return dict(created)
+
+    async def count_recent_intake_phone_verifications(
+        self, *, job_id: UUID, phone_e164: str, since: datetime,
+    ) -> int:
+        return sum(
+            1
+            for row in getattr(self, "_intake_phone_verifications", [])
+            if row["job_id"] == str(job_id)
+            and row["phone_e164"] == phone_e164
+            and row["created_at"] >= since
+        )
+
+    async def get_intake_phone_verification_status(
+        self, *, job_id: UUID, phone_e164: str,
+    ) -> dict:
+        verified = getattr(self, "_job_phone_verified", {}).get(str(job_id))
+        latest = next(
+            (
+                row
+                for row in reversed(getattr(self, "_intake_phone_verifications", []))
+                if row["job_id"] == str(job_id) and row["phone_e164"] == phone_e164
+            ),
+            None,
+        )
+        return {
+            "verified": bool(verified and verified["phone_e164"] == phone_e164),
+            "verified_at": verified.get("verified_at") if verified else None,
+            "latest_expires_at": latest.get("expires_at") if latest else None,
+        }
+
+    async def consume_intake_phone_verification(self, token_hash: str) -> dict | None:
+        now = datetime.now(timezone.utc)
+        for row in getattr(self, "_intake_phone_verifications", []):
+            if row["token_hash"] != token_hash:
+                continue
+            if row.get("consumed_at") or row.get("superseded_at") or row["expires_at"] <= now:
+                return None
+            current_phone = normalize_e164(
+                getattr(self, "_job_detail", {}).get(row["job_id"], {}).get("customer_phone")
+            )
+            if current_phone != row["phone_e164"] or not row.get("send_succeeded_at"):
+                return None
+            row["consumed_at"] = now
+            verified = self._job_phone_verified = getattr(self, "_job_phone_verified", {})
+            verified[row["job_id"]] = {
+                "phone_e164": row["phone_e164"],
+                "verified_at": now,
+            }
+            return {
+                "job_id": row["job_id"],
+                "phone_e164": row["phone_e164"],
+                "verified_at": now,
+                "tracking_token": getattr(self, "_tokens", {}).get(row["job_id"]),
+                "intake_channel_slug": row["intake_channel_slug"],
+            }
+        return None
+
+    async def supersede_intake_phone_verification(self, token_hash: str) -> None:
+        for row in getattr(self, "_intake_phone_verifications", []):
+            if row["token_hash"] == token_hash and not row.get("consumed_at"):
+                row["superseded_at"] = datetime.now(timezone.utc)
+
+    async def supersede_other_intake_phone_verifications(
+        self, *, job_id: UUID, keep_token_hash: str,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        rows = getattr(self, "_intake_phone_verifications", [])
+        keep = next((row for row in rows if row["token_hash"] == keep_token_hash), None)
+        if not keep or keep.get("consumed_at") or keep.get("superseded_at"):
+            return
+        keep["send_succeeded_at"] = now
+        for row in rows:
+            if (
+                row["job_id"] == str(job_id)
+                and row["token_hash"] != keep_token_hash
+                and row.get("send_succeeded_at")
+                and not row.get("consumed_at")
+                and not row.get("superseded_at")
+            ):
+                row["superseded_at"] = now
+
+    async def get_intake_activation_context(self, job_id: UUID) -> dict | None:
+        jid = str(job_id)
+        ticket = self._tickets.get(job_id)
+        if not ticket:
+            return None
+        return {
+            "status": getattr(self, "_job_status", {}).get(jid, _enum_value(ticket.status)),
+            "customer_owner_org_id": getattr(self, "_job_org", {}).get(jid),
+            "dispatch_cutover_enabled": bool(
+                getattr(self, "_job_dispatch_cutover", {}).get(jid, False)
+            ),
+            "intake_channel_slug": getattr(self, "_job_intake_channel_slug", {}).get(jid),
+        }
+
     async def ops_create_single_offer(
         self, job_id: UUID, technician_id: UUID, org_id: UUID | None, expires_at: datetime
     ) -> dict | None:
@@ -4133,7 +4301,9 @@ class InMemoryStore(Store):
         self._job_status = getattr(self, "_job_status", {})
         self._job_lifecycle_version = getattr(self, "_job_lifecycle_version", {})
         jid = str(job_id)
-        if expected_current is not None and self._job_status.get(jid) != expected_current:
+        ticket = self._tickets.get(job_id)
+        current = self._job_status.get(jid) or (ticket.status.value if ticket else None)
+        if expected_current is not None and current != expected_current:
             return None
         self._job_status[jid] = new_status
         self._job_lifecycle_version[jid] = self._job_lifecycle_version.get(jid, 1) + 1
@@ -9374,6 +9544,165 @@ class PostgresStore(Store):
             )
             row = await cur.fetchone()
         return row is not None
+
+    async def create_intake_phone_verification(
+        self, *, job_id: UUID, phone_e164: str, token_hash: str,
+        intake_channel_slug: str, expires_at: datetime, consent_version: str,
+        since: datetime, job_limit: int, phone_limit: int,
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            # Serialize reservations for a destination phone so parallel requests
+            # cannot evade either the per-intake or cross-intake limit.
+            await conn.execute(
+                "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (phone_e164,),
+            )
+            counts = await (
+                await conn.execute(
+                    "select count(*) filter (where job_id = %s), count(*)"
+                    " from intake_phone_verifications"
+                    " where phone_e164 = %s and created_at >= %s",
+                    (str(job_id), phone_e164, since),
+                )
+            ).fetchone()
+            if counts and (int(counts[0]) >= job_limit or int(counts[1]) >= phone_limit):
+                return None
+            cur = await conn.execute(
+                "insert into intake_phone_verifications"
+                " (job_id, phone_e164, token_hash, intake_channel_slug, expires_at, consent_version)"
+                " values (%s, %s, %s, %s, %s, %s)"
+                " returning id, job_id, phone_e164, intake_channel_slug, expires_at, created_at",
+                (str(job_id), phone_e164, token_hash, intake_channel_slug, expires_at, consent_version),
+            )
+            row = await cur.fetchone()
+        return {
+            "id": str(row[0]),
+            "job_id": str(row[1]),
+            "phone_e164": row[2],
+            "intake_channel_slug": row[3],
+            "expires_at": row[4].isoformat(),
+            "created_at": row[5].isoformat(),
+        }
+
+    async def count_recent_intake_phone_verifications(
+        self, *, job_id: UUID, phone_e164: str, since: datetime,
+    ) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from intake_phone_verifications"
+                " where job_id = %s and phone_e164 = %s and created_at >= %s",
+                (str(job_id), phone_e164, since),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+    async def get_intake_phone_verification_status(
+        self, *, job_id: UUID, phone_e164: str,
+    ) -> dict:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select phone_verified_at, phone_verified_e164,"
+                " (select expires_at from intake_phone_verifications v"
+                "  where v.job_id = j.id and v.phone_e164 = %s"
+                "  order by created_at desc limit 1)"
+                " from jobs j where id = %s",
+                (phone_e164, str(job_id)),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return {"verified": False, "verified_at": None, "latest_expires_at": None}
+        return {
+            "verified": bool(row[0] and row[1] == phone_e164),
+            "verified_at": row[0].isoformat() if row[0] else None,
+            "latest_expires_at": row[2].isoformat() if row[2] else None,
+        }
+
+    async def consume_intake_phone_verification(self, token_hash: str) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select v.id, v.job_id, v.phone_e164, v.intake_channel_slug, j.tracking_token,"
+                " j.detail->>'customer_phone'"
+                " from intake_phone_verifications v"
+                " join jobs j on j.id = v.job_id"
+                " where v.token_hash = %s and v.consumed_at is null"
+                " and v.send_succeeded_at is not null"
+                " and v.superseded_at is null and v.expires_at > now()"
+                " for update of v, j",
+                (token_hash,),
+            )
+            row = await cur.fetchone()
+            if not row or normalize_e164(row[5]) != row[2]:
+                return None
+            verified_at = datetime.now(timezone.utc)
+            await conn.execute(
+                "update intake_phone_verifications set consumed_at = %s where id = %s",
+                (verified_at, str(row[0])),
+            )
+            await conn.execute(
+                "update jobs set phone_verified_at = %s, phone_verified_e164 = %s, updated_at = now()"
+                " where id = %s",
+                (verified_at, row[2], str(row[1])),
+            )
+        return {
+            "job_id": str(row[1]),
+            "phone_e164": row[2],
+            "verified_at": verified_at,
+            "intake_channel_slug": row[3],
+            "tracking_token": row[4],
+        }
+
+    async def supersede_intake_phone_verification(self, token_hash: str) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "update intake_phone_verifications set superseded_at = now()"
+                " where token_hash = %s and consumed_at is null and superseded_at is null",
+                (token_hash,),
+            )
+
+    async def supersede_other_intake_phone_verifications(
+        self, *, job_id: UUID, keep_token_hash: str,
+    ) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(job_id),),
+            )
+            activated = await (
+                await conn.execute(
+                    "update intake_phone_verifications set send_succeeded_at = now()"
+                    " where job_id = %s and token_hash = %s and consumed_at is null"
+                    " and superseded_at is null returning id",
+                    (str(job_id), keep_token_hash),
+                )
+            ).fetchone()
+            if not activated:
+                return
+            await conn.execute(
+                "update intake_phone_verifications set superseded_at = now()"
+                " where job_id = %s and token_hash <> %s"
+                " and send_succeeded_at is not null"
+                " and consumed_at is null and superseded_at is null",
+                (str(job_id), keep_token_hash),
+            )
+
+    async def get_intake_activation_context(self, job_id: UUID) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select j.status, j.customer_owner_org_id,"
+                " coalesce(c.dispatch_cutover_enabled, false), c.slug"
+                " from jobs j left join intake_channels c on c.id = j.intake_channel_id"
+                " where j.id = %s",
+                (str(job_id),),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "status": row[0],
+            "customer_owner_org_id": str(row[1]) if row[1] else None,
+            "dispatch_cutover_enabled": bool(row[2]),
+            "intake_channel_slug": row[3],
+        }
 
     async def record_customer_review(
         self,

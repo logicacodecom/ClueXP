@@ -4,7 +4,9 @@
 **Spec Directory**: `specs/001-twilio-production-configuration`
 **Created**: `2026-09-23`
 **Owner**: `Codex with Human production authorization`
-**Status**: `configuration staged; awaiting authenticated production identity, number-assignment authorization, deployment, and go-live gates`
+**Status**: `superseded on 2026-09-24; production activation cancelled in favor of ClueXP-owned digital verification SMS`
+
+> **Supersession decision (2026-09-24):** ClueXP will not provision or operate provider call-center numbers in this phase. The shared number remains a ClueXP platform asset and must not be assigned to Metro Key or another provider. Voice, masked calling, provider-number SMS, deployment, and webhook activation in this plan are cancelled. The replacement scope is defined in [`../002-cluexp-digital-verification-sms/spec.md`](../002-cluexp-digital-verification-sms/spec.md). `COMMUNICATIONS_PROVIDER=noop` remains unchanged.
 
 ## Summary
 
