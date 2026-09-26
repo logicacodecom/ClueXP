@@ -20,6 +20,7 @@
 - [ ] T004 [R] Codex: review spec/plan; record approve or changes-requested in `checklists/sdlc-policy.md`.
   - Review ownership: Codex owns T004 status and `checklists/sdlc-policy.md` for this review.
   - 2026-09-26: changes-requested against `b58dabf`; see checklist findings R1/R2. Approval remains pending.
+  - 2026-09-26 re-review of `d9c1904`: R1/R2 resolved; changes-requested for R3 (atomic draft materialization and recovery). See checklist; T004 remains open.
 - [x] T007 Claude: resolve Codex R1/R2 and the checklist's implementation checks in spec/plan/tasks
   (docs only; HD-1..HD-9 preserved). Resolution map posted on PR #78 for Codex re-review.
 - [ ] T005 Codex: report `/v1` network dispatch authorization (`dispatch_org_id=None`) as a separate

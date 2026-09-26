@@ -98,3 +98,47 @@ existing intake callers' behavior explicit rather than changing it accidentally.
 - Read-only code/query review; no production probes or application changes. Application suites are
   not rerun for this documentation-only verdict.
 - Review-record checks: `git diff --check` and the working-tree SDLC policy check passed.
+
+## Codex Re-review — 2026-09-26, head `d9c1904`
+
+Current verdict remains **changes-requested**. R1 and R2 above are historical findings, now resolved
+at the design level; the new R3 below blocks approval. T004 remains open.
+
+- **R1 resolved:** FR-021 now isolates drafts in `intake_drafts`, with no pre-commit job/customer
+  writes or customer reads. Draft-subject verification, provider-read exclusion, and Postgres-backed
+  tests with verification on/off cover the original privacy failure. The shared customer upsert
+  after an authorized web commit is explicitly documented as existing behavior.
+- **R2 resolved:** FR-009a specifies precise geocoding acceptance and error outcomes;
+  `geocode_candidates` preserves the necessary evidence while existing callers retain their behavior.
+- The additional checks are incorporated: per-org eligibility and shared snapshot data, null-org
+  exclusion, phase-1 queue timing, failure-log privacy, and server-side draft channel validation.
+- Confirmed the reviewer-owned checklist was unchanged from `7caadc3` at the submitted head.
+
+### R3 — P1: make draft materialization and its recovery reference atomic
+
+`plan.md` phase-2 Commit steps 2–3 first mark the draft `committing`, then call the normal `save()`
+and record `job_id`. `PostgresStore.save()` (`store.py:6613–6750`) owns its database connection and
+persists the customer/job independently of a later draft update. If the process dies after that save
+but before recording `job_id`, the shared job exists while the draft is `committing` with no ID.
+The proposed retry only resumes a committing draft **with** an ID; the proposed one-hour cleanup
+deletes a committing draft **without** an ID. That can leave an orphan job/customer mutation and
+discard the recovery information, contradicting FR-028 and the cleanup design. Conditional state
+updates alone do not close this crash window.
+
+Required correction: specify a store-level transaction that locks/revalidates the draft and writes
+the customer/job plus draft-to-job mapping atomically, or an equally explicit durable idempotency
+design that cannot lose the materialized job's identity. State how concurrent edits/commits and the
+purge are fenced. Define recovery for failure before materialization and after materialization but
+before activation/finalization, including `committing` rows with a job ID if the customer never
+retries. Cleanup must not discard recovery state or retain draft PII indefinitely. Preserve the
+existing cutover/global gates and HD-9; no product-scope change is requested.
+
+Add targeted Postgres failure-injection tests at the save/mapping boundary and before finalization,
+including concurrent commit/purge. Assert no orphan/duplicate job, no duplicate activation, and
+eventual finalization/PII clearing. Update the plan's store surfaces and T032b/T033 accordingly.
+
+### Re-review verification
+
+- Documentation diff and existing `PostgresStore.save()` transaction boundary reviewed.
+- `git diff --check` and working-tree SDLC policy check passed for this review record.
+- No application code, production action, or merge. T005 remains separate.
