@@ -15,6 +15,7 @@ type Screen =
   | "additional"
   | "photos"
   | "identity"
+  | "verify"
   | "price"
   | "commit"
   | "scheduled"
@@ -35,6 +36,7 @@ const intakeSteps: Partial<Record<Screen, number>> = {
   additional: 4,
   photos: 4,
   identity: 5,
+  verify: 5,
   price: 5,
   commit: 6,
   handoff: 6
@@ -48,7 +50,8 @@ const PREV_SCREEN: Partial<Record<Screen, Screen>> = {
   additional: "details",
   photos: "additional",
   identity: "photos",
-  price: "identity",
+  verify: "identity",
+  price: "verify",
   commit: "price",
 };
 
@@ -59,13 +62,13 @@ const emptyGuards: TicketGuards = {
 };
 
 const SESSION_KEY = "cluexp_session";
+const PHONE_VERIFICATION_CONSENT_VERSION = "transactional-verification-v1";
 // A saved intake session is only resumed if it is recent and not already finished.
 // Otherwise opening the browser would strand the customer on a stale/closed request
 // with no way to start a new one.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 const TERMINAL_SCREENS: Screen[] = ["review", "handoff"];
 const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
-const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
 
 type DispatchState = "waiting" | "matched" | "no_eligible" | "expired_retry" | "error";
@@ -295,6 +298,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   const [dispatchStatus, setDispatchStatus] = useState<DispatchStatus | null>(null);
   const [dispatchPhone, setDispatchPhone] = useState<string | null>(null);
   const [showEstimate, setShowEstimate] = useState(true);
+  const [phoneVerificationRequired, setPhoneVerificationRequired] = useState<boolean | null>(null);
+  const [smsConsentAccepted, setSmsConsentAccepted] = useState(false);
+  const [resumedFromVerification, setResumedFromVerification] = useState(false);
   const [serviceMode, setServiceMode] = useState<ServiceMode>("now");
   const [scheduleWindow] = useState(defaultScheduleWindow);
   const [form, setForm] = useState({
@@ -376,6 +382,19 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     });
     sync(envelope);
     return envelope.ticket;
+  }
+
+  async function sendPhoneVerification(ticketId: string) {
+    return api<{ sent: boolean; verified: boolean; expires_in: number }>(
+      `/tickets/${ticketId}/phone-verification`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          consent_accepted: true,
+          consent_version: PHONE_VERIFICATION_CONSENT_VERSION
+        })
+      }
+    );
   }
 
   async function geocodeAddress(address: string) {
@@ -511,18 +530,39 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     );
   }
 
-  // Branded channel → the owning provider's own dispatch number for every
-  // "call dispatch" affordance (each provider has its own line). Public intake
-  // keeps the NEXT_PUBLIC_DISPATCH_PHONE fallback.
+  // A provider may expose its own public line. ClueXP does not provision,
+  // forward, or operate that number, and there is no platform fallback number.
   useEffect(() => {
     if (!organizationSlug) return;
-    api<{ dispatch_phone: string | null; show_estimate?: boolean }>(`/channels/${organizationSlug}`)
+    api<{ dispatch_phone: string | null; show_estimate?: boolean; phone_verification_required?: boolean }>(`/channels/${organizationSlug}`)
       .then((info) => {
         if (info.dispatch_phone) setDispatchPhone(info.dispatch_phone);
         setShowEstimate(info.show_estimate !== false);
+        setPhoneVerificationRequired(info.phone_verification_required === true);
       })
-      .catch(() => {}); // unknown channel / offline — keep the global fallback
+      .catch(() => setError("Unable to load this provider's intake policy. Try again."));
   }, [organizationSlug]);
+
+  // A consumed SMS magic link restores the HttpOnly intake capability, then
+  // redirects here without putting a raw job id in the URL. Resolve the ticket
+  // through that cookie and continue the branded intake.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("verified") !== "1") return;
+    window.localStorage.removeItem(sessionKey);
+    (async () => {
+      try {
+        const envelope = await api<TicketEnvelope>("/tickets/resume");
+        sync(envelope);
+        setResumedFromVerification(true);
+        setScreen("price");
+        window.history.replaceState({}, "", window.location.pathname);
+      } catch {
+        setError("This verification link is invalid or expired. Request a new link.");
+      }
+    })();
+  }, [sessionKey]);
 
   // Rehydrate the active ticket on load so refresh/back doesn't orphan a ticket —
   // but only for a recent, still-in-progress session. A stale (>12h) or already
@@ -530,6 +570,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   // request instead of being stranded on an old one.
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("verified") === "1") return;
     const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
     let saved: { ticketId?: string; screen?: Screen; savedAt?: number };
@@ -632,9 +673,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
             <p className="panel-title">This direct intake page is closed.</p>
             <p className="fine">Please use the intake link from your service provider, or call customer service.</p>
           </div>
-          <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`}>
-            <Phone size={18} aria-hidden="true" /> Call customer service
-          </a>
+          {dispatchPhone ? (
+            <a className="secondary" href={`tel:${dispatchPhone}`}>
+              <Phone size={18} aria-hidden="true" /> Call customer service
+            </a>
+          ) : null}
         </>
       );
     }
@@ -1033,7 +1076,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               type="tel"
               placeholder="Phone number"
               value={form.phone}
-              onChange={(event) => setForm({ ...form, phone: event.target.value })}
+              onChange={(event) => {
+                setForm({ ...form, phone: event.target.value });
+                setSmsConsentAccepted(false);
+              }}
             />
             <p className="fine">Your authorization role:</p>
             <ChipSelect
@@ -1047,22 +1093,86 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               ]}
               onSelect={(value) => setAuthorityRole(value)}
             />
+            {phoneVerificationRequired ? (
+              <label className="panel" style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={smsConsentAccepted}
+                  onChange={(event) => setSmsConsentAccepted(event.target.checked)}
+                />
+                <span className="fine">
+                  I agree to receive a one-time transactional text from ClueXP at this number with a secure link to verify and continue this service request. Message and data rates may apply. Reply STOP to opt out.
+                </span>
+              </label>
+            ) : null}
             <button
               className="primary"
               type="button"
-              disabled={busy || !form.name.trim() || !authorityRole}
+              disabled={
+                busy
+                || !form.name.trim()
+                || !authorityRole
+                || phoneVerificationRequired === null
+                || (phoneVerificationRequired && (!form.phone.trim() || !smsConsentAccepted))
+              }
               onClick={() =>
                 run(async () => {
-                  await patch({
+                  const updated = await patch({
                     customer_name: form.name.trim(),
                     customer_phone: form.phone.trim() || null,
                     identity: { claims_ownership: true, authority_role: authorityRole },
                   });
-                  setScreen("price");
+                  if (phoneVerificationRequired) {
+                    if (!updated.ticket_id) throw new Error("Could not secure this intake session.");
+                    await sendPhoneVerification(updated.ticket_id);
+                    setScreen("verify");
+                  } else {
+                    setScreen("price");
+                  }
                 })
               }
             >
               Continue
+            </button>
+          </div>
+        </>
+      );
+    }
+
+    if (screen === "verify") {
+      return (
+        <>
+          <AgentMessage support="The link verifies this phone for this request. It expires and can be used only once.">
+            Check your phone to continue.
+          </AgentMessage>
+          <div className="stack">
+            <div className="panel">
+              <p className="panel-title">Verification link sent</p>
+              <p className="fine">Open the ClueXP link in the text message. It will securely resume this intake without exposing your request ID.</p>
+            </div>
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || !ticket?.ticket_id}
+              onClick={() => run(async () => {
+                if (!ticket?.ticket_id) return;
+                const status = await api<{ verified: boolean }>(`/tickets/${ticket.ticket_id}/phone-verification`);
+                if (!status.verified) throw new Error("Open the verification link from your text message first.");
+                setScreen("price");
+              })}
+            >
+              I opened the link
+            </button>
+            <button
+              className="ghost"
+              type="button"
+              disabled={busy || !ticket?.ticket_id}
+              onClick={() => run(async () => {
+                if (!ticket?.ticket_id) return;
+                await sendPhoneVerification(ticket.ticket_id);
+              })}
+            >
+              Send another link
             </button>
           </div>
         </>
@@ -1227,9 +1337,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 If your provider uses a partner, the partner first sees a masked job offer. Customer details appear only after the provider-approved team accepts and assigns a technician.
               </p>
             </div>
-            <a className="secondary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
-              <Phone size={18} aria-hidden="true" /> Call dispatch
-            </a>
+            {dispatchPhone ? (
+              <a className="secondary" href={`tel:${dispatchPhone}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+                <Phone size={18} aria-hidden="true" /> Call dispatch
+              </a>
+            ) : null}
           </div>
         </>
       );
@@ -1276,11 +1388,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               <button className="primary" type="button" onClick={() => void handoff("dispatch_exhausted")}>
                 Contact dispatch
               </button>
-            ) : (
-              <a className="ghost" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+            ) : dispatchPhone ? (
+              <a className="ghost" href={`tel:${dispatchPhone}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
                 Need help? Call dispatch
               </a>
-            )}
+            ) : null}
           </div>
         </>
       );
@@ -1491,9 +1603,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <div className="big-number">Sam Reyes</div>
           <p className="fine">Plain-language support for this request. No app install required.</p>
         </div>
-        <a className="primary" href={`tel:${dispatchPhone || DISPATCH_PHONE}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
-          Call now
-        </a>
+        {dispatchPhone ? (
+          <a className="primary" href={`tel:${dispatchPhone}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+            Call now
+          </a>
+        ) : null}
       </>
     );
   })();
@@ -1508,12 +1622,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           </div>
         ) : null}
         <StepPipes screen={screen} />
-        {PREV_SCREEN[screen] ? (
+        {(screen === "price"
+          ? (phoneVerificationRequired || resumedFromVerification ? "verify" : "identity")
+          : PREV_SCREEN[screen]) ? (
           <button
             className="ghost"
             type="button"
             style={{ alignSelf: "flex-start", padding: "4px 0", marginBottom: 4 }}
-            onClick={() => { setError(null); setScreen(PREV_SCREEN[screen]!); }}
+            onClick={() => {
+              setError(null);
+              setScreen(
+                screen === "price"
+                  ? (phoneVerificationRequired || resumedFromVerification ? "verify" : "identity")
+                  : PREV_SCREEN[screen]!
+              );
+            }}
           >
             ← Back
           </button>

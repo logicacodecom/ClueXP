@@ -463,7 +463,7 @@ Customer affordances are driven by `customer_actions(status)`:
 
 ### 7.1 Where Migrations Live
 
-`packages/db/` — Alembic migrations. **Current repository and verified production head: `0059_job_origin_client`** (`0059` was applied to production 2026-08-24 after explicit authorization and verified in `docs/HANDOFF.md`). Landmarks: `0010` Sprint 3 cutover (fulfillment lifecycle columns, tracking token, dispatch_offers); `0011` single-active-offer index; `0012` decline reason; `0013` arrival verification (PIN); `0014` job notes; `0015` job payments; `0016`/`0017` provider affiliation ledger + history; `0018` technician photo status; `0019` organization status enum; `0020`/`0021` technician documents; `0022` technician invites; `0023` global runtime settings; `0024` additional DB-backed operational tunables; `0029` managed service catalog; `0030` organization capabilities; `0031` financial closeout settings and item type catalog; `0032` job closeout reports; `0033` technician agreements; `0034` settlement periods; `0035` settlement payments; `0036` organization company profile; `0037` canonical technician skills; `0038` operational job IDs; `0039` operations refresh setting; `0040` technician last-seen; `0041` technician devices; `0042` technician device install metadata; `0043` technician mutation hardening; `0044` job lifecycle version; `0045` auth refresh tokens; `0046` technician notifications; `0047` job messages; `0048` job call sessions; `0049` push provider receipts; `0050` Twilio communications; `0051` organization partnerships; `0052` technician reservations; `0053` provider CRM; `0054` alert escalation; `0055` default-deny RLS closure; `0056` public API external client foundation; `0057` dispatch authorization evidence; `0058` governance-event entity type widening; `0059` external-client request ownership.
+`packages/db/` — Alembic migrations. **Current repository head: `0060_intake_phone_verification`; verified production head: `0059_job_origin_client`.** `0060` is unapplied and requires separate Human production-DDL authorization. It adds hashed, expiring, single-use digital-intake verification records plus the exact verified phone on `jobs`. Earlier landmarks: `0010` fulfillment cutover; `0013` arrival verification; `0047` job messages; `0048` job call sessions; `0049` push receipts; `0050` provider communications foundations; `0054` alert escalation; `0055` default-deny RLS; `0056`–`0059` public API and external-client request ownership.
 
 The `PostgresStore.startup()` method in `store.py` also runs `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS` guards so the API boots cleanly even if a migration is behind.
 
@@ -1395,26 +1395,37 @@ verified technician — organization acceptance alone never flips customer visib
 signup/onboarding are wired and deployed. Remaining items: [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md)
 §11.2. **Forward design** (team-based dispatch, org job-intake/accept screens) is designed-ahead.
 
-#### 18.3.1 Provider Communications
+#### 18.3.1 Digital Customer Communications
 
-Provider communications are tenant-scoped through the same active organization
-boundary as dispatch. Provider admins configure an already-purchased Twilio
-business number, primary/backup forwarding numbers, ring timeout, voicemail,
-masked calling, SMS, and A2P readiness in provider-web Settings. Dispatchers can
-view call history in provider-web Calls and start masked customer callbacks from
-job detail. The backend never exposes Twilio credentials or raw customer/tech
-numbers to client bundles.
+The active product scope is digital-first. Customers enter through provider-branded
+web intake, ClueXP web surfaces, ChatGPT, or approved API integrations. Providers
+operate their own public phone lines and call centers outside ClueXP. ClueXP does
+not provision, forward, answer, or automate provider calls in this phase; masked
+customer-technician calling remains a future in-app slice.
 
-Public Twilio webhooks live on the intake FastAPI app:
-`/api/twilio/voice/incoming`, `/api/twilio/voice/status`,
-`/api/twilio/sms/incoming`, and `/api/twilio/sms/status`. Every webhook validates
-the Twilio signature against the public request URL before doing DB work. Inbound
-calls resolve the called Twilio number to one provider organization, attempt to
-match the caller to an active same-tenant customer/job, forward to the provider's
-configured dispatch numbers, and persist idempotent call-session records. SMS is
-transactional only; sends are idempotent by job/purpose/recipient/request hash
-and are skipped unless the provider has SMS enabled and A2P registration marked
-ready. STOP/START updates opt-out state.
+ClueXP owns one narrowly scoped platform SMS channel for phone verification and
+secure intake-link delivery. It is independent of provider `twilio_number`,
+`sms_enabled`, and `a2p_registered` fields. A high-entropy link is stored only as
+a SHA-256 hash, expires, is single-use, and restores the existing HttpOnly intake
+capability without exposing a raw job UUID. When phone verification is required,
+the provisional request stays out of the provider queue until the exact current
+phone is verified and the customer commits the request. Link consumption locks
+the verification and job rows and rejects a token unless its destination still
+matches the job's current normalized phone. The send endpoint records the
+versioned affirmative transactional-SMS disclosure, atomically enforces both
+per-intake and cross-intake per-phone windows, and activates only one successfully
+delivered link during competing resends. Dispatch activation uses an optimistic
+status guard so only one commit emits the new-job alert and transition.
+
+The platform SMS selector is `CLUEXP_SMS_PROVIDER`; the older
+`COMMUNICATIONS_PROVIDER` selector remains `noop`. Sending also requires explicit
+`CLUEXP_VERIFICATION_SMS_ENABLED` and `CLUEXP_A2P_REGISTERED` gates plus
+`CLUEXP_VERIFICATION_FROM_NUMBER`. All default to disabled/noop. Delivery-status
+callbacks have an independent, default-off `CLUEXP_SMS_STATUS_WEBHOOK_ENABLED`
+gate so SMS activation cannot implicitly activate a webhook. The channel does
+not send marketing, general conversation, provider call-center messages, or
+customer-technician chat. Existing provider voice/SMS code from migration `0050`
+remains dormant and is not a production launch commitment.
 
 ### 18.4 Ops console — `ops-web`
 

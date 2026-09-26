@@ -39,6 +39,7 @@ RLS_TABLES = (
     "global_settings",
     "governance_events",
     "intake_channels",
+    "intake_phone_verifications",
     "job_call_sessions",
     "job_closeout_line_items",
     "job_closeout_reports",
