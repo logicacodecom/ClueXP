@@ -62,7 +62,34 @@ npm run build --workspace @cluexp/console-web
 
 ## MCP endpoint (`mcp.cluexp.com`)
 
-Before treating the MCP server as publicly launched/listed in any assistant platform:
+The MCP server is public, read-only provider discovery (`specs/003`, phase 1): `list_services` and
+`find_providers`, with no sign-in. Before the phase 1 production cutover (each item needs explicit Human
+authorization for the exact target):
+
+- Apply migration `0061_intake_channel_ai_listing` (additive, default off; listing nobody until a
+  channel is flagged). Code deployed before the migration fails closed and lists nobody.
+- Create one production external API client/key with only `services:read` and `providers:search`, and
+  set it as `CLUEXP_API_KEY` in the Vercel project `cluexp-mcp-server`.
+- Remove `CLUEXP_MCP_OAUTH_*` and `CLUEXP_MCP_BEARER_TOKEN` from that project's environment.
+- Add a Vercel Firewall rate-limit rule on `/mcp` (per IP).
+- Deploy the MCP server from a reviewed commit (git-connected), not from a local CLI working tree.
+- Update `mcp-production-health` to call `list_services` through `/mcp` and assert a well-formed
+  result **in the same release**. The current monitor expects `401` on `/mcp` and will fail once the
+  endpoint is public.
+- After deploy, confirm:
+  - `https://mcp.cluexp.com/healthz` returns `200 {"status":"ok"}`;
+  - an unauthenticated MCP `initialize` succeeds;
+  - `find_providers` returns an empty list until the first opt-in;
+  - `external_api_events` rows for `provider_matches.search` contain no address or coordinates.
+- Flag the first provider channel (`intake_channels.ai_assistant_listed = true`) only on that
+  provider's written request (HD-6).
+- For OpenAI submission, set `OPENAI_APPS_CHALLENGE_TOKEN` only after the portal provides the exact
+  token, redeploy, and verify `https://mcp.cluexp.com/.well-known/openai-apps-challenge` returns only
+  that token as `text/plain`.
+- Decommission the Auth0 dev-tenant API/client used by the removed OAuth path.
+
+**Until that cutover deploys, the currently live server is the previous OAuth/bearer build** and these
+pre-cutover checks (from PR #75) still apply to it:
 
 - Confirm `https://mcp.cluexp.com/healthz` returns `200 {"status":"ok"}`.
 - Confirm `POST https://mcp.cluexp.com/mcp` without a bearer token and with a wrong bearer token both

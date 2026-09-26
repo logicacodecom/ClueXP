@@ -3,10 +3,7 @@
     {
       "type": "mcp_server",
       "name": "cluexp",
-      "url": "https://mcp.cluexp.com/mcp",
-      "headers": {
-        "Authorization": "Bearer replace-with-platform-held-mcp-bearer-token"
-      }
+      "url": "https://mcp.cluexp.com/mcp"
     }
   ]
 }

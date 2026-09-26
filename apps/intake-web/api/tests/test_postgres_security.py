@@ -538,3 +538,42 @@ def test_smoke_service_request_read_tracking_and_cancel_lifecycle(monkeypatch):
 
     read_after_cancel = client.get(f"/v1/service-requests/{reference}", headers={"X-API-Key": creator_key})
     assert read_after_cancel.json()["data"]["status"] == "cancelled"
+
+
+def test_ai_listed_channels_query_and_one_listing_per_org():
+    """specs/003 FR-005/FR-016 against real Postgres (migration 0061)."""
+
+    async def exercise() -> list[dict]:
+        store = PostgresStore(DSN)
+        active, suspended = uuid4(), uuid4()
+        tag = uuid4().hex[:8]
+        async with await store._connect() as conn:
+            await conn.execute(
+                "insert into organizations (id, display_name, status) values"
+                " (%s, 'Listed Active', 'active'), (%s, 'Listed Suspended', 'suspended')",
+                (active, suspended),
+            )
+            await conn.execute(
+                "insert into intake_channels (organization_id, slug, display_name, active, ai_assistant_listed)"
+                " values (%s, %s, 'Channel Name', true, true),"
+                " (%s, %s, null, true, false),"
+                " (%s, %s, null, true, true),"
+                " (null, %s, 'Platform', true, true)",
+                (active, f"listed-{tag}", active, f"unlisted-{tag}", suspended, f"suspended-{tag}",
+                 f"platform-{tag}"),
+            )
+        # Separate transaction: the violation aborts it without losing the rows above.
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            async with await store._connect() as conn:
+                await conn.execute(
+                    "insert into intake_channels (organization_id, slug, active, ai_assistant_listed)"
+                    " values (%s, %s, true, true)",
+                    (active, f"second-{tag}"),
+                )
+        return [c for c in await store.list_ai_listed_channels() if c["slug"].endswith(tag)]
+
+    listed = asyncio.run(exercise())
+
+    assert listed == [{"organization_id": listed[0]["organization_id"], "slug": listed[0]["slug"],
+                       "display_name": "Channel Name"}]
+    assert listed[0]["slug"].startswith("listed-")

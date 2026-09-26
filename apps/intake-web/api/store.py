@@ -744,6 +744,12 @@ class Store:
         org id is never trusted — only this lookup confers tenancy."""
         return None
 
+    async def list_ai_listed_channels(self) -> list[dict]:  # pragma: no cover
+        """Intake channels opted in to AI-assistant listing (specs/003 FR-005/FR-016):
+        active, listed, owned by a non-null active organization. Returns
+        [{organization_id, slug, display_name}] only -- nothing else is exposed."""
+        return []
+
     async def log_event(self, ticket: Ticket, event: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
@@ -1852,6 +1858,8 @@ class InMemoryStore(Store):
         self._technician_agreements: dict[tuple[str, str], dict] = {}
         self._settlement_periods: dict[str, dict] = {}
         self._organization_capabilities: dict[str, set[str]] = {}
+        # Test/local stand-in for intake_channels rows used by provider discovery.
+        self._intake_channels: list[dict] = []
         self._organizations: dict[str, dict] = {
             "org-metro": {
                 "id": "org-metro", "display_name": "Metro Key Partners",
@@ -1942,6 +1950,9 @@ class InMemoryStore(Store):
         if origin_client_id:
             self._job_origin_client = getattr(self, "_job_origin_client", {})
             self._job_origin_client[jid] = str(origin_client_id)
+        if origin.get("origin_channel"):
+            self._job_origin_channel = getattr(self, "_job_origin_channel", {})
+            self._job_origin_channel.setdefault(jid, str(origin["origin_channel"]))
         if origin.get("intake_channel_slug"):
             self._job_intake_channel_slug = getattr(self, "_job_intake_channel_slug", {})
             self._job_intake_channel_slug[jid] = str(origin["intake_channel_slug"])
@@ -2040,6 +2051,22 @@ class InMemoryStore(Store):
     async def resolve_intake_channel(self, slug: str | None) -> dict | None:
         # No DB locally — public ClueXP intake (no owning org).
         return None
+
+    async def list_ai_listed_channels(self) -> list[dict]:
+        listed = []
+        for channel in self._intake_channels:
+            org_id = channel.get("organization_id")
+            org = self._organizations.get(str(org_id)) if org_id else None
+            if not (channel.get("active") and channel.get("ai_assistant_listed") and org):
+                continue
+            if org.get("status") != "active":
+                continue
+            listed.append({
+                "organization_id": str(org_id),
+                "slug": channel["slug"],
+                "display_name": channel.get("display_name") or org.get("display_name"),
+            })
+        return listed
 
     async def log_event(self, ticket: Ticket, event: str) -> None:
         stamp = datetime.now(timezone.utc).isoformat()
@@ -6639,6 +6666,7 @@ class PostgresStore(Store):
         customer_owner_org_id = _uuid_or_none(origin.get("customer_owner_org_id"))
         intake_channel_id = _uuid_or_none(origin.get("intake_channel_id"))
         origin_client_id = _uuid_or_none(origin.get("origin_client_id"))
+        origin_channel = origin.get("origin_channel") or None
 
         async with await self._connect() as conn:
             customer_id = None
@@ -6676,14 +6704,14 @@ class PostgresStore(Store):
                 "  situation, urgency, lat, lng, address, detail, price_quote,"
                 "  final_charge, tracking_token, created_at, updated_at,"
                 "  operational_id, operational_year, operational_month,"
-                "  operational_day, operational_sequence, origin_client_id"
+                "  operational_day, operational_sequence, origin_client_id, origin_channel"
                 ") values ("
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s,"
                 "  %s, %s, %s, %s, %s, %s, %s,"
                 "  %s, %s, %s, now(),"
-                "  %s, %s, %s, %s, %s, %s"
+                "  %s, %s, %s, %s, %s, %s, %s"
                 ")"
                 # operational_id and its components are intentionally absent from the
                 # SET clause below — assigned once above, immutable on every later save.
@@ -6694,6 +6722,7 @@ class PostgresStore(Store):
                 "  customer_owner_org_id = coalesce(jobs.customer_owner_org_id, excluded.customer_owner_org_id),"
                 "  intake_channel_id = coalesce(jobs.intake_channel_id, excluded.intake_channel_id),"
                 "  origin_client_id = coalesce(jobs.origin_client_id, excluded.origin_client_id),"
+                "  origin_channel = coalesce(jobs.origin_channel, excluded.origin_channel),"
                 "  trust_state = excluded.trust_state,"
                 # Never overwrite an operational status (pending_dispatch and beyond)
                 # with a legacy intake status (draft/partial/complete). Once the job
@@ -6742,6 +6771,7 @@ class PostgresStore(Store):
                     op_day,
                     op_seq,
                     origin_client_id,
+                    origin_channel,
                 ),
             )
 
@@ -6877,6 +6907,26 @@ class PostgresStore(Store):
             # provider-editable via PATCH /provider/organization).
             "dispatch_phone": org_phone,
         }
+
+    async def list_ai_listed_channels(self) -> list[dict]:
+        try:
+            async with await self._connect() as conn:
+                cur = await conn.execute(
+                    "select c.organization_id::text, c.slug,"
+                    " coalesce(nullif(c.display_name, ''), o.display_name)"
+                    " from intake_channels c"
+                    " join organizations o on o.id = c.organization_id"
+                    " where c.active = true and c.ai_assistant_listed = true"
+                    " and c.organization_id is not null and o.status = 'active'"
+                )
+                rows = await cur.fetchall()
+        except Exception:
+            # Column absent until migration 0061 is applied: list nobody (fail closed).
+            return []
+        return [
+            {"organization_id": org_id, "slug": slug, "display_name": name}
+            for org_id, slug, name in rows
+        ]
 
     async def log_event(self, ticket: Ticket, event: str) -> None:
         async with await self._connect() as conn:
