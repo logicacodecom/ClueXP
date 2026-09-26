@@ -1561,6 +1561,13 @@ marketplace is the widened future (§18, [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md
   later without a retrofit).
 - **Trust-state contract reinforced:** `matched` fires only on a named verified
   `fulfillment_technician_id`; org-accept ≠ matched; no customer/tech identity before assignment.
+- **Amendment 2026-09-26 — assistant provider discovery** ([`specs/003`](../specs/003-ai-assistant-discovery-handoff/spec.md),
+  Human decision HD-5/HD-7). Customers arriving from AI assistants may choose among up to three
+  provider organizations that explicitly opted in to assistant listing, ranked by ClueXP's
+  deterministic Network Router eligibility and ordering. This is discovery, not a marketplace: no
+  bidding, no paid placement, no cross-tenant job or customer data. Provider identity is revealed
+  before assignment only for opted-in providers and only as a display name and branded intake link.
+  Fulfillment remains provider-managed.
 
 ### 20.5 ADR-5 — Public `/v1` API: error envelope, idempotency, versioning (Accepted 2026-08-22)
 
