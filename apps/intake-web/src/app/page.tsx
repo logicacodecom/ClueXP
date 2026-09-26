@@ -279,6 +279,36 @@ function ChipSelect({
   );
 }
 
+type AiPrefill = {
+  accessType: string | null;
+  location: { raw_text: string; lat: number; lng: number; geocode_confidence: string };
+};
+
+// Mirrors the API's `_access_type_for_skill` bucketing of catalog skill codes.
+function accessTypeForSkill(skill: string): string | null {
+  if (skill.startsWith("locksmith.vehicle") || skill.startsWith("locksmith.key_programming")) return "vehicle";
+  if (skill.startsWith("locksmith.residential")) return "home";
+  if (skill.startsWith("locksmith.commercial")) return "business";
+  return null;
+}
+
+// AI-assistant links carry pre-fill in the fragment so the location never
+// reaches server logs. Reading it creates nothing: a ticket exists only after
+// the customer's first tap (FR-011).
+function readAiPrefill(): AiPrefill | null {
+  if (typeof window === "undefined" || !window.location.hash) return null;
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  if (params.get("src") !== "ai_assistant") return null;
+  const lat = Number(params.get("lat"));
+  const lng = Number(params.get("lng"));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  const address = (params.get("address") || "").slice(0, 300);
+  return {
+    accessType: accessTypeForSkill(params.get("skill") || ""),
+    location: { raw_text: address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`, lat, lng, geocode_confidence: "high" }
+  };
+}
+
 export function IntakeFlow({ organizationName, organizationSlug }: IntakeBranding) {
   const router = useRouter();
   const [screen, setScreen] = useState<Screen>("opener");
@@ -317,6 +347,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     scheduleEnd: scheduleWindow.end,
   });
   const [authorityRole, setAuthorityRole] = useState<string | null>(null);
+  const [aiPrefill, setAiPrefill] = useState<AiPrefill | null>(null);
+  const [providerAvailable, setProviderAvailable] = useState<boolean | null>(null);
 
   const iconFor = useMemo(
     () => ({
@@ -571,6 +603,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (new URLSearchParams(window.location.search).get("verified") === "1") return;
+    if (readAiPrefill()) return; // an assistant handoff starts a fresh request
     const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
     let saved: { ticketId?: string; screen?: Screen; savedAt?: number };
@@ -596,6 +629,24 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       }
     })();
   }, [sessionKey]);
+
+  useEffect(() => {
+    if (!organizationSlug) return;
+    const prefill = readAiPrefill();
+    if (!prefill) return;
+    window.localStorage.removeItem(sessionKey);
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setAiPrefill(prefill);
+    setForm((current) => ({ ...current, address: prefill.location.raw_text }));
+  }, [organizationSlug, sessionKey]);
+
+  // Commit-step re-check for assistant handoffs (FR-013): a boolean only.
+  useEffect(() => {
+    if (screen !== "commit" || !aiPrefill || !ticket?.ticket_id) return;
+    api<{ eligible: boolean | null }>(`/tickets/${ticket.ticket_id}/provider-availability`)
+      .then((result) => setProviderAvailable(result.eligible))
+      .catch(() => setProviderAvailable(null));
+  }, [screen, aiPrefill, ticket?.ticket_id]);
 
   useEffect(() => {
     if (screen !== "matching" || !ticket?.ticket_id) return;
@@ -684,7 +735,13 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (screen === "opener") {
       return (
         <>
-          <AgentMessage support="A few structured answers help us route the right access specialist without inventing details.">
+          <AgentMessage
+            support={
+              aiPrefill
+                ? `From your assistant: ${aiPrefill.location.raw_text}. You can change it in the next steps.`
+                : "A few structured answers help us route the right access specialist without inventing details."
+            }
+          >
             What are you locked out of?
           </AgentMessage>
           <div className="stack">
@@ -702,7 +759,13 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                   run(async () => {
                     const envelope = await api<TicketEnvelope>("/tickets", {
                       method: "POST",
-                      body: JSON.stringify(withIntakeChannel({ access_type: value }))
+                      body: JSON.stringify(
+                        withIntakeChannel(
+                          aiPrefill
+                            ? { access_type: value, location: aiPrefill.location, intake_source: "ai_assistant" }
+                            : { access_type: value }
+                        )
+                      )
                     });
                     sync(envelope);
                     if (value === "other") {
@@ -1267,6 +1330,14 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           >
             {scheduled ? "Ready to request this appointment?" : "Ready to request help?"}
           </AgentMessage>
+          {providerAvailable === false ? (
+            <div className="panel">
+              <p className="panel-title">This provider may not have a technician available right now</p>
+              <p className="fine">
+                You can still send the request, or go back to your assistant to choose another provider.
+              </p>
+            </div>
+          ) : null}
           {scheduled ? (
             <div className="panel">
               <p className="panel-title">Requested window</p>

@@ -420,6 +420,35 @@ ROUTING_REASON_NOT_ELIGIBLE = "not_eligible"
 ROUTING_REASON_SELECTED = "selected"
 
 
+def org_eligible(
+    org_id: str,
+    skill_needed: str | None,
+    org_status: dict[str, str],
+    org_capabilities: dict[str, set[str]],
+) -> bool:
+    """One organization, judged on its own: active and (if a skill is
+    required) offering it. Provider discovery uses this per affiliation so a
+    technician eligible through org A never admits a listed-but-ineligible
+    org B (specs/003 FR-005)."""
+    return org_status.get(org_id) == "active" and (
+        not skill_needed or skill_needed in org_capabilities.get(org_id, set())
+    )
+
+
+def technician_org_eligible(
+    tech: dict[str, Any],
+    skill_needed: str | None,
+    org_status: dict[str, str],
+    org_capabilities: dict[str, set[str]],
+) -> bool:
+    """Router semantics: eligible through *any* affiliation; an unaffiliated
+    individual technician is eligible on their own status (ADR-4)."""
+    org_ids = tech.get("org_ids") or []
+    if not org_ids:
+        return True
+    return any(org_eligible(oid, skill_needed, org_status, org_capabilities) for oid in org_ids)
+
+
 def route_network_request(
     job: dict[str, Any],
     technicians: list[dict[str, Any]],
@@ -448,17 +477,10 @@ def route_network_request(
     `not_eligible`; the winner (if any) gets `selected`.
     """
 
-    def _org_eligible(tech: dict[str, Any]) -> bool:
-        org_ids = tech.get("org_ids") or []
-        if not org_ids:
-            return True  # unaffiliated individual technician
-        return any(
-            org_status.get(oid) == "active"
-            and (not skill_needed or skill_needed in org_capabilities.get(oid, set()))
-            for oid in org_ids
-        )
-
-    eligible_pool = [t for t in technicians if _org_eligible(t)]
+    eligible_pool = [
+        t for t in technicians
+        if technician_org_eligible(t, skill_needed, org_status, org_capabilities)
+    ]
     ineligible_ids = {t["id"] for t in technicians} - {t["id"] for t in eligible_pool}
 
     ranked = rank_candidates(job, eligible_pool, top_n=top_n)

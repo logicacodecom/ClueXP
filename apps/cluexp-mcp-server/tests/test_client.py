@@ -2,8 +2,10 @@
 mocked at the transport level via httpx.MockTransport, never a real socket."""
 from __future__ import annotations
 
-import pytest
+import json
+
 import httpx
+import pytest
 
 from mcp_server import client
 
@@ -52,16 +54,20 @@ async def test_list_services_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_check_coverage_error_envelope(monkeypatch):
+async def test_find_providers_error_envelope_keeps_candidates(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(403, json={"error": "insufficient_scope", "request_id": "r2"})
+        return httpx.Response(
+            422,
+            json={"error": "address_ambiguous", "request_id": "r2", "candidates": ["A St, X", "A St, Y"]},
+        )
 
     _patch_async_client(monkeypatch, handler)
     with pytest.raises(client.ClueXPApiError) as exc_info:
-        await client.check_coverage(1.0, 2.0, "plumbing.leak_repair")
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.error == "insufficient_scope"
+        await client.find_providers(service_skill="locksmith.residential_lockout", address="A St")
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.error == "address_ambiguous"
     assert exc_info.value.request_id == "r2"
+    assert exc_info.value.candidates == ["A St, X", "A St, Y"]
 
 
 @pytest.mark.asyncio
@@ -78,102 +84,19 @@ async def test_non_json_error_body_is_still_structured(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_service_request_sends_idempotency_key(monkeypatch):
+@pytest.mark.parametrize("kwargs,expected", [
+    ({"address": "221 King St W, Toronto"}, {"address": "221 King St W, Toronto"}),
+    ({"lat": 43.6, "lng": -79.4}, {"lat": 43.6, "lng": -79.4}),
+])
+async def test_find_providers_path_and_payload(monkeypatch, kwargs, expected):
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["idempotency_key"] = request.headers.get("idempotency-key")
-        return httpx.Response(
-            200,
-            json={"data": {"request_reference": "SR-1", "dispatch_scope": "private_partner", "status": "received"}, "meta": {"request_id": "r3"}},
-        )
+        seen["method"], seen["path"] = request.method, request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"data": {"providers": []}, "meta": {"request_id": "r3"}})
 
     _patch_async_client(monkeypatch, handler)
-    result = await client.create_service_request(
-        dispatch_scope="private_partner",
-        service_skill="plumbing.leak_repair",
-        location={"lat": 1.0, "lng": 2.0},
-        consent={"terms_accepted": True, "policy_version": "2026-01"},
-        idempotency_key="key-123",
-    )
-    assert seen["idempotency_key"] == "key-123"
-    assert result["data"]["request_reference"] == "SR-1"
-
-
-@pytest.mark.asyncio
-async def test_get_service_request_and_tracking_paths(monkeypatch):
-    paths = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        return httpx.Response(200, json={"data": {}, "meta": {"request_id": "r4"}})
-
-    _patch_async_client(monkeypatch, handler)
-    await client.get_service_request("SR-1")
-    await client.get_tracking("SR-1")
-    assert paths == ["/v1/service-requests/SR-1", "/v1/service-requests/SR-1/tracking"]
-
-
-@pytest.mark.asyncio
-async def test_request_reference_path_segments_are_escaped(monkeypatch):
-    urls = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        urls.append(str(request.url))
-        return httpx.Response(200, json={"data": {}, "meta": {"request_id": "r5"}})
-
-    _patch_async_client(monkeypatch, handler)
-    await client.get_service_request("SR-1/extra")
-    await client.get_tracking("SR-2/extra")
-    assert urls == [
-        "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra",
-        "http://local-test-api.invalid/v1/service-requests/SR-2%2Fextra/tracking",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_authorize_dispatch_path_and_payload(monkeypatch):
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["payload"] = request.read().decode()
-        return httpx.Response(
-            200,
-            json={"data": {"request_reference": "SR-1", "status": "authorized"}, "meta": {"request_id": "r6"}},
-        )
-
-    _patch_async_client(monkeypatch, handler)
-    result = await client.authorize_dispatch(
-        request_reference="SR-1/extra",
-        channel="first_party_website",
-        evidence_reference="consent-event-1",
-        terms_version="2026-08-01",
-    )
-    assert seen["url"] == "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra/dispatch-authorizations"
-    assert '"channel":"first_party_website"' in seen["payload"]
-    assert '"evidence_reference":"consent-event-1"' in seen["payload"]
-    assert '"terms_version":"2026-08-01"' in seen["payload"]
-    assert result["data"]["status"] == "authorized"
-
-
-@pytest.mark.asyncio
-async def test_cancel_service_request_path_and_payload(monkeypatch):
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["payload"] = request.read().decode()
-        return httpx.Response(
-            200,
-            json={"data": {"request_reference": "SR-1", "status": "cancelled"}, "meta": {"request_id": "r7"}},
-        )
-
-    _patch_async_client(monkeypatch, handler)
-    result = await client.cancel_service_request(
-        request_reference="SR-1/extra",
-        reason="Customer requested cancellation",
-    )
-    assert seen["url"] == "http://local-test-api.invalid/v1/service-requests/SR-1%2Fextra/cancellations"
-    assert '"reason":"Customer requested cancellation"' in seen["payload"]
-    assert result["data"]["status"] == "cancelled"
+    await client.find_providers(service_skill="locksmith.residential_lockout", **kwargs)
+    assert (seen["method"], seen["path"]) == ("POST", "/v1/provider-matches")
+    assert seen["body"] == {"service_skill": "locksmith.residential_lockout", **expected}

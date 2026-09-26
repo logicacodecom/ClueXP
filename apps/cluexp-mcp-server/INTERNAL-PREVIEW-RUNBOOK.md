@@ -1,25 +1,20 @@
-# ClueXP MCP — controlled preview / launch runbook
+# ClueXP MCP — preview / launch runbook
 
-Status: controlled preview / launch candidate. This is not by itself a marketplace listing or public connector; external platform submission and production credential wiring are separate launch steps.
+Status: public, read-only provider discovery ([`specs/003`](../../specs/003-ai-assistant-discovery-handoff/spec.md)).
+This is not by itself a marketplace listing; external platform submission and production credential
+wiring are separate, Human-authorized launch steps.
 
 ## Safety boundary
 
-- Use only a local/dev `/v1` API base URL.
-- Use only a non-production external API key.
-- Do not point `CLUEXP_API_BASE_URL` at `https://intake.cluexp.com` unless Human + Codex separately authorize a production MCP preview.
+- Use only a local/dev `/v1` API base URL unless Human + Codex authorize production wiring.
 - Do not commit a real `CLUEXP_API_KEY`.
-- Do not expose `/mcp` publicly without setting `CLUEXP_MCP_BEARER_TOKEN`.
-- Internal preview exposes seven tools:
+- The server exposes exactly two read-only tools, and nothing it does creates, books, dispatches, or
+  cancels anything:
   - `list_services`
-  - `check_coverage`
-  - `create_service_request`
-  - `get_service_request`
-  - `get_tracking`
-  - `authorize_dispatch`
-  - `cancel_service_request`
-- `create_service_request`, `authorize_dispatch`, and `cancel_service_request` require
-  `confirm=true`; with `confirm=false`, the tool must return `confirmation_required` and
-  must not call the API.
+  - `find_providers` — up to three opted-in providers (name, recommended flag, branded intake link)
+- `/mcp` needs no credentials. It is safe to expose because the tools reveal only the service catalog
+  and opted-in providers' names and links. In production it sits behind a Vercel Firewall rate-limit
+  rule on `/mcp`, and the `/v1` key carries its own rate limit.
 
 ## 1. Verify the package locally
 
@@ -39,19 +34,18 @@ Start from `.env.example`, but keep real values in your shell or local MCP clien
 ```sh
 CLUEXP_API_BASE_URL=http://127.0.0.1:8000
 CLUEXP_API_KEY=<local-dev-api-key>
-CLUEXP_MCP_BEARER_TOKEN=<local-mcp-client-token-for-http-mode>
 ```
 
 The key should have only these scopes:
 
 ```text
 services:read
-coverage:check
-service_requests:write
-service_requests:read
-service_requests:authorize
-service_requests:cancel
+providers:search
 ```
+
+A provider appears in `find_providers` only when one of its active intake channels has
+`intake_channels.ai_assistant_listed = true` (migration `0061`). ClueXP ops sets that flag on the
+provider's written request (HD-6); it defaults to off.
 
 ## 3. Run the MCP server manually
 
@@ -73,44 +67,38 @@ Expected checks:
 
 ```text
 GET  /healthz -> 200 {"status":"ok"}
-POST /mcp without Authorization -> 401, or 503 if CLUEXP_MCP_BEARER_TOKEN is not configured
-POST /mcp with Authorization: Bearer <CLUEXP_MCP_BEARER_TOKEN> -> reaches the MCP app
+POST /mcp (MCP initialize, no Authorization) -> 200 from the MCP app
+POST /mcp with an unlisted Host header -> 421 (DNS-rebinding guard)
 ```
 
-## 4. Connect a local MCP client
+## 4. Connect an MCP client
 
-Use one of the examples in `examples/` and replace placeholders:
-
-- `examples/claude-desktop.local.example.json` — Windows-oriented example for a Claude Desktop-style MCP config.
-- `examples/generic-mcp-client.local.example.json` — generic stdio MCP client shape.
+- Claude: Settings → Connectors → Add custom connector → `https://<preview-host>/mcp`, no auth.
+- ChatGPT: developer mode → add the remote MCP server URL, no auth.
+- Local stdio: `examples/claude-desktop.local.example.json` or
+  `examples/generic-mcp-client.local.example.json`, with placeholders replaced.
 
 Keep real API keys outside Git. If a copied config contains a real key, do not commit it.
 
 ## 5. Manual smoke script for an MCP client
 
-In the connected MCP client, use this order:
+1. Ask what ClueXP can help with → `list_services` returns the catalog.
+2. Ask for an urgent service at a precise address → `find_providers` returns up to three providers,
+   the first marked recommended, each with an `intake_url`.
+3. Ask with an ambiguous address (for example "100 Main Street") → the assistant asks which
+   candidate you mean instead of listing providers.
+4. Open a provider link in a private window → the branded intake opens with service and location
+   pre-filled; **no ticket exists until you take the first step** (FR-011). Pasting the link into a
+   chat that renders link previews must not create a ticket either.
+5. Confirm no address or coordinates appear in `external_api_events` metadata or server logs.
 
-1. Call `list_services`.
-2. Call `check_coverage` with a known local/dev service skill and location.
-3. Call `create_service_request` with `confirm=false`; verify it returns `confirmation_required`.
-4. Summarize the request to the human.
-5. Only after explicit yes, call `create_service_request` with `confirm=true`.
-6. Call `get_service_request` with the returned request reference.
-7. Call `get_tracking` with the returned request reference.
-8. Call `authorize_dispatch` with `confirm=false`; verify it returns `confirmation_required`
-   and creates no dispatch authorization/offer.
-9. Call `cancel_service_request` with `confirm=false`; verify it returns
-   `confirmation_required` and does not cancel the request.
-
-Expected result: one local/dev service request record is created. No dispatch authorization,
-cancellation, technician offer, production DB write, or real customer/provider action occurs unless
-Human + Codex separately approve a live MCP dispatch/cancel smoke.
+Expected result: no ticket, job, customer, offer, or dispatch record is created by the MCP tools.
 
 ## 6. Stop conditions
 
 Stop and ask Human + Codex before doing any of these:
 
-- Using production API base URL or production API key.
+- Using a production API base URL or production API key.
+- Applying migration `0061` to production or flagging a production channel as listed.
 - Publishing/submitting the MCP server to ChatGPT, Claude, Gemini, Siri, or any marketplace.
-- Deploying the MCP server as a remotely reachable service.
-- Calling `authorize_dispatch` or `cancel_service_request` with `confirm=true` against production.
+- Deploying the MCP server to production or changing its production environment variables.

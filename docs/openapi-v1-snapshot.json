@@ -164,6 +164,146 @@
         "title": "PublicDispatchAuthorizationResult",
         "type": "object"
       },
+      "PublicMatchedLocation": {
+        "properties": {
+          "formatted_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formatted Address"
+          },
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lng": {
+            "title": "Lng",
+            "type": "number"
+          }
+        },
+        "required": [
+          "lat",
+          "lng"
+        ],
+        "title": "PublicMatchedLocation",
+        "type": "object"
+      },
+      "PublicProviderMatch": {
+        "properties": {
+          "intake_url": {
+            "title": "Intake Url",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "recommended": {
+            "title": "Recommended",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "recommended",
+          "intake_url"
+        ],
+        "title": "PublicProviderMatch",
+        "type": "object"
+      },
+      "PublicProviderMatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "lat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat"
+          },
+          "lng": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng"
+          },
+          "service_skill": {
+            "title": "Service Skill",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service_skill"
+        ],
+        "title": "PublicProviderMatchRequest",
+        "type": "object"
+      },
+      "PublicProviderMatchResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicProviderMatchResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PublicApiMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PublicProviderMatchResponse",
+        "type": "object"
+      },
+      "PublicProviderMatchResult": {
+        "properties": {
+          "matched_location": {
+            "$ref": "#/components/schemas/PublicMatchedLocation"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/PublicProviderMatch"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "service_skill": {
+            "title": "Service Skill",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service_skill",
+          "matched_location",
+          "providers"
+        ],
+        "title": "PublicProviderMatchResult",
+        "type": "object"
+      },
       "PublicServiceCategory": {
         "properties": {
           "code": {
@@ -608,6 +748,45 @@
           }
         },
         "summary": "Public V1 Coverage Checks"
+      }
+    },
+    "/provider-matches": {
+      "post": {
+        "description": "AI-assistant provider discovery (specs/003). Read-only: creates no ticket,\njob, or customer. Returns up to three opted-in providers with branded intake\nlinks; the customer requests, confirms, and tracks on the web.",
+        "operationId": "public_v1_provider_matches_v1_provider_matches_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicProviderMatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicProviderMatchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Public V1 Provider Matches"
       }
     },
     "/service-requests": {

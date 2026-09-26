@@ -11,6 +11,7 @@ import random
 import re
 import secrets
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -21,10 +22,16 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
-from api.geocode import geocode, places_autocomplete, reverse_geocode
+from api.geocode import (
+    discovery_address_outcome,
+    geocode,
+    geocode_candidates,
+    places_autocomplete,
+    reverse_geocode,
+)
 from api import storage
 from api.auth import create_access_token, decode_access_token
 from api.communications import (
@@ -66,8 +73,10 @@ from api.dispatch import (
     normalize_payment_method,
     normalize_settlement_payment_method,
     normalize_policy,
+    org_eligible,
     rank_candidates,
     route_network_request,
+    technician_org_eligible,
     select_candidates,
     to_db_policy,
 )
@@ -259,11 +268,18 @@ class PublicApiRequest(BaseModel):
 
 
 def public_api_error(
-    status_code: int, error: str, request_id: str, *, detail: str | None = None
+    status_code: int,
+    error: str,
+    request_id: str,
+    *,
+    detail: str | None = None,
+    candidates: list[str] | None = None,
 ) -> HTTPException:
     body: dict[str, Any] = {"error": error, "request_id": request_id}
     if detail:
         body["detail"] = detail
+    if candidates:
+        body["candidates"] = candidates
     return HTTPException(status_code=status_code, detail=body)
 
 
@@ -397,6 +413,64 @@ class PublicCoverageCheckResult(BaseModel):
 
 class PublicCoverageCheckResponse(BaseModel):
     data: PublicCoverageCheckResult
+    meta: PublicApiMeta
+
+
+# --- POST /v1/provider-matches (specs/003: AI-assistant provider discovery) ---
+class PublicProviderMatchRequest(PublicApiRequest):
+    service_skill: str
+    address: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+
+    @field_validator("address")
+    @classmethod
+    def _address_bounded(cls, v: str | None) -> str | None:
+        if v is not None and not 3 <= len(v.strip()) <= 300:
+            raise ValueError("address must be 3-300 characters")
+        return v
+
+    @field_validator("lat")
+    @classmethod
+    def _lat_range(cls, v: float | None) -> float | None:
+        return None if v is None else _validate_lat(v)
+
+    @field_validator("lng")
+    @classmethod
+    def _lng_range(cls, v: float | None) -> float | None:
+        return None if v is None else _validate_lng(v)
+
+    @model_validator(mode="after")
+    def _one_location(self) -> "PublicProviderMatchRequest":
+        if (self.lat is None) != (self.lng is None):
+            raise ValueError("lat and lng must be provided together")
+        if (self.lat is not None) == (self.address is not None):
+            raise ValueError("provide exactly one of address or lat+lng")
+        return self
+
+
+class PublicMatchedLocation(BaseModel):
+    formatted_address: str | None = None
+    lat: float
+    lng: float
+
+
+class PublicProviderMatch(BaseModel):
+    # Allow-list (FR-007): never technician identity/count/location/distance,
+    # rating, ETA, price, or internal IDs.
+    name: str
+    recommended: bool
+    intake_url: str
+
+
+class PublicProviderMatchResult(BaseModel):
+    service_skill: str
+    matched_location: PublicMatchedLocation
+    providers: list[PublicProviderMatch]
+
+
+class PublicProviderMatchResponse(BaseModel):
+    data: PublicProviderMatchResult
     meta: PublicApiMeta
 
 
@@ -3338,6 +3412,10 @@ async def create_ticket(response: Response, payload: dict[str, Any] | None = Non
             detail="Intake must be opened from a provider company link.",
         )
     origin = {**origin, "intake_channel_slug": raw_slug}
+    # Client-supplied attribution for conversion analytics only (specs/003 FR-012):
+    # an allow-listed label, never used for authorization or routing.
+    if (payload or {}).get("intake_source") == "ai_assistant":
+        origin["origin_channel"] = "ai_assistant"
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
@@ -3756,6 +3834,29 @@ async def _intake_show_estimate_for_ticket(ticket_id: UUID) -> bool:
     if not org_id:
         return True
     return bool(await runtime_settings.resolve_org(store, str(org_id), "intake_show_estimate"))
+
+
+@app.get("/tickets/{ticket_id}/provider-availability")
+async def provider_availability(ticket_id: UUID, request: Request) -> dict[str, bool | None]:
+    """Commit-step re-check for AI-assistant intakes (specs/003 FR-013): can the
+    owning provider still serve this skill here? `None` when there is no owner or
+    location to check. A boolean only -- no ETA, count, or technician data."""
+    await latency()
+    ticket = await require_intake_ticket(ticket_id, request)
+    activation = await store.get_intake_activation_context(ticket_id) or {}
+    org_id = activation.get("customer_owner_org_id")
+    location = ticket.location
+    if not org_id or location is None or location.lat is None or location.lng is None:
+        return {"eligible": None}
+    org_id = str(org_id)
+    access_type = ticket.access_type.value if ticket.access_type else None
+    job = {"access_type": access_type, "lat": location.lat, "lng": location.lng}
+    skill = required_skill_for_job(job)
+    technicians, org_status, org_capabilities = await _network_eligibility_snapshot()
+    if not org_eligible(org_id, skill, org_status, org_capabilities):
+        return {"eligible": False}
+    own = [t for t in technicians if org_id in {str(o) for o in t.get("org_ids") or []}]
+    return {"eligible": bool(rank_candidates(job, own, top_n=1))}
 
 
 @app.post("/tickets/{ticket_id}/price-quote", response_model=TicketEnvelope)
@@ -4629,6 +4730,22 @@ async def require_public_coverage_check(request: Request) -> dict[str, Any]:
     return await require_public_api_client(request, "coverage:check")
 
 
+async def _network_eligibility_snapshot() -> tuple[
+    list[dict[str, Any]], dict[str, str], dict[str, set[str]]
+]:
+    """Available technicians plus their organizations' status and capabilities.
+    The single data source for the Network Router and provider discovery."""
+    technicians = await store.list_available_technicians()
+    org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
+    org_status = await store.get_organizations_status(org_ids)
+    org_capabilities = {
+        oid: set(await store.list_organization_capabilities(oid))
+        for oid, status in org_status.items()
+        if status == "active"
+    }
+    return technicians, org_status, org_capabilities
+
+
 async def _network_routing_snapshot(
     job: dict[str, Any], *, skill_needed: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -4638,14 +4755,7 @@ async def _network_routing_snapshot(
     suspended/non-capable provider cannot produce a positive coverage answer
     that the Router would immediately reject.
     """
-    technicians = await store.list_available_technicians()
-    org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
-    org_status = await store.get_organizations_status(org_ids)
-    org_capabilities = {
-        oid: set(await store.list_organization_capabilities(oid))
-        for oid, status in org_status.items()
-        if status == "active"
-    }
+    technicians, org_status, org_capabilities = await _network_eligibility_snapshot()
     routed = route_network_request(
         job,
         technicians,
@@ -4728,6 +4838,127 @@ async def public_v1_coverage_checks(
         ip=_request_ip(request),
         metadata={"covered": covered, "service_skill": skill},
     )
+    return body
+
+
+MAX_PROVIDER_MATCHES = 3
+
+_ADDRESS_OUTCOME_DETAIL = {
+    "address_not_found": "No location matches that address. Ask the user for a more complete street address.",
+    "address_ambiguous": "That address matches several places. Confirm one of the candidates with the user.",
+    "address_imprecise": "That address only identifies an area. Ask the user for a street address with a number.",
+    "geocoding_unavailable": "Address lookup is temporarily unavailable. Retry, or send lat and lng instead.",
+}
+
+
+def _provider_intake_url(slug: str, *, skill: str, lat: float, lng: float, address: str | None) -> str:
+    """Branded intake link; pre-fill rides in the fragment so the location never
+    reaches request paths or server logs (FR-008)."""
+    prefill = {"skill": skill, "lat": f"{lat:.6f}", "lng": f"{lng:.6f}", "src": "ai_assistant"}
+    if address:
+        prefill["address"] = address
+    base = config.CUSTOMER_INTAKE_BASE_URL.rstrip("/")
+    return f"{base}/o/{urllib.parse.quote(slug, safe='')}#{urllib.parse.urlencode(prefill)}"
+
+
+async def _listed_provider_matches(skill: str, lat: float, lng: float) -> list[dict[str, Any]]:
+    """Opted-in providers eligible for `skill` near (lat, lng), in Network Router
+    order: rank the full eligible pool, then keep each organization once, judged
+    on its own affiliation (FR-004/FR-005/FR-006)."""
+    technicians, org_status, org_capabilities = await _network_eligibility_snapshot()
+    eligible = [
+        t for t in technicians
+        if technician_org_eligible(t, skill, org_status, org_capabilities)
+    ]
+    ranked = rank_candidates({"access_type": skill, "lat": lat, "lng": lng}, eligible, top_n=len(eligible))
+    listed = {c["organization_id"]: c for c in await store.list_ai_listed_channels()}
+    matches: list[dict[str, Any]] = []
+    for tech in ranked:
+        for oid in (str(o) for o in tech.get("org_ids") or []):
+            if (
+                oid in listed
+                and all(m["organization_id"] != oid for m in matches)
+                and org_eligible(oid, skill, org_status, org_capabilities)
+            ):
+                matches.append(listed[oid])
+        if len(matches) >= MAX_PROVIDER_MATCHES:
+            break
+    return matches[:MAX_PROVIDER_MATCHES]
+
+
+async def require_public_providers_search(request: Request) -> dict[str, Any]:
+    return await require_public_api_client(request, "providers:search")
+
+
+@app.post("/v1/provider-matches", response_model=PublicProviderMatchResponse)
+async def public_v1_provider_matches(
+    request: Request,
+    response: Response,
+    payload: PublicProviderMatchRequest,
+    context: dict[str, Any] = Depends(require_public_providers_search),
+) -> PublicProviderMatchResponse:
+    """AI-assistant provider discovery (specs/003). Read-only: creates no ticket,
+    job, or customer. Returns up to three opted-in providers with branded intake
+    links; the customer requests, confirms, and tracks on the web."""
+    request_id = context["request_id"]
+    response.headers["X-Request-ID"] = request_id
+    skill = normalize_skill_code(payload.service_skill) or payload.service_skill
+    catalog = await store.list_service_catalog(active_only=True)
+    if skill not in active_skill_codes(catalog):
+        raise public_api_error(
+            422, "unknown_service_skill", request_id, detail=f"Unknown service_skill: {payload.service_skill!r}",
+        )
+
+    async def audit(status_code: int, outcome: str, result_count: int = 0) -> None:
+        # NFR-001: skill and outcome only -- never address, coordinates, or links.
+        await store.record_external_api_event(
+            client_id=context["client"]["id"], api_key_id=context["api_key"]["id"],
+            action="provider_matches.search", path=request.url.path, status_code=status_code,
+            request_id=request_id, ip=_request_ip(request),
+            metadata={"service_skill": skill, "outcome": outcome, "result_count": result_count},
+        )
+
+    formatted_address: str | None = None
+    if payload.address is not None:
+        candidates = await geocode_candidates(payload.address)
+        outcome, match = discovery_address_outcome(candidates)
+        if match is None:
+            status_code = 503 if outcome == "geocoding_unavailable" else 422
+            await audit(status_code, outcome)
+            raise public_api_error(
+                status_code,
+                outcome,
+                request_id,
+                detail=_ADDRESS_OUTCOME_DETAIL[outcome],
+                candidates=(
+                    [r["formatted_address"] for r in candidates["results"][:MAX_PROVIDER_MATCHES]
+                     if r.get("formatted_address")]
+                    if outcome == "address_ambiguous" else None
+                ),
+            )
+        lat, lng, formatted_address = match["lat"], match["lng"], match["formatted_address"]
+    else:
+        lat, lng = float(payload.lat), float(payload.lng)
+
+    matches = await _listed_provider_matches(skill, lat, lng)
+    body = PublicProviderMatchResponse(
+        data=PublicProviderMatchResult(
+            service_skill=skill,
+            matched_location=PublicMatchedLocation(formatted_address=formatted_address, lat=lat, lng=lng),
+            providers=[
+                PublicProviderMatch(
+                    name=m["display_name"],
+                    recommended=index == 0,
+                    intake_url=_provider_intake_url(
+                        m["slug"], skill=skill, lat=lat, lng=lng, address=formatted_address,
+                    ),
+                )
+                for index, m in enumerate(matches)
+            ],
+        ),
+        meta=PublicApiMeta(request_id=request_id),
+    )
+    await audit(200, "matched" if matches else "no_providers", len(matches))
     return body
 
 
@@ -5232,7 +5463,7 @@ async def public_v1_cancel_service_request(
 # (as the tests use) is fine while there are 0-1 real external clients; this
 # is the "safe operational habit" step before that stops being true.
 KNOWN_PUBLIC_API_SCOPES = {
-    "services:read", "coverage:check", "service_requests:write", "service_requests:authorize",
+    "services:read", "coverage:check", "providers:search", "service_requests:write", "service_requests:authorize",
     "service_requests:read", "service_requests:cancel",
 }
 
