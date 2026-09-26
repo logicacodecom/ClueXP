@@ -13,7 +13,7 @@ Review result:
 
 - [x] Requirements are testable and observable.
 - [x] Scope and non-goals are explicit.
-- [ ] Ambiguities are resolved or listed as Human decisions. (Listed: HD-6, HD-7, HD-8, HD-9; unresolved.)
+- [x] Ambiguities are resolved or listed as Human decisions. (HD-1..HD-9 recorded 2026-09-26.)
 
 ## ClueXP Safety
 

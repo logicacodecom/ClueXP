@@ -86,14 +86,15 @@ create unique index intake_channels_one_ai_listing_per_org
 No RLS change: the column sits on an existing table with existing policies. Rollback: drop the index
 and column.
 
-### Phase 2 (after phase 1 acceptance; blocked on spec 002 production activation)
+### Phase 2 (after phase 1 acceptance; independent of spec 002 activation per HD-9)
 
 - Migration: `intake_handoff_tokens (id, job_id fk, token_hash, expires_at, consumed_at, created_at)`,
   default-deny RLS, and an index on `expires_at`.
 - `/v1` endpoint `POST /v1/intake-drafts` with scope `intake_drafts:create`. It resolves the channel by
   slug, creates the ticket through the same `save()` path with `origin_channel='ai_assistant'`, and
-  **always** takes the "awaiting verification" branch, never the immediate `pending_dispatch` branch
-  (FR-021). It returns `handoff_url` with the raw token in the fragment only.
+  **always** holds the draft out of the queue, never taking the immediate `pending_dispatch` branch in
+  `create_ticket` (FR-021). Commit activates the queue once: reuse spec 002's verified-commit
+  activation, with the verification check applied only when `CLUEXP_PHONE_VERIFICATION_REQUIRED=true`. It returns `handoff_url` with the raw token in the fragment only.
 - Web: `/o/<slug>/continue` page reads the fragment token and POSTs it same-origin to
   `/intake-handoff/consume`, which verifies the hash, checks expiry and single use, sets the intake
   capability cookie, and returns the resume screen (the spec 002 FR-009 pattern). Reuse spec 002's

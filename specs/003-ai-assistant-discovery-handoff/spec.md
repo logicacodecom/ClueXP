@@ -4,7 +4,7 @@
 **Spec Directory**: `specs/003-ai-assistant-discovery-handoff`  
 **Created**: `2026-09-26`  
 **Owner**: `Claude (author) with Human product authority; Codex review`  
-**Status**: `draft`
+**Status**: `clarified`
 
 ## Summary
 
@@ -33,6 +33,15 @@ agent), which is live at `https://mcp.cluexp.com/mcp` but non-functional: produc
 - **HD-4**: Fulfillment always goes to a provider company, whose dispatchers assign the technician.
 - **HD-5**: The customer chooses one provider from a short list of opted-in providers, ranked by ClueXP
   (option 2). This amends ADR-4's "no marketplace in MVP" (see ADR-4 amendment below).
+- **HD-6** (2026-09-26): Pilot opt-in is set by ClueXP ops on a provider's written request; no UI.
+  Provider self-serve Settings toggle is deferred.
+- **HD-7** (2026-09-26): ADR-4 amendment accepted; applied to `docs/SYSTEM-DESIGN.md` §20.4.
+- **HD-8** (2026-09-26): Production steps approved in principle. Each production action (migration
+  apply, `/v1` key, Vercel env, firewall rule, deploy, Auth0 decommission) is still confirmed with
+  its exact target at execution time, per the constitution.
+- **HD-9** (2026-09-26): Phase 2 does **not** wait for spec 002 production activation. Drafts still
+  never reach a provider queue before the customer's web commit; phone verification applies whenever
+  spec 002 is active.
 
 ## Scope
 
@@ -54,11 +63,11 @@ Phase 1 — discovery + link:
 - Production health monitor exercises a real tool call.
 - Agent-platform docs and the ChatGPT submission manifest updated to the new tool surface.
 
-Phase 2 — assistant-prepared draft (built only after phase 1 is live and accepted):
+Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; independent of spec 002 activation per HD-9):
 
 - MCP tool `prepare_service_request` creates a provisional intake on the chosen provider's channel,
   pre-filled with what the assistant collected, and returns a single-use, expiring handoff link.
-- Opening the link restores the intake on the web; the customer verifies the phone (spec 002), sees
+- Opening the link restores the intake on the web; the customer verifies the phone when spec 002 is active, sees
   the price, accepts terms, and commits.
 
 ### Out Of Scope
@@ -174,15 +183,16 @@ Phase 2 — assistant-prepared draft (built only after phase 1 is live and accep
   `customer_name`, `customer_phone`, `notes`. It sends no SMS and makes no call.
 - **FR-021**: It creates a provisional intake on that provider's channel that must not enter the
   provider's dispatch queue, raise a provider alert, or be visible to provider operations before the
-  customer's verified web commit — regardless of the global `CLUEXP_PHONE_VERIFICATION_REQUIRED`
-  default.
+  customer's web commit — regardless of `CLUEXP_PHONE_VERIFICATION_REQUIRED` or the channel's
+  `dispatch_cutover_enabled`. The commit activates the provider queue exactly once.
 - **FR-022**: It returns a single-use, expiring (≤ 24 h) handoff link. The raw token is never stored or
   logged (hash only), travels in the URL fragment, and is consumed by a same-origin POST, so preview
   fetches cannot consume it — mirroring spec 002 FR-003/FR-009.
 - **FR-023**: Consuming the link restores the HttpOnly intake capability and lands the customer on the
   review step of the provider-branded intake with no raw job identifier in the URL.
-- **FR-024**: Committing an assistant-prepared intake requires phone verification (spec 002), price
-  acceptance, and terms acceptance by the customer on the web.
+- **FR-024**: Committing an assistant-prepared intake requires price and terms acceptance by the
+  customer on the web, plus phone verification whenever `CLUEXP_PHONE_VERIFICATION_REQUIRED=true`
+  (spec 002). Until then the phone is unverified, exactly as in today's web intake.
 - **FR-025**: Unconsumed or uncommitted assistant-prepared intakes, including their personal data, are
   deleted after expiry.
 - **FR-026**: Per-IP and per-phone creation caps prevent flooding providers' channels with drafts.
@@ -215,7 +225,7 @@ Phase 2 — assistant-prepared draft (built only after phase 1 is live and accep
   public intake links. No job or customer data crosses tenants. Phase 2 drafts belong solely to the
   chosen provider's channel.
 - **Dispatch state**: Phase 1 does not touch job status. Phase 2 must never set `pending_dispatch`
-  before verified web commit (FR-021).
+  before the customer's web commit (FR-021).
 - **Payments/closeout**: Not applicable.
 - **External side effects**: None from the assistant path. No SMS, call, push, or provider alert is
   triggered by any MCP tool.
@@ -233,7 +243,7 @@ Phase 2 — assistant-prepared draft (built only after phase 1 is live and accep
   New tables default-deny under RLS like spec 002's verification table.
 - **Generated artifacts**: OpenAPI v1 snapshot, `packages/api-client` if generated from it.
 
-## Proposed ADR-4 Amendment (for Codex review; applied to `docs/SYSTEM-DESIGN.md` §20.4 on acceptance)
+## ADR-4 Amendment (accepted HD-7; applied to `docs/SYSTEM-DESIGN.md` §20.4)
 
 > **Amendment 2026-09-26 — assistant provider discovery (HD-5).** Customers arriving from AI
 > assistants may choose among up to three provider organizations that explicitly opted in to
@@ -268,18 +278,14 @@ Phase 2 — assistant-prepared draft (built only after phase 1 is live and accep
     providers.
   - With only 4 active provider orgs and 2 intake channels in production today (observed 2026-09-26),
     most queries will return zero or one provider until more providers opt in.
-  - Phase 2 depends on spec 002 phone verification being enabled in production (A2P pending). Without
-    it, FR-021/FR-024 cannot be met and phase 2 must not ship.
+  - Per HD-9, phase 2 may ship before spec 002 is active in production (A2P pending). Until then an
+    assistant-prepared intake carries an unverified phone — the same exposure as today's web intake —
+    and a draft could name someone else's number. No SMS is sent by the tool, so this is not an
+    SMS-abuse vector; FR-026 caps limit flooding.
   - Platforms differ in no-auth support and review rules; each needs verification before listing.
 - **Assumptions** (to verify in plan tasks):
   - Claude custom connectors and ChatGPT developer mode accept an unauthenticated remote MCP server.
   - The branded intake flow can start past its opening steps without restructuring `IntakeFlow`.
   - Observed: `jobs.origin_channel` has no check constraint and is currently null on every production job, so `ai_assistant` needs no schema change.
-- **Human decisions needed**:
-  - **HD-6**: How providers opt in for the pilot — recommended: ClueXP ops sets the flag on a
-    provider's written request (no UI); provider self-serve Settings toggle later.
-  - **HD-7**: Accept the ADR-4 amendment text above.
-  - **HD-8**: Authorize, separately and at the time: phase 1 production migration, creation of the
-    scoped production `/v1` key, Vercel env removal/addition, firewall rule, production deploy, and the
-    Auth0 dev tenant's decommissioning.
-  - **HD-9**: Whether phase 2 waits for spec 002 production activation (recommended) or is dropped.
+- **Human decisions needed**: none open for the spec. HD-6..HD-9 are recorded above; production
+  actions remain individually confirmed at execution (HD-8).

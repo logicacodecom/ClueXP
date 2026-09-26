@@ -15,7 +15,8 @@
 - [x] T001 Claude: assess live MCP deployment and code (2026-09-24/26): 0 prod `/v1` keys, OAuth on an
   Auth0 dev tenant, CLI-deployed build ahead of committed code, health monitor blind to tool failure.
 - [x] T002 Claude: draft spec, plan, tasks, and checklist from Human decisions HD-1..HD-5.
-- [ ] T003 [H] Human: decide HD-6 (opt-in mechanism), HD-7 (ADR-4 amendment), HD-9 (phase 2 gating).
+- [x] T003 [H] Human: decided 2026-09-26 — HD-6 ops-set opt-in, HD-7 ADR-4 amendment accepted, HD-8 approved in principle, HD-9 phase 2 independent of spec 002.
+- [x] T006 Claude: apply the accepted ADR-4 amendment to `docs/SYSTEM-DESIGN.md` §20.4.
 - [ ] T004 [R] Codex: review spec/plan; record approve or changes-requested in `checklists/sdlc-policy.md`.
 - [ ] T005 Codex: report `/v1` network dispatch authorization (`dispatch_org_id=None`) as a separate
   finding/spec. Not part of this feature.
@@ -36,8 +37,7 @@
   `intake_source` → `origin_channel='ai_assistant'`, commit-step `provider_eligible` notice; build
   passes.
 - [ ] T016 Claude: docs — `AGENT-INTEGRATION-MCP-PLAN.md`, `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`,
-  `PUBLIC-API-DEVELOPER-GUIDE.md`, `PRODUCTION-READINESS.md`; apply the ADR-4 amendment to
-  `SYSTEM-DESIGN.md` §20.4 after HD-7.
+  `PUBLIC-API-DEVELOPER-GUIDE.md`, `PRODUCTION-READINESS.md`.
 - [ ] T017 [H] Human: approve the workflow edit, then Claude updates `mcp-production-health.yml` to call
   `list_services` via `/mcp`.
 - [ ] T018 Claude: preview deploy; manual scenario in Claude (no-auth custom connector) and ChatGPT
@@ -50,12 +50,13 @@
 - [ ] T023 Claude: post-deploy verification — health monitor green on the real tool call; one live
   discovery query per assistant; confirm no location in `external_api_events`.
 
-## Tasks — Phase 2 (starts only after T023 and spec 002 production activation)
+## Tasks — Phase 2 (starts after T023; independent of spec 002 activation per HD-9)
 
 - [ ] T030 Claude: migration `intake_handoff_tokens` (hash only, default-deny RLS).
 - [ ] T031 Claude: `POST /v1/intake-drafts` + scope `intake_drafts:create`; always the
-  awaiting-verification branch; per-IP/per-phone caps; tests proving no queue entry or alert before
-  verified commit.
+  held-out-of-queue draft; commit activates the queue exactly once (verification enforced only when
+  spec 002 is active); per-IP/per-phone caps; tests proving no queue entry or alert before commit,
+  with verification both on and off.
 - [ ] T032 Claude: `/o/<slug>/continue` fragment-token consume (same-origin POST, single use, expiry),
   reusing spec 002's consume helper.
 - [ ] T033 Claude: expired-draft purge in the scheduled sweep.
