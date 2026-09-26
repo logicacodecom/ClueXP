@@ -108,9 +108,11 @@ status, so a draft must never exist as a `jobs` row or touch `customers` before 
 
 - **Migration** `00NN_intake_drafts`:
   - `intake_drafts (id uuid pk, intake_channel_id fk, organization_id fk, service_skill,
-    location jsonb, situation, customer_name, customer_phone_e164, notes, handoff_token_hash unique,
-    handoff_expires_at, handoff_consumed_at, expires_at, state check in ('open','committing','committed'),
-    job_id uuid null references jobs(id), created_at, updated_at)`.
+    location jsonb, situation, customer_name, customer_phone_e164, notes, price_accepted_at,
+    terms_accepted_at, handoff_token_hash unique, handoff_expires_at, handoff_consumed_at, expires_at,
+    state check in ('open','committed'), job_id uuid null references jobs(id), committed_at,
+    effects_claimed_at, effects_done_at, created_at, updated_at)`, with
+    `check ((state = 'committed') = (job_id is not null))`.
   - Default-deny RLS, like `intake_phone_verifications`. No FK to `customers`. Indexes on `expires_at`
     and `(customer_phone_e164, created_at)` for the per-phone cap.
   - `intake_phone_verifications`: add `draft_id uuid null references intake_drafts(id) on delete
@@ -134,22 +136,46 @@ status, so a draft must never exist as a `jobs` row or touch `customers` before 
     by both. Price and terms acceptance are stored on the draft.
 - **Verify** (only when `CLUEXP_PHONE_VERIFICATION_REQUIRED=true`): spec 002 send/consume helpers are
   generalized to a subject (`job_id` or `draft_id`). Job-subject behavior is unchanged.
-- **Commit**: `POST /intake-drafts/current/commit`.
-  1. Validate every gate against the draft: price or terms acceptance, and verification of the draft
-     phone when the flag is on.
-  2. Conditional update `open → committing`. If the draft is already `committing` with a `job_id`,
-     resume.
-  3. Build the `Ticket` from the draft (`origin_channel='ai_assistant'`), `save()` it (first shared
-     write, including the customer upsert), and record `job_id` on the draft.
-  4. Run the shared commit/activation function. Extract the body of `commit()` into
-     `_commit_ticket(ticket, ...)` so both paths use the same cutover, global kill-switch, alert, and
-     tracking logic, exactly once.
-  5. Conditional update to `committed`, clearing the draft's personal-data columns. Set the normal
-     intake capability cookie and clear the draft cookie.
-- **Cleanup**: purge `intake_drafts` rows where `state='open'` and `expires_at < now()`, or `state =
-  'committing'` older than 1 h with no `job_id`. Draft-subject verifications go by cascade. The purge
-  never touches `customers`, `jobs`, or job-subject verifications (FR-025). It runs in the existing
-  scheduled sweep.
+- **Commit**: `POST /intake-drafts/current/commit`. This resolves Codex R3: one transaction, no
+  recovery gap.
+  - **Store refactor:** extract the SQL body of `PostgresStore.save()` into a cursor-level helper
+    `_save_ticket_tx(cur, ticket, origin)`. `save()` becomes "open a connection, run the helper,
+    commit" with unchanged behavior. The customer/job SQL is never duplicated. InMemoryStore gets the
+    equivalent under a lock.
+  - **New store method** `commit_intake_draft(draft_id, *, verification_required, activation)`. In one
+    connection and one transaction it:
+    1. Runs `select … from intake_drafts where id = %s for update`; returns `already_committed(job_id)`
+       if `state='committed'`, and rejects if the draft is expired.
+    2. Re-validates the gates under the lock: price or terms accepted on the draft, and — when
+       `verification_required` — a verified draft-subject row for the draft's current phone.
+    3. Builds the `Ticket` from the draft (`origin_channel='ai_assistant'`) and runs
+       `_save_ticket_tx`. This is the first shared write, including the customer upsert.
+    4. Applies activation with the same rules as `commit()`: when the channel cutover is on and the
+       global kill-switch is off, set `pending_dispatch` and write the lifecycle transitions and the
+       tracking token in the same transaction; otherwise leave the job held, as `commit()` does today.
+       The pure activation decision is extracted from `commit()` into a shared function, so both paths
+       use one rule.
+    5. Updates the draft: `state='committed'`, `job_id`, `committed_at`, personal-data columns set
+       to null.
+    6. Deletes the draft-subject `intake_phone_verifications` rows.
+    7. Commits.
+  - **After the transaction:** the endpoint claims post-commit effects with `update intake_drafts set
+    effects_claimed_at = now() where id = %s and effects_claimed_at is null returning id`. Only the
+    claimer sends the provider new-job alert and the customer system message (best-effort, as in
+    `commit()`) and then sets `effects_done_at`. The endpoint then sets the normal intake capability
+    cookie and clears the draft cookie.
+  - **Retries and concurrency:** a retry, or a concurrent second commit blocked on the row lock, gets
+    `already_committed(job_id)` and returns the same job; it never re-materializes or re-activates.
+  - **Fencing:** draft `PATCH` runs `update … where id = %s and state = 'open'` under the same row lock
+    and returns 409 once committed. The purge uses `for update skip locked` and never waits on or
+    interleaves with an in-flight commit.
+- **Cleanup** (FR-025), in the existing scheduled sweep:
+  - Delete `state='open'` drafts with `expires_at < now()` (`for update skip locked`). Draft-subject
+    verifications are removed by cascade.
+  - Run post-commit effects for `committed` drafts whose `effects_claimed_at` is null and whose
+    `committed_at` is older than 5 minutes, using the same at-most-once claim.
+  - Delete committed rows older than 30 days. They hold no personal data.
+  - The sweep never touches `customers`, `jobs`, or job-subject verifications.
 - **MCP**: `prepare_service_request` tool (not destructive, not read-only, closed-world).
   - No `confirm` flag, because it creates nothing any provider can see.
   - Its description requires the assistant to tell the user what will be shared and that confirmation
@@ -165,8 +191,14 @@ status, so a draft must never exist as a `jobs` row or touch `customers` before 
     `_commit_ticket` extraction, and the pure price function.
   - `dispatch.py`: `org_eligible`/`technician_org_eligible` extraction.
   - `geocode.py`: new `geocode_candidates`; existing `geocode()` unchanged.
-  - `store.py`: listed-channel query. Phase 2: draft CRUD, state transitions, purge, and
-    subject-generalized verification methods, in both InMemoryStore and PostgresStore.
+  - `store.py`: listed-channel query. Phase 2, in both InMemoryStore and PostgresStore:
+    - extract the `_save_ticket_tx` cursor helper from `PostgresStore.save()`, keeping `save()`'s
+      behavior;
+    - the transactional `commit_intake_draft`;
+    - the at-most-once effects claim;
+    - draft CRUD with `state='open'` fencing;
+    - the skip-locked purge;
+    - subject-generalized verification methods.
   - `schema.py` (models) and `docs/openapi-v1-snapshot.json`.
   - Explicitly **not** changed: the `/provider/crm/customers` query, the provider queue, and
     `PostgresStore.save` customer upsert. Isolation comes from never writing drafts to `jobs`/`customers`,
@@ -220,11 +252,22 @@ status, so a draft must never exist as a `jobs` row or touch `customers` before 
       reads;
     - an existing same-phone `customers` row is unchanged before commit;
     - commit is blocked without price/terms and, when the flag is on, without draft verification;
-    - commit creates one job and one activation, including retry-after-partial-failure and two
-      concurrent commits;
+    - commit creates one job and one activation, including retry and two concurrent commits;
+    - **failure injection** by patching the store to raise at each boundary:
+      - after `_save_ticket_tx` but before the draft update → rollback: no job, same-phone customer
+        unchanged, draft still `open` with personal data, retry succeeds;
+      - after activation but before commit → same rollback;
+      - after the database commit but before the effects claim → exactly one job, draft `committed`
+        without personal data; a retry returns the same job, and the sweep sends effects exactly once;
+      - after the claim but before `effects_done_at` → no second claim; the job is still queued;
+    - concurrent commit and purge at the expiry boundary → either one committed job or a deleted draft
+      with no job, never an orphan;
+    - concurrent commit and `PATCH` → the edit is either fully included or rejected with 409;
+    - `save()` regression: the web intake path behaves as before the `_save_ticket_tx` extraction;
     - post-commit draft personal-data columns are cleared;
-    - expiry purge removes open and stale-committing drafts plus their verifications, and leaves
-      `customers`, `jobs`, and job-subject verifications untouched;
+    - expiry purge removes expired `open` drafts plus their verifications, skips drafts locked by a
+      commit, and leaves `customers`, `jobs`, and job-subject verifications untouched; no draft
+      personal data remains after `expires_at` + one sweep;
     - spec 002's job-subject verification tests stay green after the subject change;
     - handoff token single use, expiry, GET non-consumption;
     - channel validation for inactive, unlisted, null-org, and ineligible channels.

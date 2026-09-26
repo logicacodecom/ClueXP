@@ -23,6 +23,8 @@
   - 2026-09-26 re-review of `d9c1904`: R1/R2 resolved; changes-requested for R3 (atomic draft materialization and recovery). See checklist; T004 remains open.
 - [x] T007 Claude: resolve Codex R1/R2 and the checklist's implementation checks in spec/plan/tasks
   (docs only; HD-1..HD-9 preserved). Resolution map posted on PR #78 for Codex re-review.
+- [x] T008 Claude: resolve Codex R3 (atomic draft commit and recovery) in spec FR-024/FR-025/FR-028,
+  plan phase 2, and T032b/T033 (docs only). Resolution posted on PR #78 for Codex re-review.
 - [ ] T005 Codex: report `/v1` network dispatch authorization (`dispatch_org_id=None`) as a separate
   finding/spec. Not part of this feature.
 
@@ -78,14 +80,25 @@
   components.
 - [ ] T032a Claude: subject-generalize spec 002 verification send/consume/status (`job_id` or
   `draft_id`), keeping job-subject behavior unchanged.
-- [ ] T032b Claude: commit-from-draft.
-  - Gates validated on the draft; `open → committing → committed` state machine.
-  - Extract `_commit_ticket` shared with `commit()` and the pure price function.
-  - Clear draft personal-data columns at commit.
-  - Postgres-backed tests with verification on **and** off: CRM, queue, and alert invisibility before
-    commit; same-phone customer unchanged before commit; exactly-once under retry and concurrency.
-- [ ] T033 Claude: purge of open/stale-committing drafts (cascade draft verifications) in the scheduled
-  sweep. Postgres test: `customers`, `jobs`, and job-subject verifications untouched.
+- [ ] T032b Claude: commit-from-draft (resolves R3).
+  - Extract the `_save_ticket_tx` cursor helper from `PostgresStore.save()`, with the `save()`
+    regression test.
+  - Extract the shared activation decision from `commit()` and the pure price function.
+  - Transactional `commit_intake_draft`: lock, re-validate, materialize, activate, transitions,
+    mapping, personal-data clear, draft-verification delete, all in one transaction.
+  - At-most-once post-commit effects claim; `PATCH` fencing on `state='open'`.
+  - Postgres-backed tests with verification on **and** off:
+    - CRM, queue, and alert invisibility before commit;
+    - same-phone customer unchanged before commit;
+    - exactly-once under retry and concurrency;
+    - failure injection at each boundary listed in the plan;
+    - concurrent commit/`PATCH`.
+- [ ] T033 Claude: sweep work.
+  - Skip-locked purge of expired `open` drafts (cascade draft verifications).
+  - Post-commit effects for unclaimed committed drafts.
+  - 30-day deletion of committed rows (which hold no personal data).
+  - Postgres tests: concurrent commit/purge leaves no orphan job; `customers`, `jobs`, and job-subject
+    verifications untouched; no draft personal data after `expires_at` + one sweep.
 - [ ] T034 Claude: MCP `prepare_service_request` tool + tests + docs.
 - [ ] T035 [R] Codex: secondary review of phase 2 PR.
 - [ ] T036 [H] Human: authorize phase 2 production migration, key scope change, and deploy.

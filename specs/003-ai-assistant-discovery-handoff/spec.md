@@ -229,25 +229,58 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
   - price acceptance, or terms acceptance when the provider hides estimates (same rules as `commit`);
   - phone verification of the draft's current phone when `CLUEXP_PHONE_VERIFICATION_REQUIRED=true`.
     Spec 002 verification is bound to the draft as its subject, so it can happen before any job exists.
-  Only after all gates pass does it materialize the ticket through the normal save path (the first
-  permitted customer-record write) and run the shared commit/activation logic, with the existing
-  channel cutover and global kill-switch gates. When verification is off the phone is unverified,
-  exactly as in today's web intake (HD-9).
-- **FR-025 — cleanup**: A scheduled purge deletes expired or abandoned drafts and their draft-subject
-  verification rows. It deletes only `intake_drafts` rows and verification rows whose subject is a
-  draft; it never deletes or modifies `customers`, `jobs`, or verification rows bound to a job.
-  Committed drafts have their personal-data columns cleared at commit, keeping only
-  `id, job_id, committed_at` for exactly-once and audit purposes.
+  Only after all gates pass does it materialize the ticket and activate it, applying the existing
+  channel cutover and global kill-switch gates. The following happen in **one database
+  transaction** (FR-028):
+  - locking and re-validating the draft;
+  - the customer upsert and job write, using the same SQL as the normal save path;
+  - queue activation;
+  - lifecycle transition records;
+  - the draft-to-job mapping;
+  - clearing the draft's personal data.
+  When verification is off the phone is unverified, exactly as in today's web intake (HD-9).
+- **FR-025 — cleanup**: A scheduled purge deletes expired, uncommitted (`open`) drafts and their
+  draft-subject verification rows, skipping any draft currently locked by a commit. It deletes only
+  `intake_drafts` rows and verification rows whose subject is a draft. It never deletes or modifies
+  `customers`, `jobs`, or verification rows bound to a job.
+  - A committed draft has no personal data: its personal-data columns and draft-subject verification
+    rows are removed inside the commit transaction.
+  - It keeps only `id, job_id, committed_at` and the post-commit effect markers, for idempotent
+    retries and audit.
+  - Committed rows are deleted after 30 days.
+  - No draft personal data survives past `expires_at` + one sweep interval, whether or not the customer
+    ever returns.
 - **FR-026**: Per-IP and per-phone creation caps prevent flooding providers' channels with drafts.
 - **FR-027 — channel validation**: At draft creation the server resolves the slug and requires the
   channel to be active, `ai_assistant_listed`, owned by an active organization, and eligible for the
   skill at the location under FR-004/FR-005. A caller-provided slug is never treated as proof of a
   prior `find_providers` result. Inactive, unlisted, platform (null-org), and ineligible channels are
   rejected with the same generic error.
-- **FR-028 — exactly once**: The draft moves `open → committing → committed` through conditional
-  updates. The first successful commit records `job_id`. A retry after a partial failure resumes with
-  that `job_id` and never creates a second job or a second activation. Concurrent commits produce one
-  job and one activation.
+- **FR-028 — atomic, exactly-once commit**: A draft has two states, `open` and `committed`. There is no
+  intermediate state.
+  - **The commit transaction:**
+    1. Take a row lock on the draft (`SELECT … FOR UPDATE`).
+    2. Require `state='open'` and `expires_at > now()`.
+    3. Re-validate every FR-024 gate under the lock.
+    4. Write the customer/job, activation, transitions, and the draft's `committed` state with its
+       `job_id`.
+    5. Clear the draft's personal data.
+    All of this commits or rolls back together, so no persisted job can exist without its draft
+    mapping.
+  - **Crash before commit:** nothing shared persists; the draft stays `open` and the customer can
+    retry until expiry.
+  - **Crash after commit:** the request is fully confirmed and in the provider's queue. A retry, or a
+    concurrent second commit that waited on the lock, finds `committed` and returns the same job. It
+    never creates a second job or activation.
+  - **Edits (FR-023) and the purge (FR-025)** take the same row lock or skip locked rows, so neither can
+    interleave with a commit.
+  - **Non-transactional side effects** (provider new-job alert, customer system message) run only after
+    the transaction commits, best-effort as in today's web commit.
+    - Each is claimed at most once with a conditional `effects_claimed_at` update.
+    - A sweep runs the effects for committed drafts whose effects were never claimed, for example after
+      a crash when the customer never returns.
+    - A crash between claim and send can lose that one alert. The job is still visible in the provider
+      queue, the same exposure as today's `commit()`.
 
 ### Non-Functional Requirements
 
@@ -336,6 +369,12 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
     reads;
   - an existing same-phone customer's row is byte-identical before commit;
   - commit activates exactly once, including under retry and concurrent commit;
+  - failure injection at the save/mapping boundary and before finalization rolls everything back
+    (no job, customer unchanged, draft still `open`);
+  - failure injection after the database commit leaves exactly one job, a `committed` draft with no
+    personal data, and effects completed exactly once by retry or sweep;
+  - concurrent commit and purge, and concurrent commit and edit, never produce an orphan or duplicate
+    job;
   - expiry cleanup removes draft rows and draft verifications and leaves `customers`, `jobs`, and
     job-bound verifications untouched.
 - [ ] Phase 2: handoff links are single-use, expiring, and not consumed by GET; inactive, unlisted,
