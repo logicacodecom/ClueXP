@@ -7,7 +7,7 @@
 Secondary-agent review required: yes
 Secondary-agent review completed: yes
 Reviewer agent: Codex
-Review result: changes-requested
+Review result: approve
 
 ## Requirements Quality
 
@@ -142,3 +142,34 @@ eventual finalization/PII clearing. Update the plan's store surfaces and T032b/T
 - Documentation diff and existing `PostgresStore.save()` transaction boundary reviewed.
 - `git diff --check` and working-tree SDLC policy check passed for this review record.
 - No application code, production action, or merge. T005 remains separate.
+
+## Codex Final Re-review — 2026-09-26, head `00449a8`
+
+**Current verdict: approve (docs-only spec/design).** This supersedes the historical
+changes-requested verdicts above. R1, R2, and R3 are resolved at the design level; T004 is complete.
+
+- R3 is closed by `commit_intake_draft`: one Postgres transaction locks/revalidates the draft,
+  invokes the extracted cursor-level save helper, applies activation and transitions, records the
+  draft-to-job mapping, clears draft PII, and deletes draft-subject verifications. The previous
+  independent-save/mapping crash window and durable `committing` state are removed.
+- `open`/`committed` plus the mapping check, row-locked commit/PATCH, and skip-locked purge give a
+  coherent concurrency and recovery plan. The transaction, rather than the check constraint alone,
+  prevents a materialized draft job from losing its mapping.
+- T032b/T033 cover failure injection before/after the transaction and effects claim, concurrent
+  commit/PATCH/purge, same-job retries, PII cleanup, and unchanged normal `save()` behavior.
+- Post-commit effects are explicitly **at most once / best effort**, not guaranteed delivery:
+  the sweep handles unclaimed effects; a crash after claim can lose an alert/message. This is a
+  disclosed limitation consistent with existing best-effort behavior, not a remaining R3 blocker.
+  Read the acceptance criterion about effects completing after a database crash as the
+  before-claim case, as specified by the detailed plan's failure-injection cases.
+- Implementation review must preserve HD-9 activation with verification off, respect cutover/global
+  gates, and issue new-job effects only for actual activation. The detailed transaction/shared
+  activation plan supersedes the residual `_commit_ticket` name in the affected-surfaces summary.
+- R1/R2 remain resolved; no new blocking design finding. Confirmed the submitted checklist was
+  byte-identical to `eaadd8e` before this reviewer update.
+
+Verification: documentation diff and existing store/activation boundaries reviewed;
+`git diff --check` and working-tree SDLC policy checks passed. Application tests were not rerun
+for this docs-only review. CI on the submitted head was still running at review time; all required
+checks must pass before merge. This approval does not approve implementation or production actions.
+Human confirmation is still required to merge. T005 remains separate.

@@ -17,10 +17,11 @@
 - [x] T002 Claude: draft spec, plan, tasks, and checklist from Human decisions HD-1..HD-5.
 - [x] T003 [H] Human: decided 2026-09-26 — HD-6 ops-set opt-in, HD-7 ADR-4 amendment accepted, HD-8 approved in principle, HD-9 phase 2 independent of spec 002.
 - [x] T006 Claude: apply the accepted ADR-4 amendment to `docs/SYSTEM-DESIGN.md` §20.4.
-- [ ] T004 [R] Codex: review spec/plan; record approve or changes-requested in `checklists/sdlc-policy.md`.
+- [x] T004 [R] Codex: review spec/plan; record approve or changes-requested in `checklists/sdlc-policy.md`.
   - Review ownership: Codex owns T004 status and `checklists/sdlc-policy.md` for this review.
   - 2026-09-26: changes-requested against `b58dabf`; see checklist findings R1/R2. Approval remains pending.
   - 2026-09-26 re-review of `d9c1904`: R1/R2 resolved; changes-requested for R3 (atomic draft materialization and recovery). See checklist; T004 remains open.
+  - 2026-09-26 final re-review of `00449a8`: approve; R1/R2/R3 resolved at the design level. T004 complete. Merge awaits green CI and Human confirmation; implementation/production reviews remain separate.
 - [x] T007 Claude: resolve Codex R1/R2 and the checklist's implementation checks in spec/plan/tasks
   (docs only; HD-1..HD-9 preserved). Resolution map posted on PR #78 for Codex re-review.
 - [x] T008 Claude: resolve Codex R3 (atomic draft commit and recovery) in spec FR-024/FR-025/FR-028,
