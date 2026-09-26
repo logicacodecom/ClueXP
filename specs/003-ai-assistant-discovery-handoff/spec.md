@@ -114,8 +114,10 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 
 - No opted-in provider is eligible → `find_providers` returns an empty list and a plain message; the
   assistant must not suggest a provider exists. It may still show `list_services`.
-- Address cannot be geocoded or is ambiguous → structured `address_not_found` error asking for a more
-  specific address; no guessing.
+- Address cannot be geocoded → `address_not_found`. Address matches several places or only partially
+  → `address_ambiguous` with up to 3 candidate formatted addresses for the assistant to confirm with
+  the user. Address resolves only to an area (city, postal code, street without number) →
+  `address_imprecise`. In every rejection no providers are returned; no guessing (FR-009a).
 - Unknown skill → `unknown_service_skill` (existing `/v1` behavior).
 - Provider becomes ineligible between discovery and the customer opening the link → the intake shows an
   honest notice before commit (FR-013); no ETA or availability is invented.
@@ -123,6 +125,11 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
   enters any queue (FR-011).
 - Phase 2 handoff link reused, expired, or fetched by a preview bot → fails safely; a GET never consumes
   it (FR-022).
+- Phase 2 draft names a phone that already belongs to an existing customer → the existing customer
+  record is not read, created, or changed, and no provider sees the draft, until the customer commits
+  on the web (FR-021).
+- Phase 2 draft names a channel that is inactive, not listed, or no longer eligible → rejected at
+  creation; a caller-supplied slug is not trusted as proof of a prior discovery result (FR-027).
 - Endpoint abuse (scraping provider coverage by sweeping coordinates, flooding) → per-IP rate limiting
   plus `/v1` per-client limits; responses reveal only opted-in providers.
 - `/v1` API or key misconfigured → tools return the public error envelope; health monitor turns red
@@ -142,10 +149,14 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 - **FR-004**: Eligibility reuses the canonical Network Router eligibility path
   (`_network_routing_snapshot` → `route_network_request` → `rank_candidates`): available technician,
   skill match, within service radius, org `status=active`, org capability includes the skill. No second
-  eligibility engine.
+  eligibility engine: the org-eligibility predicate and the snapshot's org status/capability data are
+  shared with `route_network_request`, not re-derived.
 - **FR-005**: A provider is listed only if it has an active intake channel with AI-assistant listing
-  enabled and at least one eligible technician for the request. Unaffiliated technicians never
-  produce a listing.
+  enabled, a non-null `organization_id` whose organization is active, and at least one eligible
+  technician for the request **through that organization's own affiliation**. For a technician
+  affiliated with several organizations, each organization is judged separately: one eligible
+  affiliation never admits a different, inactive or non-capable listed organization. Unaffiliated
+  technicians and platform channels without an organization never produce a listing.
 - **FR-006**: Providers are ordered by their best eligible technician's rank (distance ascending, then
   rating descending — the existing deterministic rule); at most 3 are returned; the first is
   `recommended=true`. The assistant cannot influence ordering.
@@ -156,6 +167,19 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
   it is not sent in request paths or server logs.
 - **FR-009**: `find_providers` returns the geocoded, formatted address it matched so the assistant can
   confirm the location with the user.
+- **FR-009a — geocoding acceptance rule (discovery only)**: an `address` is accepted only when the
+  geocoder returns status `OK` with **exactly one** result, that result has no `partial_match` flag, and
+  its `geometry.location_type` is `ROOFTOP` or `RANGE_INTERPOLATED` (the values the existing helper
+  already maps to `high` confidence). Otherwise:
+  - zero results or `ZERO_RESULTS` → 422 `address_not_found`;
+  - more than one result, or `partial_match=true` → 422 `address_ambiguous`, with up to 3 candidate
+    `formatted_address` values;
+  - one full-match result with `GEOMETRIC_CENTER` or `APPROXIMATE` → 422 `address_imprecise`;
+  - geocoder unavailable, unconfigured, or any other status → 503 `geocoding_unavailable`, never a
+    silent fallback.
+  Callers with precise coordinates (for example device location) use `lat`/`lng` and skip geocoding.
+  The existing `geocode()` helper and its intake callers (`GET /geocode`, provider manual intake) keep
+  their current first-result behavior unchanged; discovery uses a new evidence-preserving helper.
 - **FR-010**: The branded intake reads the fragment and pre-fills the service and location, starting the
   customer at the first step after them.
 - **FR-011**: Opening an intake link must not create a ticket. A ticket is created only on an explicit
@@ -166,7 +190,9 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 - **FR-013**: When an AI-sourced intake reaches the commit step, the backend re-checks that provider's
   eligibility for the skill and location. If it is no longer eligible, the customer sees a plain notice
   ("this provider may not have a technician available right now") and chooses to proceed or go back. No
-  ETA or availability figure is shown.
+  ETA or availability figure is shown. Phase 1 does **not** change when an intake enters the queue: on a
+  cutover channel with verification off, the existing first customer action still sets
+  `pending_dispatch` (observed in `create_ticket`). The hold-until-commit rule is phase 2 only (FR-021).
 - **FR-014**: A production `/v1` key for the MCP server has only `services:read` and
   `providers:search`.
 - **FR-015**: The ChatGPT submission manifest and `docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md` /
@@ -179,28 +205,56 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 ### Functional Requirements — Phase 2
 
 - **FR-020**: `prepare_service_request` takes the provider's `intake_url` (or slug) from a prior
-  `find_providers` result, `service_skill`, location, and optional `situation`, `urgency`,
-  `customer_name`, `customer_phone`, `notes`. It sends no SMS and makes no call.
-- **FR-021**: It creates a provisional intake on that provider's channel that must not enter the
-  provider's dispatch queue, raise a provider alert, or be visible to provider operations before the
-  customer's web commit — regardless of `CLUEXP_PHONE_VERIFICATION_REQUIRED` or the channel's
-  `dispatch_cutover_enabled`. The commit activates the provider queue exactly once.
+  `find_providers` result, `service_skill`, location, and optional `situation`, `customer_name`,
+  `customer_phone`, `notes`. It sends no SMS and makes no call. Phase 2 drafts are for immediate
+  requests only; scheduled requests use the phase 1 link, because the appointment-window step stays in
+  the full web flow.
+- **FR-021 — draft isolation**: A draft is stored **only** in a dedicated `intake_drafts` table until
+  the customer's web commit. Before commit, the draft path must not:
+  - insert or update any `jobs` row;
+  - insert, update, or read any `customers` row, including an existing customer with the same phone;
+  - create alerts, offers, communications, or governance events that reference customer data.
+  No provider, ops, or console read path (queue, CRM `/provider/crm/customers`, job search, alerts,
+  exports) reads `intake_drafts`. This holds whether `CLUEXP_PHONE_VERIFICATION_REQUIRED` is on or off,
+  and regardless of the channel's `dispatch_cutover_enabled` (HD-9).
 - **FR-022**: It returns a single-use, expiring (≤ 24 h) handoff link. The raw token is never stored or
   logged (hash only), travels in the URL fragment, and is consumed by a same-origin POST, so preview
   fetches cannot consume it — mirroring spec 002 FR-003/FR-009.
-- **FR-023**: Consuming the link restores the HttpOnly intake capability and lands the customer on the
-  review step of the provider-branded intake with no raw job identifier in the URL.
-- **FR-024**: Committing an assistant-prepared intake requires price and terms acceptance by the
-  customer on the web, plus phone verification whenever `CLUEXP_PHONE_VERIFICATION_REQUIRED=true`
-  (spec 002). Until then the phone is unverified, exactly as in today's web intake.
-- **FR-025**: Unconsumed or uncommitted assistant-prepared intakes, including their personal data, are
-  deleted after expiry.
+- **FR-023**: Consuming the link sets an HttpOnly, Secure, SameSite=Strict draft capability cookie bound
+  to that draft and opens a review screen on the provider-branded intake, built from the draft (existing
+  intake components). The customer can correct name, phone, address, and notes; edits update the draft
+  row only. No raw draft or job identifier appears in the URL.
+- **FR-024 — commit from draft**: A single commit endpoint first validates every gate **against the
+  draft**, before any shared write:
+  - price acceptance, or terms acceptance when the provider hides estimates (same rules as `commit`);
+  - phone verification of the draft's current phone when `CLUEXP_PHONE_VERIFICATION_REQUIRED=true`.
+    Spec 002 verification is bound to the draft as its subject, so it can happen before any job exists.
+  Only after all gates pass does it materialize the ticket through the normal save path (the first
+  permitted customer-record write) and run the shared commit/activation logic, with the existing
+  channel cutover and global kill-switch gates. When verification is off the phone is unverified,
+  exactly as in today's web intake (HD-9).
+- **FR-025 — cleanup**: A scheduled purge deletes expired or abandoned drafts and their draft-subject
+  verification rows. It deletes only `intake_drafts` rows and verification rows whose subject is a
+  draft; it never deletes or modifies `customers`, `jobs`, or verification rows bound to a job.
+  Committed drafts have their personal-data columns cleared at commit, keeping only
+  `id, job_id, committed_at` for exactly-once and audit purposes.
 - **FR-026**: Per-IP and per-phone creation caps prevent flooding providers' channels with drafts.
+- **FR-027 — channel validation**: At draft creation the server resolves the slug and requires the
+  channel to be active, `ai_assistant_listed`, owned by an active organization, and eligible for the
+  skill at the location under FR-004/FR-005. A caller-provided slug is never treated as proof of a
+  prior `find_providers` result. Inactive, unlisted, platform (null-org), and ineligible channels are
+  rejected with the same generic error.
+- **FR-028 — exactly once**: The draft moves `open → committing → committed` through conditional
+  updates. The first successful commit records `job_id`. A retry after a partial failure resumes with
+  that `job_id` and never creates a second job or a second activation. Concurrent commits produce one
+  job and one activation.
 
 ### Non-Functional Requirements
 
 - **NFR-001 Privacy**: Location, address, name, and phone are not written to `external_api_events`
-  metadata or application logs. Only skill and outcome codes are recorded.
+  metadata or to application logs, including error and exception logs of discovery, draft creation,
+  consume, and commit. Fragment-bearing `intake_url`/`handoff_url` values and phase 2 tokens are never
+  logged by the API or the MCP server. Only skill and outcome codes are recorded.
 - **NFR-002 Abuse**: `/mcp` has a per-IP rate limit at the Vercel Firewall; `/v1` per-client limits
   remain as a backstop.
 - **NFR-003 Neutrality**: Ranking is deterministic, identical for every caller, and documented. No
@@ -213,17 +267,22 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 
 ## Data, API, And Trust Boundaries
 
-- **Data touched**: `intake_channels` (new opt-in column; partial unique index per organization);
-  `jobs.origin_channel` attribution (phase 1). Phase 2: new handoff-token table (hash, job, expiry,
-  consumed_at) and draft expiry cleanup.
+- **Data touched**:
+  - Phase 1: `intake_channels` (new opt-in column; partial unique index per organization);
+    `jobs.origin_channel` attribution.
+  - Phase 2: new `intake_drafts` table (draft fields, token hash, expiry, state, `job_id` after commit;
+    default-deny RLS; no FK to `customers`). `intake_phone_verifications` gains a nullable `draft_id`,
+    `job_id` becomes nullable, and a check constraint enforces exactly one subject. `customers` and
+    `jobs` are written only at commit (FR-021, FR-024).
 - **API contracts**: New `POST /v1/provider-matches` + scope `providers:search`; OpenAPI v1 snapshot
   regenerated. MCP tool surface shrinks from 7 to 2 (phase 2: 3). `/v1/coverage-checks` and all other
   `/v1` routes unchanged.
 - **Trust-state/privacy rules**: Only opted-in provider display names are exposed. Technician
   identity, location, count, rating, ETA, and price are never returned by discovery.
 - **Tenant isolation**: Discovery reads across providers but only surfaces opted-in channel names and
-  public intake links. No job or customer data crosses tenants. Phase 2 drafts belong solely to the
-  chosen provider's channel.
+  public intake links. No job or customer data crosses tenants. Phase 2 drafts are invisible to every
+  provider, including the chosen one, until the customer commits (FR-021); after commit the job belongs
+  solely to the chosen provider.
 - **Dispatch state**: Phase 1 does not touch job status. Phase 2 must never set `pending_dispatch`
   before the customer's web commit (FR-021).
 - **Payments/closeout**: Not applicable.
@@ -239,8 +298,10 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 - **Public `/v1`/MCP rule**: Additive `/v1` change with a new scope; existing keys unaffected. The MCP
   tool removal is a breaking change for any existing MCP client — acceptable because no client has ever
   succeeded in production.
-- **Migration/RLS rule**: One migration in phase 1 (channel opt-in), one in phase 2 (handoff tokens).
-  New tables default-deny under RLS like spec 002's verification table.
+- **Migration/RLS rule**: One migration in phase 1 (channel opt-in; no RLS change). One in phase 2:
+  `intake_drafts` default-deny under RLS like spec 002's verification table, plus the
+  `intake_phone_verifications` subject change. That table's existing job-bound behavior must stay
+  unchanged, proven by spec 002's tests.
 - **Generated artifacts**: OpenAPI v1 snapshot, `packages/api-client` if generated from it.
 
 ## ADR-4 Amendment (accepted HD-7; applied to `docs/SYSTEM-DESIGN.md` §20.4)
@@ -265,8 +326,21 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
 - [ ] `/mcp` works without credentials; OAuth code, metadata route, and env vars are gone.
 - [ ] Health monitor calls a real tool and goes red when the `/v1` key is invalid.
 - [ ] No location or personal data in `external_api_events` or logs for discovery calls (test).
-- [ ] Phase 2: a prepared intake is invisible to provider operations until verified web commit; handoff
-  links are single-use, expiring, and not consumed by GET (tests).
+- [ ] Geocoding: multiple results, partial match, coarse area, no result, and geocoder failure are
+  rejected with the specified codes; a precise single address is accepted; existing `geocode()`
+  callers are unchanged (tests).
+- [ ] Multi-org technician: an eligible affiliation never lists a different ineligible listed
+  organization; platform (null-org) channels are never listed (tests).
+- [ ] Phase 2, Postgres-backed, with verification **both on and off**:
+  - a prepared draft does not appear in `/provider/crm/customers`, the provider queue, alerts, or job
+    reads;
+  - an existing same-phone customer's row is byte-identical before commit;
+  - commit activates exactly once, including under retry and concurrent commit;
+  - expiry cleanup removes draft rows and draft verifications and leaves `customers`, `jobs`, and
+    job-bound verifications untouched.
+- [ ] Phase 2: handoff links are single-use, expiring, and not consumed by GET; inactive, unlisted,
+  null-org, and ineligible channels are rejected at draft creation (tests).
+- [ ] No PII, fragment-bearing URLs, or tokens in error logs of discovery or draft paths (tests).
 - [ ] Independent secondary review approves each implementation PR.
 
 ## Risks, Assumptions, And Human Decisions
@@ -280,8 +354,13 @@ Phase 2 — assistant-prepared draft (built after phase 1 is live and accepted; 
     most queries will return zero or one provider until more providers opt in.
   - Per HD-9, phase 2 may ship before spec 002 is active in production (A2P pending). Until then an
     assistant-prepared intake carries an unverified phone — the same exposure as today's web intake —
-    and a draft could name someone else's number. No SMS is sent by the tool, so this is not an
-    SMS-abuse vector; FR-026 caps limit flooding.
+    and a draft could name someone else's number. FR-021 keeps that draft away from the shared customer
+    record and every provider until the customer commits. No SMS is sent by the tool, so this is not
+    an SMS-abuse vector; FR-026 caps limit flooding.
+  - At commit, the normal save path upserts `customers` by phone and may update an existing same-phone
+    customer's name (observed at `store.py` `PostgresStore.save`). That is existing behavior for every
+    web intake and now happens only after the customer's authorized commit. Changing it is outside
+    this spec.
   - Platforms differ in no-auth support and review rules; each needs verification before listing.
 - **Assumptions** (to verify in plan tasks):
   - Claude custom connectors and ChatGPT developer mode accept an unauthenticated remote MCP server.

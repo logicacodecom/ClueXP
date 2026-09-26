@@ -18,6 +18,9 @@
 - [x] T003 [H] Human: decided 2026-09-26 — HD-6 ops-set opt-in, HD-7 ADR-4 amendment accepted, HD-8 approved in principle, HD-9 phase 2 independent of spec 002.
 - [x] T006 Claude: apply the accepted ADR-4 amendment to `docs/SYSTEM-DESIGN.md` §20.4.
 - [ ] T004 [R] Codex: review spec/plan; record approve or changes-requested in `checklists/sdlc-policy.md`.
+  2026-09-26: changes-requested (R1 P1 draft isolation, R2 P2 ambiguous geocoding); re-review pending.
+- [x] T007 Claude: resolve Codex R1/R2 and the checklist's implementation checks in spec/plan/tasks
+  (docs only; HD-1..HD-9 preserved).
   - Review ownership: Codex owns T004 status and `checklists/sdlc-policy.md` for this review.
   - 2026-09-26: changes-requested against `b58dabf`; see checklist findings R1/R2. Approval remains pending.
 - [ ] T005 Codex: report `/v1` network dispatch authorization (`dispatch_org_id=None`) as a separate
@@ -25,14 +28,23 @@
 
 ## Tasks — Phase 1
 
-- [ ] T010 Claude: extract `_org_eligible` from `route_network_request` into a reusable function
-  (`apps/intake-web/api/dispatch.py`); existing dispatch tests stay green.
+- [ ] T010 Claude: extract `org_eligible` (per-org) and `technician_org_eligible` from
+  `route_network_request`. Make `_network_routing_snapshot` return `(technicians, org_status,
+  org_capabilities)` and update its two callers. Regression tests show coverage-check and
+  dispatch-authorization results are unchanged.
 - [ ] T011 Claude: migration `intake_channels.ai_assistant_listed` + partial unique index; upgrade and
   downgrade verified on scratch Postgres.
 - [ ] T012 Claude: store method for listed channels (InMemoryStore + PostgresStore) with a
   Postgres-backed test.
-- [ ] T013 Claude: `POST /v1/provider-matches` + scope `providers:search` + geocoding + event metadata
-  allow-list; tests per plan; regenerate `docs/openapi-v1-snapshot.json`.
+- [ ] T013a Claude: `geocode.geocode_candidates` (all results with `location_type`, `partial_match`,
+  `types`), sharing only the HTTP fetch with `geocode()`. Pinned regression test for the existing
+  first-result callers.
+- [ ] T013 Claude: `POST /v1/provider-matches` + scope `providers:search`.
+  - FR-009a acceptance rule with the `address_not_found`, `address_ambiguous`, `address_imprecise`,
+    and `geocoding_unavailable` codes.
+  - Per-org eligibility with multi-org and null-org tests.
+  - Event metadata allow-list and failure-log privacy tests.
+  - Regenerate `docs/openapi-v1-snapshot.json`.
 - [ ] T014 [P] Claude: MCP server — delete five tools, OAuth, and bearer path; add `find_providers`;
   update tests, `tools/list` snapshot test, README, runbook, `.env.example`, `vercel.json`, manifest.
 - [ ] T015 [P] Claude: intake web — fragment pre-fill in `IntakeFlow`, no ticket on load,
@@ -54,14 +66,26 @@
 
 ## Tasks — Phase 2 (starts after T023; independent of spec 002 activation per HD-9)
 
-- [ ] T030 Claude: migration `intake_handoff_tokens` (hash only, default-deny RLS).
-- [ ] T031 Claude: `POST /v1/intake-drafts` + scope `intake_drafts:create`; always the
-  held-out-of-queue draft; commit activates the queue exactly once (verification enforced only when
-  spec 002 is active); per-IP/per-phone caps; tests proving no queue entry or alert before commit,
-  with verification both on and off.
-- [ ] T032 Claude: `/o/<slug>/continue` fragment-token consume (same-origin POST, single use, expiry),
-  reusing spec 002's consume helper.
-- [ ] T033 Claude: expired-draft purge in the scheduled sweep.
+- [ ] T030 Claude: migration `intake_drafts` (default-deny RLS, no customers FK) and the
+  `intake_phone_verifications` subject change (nullable `job_id`, `draft_id`, exactly-one check).
+  Upgrade/downgrade on scratch Postgres; spec 002 tests stay green.
+- [ ] T031 Claude: `POST /v1/intake-drafts` + scope `intake_drafts:create`.
+  - Server-side channel validation (FR-027).
+  - Per-IP and per-phone caps.
+  - Writes only `intake_drafts`; no `jobs`/`customers` write or read.
+- [ ] T032 Claude: `/o/<slug>/continue` fragment-token consume (same-origin POST, single use, expiry)
+  reusing spec 002 helpers, plus the draft review/edit endpoints and screen built from existing intake
+  components.
+- [ ] T032a Claude: subject-generalize spec 002 verification send/consume/status (`job_id` or
+  `draft_id`), keeping job-subject behavior unchanged.
+- [ ] T032b Claude: commit-from-draft.
+  - Gates validated on the draft; `open → committing → committed` state machine.
+  - Extract `_commit_ticket` shared with `commit()` and the pure price function.
+  - Clear draft personal-data columns at commit.
+  - Postgres-backed tests with verification on **and** off: CRM, queue, and alert invisibility before
+    commit; same-phone customer unchanged before commit; exactly-once under retry and concurrency.
+- [ ] T033 Claude: purge of open/stale-committing drafts (cascade draft verifications) in the scheduled
+  sweep. Postgres test: `customers`, `jobs`, and job-subject verifications untouched.
 - [ ] T034 Claude: MCP `prepare_service_request` tool + tests + docs.
 - [ ] T035 [R] Codex: secondary review of phase 2 PR.
 - [ ] T036 [H] Human: authorize phase 2 production migration, key scope change, and deploy.
