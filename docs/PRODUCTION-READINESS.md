@@ -63,8 +63,10 @@ npm run build --workspace @cluexp/console-web
 ## MCP endpoint (`mcp.cluexp.com`)
 
 The MCP server is public, read-only provider discovery (`specs/003`, phase 1): `list_services` and
-`find_providers`, with no sign-in. Before the phase 1 production cutover (each item needs explicit Human
-authorization for the exact target):
+`find_providers`, with no sign-in. **The phase 1 cutover is live as of 2026-09-27**; see `specs/003`
+tasks T020/T023 for the executed record. The checklist below is kept as the cutover procedure; the
+open items are T021 (first provider opt-in, with written consent), T022 (Auth0 dev-tenant
+decommission), and the per-assistant UI runs in T018:
 
 - Apply migration `0061_intake_channel_ai_listing` (additive, default off; listing nobody until a
   channel is flagged). Code deployed before the migration fails closed and lists nobody.
@@ -88,39 +90,6 @@ authorization for the exact target):
   token, redeploy, and verify `https://mcp.cluexp.com/.well-known/openai-apps-challenge` returns only
   that token as `text/plain`.
 - Decommission the Auth0 dev-tenant API/client used by the removed OAuth path.
-
-**Until that cutover deploys, the currently live server is the previous OAuth/bearer build** and these
-pre-cutover checks (from PR #75) still apply to it:
-
-- Confirm `https://mcp.cluexp.com/healthz` returns `200 {"status":"ok"}`.
-- Confirm `POST https://mcp.cluexp.com/mcp` without a bearer token and with a wrong bearer token both
-  return `401`. **The body depends on which auth mode the deployment is in, so assert against the
-  mode you are actually running:**
-  - Compatibility (bearer) mode — `CLUEXP_MCP_BEARER_TOKEN` set, OAuth not configured:
-    `{"error":"invalid_mcp_token"}` (`mcp_server/asgi.py`, `MCPBearerAuthMiddleware`).
-  - OAuth mode — when OAuth is configured, `MCPBearerAuthMiddleware` short-circuits
-    (`if oauth_enabled: return await call_next(request)`) and the MCP app's own OAuth layer
-    answers, emitting the OAuth-style `{"error":"invalid_token","error_description":...}`.
-  Record which mode production is in as part of preflight. A change of auth mode that nobody
-  records will silently invalidate whatever the health monitor asserts.
-- Confirm the scheduled GitHub Actions workflow `mcp-production-health` is enabled on `main` **and
-  green**; it runs every 30 minutes and checks only public health plus negative auth-boundary
-  behavior, so it does not require storing the production MCP bearer token in GitHub. A persistently
-  red monitor means the auth boundary is unverified, not that the check is noisy — the workflow's
-  expected error body must match the deployment's current auth mode (see above).
-- **The MCP server exposes mutating tools** (`create_service_request`, `authorize_dispatch`,
-  `cancel_service_request` in `mcp_server/server.py`). Their `confirm=true` argument is a
-  caller-supplied agent-UX convention, **not** an authorization control. Before any pilot, confirm
-  the production external client's organization binding and scopes, and prove it cannot reach the
-  pilot tenant — or disable the mutating tools for the window. Note also that the server calls the
-  API with a single shared `CLUEXP_API_KEY`, so every MCP caller shares one audit identity.
-- Keep `CLUEXP_MCP_BEARER_TOKEN` and `CLUEXP_API_KEY` only in Vercel's environment store unless a
-  reviewed platform/reviewer credential plan exists.
-- For OpenAI plugin submission, set `OPENAI_APPS_CHALLENGE_TOKEN` only after the submission portal
-  provides the exact token, redeploy, and verify
-  `https://mcp.cluexp.com/.well-known/openai-apps-challenge` returns only that token as `text/plain`.
-- Do not run `confirm=true` MCP dispatch/cancel smoke against production unless the Human explicitly
-  authorizes a scoped live proof run.
 
 ## Alerting (migration 0054)
 

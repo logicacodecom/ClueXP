@@ -16,15 +16,11 @@ jobs:
           response="$(curl --fail --silent --show-error --max-time 15 https://mcp.cluexp.com/healthz)"
           test "$response" = '{"status":"ok"}'
 
-      # specs/003 makes /mcp public, read-only discovery. A real tool call is the only
-      # meaningful check: a broken /v1 key still answers HTTP 200 with an error inside
-      # the tool result, which a health or status-code probe cannot see.
-      #
-      # Until the spec 003 cutover is deployed, production still runs the older
-      # sign-in build, which rejects this call with 401. In that case the step falls
-      # back to the auth-boundary contract from PR #75 (bearer or OAuth mode, both
-      # probes must agree). ponytail: remove the 401 branch once the cutover is live.
-      - name: Check MCP list_services (public) or auth boundary (pre-cutover)
+      # specs/003: /mcp is public, read-only discovery (cutover 2026-09-27). A real tool
+      # call is the only meaningful check: a broken /v1 key still answers HTTP 200 with an
+      # error inside the tool result, which a health or status-code probe cannot see. Any
+      # non-200 (including a 401 from an accidental rollback to the old sign-in build) fails.
+      - name: Check MCP list_services
         run: |
           set -euo pipefail
 
@@ -37,10 +33,14 @@ jobs:
               -H "Accept: application/json, text/event-stream" \
               -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_services","arguments":{}}}'
           )"
+          if [ "$status" != "200" ]; then
+            echo "::error::MCP tool call: expected 200, got $status" >&2
+            cat /tmp/mcp-tool.txt >&2 || true
+            exit 1
+          fi
 
-          if [ "$status" = "200" ]; then
-            if ! summary="$(
-              python3 - /tmp/mcp-tool.txt <<'PY'
+          if ! summary="$(
+            python3 - /tmp/mcp-tool.txt <<'PY'
           import json
           import sys
 
@@ -65,87 +65,9 @@ jobs:
               sys.exit("list_services returned an empty service catalog")
           print(f"{len(categories)} service categories")
           PY
-            )"; then
-              echo "::error::MCP list_services check failed" >&2
-              cat /tmp/mcp-tool.txt >&2 || true
-              exit 1
-            fi
-            echo "MCP public discovery OK: list_services returned $summary." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          if [ "$status" != "401" ]; then
-            echo "::error::MCP tool call: expected 200 (public) or 401 (pre-cutover), got $status" >&2
+          )"; then
+            echo "::error::MCP list_services check failed" >&2
             cat /tmp/mcp-tool.txt >&2 || true
             exit 1
           fi
-
-          # Pre-cutover: the sign-in build is still live. Keep verifying its boundary.
-          probe() {
-            local label="$1" out="$2"; shift 2
-            local status
-            status="$(
-              curl --silent --show-error --max-time 15 \
-                --output "$out" \
-                --write-out "%{http_code}" \
-                -X POST https://mcp.cluexp.com/mcp \
-                -H "Content-Type: application/json" \
-                "$@" \
-                -d '{}'
-            )"
-            if [ "$status" != "401" ]; then
-              # stderr: probe runs inside $( ), so stdout is the return value.
-              echo "::error::$label: expected 401, got $status" >&2
-              cat "$out" >&2 || true
-              exit 1
-            fi
-            local mode
-            if ! mode="$(
-              python3 - "$out" <<'PY'
-          import json
-          import sys
-
-          try:
-              with open(sys.argv[1], encoding="utf-8") as response_file:
-                  body = json.load(response_file)
-          except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-              print(f"invalid JSON response: {exc}", file=sys.stderr)
-              raise SystemExit(1)
-
-          error = body.get("error") if isinstance(body, dict) else None
-          if not isinstance(error, str):
-              print("response JSON must contain a string 'error' field", file=sys.stderr)
-              raise SystemExit(1)
-
-          modes = {
-              "invalid_mcp_token": "bearer",
-              "invalid_token": "oauth",
-          }
-          mode = modes.get(error)
-          if mode is None:
-              print(f"unrecognized error value: {error!r}", file=sys.stderr)
-              raise SystemExit(1)
-
-          print(mode)
-          PY
-            )"; then
-              echo "::error::$label: 401 with an invalid or unrecognized error response — the auth contract changed" >&2
-              cat "$out" >&2 || true
-              exit 1
-            fi
-
-            echo "$mode"
-          }
-
-          no_token_mode="$(probe 'missing token' /tmp/mcp-no-token.json)"
-          wrong_token_mode="$(probe 'wrong token' /tmp/mcp-wrong-token.json \
-            -H "Authorization: Bearer definitely-not-the-production-token")"
-
-          if [ "$no_token_mode" != "$wrong_token_mode" ]; then
-            echo "::error::auth mode disagreement: missing-token=$no_token_mode wrong-token=$wrong_token_mode"
-            exit 1
-          fi
-
-          echo "MCP pre-cutover auth boundary OK — both probes rejected with 401 (\`$no_token_mode\` mode)." \
-            >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::MCP is still in pre-cutover \`$no_token_mode\` mode; spec 003 expects public discovery after the authorized cutover."
+          echo "MCP public discovery OK: list_services returned $summary." >> "$GITHUB_STEP_SUMMARY"

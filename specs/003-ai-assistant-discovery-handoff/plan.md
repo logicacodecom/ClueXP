@@ -346,3 +346,17 @@ Implemented on `feat/003-phase1-provider-discovery`. Deviations from the plan te
   transitional and should be removed once the cutover is live.
 - **Not in this change:** T018 preview/manual testing, the node handoff test in CI, and all production
   steps (T020–T023).
+
+## Phase 1 Production Cutover (2026-09-27)
+
+Executed under Human authorization; the full record is in `tasks.md` T020/T023. Deviations from the
+rollout plan:
+
+- **Migration order:** migration 0061 was applied as SQL while `alembic_version` stayed at `0059`,
+  because spec 002's 0060 is separately gated. 0061 is idempotent, so a later `alembic upgrade head`
+  is safe.
+- **Build skipping:** the MCP Vercel project has no ignored-build-step command. The repository-root
+  `.vercelignore` removes `.git`, so git-diff-based skipping fails; every `main` push rebuilds the MCP
+  server, and a failed build never replaces production.
+- **Monitor:** the transitional pre-cutover 401 branch is removed. The monitor now requires a
+  successful public `list_services`, so a rollback to the sign-in build turns it red.
