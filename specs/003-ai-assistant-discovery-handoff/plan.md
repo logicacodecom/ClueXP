@@ -342,5 +342,7 @@ Implemented on `feat/003-phase1-provider-discovery`. Deviations from the plan te
   `/v1/provider-matches` documents its 422/503 `PublicApiError` responses in OpenAPI (Codex T019 R4).
 - **Attribution (FR-012):** only `intake_source == "ai_assistant"` is accepted; `origin_channel` is
   written once and never overwritten.
-- **Not in this change:** T017 (health-monitor workflow edit, awaiting explicit Human approval for the
-  workflow file), T018 preview/manual testing, and all production steps (T020–T023).
+- **Health monitor (T017, added after PR #75 merged):** see T017 in `tasks.md`. The 401 fallback is
+  transitional and should be removed once the cutover is live.
+- **Not in this change:** T018 preview/manual testing, the node handoff test in CI, and all production
+  steps (T020–T023).

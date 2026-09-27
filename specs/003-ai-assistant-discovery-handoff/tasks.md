@@ -55,8 +55,12 @@
   passes.
 - [x] T016 Claude: docs — `AGENT-INTEGRATION-MCP-PLAN.md`, `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`,
   `PUBLIC-API-DEVELOPER-GUIDE.md`, `PRODUCTION-READINESS.md`.
-- [ ] T017 [H] Human: approve the workflow edit, then Claude updates `mcp-production-health.yml` to call
-  `list_services` via `/mcp`.
+- [x] T017 [H] Human approved 2026-09-27 ("if PR 75 affected 79 badly, fix"); Claude updated
+  `mcp-production-health.yml`. It now calls `list_services` through `/mcp` and fails on an MCP error,
+  an API error inside the tool result, or an empty catalog. While the pre-cutover sign-in build is
+  still live it falls back to PR #75's 401 auth-boundary contract. Verified: pre-cutover branch against
+  live production (green, `oauth` mode); public branch against a local server (OK, bad key, and empty
+  catalog cases).
 - [ ] T018 Claude: preview deploy; manual scenario in Claude (no-auth custom connector) and ChatGPT
   developer mode; link-preview and private-window checks; log grep for test address.
 - [x] T019 [R] Codex: secondary review of phase 1 implementation PR (markers in PR body).

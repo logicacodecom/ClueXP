@@ -73,9 +73,10 @@ authorization for the exact target):
 - Remove `CLUEXP_MCP_OAUTH_*` and `CLUEXP_MCP_BEARER_TOKEN` from that project's environment.
 - Add a Vercel Firewall rate-limit rule on `/mcp` (per IP).
 - Deploy the MCP server from a reviewed commit (git-connected), not from a local CLI working tree.
-- Update `mcp-production-health` to call `list_services` through `/mcp` and assert a well-formed
-  result **in the same release**. The current monitor expects `401` on `/mcp` and will fail once the
-  endpoint is public.
+- `mcp-production-health` already handles both modes. Once `/mcp` is public it calls `list_services`
+  and fails on an API error or empty catalog; while the sign-in build is live it checks the 401
+  boundary. After cutover, confirm the run summary says "public discovery OK", then remove the
+  transitional 401 branch.
 - After deploy, confirm:
   - `https://mcp.cluexp.com/healthz` returns `200 {"status":"ok"}`;
   - an unauthenticated MCP `initialize` succeeds;
