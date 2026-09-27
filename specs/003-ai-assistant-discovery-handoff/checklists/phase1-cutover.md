@@ -18,7 +18,7 @@ Review result: approve
   Vercel environment store; the local copy is deleted.
 - [x] MCP env: the OAuth and bearer variables are removed; the new key and
   `CLUEXP_API_BASE_URL=https://api.cluexp.com` are set.
-- [x] Firewall: 60 requests/60 s per IP on `/mcp` and `/api/mcp`; a burst gave 60 Ã— 200, then 429.
+- [x] Firewall: 60 requests/60 s per IP on `/mcp` and `/api/mcp`; a burst gave 60 Ãƒâ€” 200, then 429.
 - [x] Deploy from a clean `origin/main` export (`3c08e65`). The live protocol run showed two
   read-only tools, a live catalog, `providers: []`, ambiguous-address candidates, and a 404 OAuth
   route.
@@ -33,7 +33,7 @@ Review result: approve
   or on an empty catalog.
 - The accuracy of the recorded production state and the 0061/alembic decision.
 
-## Independent Codex Review — 2026-09-27
+## Independent Codex Review â€” 2026-09-27
 
 Reviewed PR #81 at `6fb8ea25c830795f592137f434c13e239ac3c1c3` as the
 non-author secondary reviewer. Codex owns this checklist for this review.
@@ -89,3 +89,34 @@ T018 assistant UI tests, T021 written-consent opt-in, and T022 Auth0 cleanup
 remain open; T023's completion is protocol-level verification only, as its
 record explains. No merge, deployment, production mutation, or provider listing
 was performed by this review.
+
+## Supplemental Review — `329d771` (2026-09-27)
+
+**Result: approve.** Reviewed the docs-only T018/T021/T022 update after pulling
+`329d771484ce68362905a95e88f51ddbc969a7be`. This supplement supersedes the earlier
+snapshot's zero-listed count and open T021 status; those observations were valid
+at the time of the initial review.
+
+- Human confirmation of provider consent is recorded in the task and confirmed
+  by the Human's review request. Written requests remain an operational record
+  to retain; Codex did not inspect the underlying consent documents.
+- Independent read-only production SQL now shows exactly `florida-locksmith`
+  and `metro-key` listed. Active affiliations with active, verified technicians
+  number 3 and 6 respectively; none of either channel's affiliated technicians
+  is available. Pending invitations are not included in those active counts.
+- A public `find_providers` call for catalog skill
+  `locksmith.residential_lockout` at Tampa coordinates returned a successful
+  result with `providers: []`. Availability remains one of the eligibility
+  conditions, not a promise that going on shift alone guarantees a match.
+- The T018 browser/network/job-count observations remain Claude's execution
+  evidence, not a browser rerun by this reviewer. T018 stays open: assistant UI
+  tests remain outstanding, and this embedded-browser record does not by itself
+  prove private-window or link-preview-fetch coverage.
+- No Auth0 references were found under current `apps/` or `packages/` code.
+  The broader all-Vercel-project usage assertion remains author evidence. T022
+  remains Human-gated and open: absence of repository usage does not establish
+  absence of external tenant consumers or authorize whole-tenant deletion;
+  inspect tenant applications/APIs before any authorized decommission.
+- `git diff --check` passed. This update changes no executable code; the prior
+  monitor/migration review remains applicable. No production writes, provider
+  listing changes, deployment commands, or merge were performed by Codex.
