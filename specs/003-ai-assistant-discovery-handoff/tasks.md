@@ -72,9 +72,15 @@
     - an ambiguous address returns `address_ambiguous` with candidates;
     - `/.well-known/oauth-protected-resource/mcp` returns 404;
     - `external_api_events` metadata holds only skill, outcome, and count.
-  - Still open, needing the Human's own accounts: the in-product Claude custom connector and
-    ChatGPT developer-mode runs, and the private-window/link-preview check of an intake link
-    (blocked until a provider is listed, T021).
+  - 2026-09-27, browser check in the Orca embedded browser: a handoff link to `/o/metro-key` with a
+    Tampa address.
+    - The page shows "From your assistant: <address>", **Home** is pre-selected (`active`,
+      `aria-pressed=true`), and the fragment is stripped from the URL.
+    - Metro Key jobs stayed at 40 before and after.
+    - Vercel production logs show no `POST /tickets`, no autocomplete or geocode call, and no address
+      in any request path; the only load call was `GET /api/channels/metro-key`.
+  - Still open, needing the Human's own accounts: the in-product Claude custom connector and ChatGPT
+    developer-mode runs. No Anthropic or OpenAI API key is available to Claude Code.
 - [x] T019 [R] Codex: secondary review of phase 1 implementation PR (markers in PR body).
   - Review ownership: Codex owns T019 status and `checklists/phase1-implementation.md`.
   - 2026-09-26: changes-requested on `167d618`; findings R1-R4 in the implementation checklist.
@@ -105,14 +111,17 @@
     `main` and `rootDirectory=apps/cluexp-mcp-server`. There is no ignored-build-step command, because
     the root `.vercelignore` strips `.git`, so git-based skip commands fail. A git preview build of
     `main` succeeded (26 s).
-- [ ] T021 [H] Human: first provider channel opt-ins (written provider consent per HD-6).
-  Candidates in production (both active, all locksmith skills): `florida-locksmith` (Florida
-  Locksmith) and `metro-key` (Metro Key Partners). Opt-in is
-  `update intake_channels set ai_assistant_listed = true where slug = '<slug>'`, run only after that
-  provider's written request.
+- [x] T021 [H] Human: first provider channel opt-ins (written provider consent per HD-6).
+  - 2026-09-27: the Human confirmed both providers' consent. Claude set `ai_assistant_listed = true`
+    for `florida-locksmith` (Florida Locksmith) and `metro-key` (Metro Key Partners). Keep the written
+    requests on file.
+  - Both operate around Tampa, FL (3 and 6 verified technicians). At listing time no technician was
+    `is_available`, so `find_providers` correctly returns `[]` until one goes on shift. Technician
+    availability was not modified.
 - [ ] T022 [H] Human: decommission the Auth0 dev tenant client/API used by the removed OAuth path.
-  The MCP server no longer references it (env vars removed 2026-09-27); this needs Auth0 dashboard
-  access, which Claude does not have.
+  The MCP server no longer references it (env vars removed 2026-09-27). No other code or Vercel
+  project uses Auth0, so the whole dev tenant `dev-w317wetforjtbtvk` can be deleted. This needs
+  Auth0 dashboard access, which Claude does not have.
 - [x] T023 Claude: post-deploy verification — health monitor green on the real tool call; one live
   discovery query per assistant; confirm no location in `external_api_events`.
   - 2026-09-27: a `workflow_dispatch` of `mcp-production-health` on `main` passed via the **public**
