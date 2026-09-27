@@ -1,13 +1,13 @@
 # Checklist: Spec 003 Phase 1 Production Cutover Record
 
 **Artifact Reviewed**: `tasks.md T020/T023 record, mcp-production-health.yml, PRODUCTION-READINESS.md`
-**Reviewer**: `Codex (pending)`
+**Reviewer**: `Codex`
 **Date**: `2026-09-27`
 
 Secondary-agent review required: yes
-Secondary-agent review completed: no
-Reviewer agent:
-Review result:
+Secondary-agent review completed: yes
+Reviewer agent: Codex
+Review result: approve
 
 ## Author Evidence (Claude)
 
@@ -18,7 +18,7 @@ Review result:
   Vercel environment store; the local copy is deleted.
 - [x] MCP env: the OAuth and bearer variables are removed; the new key and
   `CLUEXP_API_BASE_URL=https://api.cluexp.com` are set.
-- [x] Firewall: 60 requests/60 s per IP on `/mcp` and `/api/mcp`; a burst gave 60 × 200, then 429.
+- [x] Firewall: 60 requests/60 s per IP on `/mcp` and `/api/mcp`; a burst gave 60 Ã— 200, then 429.
 - [x] Deploy from a clean `origin/main` export (`3c08e65`). The live protocol run showed two
   read-only tools, a live catalog, `providers: []`, ambiguous-address candidates, and a 404 OAuth
   route.
@@ -32,3 +32,60 @@ Review result:
 - The monitor now fails on any non-200, on an MCP error, on an API error inside `structuredContent`,
   or on an empty catalog.
 - The accuracy of the recorded production state and the 0061/alembic decision.
+
+## Independent Codex Review — 2026-09-27
+
+Reviewed PR #81 at `6fb8ea25c830795f592137f434c13e239ac3c1c3` as the
+non-author secondary reviewer. Codex owns this checklist for this review.
+**Result: approve; no blocking findings.** This approves the cutover record and
+monitor change, not any further production action or provider opt-in.
+
+### Independently observed
+
+- Executed both exact workflow Bash steps against production: health returned
+  `{"status":"ok"}` and public `list_services` returned one service category.
+  Thirteen offline exact-step fixtures passed: JSON/SSE success; rejection of
+  401/403/429/500, JSON-RPC errors, tool errors, nested API errors, empty or invalid
+  catalogs, missing structured content, and invalid JSON.
+- Public initialization works; `tools/list` advertises only `list_services` and
+  `find_providers`, both read-only. The former OAuth resource route returns 404.
+- Production SQL used a read-only transaction with statement timeout, then rollback:
+  `alembic_version = 0059_job_origin_client`; `ai_assistant_listed` is boolean,
+  NOT NULL, default false; the unique organization index has predicate
+  `WHERE ai_assistant_listed`; listed channel count is zero. Neither the 0060
+  verification table nor its two jobs columns exists.
+- The recorded external client is active, type `agent`, organization null,
+  scopes exactly `providers:search` and `services:read`, rate limit 120/minute.
+  Today's audit rows show successful service/provider calls and a scope-denied
+  403. Provider-search metadata keys are only `outcome`, `result_count`, and
+  `service_skill`; no location keys were present. No API key was retrieved.
+- Vercel production environment names include the API key/base URL and exclude
+  OAuth/bearer variables. Project Git linkage is `logicacodecom/ClueXP`, production
+  branch `main`, root `apps/cluexp-mcp-server`, ignored-build command null.
+  The production domain resolves to Ready deployment
+  `dpl_G1FNqXG1KFEpUTJ9NqcWnAKwKzDH`.
+- Live firewall configuration has the enabled per-IP fixed-window rule, 60/60s,
+  covering paths starting with `/mcp` or `/api/mcp`. No burst test was repeated.
+- Recorded production monitor run `36316798862` succeeded. Original-head required
+  CI checks `secret-scan`, `web`, `api`, and `mcp-server` passed; `sdlc-policy`
+  failed solely because the review markers were pending. Updated markers must
+  pass that gate before merge.
+
+### Migration decision and limits
+
+0061's SQL only adds the default-off column/index to the existing intake table;
+it does not depend on 0060's schema. Both statements use IF NOT EXISTS. Applying
+that SQL while retaining 0059 is acceptable for this explicitly gated cutover:
+it does not falsely stamp unexecuted 0060. A later authorized upgrade can apply
+0060 and replay 0061, provided the existing column/index still match the reviewed
+DDL. `alembic upgrade head` is not authorization to execute gated 0060. Alembic
+at 0059 also cannot automatically downgrade the manually applied 0061; any
+schema rollback needs a separately authorized explicit reconciliation.
+
+The clean-export source provenance (`3c08e65`), exact secret value/base URL,
+local key deletion, and historical burst remain Claude's execution evidence,
+not independently re-proven here. No credentials were exposed or changed.
+T018 assistant UI tests, T021 written-consent opt-in, and T022 Auth0 cleanup
+remain open; T023's completion is protocol-level verification only, as its
+record explains. No merge, deployment, production mutation, or provider listing
+was performed by this review.
