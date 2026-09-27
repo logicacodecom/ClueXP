@@ -136,6 +136,46 @@ class GrammarTests(unittest.TestCase):
                 POLICY.normalize_agent(bad)
 
 
+NL = "\n"
+
+
+def block(result: str) -> str:
+    full = record(**{"Review result": result})
+    return full[full.index("## Review Record"):full.index("## Verification")]
+
+
+class FenceTests(unittest.TestCase):
+    """CommonMark fences (Codex T024 finding 1): only the real, unfenced record counts."""
+
+    def risky_errors(self, body: str) -> list[str]:
+        entries = FULL_ARTIFACTS + [E("M", "apps/intake-web/api/auth.py", "apps/intake-web/api/auth.py")]
+        return POLICY.evaluate(entries, body, HEAD)[0]
+
+    def test_codex_reproduction_fenced_approval_cannot_override_real_revocation(self) -> None:
+        body = NL.join(["```text", "~~~", block("approve"), "## Notes", "```", "", block("changes-requested")])
+        self.assertEqual("changes-requested", POLICY.parse_record(body)["result"])
+        self.assertTrue(any("changes-requested" in e for e in self.risky_errors(body)))
+
+    def test_shorter_closer_does_not_close_longer_fence(self) -> None:
+        body = NL.join(["````markdown", "```", block("approve"), "```", "````", "", block("changes-requested")])
+        self.assertEqual("changes-requested", POLICY.parse_record(body)["result"])
+
+    def test_mixed_delimiters(self) -> None:
+        body = NL.join(["~~~", "```", block("approve"), "~~~", "", block("changes-requested")])
+        self.assertEqual("changes-requested", POLICY.parse_record(body)["result"])
+
+    def test_indented_fence_and_backtick_info_string(self) -> None:
+        body = NL.join(["   ```", block("approve"), "   ```", "", block("changes-requested")])
+        self.assertEqual("changes-requested", POLICY.parse_record(body)["result"])
+        # A backtick info string containing a backtick is not a fence opener.
+        self.assertEqual("approve", POLICY.parse_record("```a`b" + NL + record())["result"])
+
+    def test_fenced_lines_inside_a_real_block_are_not_keys(self) -> None:
+        inner = NL.join(["```", "Review result: approve", "```", "- Merge owner: Claude Code"])
+        body = record(**{"Review result": "changes-requested"}).replace("- Merge owner: Claude Code", inner)
+        self.assertEqual("changes-requested", POLICY.parse_record(body)["result"])
+
+
 class ReviewTests(unittest.TestCase):
     def errors(self, text: str, *, risky: bool = True, implementation: bool = True) -> list[str]:
         return POLICY.review_errors(POLICY.parse_record(text), risky=risky, implementation=implementation,

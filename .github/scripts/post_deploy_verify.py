@@ -113,6 +113,30 @@ def observe(fetch: Callable[[str], str]) -> dict[str, tuple[bool, str | None, st
     return out
 
 
+def _sample(pushed, fetch, compare, main_head):
+    observed = observe(fetch)
+    try:
+        head = main_head()
+    except Exception:  # noqa: BLE001 - an unknown main head never counts as success
+        head = None
+    states = {
+        name: (contains(pushed, rev, head, compare) if head else "unknown")
+        for name, (_, rev, _) in observed.items()
+    }
+    return observed, states
+
+
+def _attributed(observed, states) -> bool:
+    return all(s == "yes" for s in states.values()) and all(h for h, _, _ in observed.values())
+
+
+def _describe(observed, states, label: str) -> list[str]:
+    return [
+        f"- {label} {name}: revision {rev or 'null'}, contains pushed: {states.get(name)}, health: {detail}"
+        for name, (_, rev, detail) in observed.items()
+    ]
+
+
 def verify(
     pushed: str,
     *,
@@ -125,42 +149,39 @@ def verify(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> tuple[bool, list[str]]:
-    """Returns (ok, report lines)."""
-    deadline = clock() + timeout
-    states: dict[str, str] = {}
-    observed: dict[str, tuple[bool, str | None, str]] = {}
-    while True:
-        observed = observe(fetch)
-        head = None
-        try:
-            head = main_head()
-        except Exception:  # noqa: BLE001
-            head = None
-        states = {
-            name: (contains(pushed, rev, head, compare) if head else "unknown")
-            for name, (_, rev, _) in observed.items()
-        }
-        if all(state == "yes" for state in states.values()) or clock() >= deadline:
-            break
-        sleep(interval)
+    """Returns (ok, report lines).
 
-    lines = [f"pushed commit: {pushed}"]
-    for name, (healthy, rev, detail) in observed.items():
-        lines.append(f"- {name}: revision {rev or 'null'}, contains pushed: {states.get(name)}, health: {detail}")
-    ok = all(state == "yes" for state in states.values())
-    if not ok:
-        lines.append("RESULT: release not attributed (build failed/queued/rate-limited, rollback-paused, or unknown)")
-        return False, lines
-    if not all(healthy for healthy, _, _ in observed.values()):
-        lines.append("RESULT: attributed but unhealthy")
-        return False, lines
-    try:
-        mcp_ok, mcp_detail = parse_list_services(post_mcp(MCP_URL))
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        mcp_ok, mcp_detail = False, f"unreachable: {exc}"
-    lines.append(f"- mcp list_services: {mcp_detail}")
-    lines.append("RESULT: " + ("verified" if mcp_ok else "attributed but MCP smoke failed"))
-    return mcp_ok, lines
+    Success needs BOTH projects attributed and healthy before AND after the MCP smoke
+    (Codex T024 finding 3): if production moves during the smoke (a rollback, or one project
+    changing), retry within the deadline instead of trusting the pre-smoke sample.
+    """
+    deadline = clock() + timeout
+    notes: list[str] = []
+    while True:
+        before, before_states = _sample(pushed, fetch, compare, main_head)
+        if _attributed(before, before_states):
+            try:
+                mcp_ok, mcp_detail = parse_list_services(post_mcp(MCP_URL))
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                mcp_ok, mcp_detail = False, f"unreachable: {exc}"
+            after, after_states = _sample(pushed, fetch, compare, main_head)
+            lines = [f"pushed commit: {pushed}"] + notes + _describe(before, before_states, "before smoke")
+            lines += [f"- mcp list_services: {mcp_detail}"] + _describe(after, after_states, "after smoke")
+            if not _attributed(after, after_states):
+                notes.append("- attribution changed during smoke; re-sampling")
+                if clock() >= deadline:
+                    return False, lines + ["RESULT: attribution changed during smoke (rollback or deployment movement)"]
+                sleep(interval)
+                continue
+            if not mcp_ok:
+                return False, lines + ["RESULT: attributed but MCP smoke failed"]
+            return True, lines + ["RESULT: verified"]
+        if clock() >= deadline:
+            lines = [f"pushed commit: {pushed}"] + notes + _describe(before, before_states, "final")
+            if all(s == "yes" for s in before_states.values()):
+                return False, lines + ["RESULT: attributed but unhealthy"]
+            return False, lines + ["RESULT: release not attributed (build failed/queued/rate-limited, rollback-paused, or unknown)"]
+        sleep(interval)
 
 
 def main() -> int:

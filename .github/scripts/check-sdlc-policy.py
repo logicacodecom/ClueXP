@@ -272,22 +272,48 @@ def has_record(text: str | None) -> bool:
     return bool(text) and _record_blocks(text) != []
 
 
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _fence_open(line: str) -> tuple[str, int] | None:
+    """CommonMark fence opener: up to 3 spaces, >=3 backticks or tildes; a backtick
+    fence's info string may not contain a backtick."""
+    m = FENCE_OPEN_RE.match(line)
+    if not m:
+        return None
+    marker, info = m.group(1), m.group(2)
+    if marker[0] == "`" and "`" in info:
+        return None
+    return marker[0], len(marker)
+
+
+def _fence_closes(line: str, char: str, length: int) -> bool:
+    """A closer uses the SAME character, at least the opener's length, up to 3 spaces
+    of indent, and nothing but whitespace after."""
+    m = re.match(r"^ {0,3}(" + re.escape(char) + r"{3,})\s*$", line)
+    return bool(m) and len(m.group(1)) >= length
+
+
 def _record_blocks(text: str) -> list[list[str]]:
+    """Return the content lines of each `## Review Record` block that sits outside fenced
+    code. Fenced lines are never part of a block (FR-001)."""
     blocks: list[list[str]] = []
     current: list[str] | None = None
-    in_fence = False
-    for raw in text.replace("\r", "").split("\n"):
-        stripped = raw.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
-            if current is not None:
-                current.append(raw)
+    fence: tuple[str, int] | None = None
+    for raw in text.replace(chr(13), "").split(chr(10)):
+        if fence is not None:
+            if _fence_closes(raw, *fence):
+                fence = None
             continue
-        if not in_fence and raw.rstrip() == RECORD_HEADING:
+        opened = _fence_open(raw)
+        if opened is not None:
+            fence = opened
+            continue
+        if raw.rstrip() == RECORD_HEADING:
             current = []
             blocks.append(current)
             continue
-        if not in_fence and current is not None and (raw.startswith("# ") or raw.startswith("## ")):
+        if current is not None and (raw.startswith("# ") or raw.startswith("## ")):
             current = None
             continue
         if current is not None:
@@ -320,7 +346,7 @@ def parse_record(text: str) -> dict:
     raw: dict[str, str] = {}
     for line in blocks[0]:
         stripped = line.strip()
-        if not stripped or stripped.startswith("```") or stripped.startswith("~~~"):
+        if not stripped:
             continue
         if stripped[:2] in {"- ", "* "}:
             stripped = stripped[2:]

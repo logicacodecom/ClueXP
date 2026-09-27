@@ -62,7 +62,8 @@ class ContainsTests(unittest.TestCase):
 
 
 class VerifyTests(unittest.TestCase):
-    def run_verify(self, revisions: list[dict[str, str | None]], *, mcp: str = OK_LIST, healthy: bool = True):
+    def run_verify(self, revisions: list[dict[str, str | None]], *, mcp: str = OK_LIST, healthy: bool = True,
+                   during_smoke: dict[str, str | None] | None = None):
         seq = iter(revisions)
         current: dict[str, str | None] = {}
         clock = [0.0]
@@ -75,9 +76,27 @@ class VerifyTests(unittest.TestCase):
             clock[0] += seconds
             current.update(next(seq, current))
 
+        def post_mcp(url: str) -> str:
+            if during_smoke:  # production moves while the smoke request is in flight
+                current.update(during_smoke)
+            return mcp
+
         current.update(next(seq))
-        return PDV.verify(PUSHED, fetch=fetch, post_mcp=lambda url: mcp, compare=compare_table,
+        return PDV.verify(PUSHED, fetch=fetch, post_mcp=post_mcp, compare=compare_table,
                           main_head=lambda: MAIN, timeout=90, interval=30, sleep=sleep, clock=lambda: clock[0])
+
+    def test_rollback_during_smoke_is_not_verified(self) -> None:
+        # Codex T024 finding 3: attributed before smoke, rolled back to an older revision during it.
+        ok, lines = self.run_verify([{"cluexp-intake": PUSHED, "cluexp-mcp-server": PUSHED}],
+                                    during_smoke={"cluexp-mcp-server": OLDER})
+        self.assertFalse(ok)
+        self.assertTrue(any("attribution changed during smoke" in line for line in lines), lines)
+
+    def test_superseding_deploy_during_smoke_still_verifies(self) -> None:
+        ok, lines = self.run_verify([{"cluexp-intake": PUSHED, "cluexp-mcp-server": PUSHED}],
+                                    during_smoke={"cluexp-intake": NEWER})
+        self.assertTrue(ok, lines)
+        self.assertIn("RESULT: verified", lines[-1])
 
     def test_superseding_revision_on_both_projects_verifies(self) -> None:
         ok, lines = self.run_verify([{"cluexp-intake": OLDER, "cluexp-mcp-server": OLDER},
@@ -103,6 +122,53 @@ class VerifyTests(unittest.TestCase):
     def test_attributed_but_unhealthy_fails(self) -> None:
         ok, lines = self.run_verify([{"cluexp-intake": PUSHED, "cluexp-mcp-server": PUSHED}], healthy=False)
         self.assertFalse(ok)
+
+
+class CliTests(unittest.TestCase):
+    """The `verify` CLI: failure opens an incident; an incident-creation failure still exits red."""
+
+    def run_cli(self, verify_result, open_incident):
+        import contextlib
+        import io
+        import os
+        import types
+        from unittest import mock
+
+        fake = types.ModuleType("sdlc_github")
+        fake.compare_status = lambda a, b: "identical"
+        fake.request = lambda method, path: {"sha": MAIN}
+        fake.repo = lambda: "o/r"
+        fake.open_incident = open_incident
+        out = io.StringIO()
+        with mock.patch.dict(sys.modules, {"sdlc_github": fake}), \
+             mock.patch.object(PDV, "verify", return_value=verify_result), \
+             mock.patch.object(sys, "argv", ["post_deploy_verify.py", "verify", "--pushed", PUSHED]), \
+             mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+             contextlib.redirect_stdout(out):
+            code = PDV.main()
+        return code, out.getvalue()
+
+    def test_timeout_opens_incident(self) -> None:
+        calls = []
+        code, out = self.run_cli((False, ["RESULT: release not attributed"]),
+                                 lambda title, body: calls.append((title, body)) or "https://issue/1")
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(calls))
+        self.assertIn(PUSHED[:12], calls[0][0])
+        self.assertIn("incident: https://issue/1", out)
+
+    def test_incident_creation_failure_still_fails_red(self) -> None:
+        def boom(title, body):
+            raise RuntimeError("issues API down")
+        code, out = self.run_cli((False, ["RESULT: release not attributed"]), boom)
+        self.assertEqual(1, code)
+        self.assertIn("incident issue could not be created", out)
+
+    def test_success_opens_no_incident(self) -> None:
+        calls = []
+        code, _ = self.run_cli((True, ["RESULT: verified"]), lambda t, b: calls.append(t))
+        self.assertEqual(0, code)
+        self.assertEqual([], calls)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,38 @@ class ProjectionTests(unittest.TestCase):
         no_reviews["required_pull_request_reviews"] = None
         self.assertIn("reviews_required_object", PP.diff(INTENDED, no_reviews))
 
+    def test_request_strings_equal_response_objects(self) -> None:
+        # Codex T024 finding 2: PUT requests use login/slug strings; responses use objects.
+        request = copy.deepcopy(INTENDED)
+        request["restrictions"] = {"users": ["Alice"], "teams": ["ops"], "apps": []}
+        request["required_pull_request_reviews"]["bypass_pull_request_allowances"] = {"users": ["alice"]}
+        response = copy.deepcopy(AFTER)
+        response["restrictions"] = {"users": [{"login": "alice", "url": "x"}], "teams": [{"slug": "ops"}], "apps": []}
+        response["required_pull_request_reviews"]["bypass_pull_request_allowances"] = {"users": [{"login": "alice"}], "teams": [], "apps": []}
+        self.assertEqual({}, PP.diff(request, response))
+
+    def test_member_substitution_and_removal_are_drift(self) -> None:
+        alice = copy.deepcopy(AFTER)
+        alice["restrictions"] = {"users": [{"login": "alice"}], "teams": [], "apps": []}
+        mallory = copy.deepcopy(alice)
+        mallory["restrictions"]["users"] = [{"login": "mallory"}]
+        self.assertIn("restrictions", PP.diff(alice, mallory))
+        removed = copy.deepcopy(alice)
+        removed["restrictions"]["users"] = []
+        self.assertIn("restrictions", PP.diff(alice, removed))
+
+    def test_unrestricted_differs_from_empty_restriction_list(self) -> None:
+        empty = copy.deepcopy(AFTER)
+        empty["restrictions"] = {"users": [], "teams": [], "apps": []}
+        self.assertIn("restrictions", PP.diff(AFTER, empty))
+
+    def test_dismissal_restriction_identities_are_compared(self) -> None:
+        a = copy.deepcopy(AFTER)
+        a["required_pull_request_reviews"]["dismissal_restrictions"] = {"users": [{"login": "alice"}]}
+        b = copy.deepcopy(a)
+        b["required_pull_request_reviews"]["dismissal_restrictions"] = {"users": [{"login": "mallory"}]}
+        self.assertIn("dismissal", PP.diff(a, b))
+
 
 if __name__ == "__main__":
     unittest.main()

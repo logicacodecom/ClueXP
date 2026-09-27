@@ -21,19 +21,28 @@ def _enabled(value) -> bool:
     return bool(value)
 
 
+def _identity(item) -> str:
+    """Requests use login/slug strings; responses use objects with login/slug."""
+    if isinstance(item, str):
+        return item.lower()
+    if isinstance(item, dict):
+        return str(item.get("login") or item.get("slug") or item.get("name") or item.get("id")).lower()
+    return str(item).lower()
+
+
+def _members(obj) -> dict | None:
+    """None stays None (unrestricted); an object, even empty, is a restriction list."""
+    if obj is None:
+        return None
+    return {kind: sorted(_identity(i) for i in (obj.get(kind) or [])) for kind in ("users", "teams", "apps")}
+
+
 def project(doc: dict) -> dict:
     checks_src = (doc.get("required_status_checks") or {}).get("checks") or []
     checks = sorted(
         (c["context"], "any" if c.get("app_id") in (None, -1) else int(c["app_id"])) for c in checks_src
     )
     reviews = doc.get("required_pull_request_reviews")
-    bypass = (reviews or {}).get("bypass_pull_request_allowances") or {}
-    bypass_members = sorted(
-        f"{kind}:{item.get('login') or item.get('slug') or item.get('name') or item}"
-        for kind in ("users", "teams", "apps")
-        for item in (bypass.get(kind) or [])
-    )
-    restrictions = doc.get("restrictions")
     return {
         "strict": bool((doc.get("required_status_checks") or {}).get("strict")),
         "checks": checks,
@@ -43,8 +52,10 @@ def project(doc: dict) -> dict:
         "code_owner": bool((reviews or {}).get("require_code_owner_reviews")),
         "dismiss_stale": bool((reviews or {}).get("dismiss_stale_reviews")),
         "last_push": bool((reviews or {}).get("require_last_push_approval")),
-        "bypass": bypass_members,
-        "restricted": restrictions is not None,
+        # Absent bypass/dismissal lists mean "nobody"; compare actual identities.
+        "bypass": _members((reviews or {}).get("bypass_pull_request_allowances") or {}),
+        "dismissal": _members((reviews or {}).get("dismissal_restrictions") or {}),
+        "restrictions": _members(doc.get("restrictions")),
         "linear": _enabled(doc.get("required_linear_history")),
         "force_push": _enabled(doc.get("allow_force_pushes")),
         "deletions": _enabled(doc.get("allow_deletions")),
