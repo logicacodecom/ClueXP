@@ -11,8 +11,8 @@ Secondary-agent review completed: yes
 Author agents: Claude Code
 Reviewer agent: Codex
 Review scope: spec
-Reviewed head: d217114f1d6362ba9d9a3275a0d21038f031183a
-Review result: changes-requested
+Reviewed head: 404bc525e1bef4f5dde37e8080a1b82da0e02077
+Review result: approve
 Merge owner: Claude Code
 
 ## Requirements Quality
@@ -39,7 +39,7 @@ Merge owner: Claude Code
 
 - [x] Tests are listed in `plan.md` and mapped to tasks.
 - [x] Settings snapshot, read-back, and rollback are defined.
-- [x] Codex revision 2 re-review completed (T003): changes-requested; implementation remains blocked pending revisions and approval.
+- [x] Codex revision 3 review completed (T003): approve. No spec blockers; implementation-time acceptance obligations are recorded below. This is design approval only.
 
 ## T003 Review Ownership And Findings
 
@@ -175,3 +175,48 @@ Prior R1–R8 disposition:
 No P0 findings. Four P1 and three P2 findings. The architecture is implementable; these are bounded corrections, not a request for a different identity model or a human review gate. T003 remains changes-requested and implementation must await approval of the amended spec.
 
 Validation: fetched and reviewed exact d217114 git objects; inspected existing health consumers and classifier; ran in-memory classifier probes (two uncovered paths) and reproduced exact-response incompatibility; read-only protection API confirmed the response shape and current unbound sdlc-policy app; checked official platform docs. No application test suite was run because no implementation was changed. Only the reviewer-owned checklist and PR-body verdict are updated, plus the requested temporary report. Historical review text remains historical; the top Review Record is authoritative for this re-review.
+
+## T003 Revision 3 Approval
+
+Codex owns this checklist for the explicitly assigned review. This approval supersedes the earlier spec verdicts; those reviews remain historical. Governance checkboxes above describe approved requirements, not completed implementation or changed GitHub settings.
+
+# T003 — Spec 004 revision 3 review
+
+Verdict: **approve**
+
+Reviewed head: `404bc525e1bef4f5dde37e8080a1b82da0e02077` (PR #82).
+Reviewer: Codex, independent of author family Claude Code. Date: 2026-09-27.
+Scope: spec.md, plan.md and tasks.md at that exact head, compared with the revision 2 findings.
+
+**BLOCKING: none.** The design is implementable. All seven previous findings are addressed at specification level. The remaining items below are **IMPLEMENTATION-TIME** acceptance obligations under T010–T036; they do not require another spec revision before implementation. This approves the design, not unimplemented code, production activation, a merge, or a settings change. The existing independent implementation review, CI and bootstrap requirements still apply.
+
+1. **IMPLEMENTATION-TIME — Incident handling and permissions (previous finding 1).**
+   Resolved by FR-011/013 and NFR-001: the freeze is explicitly an agent-operated rule, not a claim that GitHub automatically invalidates green checks. The merge owner checks open incidents immediately before merge/arming; Hermes disarms queued auto-merges and treats a red verification run as an incident even if issue creation fails. PR and push diagnostics are read-only; only the main-only release job writes issues.
+   T020/T034/T036 evidence should demonstrate repo-qualified issue lookup, enumeration/disarming of all armed PRs, acknowledgement, and handling of issue-query/write failure. A failed lookup must not be read as an empty incident list. Record who monitors red runs and how the merge owner learns of an incident without an issue. This is execution of the accepted operational model, not a request for a new check, account or event system. Its non-atomic reaction window is a stated limitation, not an automatic GitHub freeze.
+
+2. **IMPLEMENTATION-TIME — Health consumer compatibility (previous finding 2).**
+   Resolved by T015 and the affected-surface list: both endpoints, the two ASGI exact-JSON tests and mcp-production-health change together. Verify semantic status checks with revision present/null, malformed JSON and unhealthy status, and retain list_services semantic-error detection. Keep the health tests checking the new revision value explicitly; replacing every assertion with status-only would miss attribution regressions. Verify the scheduled monitor and post-deploy verifier on the same implementation head.
+
+3. **IMPLEMENTATION-TIME — Declared review semantics and live fixture (previous finding 3).**
+   Resolved by FR-006: required=yes invokes full result, independence, scope and freshness validation even for spec-only changes. T031's harmless PR now deliberately declares required=yes and remains unmerged during negative tests.
+   T011–T014/T031 should demonstrate approval, revocation, old-event rerun, duplicate/unknown fields, stale head and current API reads. Exercise a spec-only PR with no risky paths, including its evidence-only descendant; do not make non-risky PRs supply material artifacts accidentally. If no governing complete feature exists, an exact-head review remains valid, while no unrelated checklist should obtain an evidence exception. Wait for the rerun to finish successfully before arming auto-merge. Record the current run/head rather than relying on the command to start a rerun alone. The declared review semantics apply after implementation; today's existing gate remains unchanged by this approval.
+
+4. **IMPLEMENTATION-TIME — Protection projection and recovery (previous finding 4).**
+   Resolved by the canonical projection, -1 restore binding and partial-failure procedure. Implement request/response fixtures rather than comparing raw JSON. Cover nested enabled fields, array order, null/-1 app bindings, optional/default fields, unrelated existing protections (including signatures and block-creation state), and nonempty bypass allowances. Preserve material differences rather than discarding them as API noise; a real drift must stop the transition.
+   T016/T030–T036 must retain raw snapshots, projected comparisons, response validation and restoration read-backs. Include failure of the repository PATCH and failure of restoration itself: the no-merge window stays open until verified recovery. The restore payload lives in the plan/T033; the FR-015 reference to T034 is a minor task-reference correction that can be made with the implementation documentation. No new policy decision is needed.
+
+5. **IMPLEMENTATION-TIME — Enforcement helper coverage (previous finding 5).**
+   Resolved by the .github/scripts/** risky family in the plan and T012. T010/T013 must prove helper-only additions/modifications/deletions and renames across the directory boundary trigger the material gate, including the API client, projection helper, release verifier and tests. Use surviving destination paths for supplied artifacts, while considering both old/new paths for risk. Verify that moving the job leaves exactly one producer named sdlc-policy and retains assertions and both test suites.
+
+6. **IMPLEMENTATION-TIME — Deployment attribution and prerequisite evidence (previous finding 6).**
+   Resolved by FR-013's compare-API containment, bounded polling, main-only issue writer, success summaries and explicit build-every-main-commit prerequisite. This removes dependence on a descendant object being present locally. T016 fixtures must verify the comparison direction (pushed base to observed revision), identical/ahead versus behind/diverged, invalid SHA, API errors/timeouts, superseding revisions, one-project lag, and issue-write failure. Unknown is never success. If enforcing that observed revisions also belong to main, include that check explicitly: being a descendant alone does not establish branch membership. This implements the existing non-unrelated-revision requirement. [GitHub compare API](https://docs.github.com/en/rest/commits/commits#compare-two-commits).
+   T033/T034 must verify actual project behavior and deployed revision exposure for BOTH projects, including a harmless/docs-only merge, not merely infer every-commit builds from the absence of an ignored-build command. Inspect any other project/build-skip controls that apply. Treat the author's 2026-09-27 project inspection as author evidence until its API output or re-verification is recorded; I did not independently inspect Vercel settings. A failed prerequisite blocks transition completion, not this design approval. Record the revisions with smoke results and handle a deployment changing during polling consistently.
+
+7. **IMPLEMENTATION-TIME — Push diagnostics and authority boundary (previous finding 7).**
+   Resolved by removing the incomplete commit-to-PR lookup. Push runs are explicitly artifact/range diagnostics; GitHub protection is the control preventing ordinary PR bypass once the transition is complete. Keep this distinction through T020/T021 and T030–T036: bootstrap runs occur under old settings, and an authorized admin exception is not retrospectively proven by a green diagnostic. Test the full before..after range, all-zero before, supported merge methods and failures without introducing writes into the diagnostic job. Record exception authorization/settings audit evidence operationally. No PR-provenance reconstruction service is required.
+
+Disposition of earlier review threads: record grammar, different-family independence, current-head freshness, local git-object reads and preflight-only working-tree behavior remain accepted designs; FR-012 retains the executable current-schema/config and mixed-version obligations; T021/T023/T040 cover canonical text, historical task reconciliation and local-skill alignment. These need the planned implementation tests and review, not another architecture debate. T035's deprecated-key retirement must be delivered as an ordinary reviewed policy change after the transition, with templates and active records aligned.
+
+Validation performed: fetched PR #82; verified the exact head; read all three revision 3 documents and their revision 2 diff; checked the task-to-finding mapping and the reviewer-owned checklist; consulted the official compare API documentation. No application tests or live acceptance actions were run because this is a spec-only review. The requested report and checklist/PR verdict record are the only deliverables changed. Historical changes-requested findings remain as history; the current top Review Record supersedes them for this design revision.
+
+T003 design review is complete: approve. Claude may mark T003 complete in the author-owned tasks.md and proceed through the documented implementation workflow when instructed. No tasks.md, implementation, merge or settings edits were made during this review.
