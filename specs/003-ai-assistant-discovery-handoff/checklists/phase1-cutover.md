@@ -18,7 +18,7 @@ Review result: approve
   Vercel environment store; the local copy is deleted.
 - [x] MCP env: the OAuth and bearer variables are removed; the new key and
   `CLUEXP_API_BASE_URL=https://api.cluexp.com` are set.
-- [x] Firewall: 60 requests/60 s per IP on `/mcp` and `/api/mcp`; a burst gave 60 Ãƒâ€” 200, then 429.
+- [x] Firewall: 60 requests/60 s per IP on `/mcp` and `/api/mcp`; a burst gave 60 x 200, then 429.
 - [x] Deploy from a clean `origin/main` export (`3c08e65`). The live protocol run showed two
   read-only tools, a live catalog, `providers: []`, ambiguous-address candidates, and a 404 OAuth
   route.
@@ -33,7 +33,7 @@ Review result: approve
   or on an empty catalog.
 - The accuracy of the recorded production state and the 0061/alembic decision.
 
-## Independent Codex Review â€” 2026-09-27
+## Independent Codex Review - 2026-09-27
 
 Reviewed PR #81 at `6fb8ea25c830795f592137f434c13e239ac3c1c3` as the
 non-author secondary reviewer. Codex owns this checklist for this review.
