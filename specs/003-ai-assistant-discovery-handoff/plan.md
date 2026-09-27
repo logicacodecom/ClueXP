@@ -313,3 +313,25 @@ status, so a draft must never exist as a `jobs` row or touch `customers` before 
 - Geocoder region bias: FR-009a may reject valid addresses that need a country hint. If pilot
   testing shows this, add a configured `region`/`components` bias. That is a config change, not a
   relaxation of the acceptance rule.
+
+## Phase 1 Implementation Notes (2026-09-26)
+
+Implemented on `feat/003-phase1-provider-discovery`. Deviations from the plan text above:
+
+- **Snapshot shape (plan step 3, T010):** `_network_routing_snapshot` keeps its `(technicians, routed)`
+  return, so its two existing callers are unchanged. The shared data now comes from a new
+  `_network_eligibility_snapshot()` returning `(technicians, org_status, org_capabilities)`, which both
+  the router path and provider matching use. `org_eligible` (per org) and `technician_org_eligible`
+  (the router's any-affiliation rule) live in `dispatch.py`.
+- **Commit-step re-check (FR-013):** implemented as `GET /tickets/{id}/provider-availability`
+  (`{eligible: true|false|null}`, intake capability cookie required) instead of a `provider_eligible`
+  envelope field, which avoids a generated schema-type change. The UI calls it only for assistant
+  handoffs, within the same page session.
+- **Pre-fill entry (FR-010):** the plan's open-question fallback. The branded intake reads the
+  fragment, pre-fills the address, and starts a fresh request. The customer's first tap on the opener
+  creates the ticket with the pre-filled location and `intake_source=ai_assistant`; the location step
+  then reuses those coordinates and still asks the safety question.
+- **Attribution (FR-012):** only `intake_source == "ai_assistant"` is accepted; `origin_channel` is
+  written once and never overwritten.
+- **Not in this change:** T017 (health-monitor workflow edit, awaiting explicit Human approval for the
+  workflow file), T018 preview/manual testing, and all production steps (T020–T023).

@@ -31,29 +31,29 @@
 
 ## Tasks — Phase 1
 
-- [ ] T010 Claude: extract `org_eligible` (per-org) and `technician_org_eligible` from
+- [x] T010 Claude: extract `org_eligible` (per-org) and `technician_org_eligible` from
   `route_network_request`. Make `_network_routing_snapshot` return `(technicians, org_status,
   org_capabilities)` and update its two callers. Regression tests show coverage-check and
   dispatch-authorization results are unchanged.
-- [ ] T011 Claude: migration `intake_channels.ai_assistant_listed` + partial unique index; upgrade and
+- [x] T011 Claude: migration `intake_channels.ai_assistant_listed` + partial unique index; upgrade and
   downgrade verified on scratch Postgres.
-- [ ] T012 Claude: store method for listed channels (InMemoryStore + PostgresStore) with a
+- [x] T012 Claude: store method for listed channels (InMemoryStore + PostgresStore) with a
   Postgres-backed test.
-- [ ] T013a Claude: `geocode.geocode_candidates` (all results with `location_type`, `partial_match`,
+- [x] T013a Claude: `geocode.geocode_candidates` (all results with `location_type`, `partial_match`,
   `types`), sharing only the HTTP fetch with `geocode()`. Pinned regression test for the existing
   first-result callers.
-- [ ] T013 Claude: `POST /v1/provider-matches` + scope `providers:search`.
+- [x] T013 Claude: `POST /v1/provider-matches` + scope `providers:search`.
   - FR-009a acceptance rule with the `address_not_found`, `address_ambiguous`, `address_imprecise`,
     and `geocoding_unavailable` codes.
   - Per-org eligibility with multi-org and null-org tests.
   - Event metadata allow-list and failure-log privacy tests.
   - Regenerate `docs/openapi-v1-snapshot.json`.
-- [ ] T014 [P] Claude: MCP server — delete five tools, OAuth, and bearer path; add `find_providers`;
+- [x] T014 [P] Claude: MCP server — delete five tools, OAuth, and bearer path; add `find_providers`;
   update tests, `tools/list` snapshot test, README, runbook, `.env.example`, `vercel.json`, manifest.
-- [ ] T015 [P] Claude: intake web — fragment pre-fill in `IntakeFlow`, no ticket on load,
+- [x] T015 [P] Claude: intake web — fragment pre-fill in `IntakeFlow`, no ticket on load,
   `intake_source` → `origin_channel='ai_assistant'`, commit-step `provider_eligible` notice; build
   passes.
-- [ ] T016 Claude: docs — `AGENT-INTEGRATION-MCP-PLAN.md`, `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`,
+- [x] T016 Claude: docs — `AGENT-INTEGRATION-MCP-PLAN.md`, `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`,
   `PUBLIC-API-DEVELOPER-GUIDE.md`, `PRODUCTION-READINESS.md`.
 - [ ] T017 [H] Human: approve the workflow edit, then Claude updates `mcp-production-health.yml` to call
   `list_services` via `/mcp`.
