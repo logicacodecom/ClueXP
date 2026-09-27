@@ -2,7 +2,7 @@
 
 **Artifact Reviewed**: `implementation (feat/003-phase1-provider-discovery)`
 **Reviewer**: `Codex (independent secondary/final reviewer, T019)`
-**Date**: `2026-09-26`
+**Date**: `2026-09-27`
 
 Secondary-agent review required: yes
 Secondary-agent review completed: yes
@@ -166,3 +166,35 @@ Validation at `e39762d928b660a55acfbe56043f4c1772020b43`:
 - No browser or preview validation, scratch downgrade, merge, deployment, workflow edit, key
   creation, or production action performed. T017/T018 and production T020-T023 remain gated;
   T005 remains separate. This approval authorizes none of those actions.
+
+## Independent T017 Re-review — 6580661 (2026-09-27)
+
+**Verdict: approve.** No blocking findings. Codex independently reviewed Claude's
+`65806618d671de8ec48ca7a7111d4d150760b54c`, the sole implementation commit since the
+`89aacc1` approval record. T019 approval now includes the Human-approved T017 workflow
+change and its tasks, plan, and production-readiness updates.
+
+- The monitor calls the read-only `list_services` tool without incoming credentials.
+  HTTP 200 requires a parsed JSON/SSE tool result, no MCP/tool error, no error in
+  `structuredContent`, and a nonempty catalog. This matches the server's API-error envelope;
+  a failed outbound API key cannot pass merely because MCP returns HTTP 200.
+- The 401 fallback preserves PR #75's two-probe implementation byte-for-byte, including
+  missing/wrong-token rejection, recognized bearer/OAuth errors, and mode agreement.
+  Other statuses and transport failures fail the step.
+- The fallback is deliberately transitional: a green auth-mode run does not prove cutover.
+  Follow PRODUCTION-READINESS: require the "public discovery OK" summary after deployment
+  and remove the 401 branch. This remains authorized release follow-up, not work performed here.
+- Independent validation: YAML loaded; extracted Bash step passed `bash -n`; 23 local
+  fixture-driven executions of the exact step passed. Cases cover JSON/SSE success, MCP error,
+  `isError`, nested API error, empty/missing/wrong-type catalog, absent structured content,
+  malformed/non-object JSON, HTTP 301/403/429/500, curl failure, bearer/OAuth fallback,
+  mode mismatch, either probe accepting the request, unknown auth error, and invalid auth JSON.
+  Only curl was replaced with fixtures; no live production request or workflow dispatch occurred.
+- CI run `36315016148` at `6580661`: all five required checks (`secret-scan`, `sdlc-policy`,
+  `web`, `api`, `mcp-server`) passed. Claude's local-server/live-production evidence remains
+  author evidence, separate from the independent fixture checks above.
+- Pilot `specs/001-pilot-readiness/tasks.md` T012: phase 1 removes the MCP mutating tools,
+  satisfying its disable-the-mutating-surface option once deployed and verified. Do not close
+  that production gate on code-review approval alone.
+- T018 browser/preview acceptance and production T020-T023 remain open; T005 remains separate.
+  No merge, deployment, production change, or release authorization is included in this review.

@@ -70,6 +70,10 @@
     production T020-T023 remain gated; T005 remains separate.
   - 2026-09-26 re-review of `e39762d`: approve; R1-R4 resolved. T019 complete.
     Browser/preview acceptance remains T018; approval does not authorize merge or release.
+  - 2026-09-27 re-review of `6580661`: approve; includes the Human-approved T017 workflow
+    and docs. Independent exact-step Bash validation: 23 fixture scenarios passed; all five
+    required CI checks green. Evidence and pilot spec 001 T012 deployment dependency are
+    recorded in the reviewer-owned implementation checklist. T018/T020-T023 remain open.
 - [ ] T020 [H] Human: authorize production — migration apply, scoped `/v1` key, Vercel env changes,
   Firewall rate-limit rule, git-connected Vercel project, production deploy.
 - [ ] T021 [H] Human: first provider channel opt-ins (written provider consent per HD-6).
