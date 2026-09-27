@@ -30,6 +30,7 @@ Each endpoint requires exactly one scope. A key without the required scope gets 
 |---|---|
 | `services:read` | `GET /v1/services` |
 | `coverage:check` | `POST /v1/coverage-checks` |
+| `providers:search` | `POST /v1/provider-matches` |
 | `service_requests:write` | `POST /v1/service-requests` |
 | `service_requests:authorize` | `POST /v1/service-requests/{id}/dispatch-authorizations` |
 | `service_requests:read` | `GET /v1/service-requests/{id}`, `GET /v1/service-requests/{id}/tracking` |
@@ -107,6 +108,39 @@ Content-Type: application/json
   "meta": { "request_id": "..." }
 }
 ```
+
+## Provider matches (AI-assistant discovery)
+
+Read-only: returns up to three provider companies that opted in to assistant listing and can serve the
+skill at the location, in ClueXP's deterministic router order. The first is `recommended`. Creates no
+ticket, job, or customer. Send exactly one of `address` or `lat`+`lng`.
+
+```
+POST /v1/provider-matches
+Authorization: Bearer <key>
+Content-Type: application/json
+
+{ "service_skill": "locksmith.residential_lockout", "address": "221 King St W, Toronto, ON" }
+```
+
+```json
+{
+  "data": {
+    "service_skill": "locksmith.residential_lockout",
+    "matched_location": { "formatted_address": "221 King St W, Toronto, ON M5H 1K5, Canada", "lat": 43.6, "lng": -79.4 },
+    "providers": [
+      { "name": "ABC Locksmith", "recommended": true,
+        "intake_url": "https://intake.cluexp.com/o/abc-locksmith#skill=...&src=ai_assistant" }
+    ]
+  },
+  "meta": { "request_id": "..." }
+}
+```
+
+An address is accepted only when it geocodes to exactly one full, street-precise match. Otherwise the
+response is 422 `address_not_found`, 422 `address_ambiguous` (with up to three `candidates`), 422
+`address_imprecise`, or 503 `geocoding_unavailable`. Results never include technician identity, count,
+location, distance, rating, ETA, price, or internal IDs. See `specs/003-ai-assistant-discovery-handoff`.
 
 ## Creating a service request
 

@@ -2,9 +2,10 @@
 
 import { CalendarClock, Car, Clock3, Home, LoaderCircle, MapPin, Network, Phone, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
+import { type AiPrefill, parseAiPrefill, shouldAutocomplete } from "./ai-handoff";
 
 type Screen =
   | "opener"
@@ -346,6 +347,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     scheduleEnd: scheduleWindow.end,
   });
   const [authorityRole, setAuthorityRole] = useState<string | null>(null);
+  const [aiPrefill, setAiPrefill] = useState<AiPrefill | null>(null);
+  const [providerAvailable, setProviderAvailable] = useState<boolean | null | "pending">(null);
+  const addressTypedByCustomer = useRef(false);
 
   const iconFor = useMemo(
     () => ({
@@ -600,6 +604,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (new URLSearchParams(window.location.search).get("verified") === "1") return;
+    if (parseAiPrefill(window.location.hash)) return; // an assistant handoff starts a fresh request
     const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
     let saved: { ticketId?: string; screen?: Screen; savedAt?: number };
@@ -625,6 +630,31 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       }
     })();
   }, [sessionKey]);
+
+  useEffect(() => {
+    if (!organizationSlug) return;
+    const prefill = parseAiPrefill(window.location.hash);
+    if (!prefill) return;
+    window.localStorage.removeItem(sessionKey);
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setAiPrefill(prefill);
+    setForm((current) => ({ ...current, address: prefill.location.raw_text }));
+  }, [organizationSlug, sessionKey]);
+
+  // Commit-step re-check (FR-013). The server answers only for assistant-sourced
+  // intakes (durable jobs.origin_channel), so this also covers reloads and the
+  // SMS verification return; the confirm button waits for the answer.
+  useEffect(() => {
+    if (screen !== "commit" || !ticket?.ticket_id) return;
+    let active = true;
+    setProviderAvailable("pending");
+    api<{ eligible: boolean | null }>(`/tickets/${ticket.ticket_id}/provider-availability`)
+      .then((result) => active && setProviderAvailable(result.eligible))
+      .catch(() => active && setProviderAvailable(null));
+    return () => {
+      active = false;
+    };
+  }, [screen, ticket?.ticket_id]);
 
   useEffect(() => {
     if (screen !== "matching" || !ticket?.ticket_id) return;
@@ -664,7 +694,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   // Debounced Places autocomplete. Selection performs the single geocode call.
   useEffect(() => {
     const addr = form.address.trim();
-    if (!addr) {
+    if (!shouldAutocomplete(addr, addressTypedByCustomer.current)) {
       setPlacePredictions([]);
       setPlacesLoading(false);
       return;
@@ -711,7 +741,15 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     if (screen === "opener") {
       return (
         <>
-          <AgentMessage support="A few structured answers help us route the right access specialist without inventing details.">
+          <AgentMessage
+            support={
+              aiPrefill
+                ? `From your assistant: ${aiPrefill.location.raw_text}.${
+                    aiPrefill.accessType ? " The highlighted option matches what you asked for; tap it to continue." : ""
+                  } You can change the location in the next steps.`
+                : "A few structured answers help us route the right access specialist without inventing details."
+            }
+          >
             What are you locked out of?
           </AgentMessage>
           <div className="stack">
@@ -722,14 +760,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               ["other", "Something else", "Talk with a person"]
             ].map(([value, label, hint]) => (
               <button
-                className="choice"
+                className={aiPrefill?.accessType === value ? "choice active" : "choice"}
+                aria-pressed={aiPrefill?.accessType === value ? true : undefined}
                 key={value}
                 type="button"
                 onClick={() =>
                   run(async () => {
                     const envelope = await api<TicketEnvelope>("/tickets", {
                       method: "POST",
-                      body: JSON.stringify(withIntakeChannel({ access_type: value }))
+                      body: JSON.stringify(
+                        withIntakeChannel(
+                          aiPrefill
+                            ? { access_type: value, location: aiPrefill.location, intake_source: "ai_assistant" }
+                            : { access_type: value }
+                        )
+                      )
                     });
                     sync(envelope);
                     if (value === "other") {
@@ -799,7 +844,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               className="field"
               placeholder="Address or nearby landmark"
               value={form.address}
-              onChange={(event) => setForm({ ...form, address: event.target.value })}
+              onChange={(event) => {
+                addressTypedByCustomer.current = true;
+                setForm({ ...form, address: event.target.value });
+              }}
             />
             {placesLoading ? <p className="fine">Checking address matches...</p> : null}
             {placePredictions.length ? (
@@ -1294,6 +1342,14 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           >
             {scheduled ? "Ready to request this appointment?" : "Ready to request help?"}
           </AgentMessage>
+          {providerAvailable === false ? (
+            <div className="panel">
+              <p className="panel-title">This provider may not have a technician available right now</p>
+              <p className="fine">
+                You can still send the request, or go back to your assistant to choose another provider.
+              </p>
+            </div>
+          ) : null}
           {scheduled ? (
             <div className="panel">
               <p className="panel-title">Requested window</p>
@@ -1311,6 +1367,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <button
             className="primary"
             type="button"
+            disabled={busy || providerAvailable === "pending"}
             onClick={() =>
               run(async () => {
                 const current = await ensureTicket();
@@ -1330,7 +1387,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               })
             }
           >
-            {scheduled ? "Request appointment" : "Confirm request"}
+            {providerAvailable === "pending"
+              ? "Checking provider availability..."
+              : scheduled
+                ? "Request appointment"
+                : "Confirm request"}
           </button>
         </>
       );

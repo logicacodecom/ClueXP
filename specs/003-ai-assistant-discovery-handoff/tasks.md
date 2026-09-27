@@ -31,35 +31,49 @@
 
 ## Tasks — Phase 1
 
-- [ ] T010 Claude: extract `org_eligible` (per-org) and `technician_org_eligible` from
+- [x] T010 Claude: extract `org_eligible` (per-org) and `technician_org_eligible` from
   `route_network_request`. Make `_network_routing_snapshot` return `(technicians, org_status,
   org_capabilities)` and update its two callers. Regression tests show coverage-check and
   dispatch-authorization results are unchanged.
-- [ ] T011 Claude: migration `intake_channels.ai_assistant_listed` + partial unique index; upgrade and
+- [x] T011 Claude: migration `intake_channels.ai_assistant_listed` + partial unique index; upgrade and
   downgrade verified on scratch Postgres.
-- [ ] T012 Claude: store method for listed channels (InMemoryStore + PostgresStore) with a
+- [x] T012 Claude: store method for listed channels (InMemoryStore + PostgresStore) with a
   Postgres-backed test.
-- [ ] T013a Claude: `geocode.geocode_candidates` (all results with `location_type`, `partial_match`,
+- [x] T013a Claude: `geocode.geocode_candidates` (all results with `location_type`, `partial_match`,
   `types`), sharing only the HTTP fetch with `geocode()`. Pinned regression test for the existing
   first-result callers.
-- [ ] T013 Claude: `POST /v1/provider-matches` + scope `providers:search`.
+- [x] T013 Claude: `POST /v1/provider-matches` + scope `providers:search`.
   - FR-009a acceptance rule with the `address_not_found`, `address_ambiguous`, `address_imprecise`,
     and `geocoding_unavailable` codes.
   - Per-org eligibility with multi-org and null-org tests.
   - Event metadata allow-list and failure-log privacy tests.
   - Regenerate `docs/openapi-v1-snapshot.json`.
-- [ ] T014 [P] Claude: MCP server — delete five tools, OAuth, and bearer path; add `find_providers`;
+- [x] T014 [P] Claude: MCP server — delete five tools, OAuth, and bearer path; add `find_providers`;
   update tests, `tools/list` snapshot test, README, runbook, `.env.example`, `vercel.json`, manifest.
-- [ ] T015 [P] Claude: intake web — fragment pre-fill in `IntakeFlow`, no ticket on load,
+- [x] T015 [P] Claude: intake web — fragment pre-fill in `IntakeFlow`, no ticket on load,
   `intake_source` → `origin_channel='ai_assistant'`, commit-step `provider_eligible` notice; build
   passes.
-- [ ] T016 Claude: docs — `AGENT-INTEGRATION-MCP-PLAN.md`, `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`,
+- [x] T016 Claude: docs — `AGENT-INTEGRATION-MCP-PLAN.md`, `AGENT-PLATFORM-SUBMISSION-PACKAGE.md`,
   `PUBLIC-API-DEVELOPER-GUIDE.md`, `PRODUCTION-READINESS.md`.
-- [ ] T017 [H] Human: approve the workflow edit, then Claude updates `mcp-production-health.yml` to call
-  `list_services` via `/mcp`.
+- [x] T017 [H] Human approved 2026-09-27 ("if PR 75 affected 79 badly, fix"); Claude updated
+  `mcp-production-health.yml`. It now calls `list_services` through `/mcp` and fails on an MCP error,
+  an API error inside the tool result, or an empty catalog. While the pre-cutover sign-in build is
+  still live it falls back to PR #75's 401 auth-boundary contract. Verified: pre-cutover branch against
+  live production (green, `oauth` mode); public branch against a local server (OK, bad key, and empty
+  catalog cases).
 - [ ] T018 Claude: preview deploy; manual scenario in Claude (no-auth custom connector) and ChatGPT
   developer mode; link-preview and private-window checks; log grep for test address.
-- [ ] T019 [R] Codex: secondary review of phase 1 implementation PR (markers in PR body).
+- [x] T019 [R] Codex: secondary review of phase 1 implementation PR (markers in PR body).
+  - Review ownership: Codex owns T019 status and `checklists/phase1-implementation.md`.
+  - 2026-09-26: changes-requested on `167d618`; findings R1-R4 in the implementation checklist.
+    Review performed; T019 remains open pending fixes and approving re-review. T017/T018 and
+    production T020-T023 remain gated; T005 remains separate.
+  - 2026-09-26 re-review of `e39762d`: approve; R1-R4 resolved. T019 complete.
+    Browser/preview acceptance remains T018; approval does not authorize merge or release.
+  - 2026-09-27 re-review of `6580661`: approve; includes the Human-approved T017 workflow
+    and docs. Independent exact-step Bash validation: 23 fixture scenarios passed; all five
+    required CI checks green. Evidence and pilot spec 001 T012 deployment dependency are
+    recorded in the reviewer-owned implementation checklist. T018/T020-T023 remain open.
 - [ ] T020 [H] Human: authorize production — migration apply, scoped `/v1` key, Vercel env changes,
   Firewall rate-limit rule, git-connected Vercel project, production deploy.
 - [ ] T021 [H] Human: first provider channel opt-ins (written provider consent per HD-6).

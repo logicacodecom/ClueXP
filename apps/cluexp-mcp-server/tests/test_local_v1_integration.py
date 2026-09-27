@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from uuid import uuid4
-
 import httpx
 import pytest
 
@@ -37,7 +35,7 @@ async def _issue_key(store: InMemoryStore, scopes: list[str]) -> str:
 
 
 @pytest.mark.asyncio
-async def test_mcp_tools_exercise_real_local_v1_api_without_dispatch_or_production(monkeypatch):
+async def test_mcp_tools_exercise_real_local_v1_api_without_side_effects(monkeypatch):
     from api import main as intake_main
 
     store = InMemoryStore()
@@ -47,108 +45,48 @@ async def test_mcp_tools_exercise_real_local_v1_api_without_dispatch_or_producti
         return None
 
     monkeypatch.setattr(intake_main, "latency", no_latency)
+    store._organizations["abc-org"] = {"id": "abc-org", "display_name": "ABC Locksmith", "status": "active"}
+    store._organization_capabilities["abc-org"] = {"locksmith.residential_lockout"}
+    store._intake_channels.append({
+        "organization_id": "abc-org", "slug": "abc-locksmith", "display_name": None,
+        "active": True, "ai_assistant_listed": True,
+    })
+    store._technicians = [{
+        "id": "tech-1", "display_name": "tech-1", "skills": ["locksmith.residential_lockout"],
+        "is_available": True, "status": "active", "vetting_status": "verified",
+        "service_area_center_lat": 40.0, "service_area_center_lng": -73.0,
+        "service_area_radius_km": 25, "org_ids": ["abc-org"], "rating": 4.8,
+    }]
 
-    api_key = await _issue_key(
-        store,
-        ["services:read", "coverage:check", "service_requests:write", "service_requests:read"],
-    )
+    api_key = await _issue_key(store, ["services:read", "providers:search"])
     monkeypatch.setenv(mcp_client.CLUEXP_API_BASE_URL_ENV, "http://local-cluexp-api.test")
     monkeypatch.setenv(mcp_client.CLUEXP_API_KEY_ENV, api_key)
 
     real_async_client = httpx.AsyncClient
-    seen_urls: list[str] = []
 
     def local_async_client_factory(**kwargs):
         assert kwargs.get("base_url") == "http://local-cluexp-api.test"
-        assert "intake.cluexp.com" not in str(kwargs.get("base_url"))
         kwargs["transport"] = httpx.ASGITransport(app=intake_main.app)
-        original_request = real_async_client.request
-
-        async def recording_request(self, method, url, **request_kwargs):
-            seen_urls.append(str(url))
-            assert "dispatch-authorizations" not in str(url)
-            assert "cancellations" not in str(url)
-            return await original_request(self, method, url, **request_kwargs)
-
-        class RecordingAsyncClient(real_async_client):
-            async def request(self, method, url, **request_kwargs):  # type: ignore[override]
-                return await recording_request(self, method, url, **request_kwargs)
-
-        return RecordingAsyncClient(**kwargs)
+        return real_async_client(**kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", local_async_client_factory)
+    tickets_before = len(store._tickets)
 
     services = await _tool_fn("list_services")()
     assert services["data"]
 
-    coverage = await _tool_fn("check_coverage")(
-        lat=40.0,
-        lng=-73.0,
-        service_skill="locksmith.residential_lockout",
+    found = await _tool_fn("find_providers")(
+        service_skill="locksmith.residential_lockout", lat=40.0, lng=-73.0,
     )
-    assert coverage["data"]["service_skill"] == "locksmith.residential_lockout"
+    provider = found["data"]["providers"][0]
+    assert provider["name"] == "ABC Locksmith" and provider["recommended"] is True
+    assert "/o/abc-locksmith#" in provider["intake_url"]
+    assert "tech-1" not in str(found)
 
-    before_ticket_count = len(store._tickets)
-    blocked_create = await _tool_fn("create_service_request")(
-        dispatch_scope="network",
-        service_skill="locksmith.residential_lockout",
-        location={"lat": 40.0, "lng": -73.0, "raw_text": "Local MCP proof address"},
-        consent={"terms_accepted": True, "policy_version": "2026-08-01"},
-        customer={"name": "Local MCP Proof", "phone": "+15550000000"},
-        confirm=False,
-    )
-    assert blocked_create["error"] == "confirmation_required"
-    assert len(store._tickets) == before_ticket_count
+    invalid = await _tool_fn("find_providers")(service_skill="locksmith.residential_lockout", lat=40.0)
+    assert invalid["error"] == "invalid_request"
 
-    request_idempotency_key = f"local-mcp-proof-{uuid4()}"
-    created = await _tool_fn("create_service_request")(
-        dispatch_scope="network",
-        service_skill="locksmith.residential_lockout",
-        location={"lat": 40.0, "lng": -73.0, "raw_text": "Local MCP proof address"},
-        consent={"terms_accepted": True, "policy_version": "2026-08-01"},
-        customer={"name": "Local MCP Proof", "phone": "+15550000000"},
-        confirm=True,
-        idempotency_key=request_idempotency_key,
-    )
-    reference = created["data"]["request_reference"]
-    assert created["data"]["status"] == "received"
-    assert len(store._tickets) == before_ticket_count + 1
-
-    read_back = await _tool_fn("get_service_request")(request_reference=reference)
-    assert read_back["data"]["request_reference"] == reference
-    assert read_back["data"]["status"] == "received"
-    assert read_back["data"]["created_at"] is not None
-
-    tracking = await _tool_fn("get_tracking")(request_reference=reference)
-    assert "state" in tracking["data"]
-    assert tracking["data"]["assignment"] is None
-
-    blocked_authorize = await _tool_fn("authorize_dispatch")(
-        request_reference=reference,
-        channel="first_party_website",
-        evidence_reference="local-mcp-proof-consent",
-        terms_version="2026-08-01",
-        confirm=False,
-    )
-    assert blocked_authorize["error"] == "confirmation_required"
-
-    blocked_cancel = await _tool_fn("cancel_service_request")(
-        request_reference=reference,
-        reason="Local proof cancellation was not confirmed",
-        confirm=False,
-    )
-    assert blocked_cancel["error"] == "confirmation_required"
-
-    assert {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()} == {
-        "list_services",
-        "check_coverage",
-        "create_service_request",
-        "get_service_request",
-        "get_tracking",
-        "authorize_dispatch",
-        "cancel_service_request",
-    }
-    assert not getattr(store, "_dispatch_authorizations", {})
+    # Discovery is read-only: no ticket, job, offer, or dispatch record appears.
+    assert len(store._tickets) == tickets_before
     assert not getattr(store, "_offers", {})
-    assert all("dispatch-authorizations" not in url for url in seen_urls)
-    assert all("cancellations" not in url for url in seen_urls)
+    assert not getattr(store, "_dispatch_authorizations", {})

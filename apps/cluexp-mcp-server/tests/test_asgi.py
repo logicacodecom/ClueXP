@@ -1,11 +1,10 @@
 """Remote HTTP entrypoint tests.
 
 These do not exercise production traffic. They prove the deployable ASGI app
-has an open health check and a fail-closed MCP auth boundary.
+serves a public health check and a public, credential-free MCP endpoint on both
+the direct and Vercel-rewritten paths (specs/003 FR-002).
 """
 from __future__ import annotations
-
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -32,7 +31,6 @@ def test_allowed_hosts_include_production_and_vercel_runtime_hosts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_healthz_is_public(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
     transport = httpx.ASGITransport(app=asgi.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
         response = await client.get("/healthz")
@@ -42,7 +40,6 @@ async def test_healthz_is_public(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_vercel_rewritten_healthz_path_is_public(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
     transport = httpx.ASGITransport(app=asgi.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
         response = await client.get("/api/healthz")
@@ -52,7 +49,6 @@ async def test_vercel_rewritten_healthz_path_is_public(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_openai_apps_challenge_is_public_and_exact_when_configured(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
     monkeypatch.setenv(asgi.OPENAI_APPS_CHALLENGE_TOKEN_ENV, "openai-domain-proof-token")
     transport = httpx.ASGITransport(app=asgi.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
@@ -64,7 +60,6 @@ async def test_openai_apps_challenge_is_public_and_exact_when_configured(monkeyp
 
 @pytest.mark.asyncio
 async def test_vercel_rewritten_openai_apps_challenge_path(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
     monkeypatch.setenv(asgi.OPENAI_APPS_CHALLENGE_TOKEN_ENV, "openai-domain-proof-token")
     transport = httpx.ASGITransport(app=asgi.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
@@ -75,7 +70,6 @@ async def test_vercel_rewritten_openai_apps_challenge_path(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_openai_apps_challenge_404_when_unconfigured(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
     monkeypatch.delenv(asgi.OPENAI_APPS_CHALLENGE_TOKEN_ENV, raising=False)
     transport = httpx.ASGITransport(app=asgi.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
@@ -84,74 +78,29 @@ async def test_openai_apps_challenge_404_when_unconfigured(monkeypatch):
     assert response.text == "not configured"
 
 
-@pytest.mark.asyncio
-async def test_vercel_rewritten_oauth_metadata_path(monkeypatch):
-    monkeypatch.setattr(
-        asgi,
-        "oauth_config",
-        SimpleNamespace(
-            resource_server_url="https://mcp.cluexp.com/mcp",
-            issuer="https://tenant.example.auth0.com/",
-            required_scope="cluexp:use",
-        ),
-    )
-    transport = httpx.ASGITransport(app=asgi.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
-        response = await client.get("/api/oauth_protected_resource")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "resource": "https://mcp.cluexp.com/mcp",
-        "authorization_servers": ["https://tenant.example.auth0.com/"],
-        "scopes_supported": ["cluexp:use"],
-        "bearer_methods_supported": ["header"],
-    }
+_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}},
+}
+_MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 
 
-@pytest.mark.asyncio
-async def test_mcp_endpoint_fails_closed_without_bearer_token_configured(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
-    transport = httpx.ASGITransport(app=asgi.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
-        response = await client.post("/mcp", json={})
-    assert response.status_code == 503
-    assert response.json()["error"] == "mcp_auth_not_configured"
-
-
-@pytest.mark.asyncio
-async def test_vercel_rewritten_mcp_path_fails_closed_without_bearer_token_configured(monkeypatch):
-    monkeypatch.delenv(asgi.MCP_BEARER_TOKEN_ENV, raising=False)
-    transport = httpx.ASGITransport(app=asgi.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
-        response = await client.post("/api/mcp", json={})
-    assert response.status_code == 503
-    assert response.json()["error"] == "mcp_auth_not_configured"
-
-
-@pytest.mark.asyncio
-async def test_mcp_endpoint_rejects_wrong_bearer_token(monkeypatch):
-    monkeypatch.setenv(asgi.MCP_BEARER_TOKEN_ENV, "correct-token")
-    transport = httpx.ASGITransport(app=asgi.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
-        response = await client.post("/mcp", json={}, headers={"Authorization": "Bearer wrong-token"})
-    assert response.status_code == 401
-    assert response.json() == {"error": "invalid_mcp_token"}
-
-
-@pytest.mark.asyncio
-async def test_vercel_rewritten_mcp_path_rejects_wrong_bearer_token(monkeypatch):
-    monkeypatch.setenv(asgi.MCP_BEARER_TOKEN_ENV, "correct-token")
-    transport = httpx.ASGITransport(app=asgi.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
-        response = await client.post("/api/mcp", json={}, headers={"Authorization": "Bearer wrong-token"})
-    assert response.status_code == 401
-    assert response.json() == {"error": "invalid_mcp_token"}
-
-
-def test_mcp_paths_allow_correct_bearer_token_to_reach_mcp_app(monkeypatch):
-    monkeypatch.setenv(asgi.MCP_BEARER_TOKEN_ENV, "correct-token")
+def test_mcp_endpoint_is_public_and_host_guarded():
+    # One lifespan per process: the MCP SDK session manager can only run once.
     with TestClient(asgi.app, base_url="https://mcp.cluexp.com") as client:
-        local_response = client.post("/mcp", json={}, headers={"Authorization": "Bearer correct-token"})
-        vercel_response = client.post("/api/mcp", json={}, headers={"Authorization": "Bearer correct-token"})
-    assert local_response.status_code not in {401, 421, 503}
-    assert vercel_response.status_code not in {401, 421, 503}
+        direct = client.post("/mcp", json=_INITIALIZE, headers=_MCP_HEADERS)
+        rewritten = client.post("/api/mcp", json=_INITIALIZE, headers=_MCP_HEADERS)
+        oauth_metadata = client.get("/api/oauth_protected_resource")
+        foreign_host = client.post(
+            "/mcp", json=_INITIALIZE, headers={**_MCP_HEADERS, "Host": "evil.example"},
+        )
+
+    # No credentials needed on either the direct or the Vercel-rewritten path.
+    assert direct.status_code == 200 and "cluexp-mcp-server" in direct.text
+    assert rewritten.status_code == 200 and "cluexp-mcp-server" in rewritten.text
+    # The OAuth protected-resource metadata route is gone.
+    assert oauth_metadata.status_code != 200
+    # The DNS-rebinding host guard still applies.
+    assert foreign_host.status_code == 421

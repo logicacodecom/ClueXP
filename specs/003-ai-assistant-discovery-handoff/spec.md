@@ -4,7 +4,7 @@
 **Spec Directory**: `specs/003-ai-assistant-discovery-handoff`  
 **Created**: `2026-09-26`  
 **Owner**: `Claude (author) with Human product authority; Codex review`  
-**Status**: `clarified`
+**Status**: `phase 1 implemented (PR pending review); phase 2 not started`
 
 ## Summary
 
