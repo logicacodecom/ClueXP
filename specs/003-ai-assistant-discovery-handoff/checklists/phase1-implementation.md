@@ -123,6 +123,8 @@ assert the exported contract includes candidates. A drift check alone cannot cat
 - CI run `36287457209` at reviewed head: API 545 passed/1 skipped; Postgres 12 passed;
   web, MCP, secret-scan passed. SDLC failed with review pending, correctly.
 - Independent local MCP rerun: 19 passed.
+- Independent local full non-Postgres API rerun: 545 passed, 1 skipped (188.91 s).
+  One duplicate OpenAPI operation-ID warning; no test failures.
 - No browser/preview acceptance or scratch Postgres downgrade performed. T017, T018,
   T020-T023 remain pending their existing gates. No merge, deployment, keys, workflow changes,
   or production actions performed. The monitor must change in the same authorized release.
