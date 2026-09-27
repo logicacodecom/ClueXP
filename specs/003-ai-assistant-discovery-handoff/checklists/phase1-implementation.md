@@ -7,7 +7,7 @@
 Secondary-agent review required: yes
 Secondary-agent review completed: yes
 Reviewer agent: Codex
-Review result: changes-requested
+Review result: approve
 
 ## Scope
 
@@ -128,3 +128,41 @@ assert the exported contract includes candidates. A drift check alone cannot cat
 - No browser/preview acceptance or scratch Postgres downgrade performed. T017, T018,
   T020-T023 remain pending their existing gates. No merge, deployment, keys, workflow changes,
   or production actions performed. The monitor must change in the same authorized release.
+
+## Independent Re-review — e39762d (2026-09-26)
+
+**Verdict: approve.** R1-R4 are resolved at the implementation-review level; T019 is complete.
+The earlier findings above are retained as review history, not outstanding blockers.
+
+- R1: `addressTypedByCustomer` starts false and is set by the address input handler. Fragment
+  hydration does not enable the autocomplete effect. Source tracing still finds no ticket POST
+  on initial handoff load or prefetch. The pure parser and autocomplete guard have four passing
+  Node tests. These are not browser tests: real load/prefetch/network and preview-log checks
+  remain explicit T018 acceptance work. This evidence limit does not block code-review approval.
+- R2: both stores return durable `origin_channel`; the API checks it after capability-cookie
+  authorization. The commit-screen effect no longer depends on `aiPrefill`, so reload and SMS
+  return take the same path. Confirmation is disabled while the check is pending, stale effect
+  responses are ignored, and an ineligible result renders the notice. Fresh-client API coverage
+  and the Postgres write-once attribution round-trip test pass. The check remains advisory:
+  a request error resolves to unknown (`null`), not a claim of eligibility.
+- R3: the parsed service bucket now selects the highlighted/`aria-pressed` opener option;
+  the customer must still tap. This implements the plan's explicit fallback without creating
+  a ticket on load. Unsupported buckets remain unselected.
+- R4: `PublicApiError.candidates` is optional; 422 and 503 on provider-matches reference that
+  model in OpenAPI. The contract regression test and independent snapshot drift check pass.
+- Rebase review: range-diff confirms prior implementation/review commits were preserved apart
+  from the production-readiness conflict resolution. Both the upcoming phase 1 cutover gates
+  and PR #75's checks for the still-live OAuth/bearer deployment are retained. `next-env.d.ts`
+  has no net change against main. No new workflow edit is included.
+
+Validation at `e39762d928b660a55acfbe56043f4c1772020b43`:
+
+- Independent local provider-matches, Network Router, public API foundation, and OpenAPI tests:
+  **93 passed**. Node handoff tests: **4 passed**. OpenAPI `--check`: passed.
+- CI run `36288580369`: API suite and clean-Postgres migration/integration checks passed;
+  **13 Postgres tests passed**, including origin attribution. Web, MCP, and secret-scan passed.
+  The SDLC run used the previous changes-requested markers; updated approval must be checked
+  on the review-record push. Existing required CI/Human gates still apply before merge.
+- No browser or preview validation, scratch downgrade, merge, deployment, workflow edit, key
+  creation, or production action performed. T017/T018 and production T020-T023 remain gated;
+  T005 remains separate. This approval authorizes none of those actions.
