@@ -41,9 +41,12 @@ the gate.
   - Codex = architect, lead engineer, implementer, reviewer;
   - Claude Code = implementer, reviewer;
   - other agents are optional workers.
-- **PO-6**: One-time bootstrap exception. Both transition PRs (this spec PR #82 and the implementation
-  PR) merge under today's rules, each authored by `logicacodecom` and approved once by
-  `ferrybarbarossa`. This is not a continuing gate and ends when T034 completes.
+- **PO-6** (revised 2026-09-27): **No bootstrap human approval.** The PO withdrew the one-time
+  exception ("I would never review a PR in the future"). Branch protection was switched to the target
+  settings (0 approvals, code-owner review off, `enforce_admins` on, five checks bound to GitHub
+  Actions, auto-merge allowed) **before** PR #82 merged. The existing `sdlc-policy` gate stays in
+  force during the gap and still requires recorded secondary-agent review markers for risky paths. The
+  strengthened gate lands with the implementation PR under agent-only review.
 - **PO-7**: Reviewer independence means a different agent family from every author. Two instances of
   the same family are not independent.
 - **PO-8**: Vercel instant rollback, and the promotion that restores automatic domain assignment after

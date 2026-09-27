@@ -56,7 +56,8 @@
 - [ ] T023 Claude: `specs/000` annotations (T012, T017, T022 historical; T025 resolved; T026
   superseded).
 - [ ] T024 [R] Codex: independent review at the exact head.
-- [ ] T025 [H] PO-6 bootstrap: one `ferrybarbarossa` approval, then merge; verify `main` CI.
+- [ ] T025 Claude: merge after Codex approve and green CI (agent merge; PO-6 revised, no human
+  approval); verify `main` CI.
 
 ## Tasks — Transition (after T025)
 
@@ -64,6 +65,11 @@
   to `main`, protection edits). Any unresolved caller blocks the transition.
 - [ ] T031 Claude: live check on OLD settings with a harmless PR: a body edit re-runs `sdlc-policy`; a
   revoked approval fails; an old-run re-run evaluates the current body. Record run links.
+- [x] T033-early Claude (2026-09-27, per revised PO-6): snapshot → PUT → read-back **match**:
+  0 approvals, code-owner off, `enforce_admins` on, strict checks (`sdlc-policy`, `web`, `api`,
+  `mcp-server`, `secret-scan`, all bound to app 15368), conversation resolution, no force-push or
+  deletion; `allow_auto_merge` true. The raw before/after JSON is kept in the author's session
+  artifacts. The restore payload is in the plan.
 - [ ] T033 Claude: re-verify that both Vercel projects have no ignored-build-step command; no-merge
   window; projected drift check; canonical PUT; projected response and read-back comparison
   (restore on mismatch); `allow_auto_merge` true with read-back (restore on failure); record the raw
