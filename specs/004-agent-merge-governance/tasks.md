@@ -1,6 +1,6 @@
 # Tasks: Agent-Owned Review And Merge Governance
 
-**Spec**: [`spec.md`](spec.md) (rev 2)  
+**Spec**: [`spec.md`](spec.md) (rev 3)  
 **Plan**: [`plan.md`](plan.md)  
 **Owner**: `Hermes accountable lead; Claude implementation; Codex independent review`
 
@@ -22,6 +22,15 @@
     R5 (FR-009 push diagnostics, all-zero `before` fails closed), R6 (plan canonical payloads,
     restore, order, PO-6 covering both PRs), R7 (FR-012 executable tests and template items), and R8
     (verification matrix, T021 sweep, FR-014 activation clarity).
+  - 2026-09-27: rev 2 `d217114` → changes-requested (findings 1–7).
+  - Claude revised it as rev 3 by simplifying:
+    - 1 and 7: the incident freeze becomes an agent-enforced operational rule; push diagnostics drop
+      the PR-provenance lookup (GitHub protection provides provenance);
+    - 2: the MCP monitor and ASGI tests move to a semantic `status` check;
+    - 3: a record-declared `required: yes` is always fully validated;
+    - 4: canonical projection, `app_id: -1` restore, partial-failure procedure;
+    - 5: `.github/scripts/**` classified risky;
+    - 6: containment via the compare API, the build-every-commit prerequisite, success recording.
   - Re-review pending.
 
 ## Tasks — Implementation (after T003 approve)
@@ -29,13 +38,16 @@
 - [ ] T010 Claude: `entries()`/`classify()`/`artifact_dirs()` status-aware (FR-007, FR-008).
 - [ ] T011 Claude: `parse_record()` grammar, agent normalization, strict keys (FR-001, FR-002, FR-003,
   FR-006).
-- [ ] T012 Claude: target resolution and modes, freshness, scope, incident gate, success re-fetch
-  (FR-004, FR-005, FR-009, FR-010, FR-011) with `sdlc_github.py`.
+- [ ] T012 Claude: target resolution and modes, freshness, scope, record-declared validation, success
+  re-fetch (FR-004, FR-005, FR-006, FR-009, FR-010) with `sdlc_github.py`; set the
+  `.github/scripts/**` risky pattern.
 - [ ] T013 Claude: unit plus git-integration suites covering the plan Verification Matrix.
 - [ ] T014 Claude: `sdlc-policy.yml` (the only `sdlc-policy` producer; assertions and both suites
   moved), and remove the job from `ci.yml`.
-- [ ] T015 Claude: `revision` on intake and MCP `/healthz`, with tests.
-- [ ] T016 Claude: `post-deploy-verify.yml` (FR-013), with fixture tests for its decision logic.
+- [ ] T015 Claude: `revision` on intake and MCP `/healthz`, with tests; update the MCP ASGI exact-JSON
+  tests and `mcp-production-health.yml` to a semantic status check, with tests.
+- [ ] T016 Claude: `post-deploy-verify.yml` plus `post_deploy_verify.py` (FR-013) with mocked-compare
+  tests; `protection_projection.py` with fixtures (plan).
 - [ ] T020 Claude: policy text (FR-011, FR-012, FR-014, FR-015, FR-016, NFR-001, NFR-003).
 - [ ] T021 Claude: canonical doc and runbook sweep; fix active text, annotate history.
 - [ ] T022 Claude: templates (checklist review record plus FR-012 items, tasks `[R]`, PR template);
@@ -51,12 +63,14 @@
   to `main`, protection edits). Any unresolved caller blocks the transition.
 - [ ] T031 Claude: live check on OLD settings with a harmless PR: a body edit re-runs `sdlc-policy`; a
   revoked approval fails; an old-run re-run evaluates the current body. Record run links.
-- [ ] T033 Claude: no-merge window; drift re-read; canonical PUT; response and read-back equality
-  (restore on mismatch); `allow_auto_merge` true; record the before/after JSON here. Settings changes
-  are authorized by PO-1..PO-9 for exactly the plan payloads.
-- [ ] T034 Claude: positive acceptance: a harmless PR merges with no human approval;
-  `post-deploy-verify` attributes the revision on both projects and passes. This ends the PO-6
-  bootstrap.
+- [ ] T033 Claude: re-verify that both Vercel projects have no ignored-build-step command; no-merge
+  window; projected drift check; canonical PUT; projected response and read-back comparison
+  (restore on mismatch); `allow_auto_merge` true with read-back (restore on failure); record the raw
+  and projected before/after JSON here. Settings changes are authorized by PO-1..PO-9 for exactly the
+  plan payloads.
+- [ ] T034 Claude: positive acceptance: a harmless PR merges with no human approval (the merge owner
+  runs the `deploy-incident` check first); `post-deploy-verify` attributes the revision on both
+  projects and passes. This ends the PO-6 bootstrap.
 - [ ] T035 Claude: remove the deprecated `Secondary-agent review completed` allowance.
 - [ ] T036 [R] Codex: verify T030–T034 evidence.
 

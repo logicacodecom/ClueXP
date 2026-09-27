@@ -2,7 +2,7 @@
 
 **Feature Branch**: `spec/004-agent-merge-governance`  
 **Spec Directory**: `specs/004-agent-merge-governance`  
-**Created**: `2026-09-27` (rev 2: addresses Codex T003 R1–R8)  
+**Created**: `2026-09-27` (rev 3: addresses Codex T003 re-review findings 1–7 by simplifying)  
 **Owner**: `Claude (author) with Product Owner authority; Codex review`  
 **Status**: `draft`
 
@@ -97,12 +97,13 @@ the gate.
 - **Same-family author and reviewer, a bare `Other`, a duplicate or unknown key, or multiple blocks** →
   fail.
 - **A delete-only or rename-away risky change** → classified risky.
-- **An open `deploy-incident` issue** → `sdlc-policy` fails for every PR except one labelled
-  `incident-fix`.
+- **An open `deploy-incident` issue** → merge owners must not merge or arm auto-merge (except
+  `incident-fix` PRs), and Hermes disarms queued auto-merges. This is an agent-enforced operational
+  rule, not a required-check freeze (FR-011).
 - **After a Vercel rollback, production serves an old revision** → post-deploy verification fails and
   opens an incident. Restoring requires a PO-authorized promotion (PO-8).
-- **A push to `main` with no associated PR, or with all-zero `before`** → the diagnostic fails and opens
-  an incident.
+- **A push to `main` with all-zero `before`, or a risky diff without artifacts** → the post-merge
+  diagnostic fails (a red run on `main`). It cannot prevent deployment.
 - **Local `--working-tree`** → preflight only; it never reports a review as satisfied.
 
 ## Requirements
@@ -155,8 +156,11 @@ the gate.
   - No self-referential SHA is needed for the evidence commit.
 - **FR-005 Scope.** If the PR diff contains any risky path outside `specs/**`, `Review scope` must be
   `implementation`.
-- **FR-006 Non-material PRs.** A PR with no risky path passes without a record. A record that is
-  present is validated for grammar only.
+- **FR-006 Non-material PRs.** A PR with no risky path passes without a record. One rule applies to
+  every PR, including spec-only ones: **if a record is present and declares `Secondary-agent review
+  required: yes`, it is fully validated (FR-002..FR-005)**. So a spec-only PR carrying a
+  `changes-requested` record is blocked, which is enforced, not advisory. A record declaring `no` on a
+  non-risky PR is validated for grammar only.
 - **FR-007 Status-aware diffs.**
   - Classification uses `git diff --name-status -M -C` including D, and classifies both endpoints of a
     rename or copy.
@@ -171,9 +175,11 @@ the gate.
   - **Push to `main`:** post-merge diagnostics only; this is not proof of review.
     - Diff = `payload.before..payload.after`.
     - An all-zero `before` fails closed as an unexpected branch creation.
-    - Classify, check artifacts, and look up the associated PR (`GET /commits/{sha}/pulls`). If there
-      is none, it is an unaccounted push.
-    - A failure opens a `deploy-incident` issue. It cannot prevent deployment.
+    - Classify and check artifacts. A failure makes the push run red; it cannot prevent deployment.
+    - It does not try to prove the push came from a merged PR. With `enforce_admins` on and PR-only
+      `main`, GitHub itself refuses pushes that skip a PR. Protection-setting edits (the only way
+      around that) are visible in the GitHub audit log and are PO-category actions (FR-014).
+    - The job has read-only permissions.
   - **`--base B --head H` (local or CI replay):** diff = `B...H`. All content, including the review
     record in the governing checklist, is read with `git show H:<path>`, independent of the checkout.
     Freshness is checked against `H`.
@@ -186,6 +192,7 @@ the gate.
       on push to `main`.
     - Per-PR concurrency cancels in-progress runs.
     - It never uses `pull_request_target`.
+    - Permissions are read-only (`contents: read`, `pull-requests: read`).
     - It contains the existing policy-file assertions and both test suites.
   - **Script:**
     - Re-fetches the PR (`GET /pulls/{n}`: `body`, `head.sha`, `updated_at`) at start and again
@@ -199,8 +206,15 @@ the gate.
   - Any agent may merge or arm auto-merge when:
     - all required checks are green on the current, up-to-date head;
     - conversations are resolved;
-    - no `deploy-incident` issue is open (unless the PR is labelled `incident-fix`);
     - FR-001..FR-008 pass.
+  - **Incident rule (agent-enforced, not a required check):**
+    - Immediately before merging or arming auto-merge, the merge owner checks for open issues labelled
+      `deploy-incident` (`gh issue list --label deploy-incident --state open`). If any is open, it merges
+      only PRs labelled `incident-fix`.
+    - When `post-deploy-verify` opens an incident, Hermes disarms every armed auto-merge
+      (`gh pr merge --disable-auto`) and acknowledges it on the issue.
+    - This is deliberately operational: GitHub doesn't re-run required checks on issue changes, and
+      `GITHUB_TOKEN`-created issues don't trigger workflows (NFR-001).
   - The merge owner merges with `--match-head-commit <reviewed head or evidence-only descendant>`.
   - Before arming auto-merge, the merge owner re-runs `sdlc-policy` for the current head.
   - Any body edit disarms queued merge intent in policy: the merge owner must re-verify before
@@ -227,18 +241,31 @@ the gate.
 - **FR-013 Release attribution and post-deploy verification.**
   - **Revision on health endpoints:** intake `/api/healthz` and MCP `/healthz` add
     `"revision": <VERCEL_GIT_COMMIT_SHA or null>`. This is additive; the existing `status` stays.
+  - **Prerequisite:** both Vercel projects build every `main` commit. Neither has an
+    ignored-build-step command (verified 2026-09-27 via the project API; re-verified in T033). Adding
+    one later would require updating this workflow.
   - **`post-deploy-verify.yml`**, triggered on push to `main` and separate from the five pre-merge
-    checks, polls both endpoints for up to 20 minutes until each reports a revision equal to, or a
-    descendant of, the pushed commit (checked with `git merge-base --is-ancestor`).
-    - A newer superseding merge counts as containing it.
-    - A `null` or older revision after the timeout covers a failed or queued build, a rollback-paused
-      alias, or a one-project failure.
+    checks.
+    - It polls both endpoints for up to 20 minutes until each reports a revision that contains the
+      pushed commit.
+    - Containment is decided by GitHub's compare API (`GET /compare/{pushed}...{revision}`, status
+      `identical` or `ahead`), so a superseding commit missing from the local checkout still counts.
+    - The revision must be 40-hex. A non-descendant, or an unrelated-branch SHA, never counts. An API
+      error is retried and reported as `unknown`, distinct from `not deployed`.
+    - A `null` or non-containing revision after the timeout covers a failed or queued build, a
+      rollback-paused alias, or a one-project failure.
+    - Responses are fetched with `Cache-Control: no-cache`. Revision and smoke results for both
+      projects are written to the job summary on success too.
+    - Permissions: `contents: read`, `issues: write` (this trusted `main`-only job is the only one that
+      writes issues).
   - **Checks once attributed:** intake `/api/healthz` `status == ok`, and MCP `tools/call
     list_services`, reusing the monitor's semantic parser.
   - **On failure:** create or comment on a GitHub issue labelled `deploy-incident`, naming the pushed
     SHA, the per-project observed revisions, and the failing check.
     - Hermes acknowledges it by comment and owns resolution.
-    - While any `deploy-incident` is open, FR-011 blocks merges except `incident-fix` PRs.
+    - While any `deploy-incident` is open, the FR-011 incident rule applies.
+    - If issue creation itself fails, the job still fails red; Hermes treats a red
+      `post-deploy-verify` run as an incident.
     - Closing the issue requires a passing re-run or recorded recovery.
 - **FR-014 Product Owner decisions.** The PR template field
   `Product Owner decision required: yes|no; category; evidence; target` uses these categories:
@@ -273,7 +300,9 @@ the gate.
     `enforce_admins`.
   - Reviewer identity and independence are self-declared under a shared account.
   - A small window between a body edit and the start of its run remains.
-  - Push diagnostics detect but cannot prevent.
+  - Push diagnostics detect but cannot prevent, and they don't prove PR provenance (GitHub
+    protection does).
+  - The deploy-incident freeze is agent-enforced, not a required check.
   - Admins can edit protection.
 - **NFR-002 Tests.** All gate logic is covered by unit tests and by integration tests against real
   temporary git repos. GitHub protection behavior is verified by read-back assertions and the T031
@@ -286,6 +315,9 @@ the gate.
 - **Data touched**: none.
 - **API contracts**: additive `revision` field on `GET /api/healthz` (intake) and `GET /healthz` (MCP).
   `/v1` is unchanged.
+  - Existing exact-match consumers must change with it: the `mcp-production-health` workflow compares
+    the whole body to `{"status":"ok"}`, and so do two MCP ASGI tests. All move to a semantic
+    `status == "ok"` check in the same PR (T015).
 - **Trust boundary**: NFR-001.
 - **External side effects**:
   - GitHub branch-protection and repository settings (PO-authorized);
