@@ -4,7 +4,6 @@
       "type": "url",
       "name": "cluexp",
       "url": "https://mcp.cluexp.com/mcp",
-      "authorization_token": "replace-with-platform-held-mcp-bearer-token",
       "tool_configuration": {
         "enabled": true
       }

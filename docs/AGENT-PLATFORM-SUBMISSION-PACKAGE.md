@@ -1,6 +1,6 @@
 # ClueXP agent-platform submission package
 
-Status: production MCP endpoint is live; external platform submission/listing is not complete.
+Status: production MCP endpoint is live as public, read-only provider discovery (specs/003); external platform submission/listing is not complete.
 
 Use this package when submitting or configuring ClueXP in ChatGPT/OpenAI, Claude/Anthropic, Gemini/Google, or Apple/Siri channels. Do not paste production secrets into tickets, docs, screenshots, or handoff logs.
 
@@ -22,19 +22,19 @@ ClueXP
 Short description:
 
 ```text
-Check service coverage and create, track, authorize, or cancel ClueXP service requests with explicit user confirmation.
+Find local service providers near you, then request and track help on the provider's ClueXP page.
 ```
 
 Long description:
 
 ```text
-ClueXP helps people request service from hosted partners and the ClueXP network through a privacy-aware, confirmation-gated workflow. Assistants can list supported services, check coverage for a location, create a service request, read status/tracking, authorize dispatch, and cancel when the public API still allows it. Creation, dispatch authorization, and cancellation require an explicit confirmation flag enforced by the MCP server before any real write happens.
+ClueXP helps people find local service help. Assistants can list the services ClueXP providers offer and, for a street address, show up to three provider companies that can help there, ranked by ClueXP. Each result links to that provider's ClueXP page, where the user requests service, verifies their phone, sees the price, confirms, and tracks progress. The app never books, dispatches, or charges from the chat, and never shares technician details, ETAs, or prices.
 ```
 
 Safety / review note:
 
 ```text
-The MCP server exposes only public /v1 API-backed tools. It does not expose internal admin, provider, technician, database, payment, ranking override, or dispatch-override routes. Mutating tools require confirm=true in server-side code and return confirmation_required without touching the API when confirm=false.
+The MCP server exposes two read-only tools backed by the public /v1 API: list_services and find_providers. It needs no sign-in because it returns only the service catalog and opted-in providers' names and links. It creates no records and exposes no admin, provider, technician, payment, ranking-override, or dispatch routes. Ambiguous or imprecise addresses are rejected so the assistant asks the user instead of guessing.
 ```
 
 Support / contact placeholders:
@@ -51,54 +51,44 @@ Update the URLs above if the public website uses different canonical paths befor
 
 | Tool | Type | User-visible purpose | Confirmation required |
 | --- | --- | --- | --- |
-| `list_services` | Read | Show service types ClueXP can help with. | No |
-| `check_coverage` | Read | Check whether a service may be available near a user location. | No |
-| `create_service_request` | Write | Create a real ClueXP service request, without dispatch. | Yes, `confirm=true` |
-| `get_service_request` | Read | Read current request status by opaque reference. | No |
-| `get_tracking` | Read | Read privacy-minimized tracking state. | No |
-| `authorize_dispatch` | Write | Authorize fulfillment/dispatch; may trigger a technician offer. | Yes, `confirm=true` |
-| `cancel_service_request` | Write | Cancel a request when allowed by the public API. | Yes, `confirm=true` |
+| `list_services` | Read | Show the service types ClueXP providers offer. | No |
+| `find_providers` | Read | Show up to three ClueXP-ranked providers for a service at an address, each with a link to request help on the web. | No |
 
 ## Review test plan
 
-Run these with test/synthetic data only unless the Human separately approves a live proof run.
+Run with synthetic data only unless the Human separately approves a live proof run.
 
-1. Connect to `https://mcp.cluexp.com/mcp` through the configured OAuth authorization-code
-   flow using a synthetic reviewer account. The legacy shared bearer token is for internal
-   preview only and is not supported by the public ChatGPT plugin flow.
-2. Initialize/list tools and confirm exactly the seven tools above are visible.
+1. Connect to `https://mcp.cluexp.com/mcp` with no authentication.
+2. Initialize/list tools and confirm exactly the two tools above are visible, both read-only.
 3. Ask: "What services can ClueXP help with?" Expected: `list_services`.
-4. Ask: "Can ClueXP help with [supported service] near [test location]?" Expected: `check_coverage`.
-5. Attempt to create a request with `confirm=false`. Expected: structured `confirmation_required`; no API write.
-6. Attempt to authorize dispatch with `confirm=false`. Expected: structured `confirmation_required`; no dispatch.
-7. Attempt to cancel with `confirm=false`. Expected: structured `confirmation_required`; no cancellation.
-8. Read a nonexistent/synthetic request reference. Expected: API-shaped not-found/permission-safe error with `request_id` when provided.
-9. Confirm unsupported requests are refused by the assistant or answered without calling internal/unavailable tools:
+4. Ask: "I'm locked out at [precise test address]. Who can help?" Expected: `find_providers` returns up
+   to three providers with one recommended, each with a link; nothing is booked.
+5. Ask with an ambiguous address ("100 Main Street"). Expected: `address_ambiguous` with candidates;
+   the assistant asks which one instead of listing providers.
+6. Open a returned link. Expected: the provider's intake opens with service and location pre-filled; no
+   request exists until the user acts.
+7. Confirm unsupported requests are refused or redirected to the link without calling other tools:
+   - "Book the locksmith and send them now."
    - "Take payment."
-   - "Assign a specific technician manually."
-   - "Show technician private phone/GPS."
-   - "Override network ranking."
+   - "Show the technician's phone or GPS."
+   - "Override ClueXP's ranking."
 
 ## ChatGPT / OpenAI submission checklist
 
-Current official OpenAI plugin submission docs require a public MCP server URL, domain verification for the MCP host, review materials, and appropriate publisher permissions.
-
 - Verify the OpenAI Platform organization/publisher identity for the name ClueXP will publish under.
 - Confirm the submitting user has `api.apps.write`; reviewers/status viewers need `api.apps.read`.
-- Create the plugin draft with MCP server URL `https://mcp.cluexp.com/mcp` and select OAuth.
-- Configure the Auth0 authorization server and reviewer account before scanning tools. The MCP
-  resource identifier/audience is `https://mcp.cluexp.com/mcp`; every tool requires
-  `cluexp:use`. Do not put an Auth0 secret or access token in this package.
+- Create the plugin draft with MCP server URL `https://mcp.cluexp.com/mcp` and **no authentication**.
+  Confirm the current Apps SDK no-auth declaration before submitting; the draft manifest is
+  `apps/cluexp-mcp-server/chatgpt-app-submission.json`.
 - If asked for a challenge base URL, use `https://mcp.cluexp.com`.
 - When the portal provides the challenge token:
   1. Set `OPENAI_APPS_CHALLENGE_TOKEN` in the Vercel project `cluexp-mcp-server`.
-  2. Redeploy production.
+  2. Redeploy production (Human-authorized).
   3. Verify `https://mcp.cluexp.com/.well-known/openai-apps-challenge` returns only the exact token as `text/plain`.
   4. Complete "Verify Domain" in the OpenAI portal.
-- Use the listing copy and review test plan above.
-- Provide demo/reviewer auth through the platform-approved flow. Do not paste the production bearer token into docs or issue comments.
+- Use the listing copy and review test plan above. Submission itself needs its own spec (`specs/000` T016).
 
-Sources checked 2026-08-26:
+Sources checked 2026-08-26 (re-verify before submission):
 
 - OpenAI plugin submission: https://developers.openai.com/plugins/deploy/submission
 - OpenAI MCP server review requirements: https://developers.openai.com/plugins/deploy/app-review
@@ -106,48 +96,42 @@ Sources checked 2026-08-26:
 
 ## Claude / Anthropic configuration
 
-Claude's API can connect to remote MCP servers directly from the Messages API MCP connector. This is an integration path, not proof of a public directory listing.
-
-Example request-tool config shape:
+Users can add ClueXP in Claude as a custom connector with the URL `https://mcp.cluexp.com/mcp` and no
+authentication. API callers use the Messages API MCP connector:
 
 ```json
 [
   {
-    "type": "mcp_server",
+    "type": "url",
     "name": "cluexp",
-    "url": "https://mcp.cluexp.com/mcp",
-    "authorization_token": "replace-with-platform-held-token"
+    "url": "https://mcp.cluexp.com/mcp"
   }
 ]
 ```
 
-For Claude Code or Claude Desktop, prefer the platform's current remote-MCP configuration UI/CLI and store the bearer token in the user's secret store, not in repository files.
+A public Anthropic directory listing is a separate path and is not implied by this configuration.
 
-Sources checked 2026-08-26:
+Sources checked 2026-08-26 (re-verify before submission):
 
 - Anthropic MCP connector: https://docs.anthropic.com/en/docs/agents-and-tools/mcp-connector
 - Anthropic remote MCP servers: https://docs.anthropic.com/en/docs/agents-and-tools/remote-mcp-servers
 
 ## Gemini / Google configuration
 
-Gemini supports remote MCP servers over Streamable HTTP. The ClueXP server uses Streamable HTTP at `/mcp`; do not configure it as SSE.
-
-Example tool config shape:
+Gemini supports remote MCP servers over Streamable HTTP. The ClueXP server uses Streamable HTTP at
+`/mcp`; do not configure it as SSE. No headers are needed.
 
 ```json
 [
   {
     "type": "mcp_server",
     "name": "cluexp",
-    "url": "https://mcp.cluexp.com/mcp",
-    "headers": {
-      "Authorization": "Bearer replace-with-platform-held-token"
-    }
+    "url": "https://mcp.cluexp.com/mcp"
   }
 ]
 ```
 
-Sources checked 2026-08-26:
+Sources checked 2026-08-26 (re-verify before submission):
 
 - Gemini function calling / MCP server tool: https://ai.google.dev/gemini-api/docs/function-calling
 - Gemini Agents API MCPServer schema: https://ai.google.dev/api/agents

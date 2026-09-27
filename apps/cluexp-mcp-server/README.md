@@ -1,62 +1,49 @@
-# ClueXP MCP Server — controlled production endpoint
+# ClueXP MCP Server — public provider discovery
 
-**Status: live controlled production endpoint.** The remote Streamable HTTP endpoint is deployed at
-`https://mcp.cluexp.com/mcp` with public health at `https://mcp.cluexp.com/healthz`. It is still not
-published, listed, or submitted to any external agent platform (ChatGPT, Claude, Gemini, Siri, or
-otherwise) until the external platform submission step is completed. See
-`docs/AGENT-INTEGRATION-MCP-PLAN.md` for the full design.
+**Status:** controlled production endpoint at `https://mcp.cluexp.com/mcp`, with public health at
+`https://mcp.cluexp.com/healthz`. It is not published or listed in any external assistant directory
+until the separate submission step is completed. Design:
+[`specs/003-ai-assistant-discovery-handoff`](../../specs/003-ai-assistant-discovery-handoff/spec.md).
 
 ## What this is
 
-A thin [MCP](https://modelcontextprotocol.io) server exposing seven tools, each a
-direct wrapper over one `/v1` endpoint of the ClueXP public API. No tool calls internal
-store/dispatch code or any non-`/v1` route.
-
-Tools exposed:
+A thin [MCP](https://modelcontextprotocol.io) server that lets any personal AI assistant (Claude,
+ChatGPT, Gemini, or another MCP client) discover ClueXP services and providers by location. It has
+two read-only tools, each a direct wrapper over one public `/v1` endpoint:
 
 - `list_services` -> `GET /v1/services`
-- `check_coverage` -> `POST /v1/coverage-checks`
-- `create_service_request` -> `POST /v1/service-requests` (requires `confirm=true`, enforced in code)
-- `get_service_request` -> `GET /v1/service-requests/{id}`
-- `get_tracking` -> `GET /v1/service-requests/{id}/tracking`
-- `authorize_dispatch` -> `POST /v1/service-requests/{id}/dispatch-authorizations` (requires `confirm=true`, enforced in code)
-- `cancel_service_request` -> `POST /v1/service-requests/{id}/cancellations` (requires `confirm=true`, enforced in code)
+- `find_providers` -> `POST /v1/provider-matches`: up to three provider companies that opted in to
+  assistant listing and can serve the skill at the location, in ClueXP's Network Router order. The
+  first is marked `recommended`. Each result carries only a name and a branded intake link.
+
+The customer requests, verifies, confirms, and tracks service **on the web** through that link.
+Nothing in this server creates, books, dispatches, or cancels anything, and it never returns
+technician identity, ETA, price, or ratings.
+
+Addresses are accepted only when they geocode to exactly one full, street-precise match. Otherwise
+the tool returns `address_not_found`, `address_ambiguous` (with `candidates`), `address_imprecise`,
+or `geocoding_unavailable`, so the assistant asks the user rather than guessing.
 
 ## Configuration
 
 Required environment variables, no defaults, no committed secrets:
 
-- `CLUEXP_API_BASE_URL` — base URL of the `/v1` API to call (e.g. a local dev server).
-  There is no default, and in particular no default pointing at production — pointing
-  this at `https://intake.cluexp.com` is a deliberate choice made by whoever runs the
-  server, not something this code assumes.
-- `CLUEXP_API_KEY` — an external API key with the scopes needed for the tools you intend
-  to use (`services:read`, `coverage:check`, `service_requests:write`,
-  `service_requests:authorize`, `service_requests:read`, `service_requests:cancel`).
-  Never commit a real key.
-- `CLUEXP_MCP_OAUTH_ISSUER` — production OAuth authorization-server issuer, including its
-  HTTPS tenant or custom-domain origin. For the public ChatGPT plugin this is the Auth0 issuer.
-- `CLUEXP_MCP_OAUTH_RESOURCE_SERVER_URL` — public MCP resource identifier. Production uses
-  `https://mcp.cluexp.com/mcp`.
-- `CLUEXP_MCP_OAUTH_AUDIENCE` — expected JWT audience; defaults to the resource-server URL.
-- `CLUEXP_MCP_OAUTH_SCOPE` — scope required on every MCP access token; defaults to `cluexp:use`.
-- `CLUEXP_MCP_OAUTH_JWKS_URL` — optional JWKS override. When omitted, the standard
-  `<issuer>/.well-known/jwks.json` URL is used.
-- `CLUEXP_MCP_BEARER_TOKEN` — internal-preview compatibility token used only when OAuth is
-  not configured. `/healthz` remains public. If neither OAuth nor this fallback token is
-  configured, remote MCP calls fail closed with `503 mcp_auth_not_configured`.
-- `CLUEXP_MCP_ALLOWED_HOSTS` — optional comma-separated exact Host values for the MCP
-  SDK DNS-rebinding guard. Defaults already include local/test hosts and `mcp.cluexp.com`;
-  Vercel's `VERCEL_URL` / `VERCEL_PROJECT_PRODUCTION_URL` runtime hosts are also accepted
-  automatically when present. Do not use wildcard values such as `*.vercel.app`; the SDK
-  matches exact hosts only, plus `host:*` port wildcards.
-- `OPENAI_APPS_CHALLENGE_TOKEN` — optional domain-verification token for OpenAI plugin
-  submission. When set, `GET /.well-known/openai-apps-challenge` returns the exact token
-  as `text/plain`; when unset, it returns `404`.
+- `CLUEXP_API_BASE_URL` — base URL of the `/v1` API to call. There is no default, and in particular
+  no default pointing at production.
+- `CLUEXP_API_KEY` — an external API key with only `services:read` and `providers:search`.
+- `CLUEXP_MCP_ALLOWED_HOSTS` — optional comma-separated exact Host values for the MCP SDK
+  DNS-rebinding guard. Defaults already include local/test hosts and `mcp.cluexp.com`; Vercel's
+  `VERCEL_URL` / `VERCEL_PROJECT_PRODUCTION_URL` runtime hosts are also accepted automatically. The
+  SDK matches exact hosts only (plus `host:*` port wildcards), so do not use `*.vercel.app`.
+- `OPENAI_APPS_CHALLENGE_TOKEN` — optional domain-verification token for OpenAI submission. When set,
+  `GET /.well-known/openai-apps-challenge` returns it as `text/plain`; when unset, it returns `404`.
 
-Production is currently hosted on Vercel project `cluexp-mcp-server` under
-`logicacode-projects`. Production secret values live only in Vercel's environment store; rotate them
-there and redeploy if access changes.
+`/mcp` is public, with no sign-in. That is intentional: the tools reveal only the service catalog and
+opted-in providers' names and links. Production relies on a Vercel Firewall rate-limit rule on
+`/mcp` plus the `/v1` key's own rate limit.
+
+Production is hosted on the Vercel project `cluexp-mcp-server` under `logicacode-projects`. Secret
+values live only in Vercel's environment store.
 
 ## Running locally
 
@@ -65,9 +52,7 @@ cd apps/cluexp-mcp-server
 uv run --with-requirements requirements.txt python -m mcp_server.server
 ```
 
-This starts the MCP server over stdio, for a local MCP-speaking client (e.g. an editor's
-MCP integration) to connect to. It does not open a network port and is not reachable
-remotely.
+This starts the MCP server over stdio for a local MCP client. It does not open a network port.
 
 ## Running as a remote HTTP MCP server
 
@@ -76,29 +61,16 @@ cd apps/cluexp-mcp-server
 uv run --with-requirements requirements.txt uvicorn mcp_server.asgi:app --host 0.0.0.0 --port 8000
 ```
 
-The remote endpoint is:
-
 ```
-GET  /healthz  -> public health check
-GET  /.well-known/openai-apps-challenge -> optional OpenAI plugin domain verification
-GET  /.well-known/oauth-protected-resource/mcp -> OAuth protected-resource metadata
-POST /mcp      -> Streamable HTTP MCP endpoint, requires an OAuth access token in production
+GET  /healthz                              -> public health check
+GET  /.well-known/openai-apps-challenge    -> optional OpenAI domain verification
+POST /mcp                                  -> Streamable HTTP MCP endpoint (no credentials)
 ```
 
-A Dockerfile is included for container hosts. Production deployment must set
-`CLUEXP_API_BASE_URL=https://api.cluexp.com`, a scoped production `CLUEXP_API_KEY`, and
-the OAuth issuer/resource settings in the hosting platform's environment store. The Auth0
-tenant issues RS256 access tokens for audience `https://mcp.cluexp.com/mcp` with the
-`cluexp:use` scope; the MCP server validates issuer, audience, signature, expiry, and scope
-against Auth0's JWKS. On Vercel,
-`CLUEXP_MCP_ALLOWED_HOSTS=mcp.cluexp.com` is sufficient for production; preview
-deployments can rely on Vercel's runtime `VERCEL_URL` or add an exact preview alias if
-needed for smoke testing.
-
-For a safer step-by-step internal preview procedure, see
-[`INTERNAL-PREVIEW-RUNBOOK.md`](INTERNAL-PREVIEW-RUNBOOK.md). Placeholder-only MCP client
-config examples live under [`examples/`](examples/). External platform listing/submission prep lives
-in [`docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md`](../../docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md).
+A Dockerfile is included for container hosts. For the step-by-step preview procedure, see
+[`INTERNAL-PREVIEW-RUNBOOK.md`](INTERNAL-PREVIEW-RUNBOOK.md). Placeholder-only client configs live
+under [`examples/`](examples/). Platform submission prep lives in
+[`docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md`](../../docs/AGENT-PLATFORM-SUBMISSION-PACKAGE.md).
 
 ## Tests
 
@@ -107,31 +79,7 @@ cd apps/cluexp-mcp-server
 uv run --with-requirements requirements-dev.txt pytest tests -q
 ```
 
-All tests use `httpx.MockTransport` (no real sockets) or monkeypatch the client module
-directly — nothing here talks to production or any real service.
-
-`tests/test_local_v1_integration.py` additionally proves the MCP tools against the
-real local FastAPI `/v1` app via `httpx.ASGITransport`; it still opens no socket and uses
-only an in-memory external API client/key fixture.
-
-## Confirmation policy
-
-The mutating tools — `create_service_request`, `authorize_dispatch`, and
-`cancel_service_request` — each take a required `confirm: bool` parameter.
-Calling any of them with `confirm=false` returns a `confirmation_required` error and
-**never reaches the API**. A calling agent must show the end user a summary of what will
-happen and get explicit consent before setting `confirm=true`.
-
-## ChatGPT OAuth setup boundary
-
-The repository implements only the OAuth resource server. It does not contain an authorization
-server, login page, client secret, or tenant credentials. Before enabling OAuth in production:
-
-1. Create/configure the Auth0 API whose identifier is `https://mcp.cluexp.com/mcp` and add the
-   `cluexp:use` permission.
-2. Configure the OpenAI client registration and callback URL shown by the plugin portal using
-   Auth0's authorization-code flow with PKCE.
-3. Set `CLUEXP_MCP_OAUTH_ISSUER`, `CLUEXP_MCP_OAUTH_RESOURCE_SERVER_URL`, and the matching
-   audience/scope in Vercel, then redeploy only after Human authorization.
-4. Verify protected-resource metadata and complete an end-to-end login in a non-production
-   Auth0 tenant before changing the production plugin draft to OAuth and scanning tools.
+All tests use `httpx.MockTransport` (no real sockets) or monkeypatch the client module directly;
+nothing here talks to production. `tests/test_local_v1_integration.py` also runs both tools against
+the real local FastAPI `/v1` app via `httpx.ASGITransport` and proves that no ticket, job, offer, or
+dispatch record is created.

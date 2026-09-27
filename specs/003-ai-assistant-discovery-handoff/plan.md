@@ -313,3 +313,36 @@ status, so a draft must never exist as a `jobs` row or touch `customers` before 
 - Geocoder region bias: FR-009a may reject valid addresses that need a country hint. If pilot
   testing shows this, add a configured `region`/`components` bias. That is a config change, not a
   relaxation of the acceptance rule.
+
+## Phase 1 Implementation Notes (2026-09-26)
+
+Implemented on `feat/003-phase1-provider-discovery`. Deviations from the plan text above:
+
+- **Snapshot shape (plan step 3, T010):** `_network_routing_snapshot` keeps its `(technicians, routed)`
+  return, so its two existing callers are unchanged. The shared data now comes from a new
+  `_network_eligibility_snapshot()` returning `(technicians, org_status, org_capabilities)`, which both
+  the router path and provider matching use. `org_eligible` (per org) and `technician_org_eligible`
+  (the router's any-affiliation rule) live in `dispatch.py`.
+- **Commit-step re-check (FR-013):** implemented as `GET /tickets/{id}/provider-availability`
+  (`{eligible: true|false|null}`, intake capability cookie required) instead of a `provider_eligible`
+  envelope field, which avoids a generated schema-type change. The server answers only when the durable
+  `jobs.origin_channel` is `ai_assistant` (otherwise `null`), so the check survives reloads and the SMS
+  verification return. The UI calls it on every commit screen and keeps the confirm button disabled
+  until it answers (Codex T019 R2).
+- **Pre-fill entry (FR-010):** the plan's open-question fallback. Parsing lives in the pure module
+  `src/app/ai-handoff.ts` (tested by `node --test apps/intake-web/scripts/ai-handoff.test.mjs`). The
+  branded intake reads the fragment, pre-fills the address, highlights the matching service option
+  (none for skills without an intake bucket), and starts a fresh request. The customer's first tap
+  creates the ticket with the pre-filled location and `intake_source=ai_assistant`; the location step
+  reuses those coordinates and still asks the safety question (Codex T019 R3).
+- **No address in request URLs (FR-008):** address autocomplete runs only for text the customer typed,
+  so a handed-off address is never sent as `/places/autocomplete?q=` (Codex T019 R1). That node test
+  is not yet wired into CI, because wiring it needs a workflow edit that awaits Human approval.
+- **Error contract (FR-009a):** `PublicApiError` gains optional `candidates`, and
+  `/v1/provider-matches` documents its 422/503 `PublicApiError` responses in OpenAPI (Codex T019 R4).
+- **Attribution (FR-012):** only `intake_source == "ai_assistant"` is accepted; `origin_channel` is
+  written once and never overwritten.
+- **Health monitor (T017, added after PR #75 merged):** see T017 in `tasks.md`. The 401 fallback is
+  transitional and should be removed once the cutover is live.
+- **Not in this change:** T018 preview/manual testing, the node handoff test in CI, and all production
+  steps (T020–T023).
