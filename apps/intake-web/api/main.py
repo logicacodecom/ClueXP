@@ -259,6 +259,9 @@ class PublicApiError(BaseModel):
     error: str
     request_id: str
     detail: str | None = None
+    # Only on `address_ambiguous` from /v1/provider-matches: up to three matches
+    # for the assistant to confirm with the user.
+    candidates: list[str] | None = None
 
 
 class PublicApiRequest(BaseModel):
@@ -3839,11 +3842,15 @@ async def _intake_show_estimate_for_ticket(ticket_id: UUID) -> bool:
 @app.get("/tickets/{ticket_id}/provider-availability")
 async def provider_availability(ticket_id: UUID, request: Request) -> dict[str, bool | None]:
     """Commit-step re-check for AI-assistant intakes (specs/003 FR-013): can the
-    owning provider still serve this skill here? `None` when there is no owner or
-    location to check. A boolean only -- no ETA, count, or technician data."""
+    owning provider still serve this skill here? Decided from the durable
+    `jobs.origin_channel`, so it survives reloads and the SMS verification return.
+    `None` for other intakes or when there is no owner/location to check. A
+    boolean only -- no ETA, count, or technician data."""
     await latency()
     ticket = await require_intake_ticket(ticket_id, request)
     activation = await store.get_intake_activation_context(ticket_id) or {}
+    if activation.get("origin_channel") != "ai_assistant":
+        return {"eligible": None}
     org_id = activation.get("customer_owner_org_id")
     location = ticket.location
     if not org_id or location is None or location.lat is None or location.lng is None:
@@ -4893,7 +4900,18 @@ async def require_public_providers_search(request: Request) -> dict[str, Any]:
     return await require_public_api_client(request, "providers:search")
 
 
-@app.post("/v1/provider-matches", response_model=PublicProviderMatchResponse)
+@app.post(
+    "/v1/provider-matches",
+    response_model=PublicProviderMatchResponse,
+    responses={
+        422: {
+            "model": PublicApiError,
+            "description": "invalid_request, unknown_service_skill, address_not_found, "
+            "address_ambiguous (with `candidates`), or address_imprecise.",
+        },
+        503: {"model": PublicApiError, "description": "geocoding_unavailable."},
+    },
+)
 async def public_v1_provider_matches(
     request: Request,
     response: Response,

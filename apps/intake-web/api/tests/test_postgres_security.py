@@ -577,3 +577,27 @@ def test_ai_listed_channels_query_and_one_listing_per_org():
     assert listed == [{"organization_id": listed[0]["organization_id"], "slug": listed[0]["slug"],
                        "display_name": "Channel Name"}]
     assert listed[0]["slug"].startswith("listed-")
+
+
+def test_origin_channel_attribution_round_trips_and_is_write_once():
+    """specs/003 FR-012: stored once on create, never overwritten by later saves."""
+
+    async def exercise() -> tuple[dict | None, dict | None]:
+        store = PostgresStore(DSN)
+        org = uuid4()
+        async with await store._connect() as conn:
+            await conn.execute(
+                "insert into organizations (id, display_name, status) values (%s, 'Attribution Org', 'active')",
+                (org,),
+            )
+        ticket = Ticket()
+        await store.save(ticket, {"origin_org_id": org, "customer_owner_org_id": org, "origin_channel": "ai_assistant"})
+        first = await store.get_intake_activation_context(ticket.ticket_id)
+        await store.save(ticket, {"origin_org_id": org, "customer_owner_org_id": org, "origin_channel": "other"})
+        await store.save(ticket, {"origin_org_id": org, "customer_owner_org_id": org})
+        return first, await store.get_intake_activation_context(ticket.ticket_id)
+
+    first, later = asyncio.run(exercise())
+
+    assert first["origin_channel"] == "ai_assistant"
+    assert later["origin_channel"] == "ai_assistant"

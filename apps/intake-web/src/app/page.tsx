@@ -2,9 +2,10 @@
 
 import { CalendarClock, Car, Clock3, Home, LoaderCircle, MapPin, Network, Phone, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
+import { type AiPrefill, parseAiPrefill, shouldAutocomplete } from "./ai-handoff";
 
 type Screen =
   | "opener"
@@ -308,36 +309,6 @@ function ChipSelect({
   );
 }
 
-type AiPrefill = {
-  accessType: string | null;
-  location: { raw_text: string; lat: number; lng: number; geocode_confidence: string };
-};
-
-// Mirrors the API's `_access_type_for_skill` bucketing of catalog skill codes.
-function accessTypeForSkill(skill: string): string | null {
-  if (skill.startsWith("locksmith.vehicle") || skill.startsWith("locksmith.key_programming")) return "vehicle";
-  if (skill.startsWith("locksmith.residential")) return "home";
-  if (skill.startsWith("locksmith.commercial")) return "business";
-  return null;
-}
-
-// AI-assistant links carry pre-fill in the fragment so the location never
-// reaches server logs. Reading it creates nothing: a ticket exists only after
-// the customer's first tap (FR-011).
-function readAiPrefill(): AiPrefill | null {
-  if (typeof window === "undefined" || !window.location.hash) return null;
-  const params = new URLSearchParams(window.location.hash.slice(1));
-  if (params.get("src") !== "ai_assistant") return null;
-  const lat = Number(params.get("lat"));
-  const lng = Number(params.get("lng"));
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
-  const address = (params.get("address") || "").slice(0, 300);
-  return {
-    accessType: accessTypeForSkill(params.get("skill") || ""),
-    location: { raw_text: address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`, lat, lng, geocode_confidence: "high" }
-  };
-}
-
 export function IntakeFlow({ organizationName, organizationSlug }: IntakeBranding) {
   const router = useRouter();
   const [screen, setScreen] = useState<Screen>("opener");
@@ -377,7 +348,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   });
   const [authorityRole, setAuthorityRole] = useState<string | null>(null);
   const [aiPrefill, setAiPrefill] = useState<AiPrefill | null>(null);
-  const [providerAvailable, setProviderAvailable] = useState<boolean | null>(null);
+  const [providerAvailable, setProviderAvailable] = useState<boolean | null | "pending">(null);
+  const addressTypedByCustomer = useRef(false);
 
   const iconFor = useMemo(
     () => ({
@@ -632,7 +604,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (new URLSearchParams(window.location.search).get("verified") === "1") return;
-    if (readAiPrefill()) return; // an assistant handoff starts a fresh request
+    if (parseAiPrefill(window.location.hash)) return; // an assistant handoff starts a fresh request
     const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
     let saved: { ticketId?: string; screen?: Screen; savedAt?: number };
@@ -661,7 +633,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
 
   useEffect(() => {
     if (!organizationSlug) return;
-    const prefill = readAiPrefill();
+    const prefill = parseAiPrefill(window.location.hash);
     if (!prefill) return;
     window.localStorage.removeItem(sessionKey);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -669,13 +641,20 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     setForm((current) => ({ ...current, address: prefill.location.raw_text }));
   }, [organizationSlug, sessionKey]);
 
-  // Commit-step re-check for assistant handoffs (FR-013): a boolean only.
+  // Commit-step re-check (FR-013). The server answers only for assistant-sourced
+  // intakes (durable jobs.origin_channel), so this also covers reloads and the
+  // SMS verification return; the confirm button waits for the answer.
   useEffect(() => {
-    if (screen !== "commit" || !aiPrefill || !ticket?.ticket_id) return;
+    if (screen !== "commit" || !ticket?.ticket_id) return;
+    let active = true;
+    setProviderAvailable("pending");
     api<{ eligible: boolean | null }>(`/tickets/${ticket.ticket_id}/provider-availability`)
-      .then((result) => setProviderAvailable(result.eligible))
-      .catch(() => setProviderAvailable(null));
-  }, [screen, aiPrefill, ticket?.ticket_id]);
+      .then((result) => active && setProviderAvailable(result.eligible))
+      .catch(() => active && setProviderAvailable(null));
+    return () => {
+      active = false;
+    };
+  }, [screen, ticket?.ticket_id]);
 
   useEffect(() => {
     if (screen !== "matching" || !ticket?.ticket_id) return;
@@ -715,7 +694,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   // Debounced Places autocomplete. Selection performs the single geocode call.
   useEffect(() => {
     const addr = form.address.trim();
-    if (!addr) {
+    if (!shouldAutocomplete(addr, addressTypedByCustomer.current)) {
       setPlacePredictions([]);
       setPlacesLoading(false);
       return;
@@ -765,7 +744,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <AgentMessage
             support={
               aiPrefill
-                ? `From your assistant: ${aiPrefill.location.raw_text}. You can change it in the next steps.`
+                ? `From your assistant: ${aiPrefill.location.raw_text}.${
+                    aiPrefill.accessType ? " The highlighted option matches what you asked for; tap it to continue." : ""
+                  } You can change the location in the next steps.`
                 : "A few structured answers help us route the right access specialist without inventing details."
             }
           >
@@ -779,7 +760,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               ["other", "Something else", "Talk with a person"]
             ].map(([value, label, hint]) => (
               <button
-                className="choice"
+                className={aiPrefill?.accessType === value ? "choice active" : "choice"}
+                aria-pressed={aiPrefill?.accessType === value ? true : undefined}
                 key={value}
                 type="button"
                 onClick={() =>
@@ -862,7 +844,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               className="field"
               placeholder="Address or nearby landmark"
               value={form.address}
-              onChange={(event) => setForm({ ...form, address: event.target.value })}
+              onChange={(event) => {
+                addressTypedByCustomer.current = true;
+                setForm({ ...form, address: event.target.value });
+              }}
             />
             {placesLoading ? <p className="fine">Checking address matches...</p> : null}
             {placePredictions.length ? (
@@ -1382,6 +1367,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <button
             className="primary"
             type="button"
+            disabled={busy || providerAvailable === "pending"}
             onClick={() =>
               run(async () => {
                 const current = await ensureTicket();
@@ -1401,7 +1387,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               })
             }
           >
-            {scheduled ? "Request appointment" : "Confirm request"}
+            {providerAvailable === "pending"
+              ? "Checking provider availability..."
+              : scheduled
+                ? "Request appointment"
+                : "Confirm request"}
           </button>
         </>
       );

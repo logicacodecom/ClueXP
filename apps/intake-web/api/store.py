@@ -4189,6 +4189,7 @@ class InMemoryStore(Store):
                 getattr(self, "_job_dispatch_cutover", {}).get(jid, False)
             ),
             "intake_channel_slug": getattr(self, "_job_intake_channel_slug", {}).get(jid),
+            "origin_channel": getattr(self, "_job_origin_channel", {}).get(jid),
         }
 
     async def ops_create_single_offer(
@@ -9739,7 +9740,7 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "select j.status, j.customer_owner_org_id,"
-                " coalesce(c.dispatch_cutover_enabled, false), c.slug"
+                " coalesce(c.dispatch_cutover_enabled, false), c.slug, j.origin_channel"
                 " from jobs j left join intake_channels c on c.id = j.intake_channel_id"
                 " where j.id = %s",
                 (str(job_id),),
@@ -9752,6 +9753,7 @@ class PostgresStore(Store):
             "customer_owner_org_id": str(row[1]) if row[1] else None,
             "dispatch_cutover_enabled": bool(row[2]),
             "intake_channel_slug": row[3],
+            "origin_channel": row[4],
         }
 
     async def record_customer_review(

@@ -14,6 +14,50 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "PublicApiError": {
+        "description": "Documented `/v1` error envelope. Every `/v1` error response \u2014 validation,\nauth, scope, rate-limit, or unhandled \u2014 takes this shape so external clients\nparse one contract instead of per-route ad hoc bodies.",
+        "properties": {
+          "candidates": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidates"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "request_id"
+        ],
+        "title": "PublicApiError",
+        "type": "object"
+      },
       "PublicApiMeta": {
         "properties": {
           "api_version": {
@@ -779,11 +823,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/PublicApiError"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "invalid_request, unknown_service_skill, address_not_found, address_ambiguous (with `candidates`), or address_imprecise."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicApiError"
+                }
+              }
+            },
+            "description": "geocoding_unavailable."
           }
         },
         "summary": "Public V1 Provider Matches"

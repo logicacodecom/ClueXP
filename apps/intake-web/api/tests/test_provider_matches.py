@@ -274,3 +274,43 @@ def test_provider_availability_rechecks_the_owning_provider(app, monkeypatch):
     assert suspended.json() == {"eligible": False}
     assert out_of_range.json() == {"eligible": False}
     assert stranger.status_code == 404  # intake capability cookie required
+
+
+def test_provider_availability_is_only_answered_for_assistant_sourced_intakes(app, monkeypatch):
+    _, store, client, _, _ = app
+    _branded_channel(monkeypatch, store)
+    _org(store, "abc", status="suspended")
+    store._technicians = [_tech("t1", ["abc"])]
+    location = {"raw_text": "x", "lat": 40.0, "lng": -73.0, "geocode_confidence": "high"}
+    web_ticket = client.post("/tickets", json={
+        "intake_channel": "abc-locksmith", "access_type": "home", "location": location,
+    }).json()["ticket"]["ticket_id"]
+
+    # A normal web intake gets no notice even though its provider is ineligible.
+    assert client.get(f"/tickets/{web_ticket}/provider-availability").json() == {"eligible": None}
+
+
+def test_provider_availability_survives_a_fresh_page_session(app, monkeypatch):
+    """R2: the answer comes from durable attribution, not browser state."""
+    _, store, client, _, _ = app
+    _branded_channel(monkeypatch, store)
+    _org(store, "abc", status="suspended")
+    ticket_id = client.post("/tickets", json={
+        "intake_channel": "abc-locksmith", "access_type": "home", "intake_source": "ai_assistant",
+        "location": {"raw_text": "x", "lat": 40.0, "lng": -73.0, "geocode_confidence": "high"},
+    }).json()["ticket"]["ticket_id"]
+
+    # Same capability cookie, brand-new client: what a reload or SMS return looks like.
+    reloaded = TestClient(client.app, cookies=client.cookies)
+    assert reloaded.get(f"/tickets/{ticket_id}/provider-availability").json() == {"eligible": False}
+
+
+def test_openapi_documents_the_provider_match_error_contract():
+    from api.main import app as fastapi_app
+
+    spec = fastapi_app.openapi()
+    responses = spec["paths"]["/v1/provider-matches"]["post"]["responses"]
+    for status in ("422", "503"):
+        assert responses[status]["content"]["application/json"]["schema"]["$ref"].endswith("/PublicApiError")
+    candidates = spec["components"]["schemas"]["PublicApiError"]["properties"]["candidates"]
+    assert "array" in str(candidates)
