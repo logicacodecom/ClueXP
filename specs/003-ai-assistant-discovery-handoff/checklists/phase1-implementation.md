@@ -1,13 +1,13 @@
 # Checklist: Spec 003 Phase 1 Implementation
 
 **Artifact Reviewed**: `implementation (feat/003-phase1-provider-discovery)`
-**Reviewer**: `Codex (pending)`
+**Reviewer**: `Codex (independent secondary/final reviewer, T019)`
 **Date**: `2026-09-26`
 
 Secondary-agent review required: yes
-Secondary-agent review completed: no
-Reviewer agent:
-Review result:
+Secondary-agent review completed: yes
+Reviewer agent: Codex
+Review result: changes-requested
 
 ## Scope
 
@@ -49,3 +49,80 @@ Review result:
 - [x] Migration is additive and default-off, with no RLS change on an existing table.
 - [x] No production DDL, deployment, key creation, env change, platform submission, or workflow edit
   is performed or authorized by this change.
+
+## Independent Review — 167d618 (2026-09-26)
+
+Changes requested. Review is performed, but T019 approval remains open.
+
+### R1 — P1: Fragment address leaks into an automatic GET query
+
+`apps/intake-web/src/app/page.tsx:640` copies the fragment address into `form.address`.
+The autocomplete effect at lines 687-706 reacts to that change without requiring a customer
+edit or the location screen, and after 350 ms calls `/places/autocomplete?q=<address>`.
+Thus opening the handoff puts its private address into a request URL, defeating FR-008's
+fragment/log protection even before the customer acts. Only run autocomplete for explicit
+address edits; preserve prefilled coordinates without this request. Add a browser-level
+regression proving a valid handoff load sends neither an address-bearing URL nor a ticket POST.
+Preview log inspection remains T018, not performed by this review.
+
+### R2 — P2: Eligibility re-check disappears on resume
+
+`page.tsx:644-649` requires `aiPrefill`, which exists only in React state. The fragment is
+removed on first load; local session storage retains only ticket ID, screen, and timestamp.
+Reloading an AI ticket (including at commit), or returning through the SMS verification link,
+therefore restores the ticket with `aiPrefill=null` and skips the check and notice entirely.
+FR-013 applies to AI-sourced intakes, not only uninterrupted page sessions. Derive the check
+from durable ticket attribution, or safely check all owning-provider intakes. Test reload and
+verification-return paths with a provider that became ineligible. Ensure the result is
+available before offering the customer's proceed/back choice.
+
+### R3 — P2: Service prefill is parsed but never applied
+
+`page.tsx:307` sets `AiPrefill.accessType`, but no consumer reads it. Lines 735-790 show the
+ordinary unselected service chooser and create from the newly clicked value. Even the plan's
+fallback requires a pre-selected service; the current flow drops that part of FR-010.
+Apply and display the validated service selection while retaining an explicit customer action
+before ticket creation. Test a residential/vehicle handoff and unsupported service handling.
+
+### R4 — P2: New error contract is absent from OpenAPI
+
+`api/main.py:254-262` still defines `PublicApiError` without `candidates`, although the new
+helper emits that field. The new `/provider-matches` operation in the snapshot advertises
+`HTTPValidationError` for 422 and no 503 response. Generated clients cannot discover the
+address-disambiguation contract. Add optional `candidates: list[str]` to the public error
+model, document the new endpoint's actual 422/503 envelope, regenerate the snapshot, and
+assert the exported contract includes candidates. A drift check alone cannot catch this.
+
+### Other requested checks
+
+- Router extraction: the old any-affiliation predicate and snapshot construction are moved
+  unchanged; `_network_routing_snapshot` keeps its existing return shape and callers. No new
+  coverage/dispatch-authorization behavior found. T005 is untouched and remains separate.
+- Per-affiliation matching: each emitted org passes `org_eligible`; both store implementations
+  exclude null-org, inactive, or unlisted channels. SQL uses an active-org inner join.
+- FR-011: source review finds ticket creation only in explicit action handlers, not mount or
+  link-prefetch paths. This does not excuse R1's automatic read request.
+- FR-009a: outcome precedence matches the approved rule; old geocoding keeps first-result
+  selection. Discovery audit metadata is allow-listed; geocoder fetch suppresses raw exceptions,
+  and API unhandled-error logging records type rather than exception text. Existing privacy
+  tests cover mocked address outcomes, not the browser leak in R1.
+- MCP: exactly two read-only tools remain, incoming OAuth/bearer enforcement is removed,
+  outbound scoped API authentication remains, and the host guard is retained and tested.
+- `PostgresStore.save`: added column, placeholder, and parameter align; `coalesce` preserves
+  an existing attribution on later saves. No SQL defect found. Dedicated attribution SQL
+  round-trip assertions would strengthen coverage beyond the in-memory attribution test.
+- Migration is additive/default-off and the unique index matches the approved rule. CI's
+  clean-Postgres migration and 12 integration tests passed, including the new listing test.
+  Scratch downgrade evidence is still absent; do not equate offline rendering with that check.
+- SDLC note confirmed: non-PR fallback reads only `checklists/sdlc-policy.md`, so the old spec
+  approval can pass a later implementation diff. PR events use the PR body exclusively and
+  cannot fall back to that approval. Track remediation separately; no workflow/policy edits here.
+
+### Validation and release limits
+
+- CI run `36287457209` at reviewed head: API 545 passed/1 skipped; Postgres 12 passed;
+  web, MCP, secret-scan passed. SDLC failed with review pending, correctly.
+- Independent local MCP rerun: 19 passed.
+- No browser/preview acceptance or scratch Postgres downgrade performed. T017, T018,
+  T020-T023 remain pending their existing gates. No merge, deployment, keys, workflow changes,
+  or production actions performed. The monitor must change in the same authorized release.

@@ -60,6 +60,10 @@
 - [ ] T018 Claude: preview deploy; manual scenario in Claude (no-auth custom connector) and ChatGPT
   developer mode; link-preview and private-window checks; log grep for test address.
 - [ ] T019 [R] Codex: secondary review of phase 1 implementation PR (markers in PR body).
+  - Review ownership: Codex owns T019 status and `checklists/phase1-implementation.md`.
+  - 2026-09-26: changes-requested on `167d618`; findings R1-R4 in the implementation checklist.
+    Review performed; T019 remains open pending fixes and approving re-review. T017/T018 and
+    production T020-T023 remain gated; T005 remains separate.
 - [ ] T020 [H] Human: authorize production — migration apply, scoped `/v1` key, Vercel env changes,
   Firewall rate-limit rule, git-connected Vercel project, production deploy.
 - [ ] T021 [H] Human: first provider channel opt-ins (written provider consent per HD-6).
