@@ -4,7 +4,7 @@
 **Spec Directory**: `specs/004-agent-merge-governance`  
 **Created**: `2026-09-27` (rev 3: addresses Codex T003 re-review findings 1–7 by simplifying)  
 **Owner**: `Claude (author) with Product Owner authority; Codex review`  
-**Status**: `draft`
+**Status**: `implemented (PR pending independent review); settings switched 2026-09-27`
 
 ## Summary
 

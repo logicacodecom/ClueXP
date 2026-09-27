@@ -41,6 +41,8 @@ work, require Spec Kit artifacts under `specs/` before implementation. Preserve 
 tenant isolation, trust-state/API-contract rules, and production authorization gates.
 Never add secrets, production credentials, or private customer evidence to the repository.
 Risky changes defined by the constitution require an independent secondary-agent review
-with completed approval markers in the PR body or local feature checklist. Use Orca
-worktrees as the active coordination surface for parallel work; `.ai-orchestrator/*` is
-legacy reference only. Never push directly to `main`.
+from a different agent family, recorded as the `## Review Record` in the PR body at the
+current head. There is no human code review or PR approval; any agent merges once the
+constitution's gates pass. Merging to `main` deploys to production, so merged changes must
+be safe live. Use Orca worktrees as the active coordination surface for parallel work;
+`.ai-orchestrator/*` is legacy reference only. Never push directly to `main`.

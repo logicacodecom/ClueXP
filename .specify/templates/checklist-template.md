@@ -1,13 +1,23 @@
 # Checklist: [FEATURE NAME]
 
 **Artifact Reviewed**: `[spec.md | plan.md | tasks.md | implementation | release]`  
-**Reviewer**: `[Human | Codex | Claude]`  
+**Reviewer**: `[Codex | Claude Code | Hermes | Other: <name>]` (different agent family from every author)  
 **Date**: `[YYYY-MM-DD]`
 
-Secondary-agent review required: no
-Secondary-agent review completed: no
-Reviewer agent:
-Review result:
+<!-- For risky changes the reviewer records the verdict in the PR body (authoritative) and may copy it
+here for local `--base/--head` checks, as an unfenced block:
+
+```text
+## Review Record
+Secondary-agent review required: yes
+Author agents: <agent>, <agent>
+Reviewer agent: <agent>
+Review scope: implementation | spec
+Reviewed head: <40-character commit SHA>
+Review result: approve | changes-requested
+Merge owner: <agent>
+```
+-->
 
 ## Requirements Quality
 
@@ -31,3 +41,11 @@ Review result:
 - [ ] Tests/checks are listed in `plan.md` and mapped to tasks.
 - [ ] CI requirements are identified.
 - [ ] Manual acceptance evidence is identified for user-facing or production-facing changes.
+
+## Deploy Safety (merge = deploy; required when adding migrations or config)
+
+- [ ] Starts and serves existing traffic against the currently applied production schema and config.
+- [ ] New capabilities default off server-side and fail closed until their migration/env/activation step.
+- [ ] Migrations are additive (expand/contract); tests run against the applied production alembic revision (recorded from a read-only query; no secrets).
+- [ ] No migration or real send runs during build or startup.
+- [ ] Intake and MCP remain compatible with each other's previous revision where a contract changes.

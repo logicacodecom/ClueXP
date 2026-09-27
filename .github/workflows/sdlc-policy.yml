@@ -1,0 +1,59 @@
+name: sdlc-policy
+
+# specs/004: the only producer of the required `sdlc-policy` check.
+# PR events evaluate the CURRENT PR metadata (re-fetched from the API), and `edited`
+# re-runs the gate when the PR body's Review Record changes. Never pull_request_target.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sdlc-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdlc-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: verify Spec Kit and AI SDLC policy files
+        run: |
+          set -euo pipefail
+          test -s .specify/memory/constitution.md
+          test -s .specify/templates/spec-template.md
+          test -s .specify/templates/plan-template.md
+          test -s .specify/templates/tasks-template.md
+          test -s .specify/templates/checklist-template.md
+          test -s docs/AI-SDLC-WORKFLOW.md
+          test -s AGENTS.md
+          test -s CLAUDE.md
+          grep -q "Human approval" .specify/memory/constitution.md
+          grep -q "Codex" AGENTS.md
+          grep -q "Claude" CLAUDE.md
+      - name: enforce Spec Kit coverage and agent review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: python .github/scripts/check-sdlc-policy.py
+      - name: unit tests (policy, grammar, modes)
+        run: python .github/scripts/test_check_sdlc_policy.py
+      - name: git-integration tests (diffs, freshness, modes)
+        run: |
+          git config --global user.email ci@example.test
+          git config --global user.name ci
+          python .github/scripts/test_check_sdlc_policy_git.py
+      - name: release helper tests
+        run: |
+          python .github/scripts/test_post_deploy_verify.py
+          python .github/scripts/test_protection_projection.py

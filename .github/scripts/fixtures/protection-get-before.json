@@ -1,0 +1,73 @@
+{
+  "url": "https://api.github.example/redacted",
+  "required_status_checks": {
+    "url": "https://api.github.example/redacted",
+    "strict": true,
+    "contexts": [
+      "sdlc-policy",
+      "web",
+      "api",
+      "mcp-server",
+      "secret-scan"
+    ],
+    "contexts_url": "https://api.github.example/redacted",
+    "checks": [
+      {
+        "context": "sdlc-policy",
+        "app_id": null
+      },
+      {
+        "context": "web",
+        "app_id": 15368
+      },
+      {
+        "context": "api",
+        "app_id": 15368
+      },
+      {
+        "context": "mcp-server",
+        "app_id": 15368
+      },
+      {
+        "context": "secret-scan",
+        "app_id": 15368
+      }
+    ]
+  },
+  "required_pull_request_reviews": {
+    "url": "https://api.github.example/redacted",
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": true,
+    "require_last_push_approval": false,
+    "required_approving_review_count": 1
+  },
+  "required_signatures": {
+    "url": "https://api.github.example/redacted",
+    "enabled": false
+  },
+  "enforce_admins": {
+    "url": "https://api.github.example/redacted",
+    "enabled": false
+  },
+  "required_linear_history": {
+    "enabled": false
+  },
+  "allow_force_pushes": {
+    "enabled": false
+  },
+  "allow_deletions": {
+    "enabled": false
+  },
+  "block_creations": {
+    "enabled": false
+  },
+  "required_conversation_resolution": {
+    "enabled": true
+  },
+  "lock_branch": {
+    "enabled": false
+  },
+  "allow_fork_syncing": {
+    "enabled": false
+  }
+}
