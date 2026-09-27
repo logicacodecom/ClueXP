@@ -69,6 +69,35 @@ const PHONE_VERIFICATION_CONSENT_VERSION = "transactional-verification-v1";
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 const TERMINAL_SCREENS: Screen[] = ["review", "handoff"];
 const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
+// ClueXP has no platform fallback dispatch number: only a provider's own
+// public line (from /channels/{slug}) may become a call affordance.
+
+/** Renders a call affordance, or honest guidance when no number is trustworthy.
+ *  Never emits a tel: to an unverified number. */
+function CallDispatch({
+  phone,
+  className,
+  style,
+  children
+}: {
+  phone: string | null;
+  className: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  if (!phone) {
+    return (
+      <p className="fine" style={{ textAlign: "center" }}>
+        Please call your service provider directly — no dispatch number is configured for this channel.
+      </p>
+    );
+  }
+  return (
+    <a className={className} href={`tel:${phone}`} style={style}>
+      {children}
+    </a>
+  );
+}
 const DEMO_SCREENS: Screen[] = ["assigned", "tracking", "arrival", "final", "review"];
 
 type DispatchState = "waiting" | "matched" | "no_eligible" | "expired_retry" | "error";
@@ -673,11 +702,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
             <p className="panel-title">This direct intake page is closed.</p>
             <p className="fine">Please use the intake link from your service provider, or call customer service.</p>
           </div>
-          {dispatchPhone ? (
-            <a className="secondary" href={`tel:${dispatchPhone}`}>
-              <Phone size={18} aria-hidden="true" /> Call customer service
-            </a>
-          ) : null}
+          <CallDispatch phone={dispatchPhone} className="secondary">
+            <Phone size={18} aria-hidden="true" /> Call customer service
+          </CallDispatch>
         </>
       );
     }
@@ -1337,11 +1364,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 If your provider uses a partner, the partner first sees a masked job offer. Customer details appear only after the provider-approved team accepts and assigns a technician.
               </p>
             </div>
-            {dispatchPhone ? (
-              <a className="secondary" href={`tel:${dispatchPhone}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
-                <Phone size={18} aria-hidden="true" /> Call dispatch
-              </a>
-            ) : null}
+            <CallDispatch phone={dispatchPhone} className="secondary" style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+              <Phone size={18} aria-hidden="true" /> Call dispatch
+            </CallDispatch>
           </div>
         </>
       );
@@ -1388,11 +1413,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               <button className="primary" type="button" onClick={() => void handoff("dispatch_exhausted")}>
                 Contact dispatch
               </button>
-            ) : dispatchPhone ? (
-              <a className="ghost" href={`tel:${dispatchPhone}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+            ) : (
+              <CallDispatch phone={dispatchPhone} className="ghost" style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
                 Need help? Call dispatch
-              </a>
-            ) : null}
+              </CallDispatch>
+            )}
           </div>
         </>
       );
@@ -1603,11 +1628,9 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
           <div className="big-number">Sam Reyes</div>
           <p className="fine">Plain-language support for this request. No app install required.</p>
         </div>
-        {dispatchPhone ? (
-          <a className="primary" href={`tel:${dispatchPhone}`} style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
-            Call now
-          </a>
-        ) : null}
+        <CallDispatch phone={dispatchPhone} className="primary" style={{ display: "block", textAlign: "center", textDecoration: "none" }}>
+          Call now
+        </CallDispatch>
       </>
     );
   })();

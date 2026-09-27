@@ -165,7 +165,18 @@ function formatWindow(value: ServiceAppointmentView | null, locale: string): str
   return `${startText}${endText ? ` – ${endText}` : ""}${value.timezone ? ` ${value.timezone}` : ""}`;
 }
 
-const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || "+18005551234";
+// Build-time floor only. This placeholder ships whenever NEXT_PUBLIC_DISPATCH_PHONE
+// is unset at build time, so it must never be handed to a customer as a tel: link.
+// `safetyPhone()` is the only sanctioned way to turn these into a call affordance.
+const PLACEHOLDER_DISPATCH_PHONE = "+18005551234";
+const DISPATCH_PHONE = process.env.NEXT_PUBLIC_DISPATCH_PHONE || PLACEHOLDER_DISPATCH_PHONE;
+
+/** The provider's own dispatch line, else a real configured floor, else nothing.
+ *  Returns null when the only number available is the unconfigured placeholder. */
+function safetyPhone(providerPhone: string | null): string | null {
+  if (providerPhone) return providerPhone;
+  return DISPATCH_PHONE === PLACEHOLDER_DISPATCH_PHONE ? null : DISPATCH_PHONE;
+}
 const emptyCustomerActions: CustomerActions = {
   can_cancel: false,
   can_confirm: false,
@@ -1147,15 +1158,23 @@ export default function TokenTrackingPage() {
             </button>
             {renderScheduleControl()}
             {renderCancelControl()}
-            <a
-              className="ghost"
-              href={`tel:${dispatchPhone || DISPATCH_PHONE}`}
-              style={{ display: "block", textAlign: "center", textDecoration: "none" }}
-            >
-              {locale === "es"
-                ? "¿Necesita ayuda? Llamar al despacho"
-                : "Need help? Call dispatch"}
-            </a>
+            {safetyPhone(dispatchPhone) ? (
+              <a
+                className="ghost"
+                href={`tel:${safetyPhone(dispatchPhone)}`}
+                style={{ display: "block", textAlign: "center", textDecoration: "none" }}
+              >
+                {locale === "es"
+                  ? "¿Necesita ayuda? Llamar al despacho"
+                  : "Need help? Call dispatch"}
+              </a>
+            ) : (
+              <p className="fine" style={{ textAlign: "center" }}>
+                {locale === "es"
+                  ? "Llame directamente a su proveedor de servicio."
+                  : "Please call your service provider directly."}
+              </p>
+            )}
           </div>
         </main>
       </div>

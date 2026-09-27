@@ -46,15 +46,42 @@ jobs:
               cat "$out" >&2 || true
               exit 1
             fi
-            if grep -q '"invalid_mcp_token"' "$out"; then
-              echo "bearer"
-            elif grep -q '"invalid_token"' "$out"; then
-              echo "oauth"
-            else
-              echo "::error::$label: 401 with an unrecognized error body — the auth contract changed" >&2
+            local mode
+            if ! mode="$(
+              python3 - "$out" <<'PY'
+          import json
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as response_file:
+                  body = json.load(response_file)
+          except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+              print(f"invalid JSON response: {exc}", file=sys.stderr)
+              raise SystemExit(1)
+
+          error = body.get("error") if isinstance(body, dict) else None
+          if not isinstance(error, str):
+              print("response JSON must contain a string 'error' field", file=sys.stderr)
+              raise SystemExit(1)
+
+          modes = {
+              "invalid_mcp_token": "bearer",
+              "invalid_token": "oauth",
+          }
+          mode = modes.get(error)
+          if mode is None:
+              print(f"unrecognized error value: {error!r}", file=sys.stderr)
+              raise SystemExit(1)
+
+          print(mode)
+          PY
+            )"; then
+              echo "::error::$label: 401 with an invalid or unrecognized error response — the auth contract changed" >&2
               cat "$out" >&2 || true
               exit 1
             fi
+
+            echo "$mode"
           }
 
           no_token_mode="$(probe 'missing token' /tmp/mcp-no-token.json)"

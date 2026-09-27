@@ -69,8 +69,15 @@ Flags: `--no-clean` (skip Metro Key cleanup), `--no-jobs` (company + roster only
 and exits non-zero on validation issues. Re-running is always safe; lookups are by slug/email so
 nothing duplicates.
 
-> ⚠️ Run against a **demo** database only. The cleanup deletes Metro Key demo jobs and their
-> dependent rows — never point it at a database with real pilot data.
+> ⚠️ Run against a **demo** database only — never point it at a database with real pilot data.
+>
+> `clean_metro_key_demo` now deletes only jobs carrying the `detail->>'demo_seed_ref'` marker (the
+> same rule the Florida path uses), so an unmarked job is never hard-deleted. This matters because
+> `metro-key` is **also a live pilot channel**: org-reachability alone cannot distinguish a
+> synthetic job from a real customer job, and this cleanup removes jobs *and* their customer rows.
+> No current seeder writes Metro Key jobs, so the Metro Key cleanup is now a deliberate no-op. A
+> legacy demo job that predates the marker must be closed per-job via
+> `POST /admin/jobs/{id}/resolve` — the audited recovery path — not by bulk delete.
 
 ---
 
@@ -80,7 +87,9 @@ Do not enable a company channel for real customers until all of these are true:
 
 - Company recovery controls (cancel/release/no-show/recall/resolve + notes + timeline) are merged and verified.
 - CI passes API tests, Alembic offline validation, shared typecheck, and all five web application builds.
-- Production migration head is **`0053_provider_crm`** or later; `job_notes` (`0014`),
+- Production migration head is **`0054_alert_escalation`** or later — the alerting surface this
+  runbook relies on ships in `0054`, so a `0053` head does not satisfy this gate. Also present:
+  `job_notes` (`0014`),
   `job_payment_reports` (`0015`), communications (`0047`-`0050`), partnerships (`0051`),
   technician reservations (`0052`), and provider CRM (`0053`) are present.
 - `ARRIVAL_PIN_SECRET`, `CRON_SECRET`, database credentials, and application authentication
@@ -90,16 +99,46 @@ Do not enable a company channel for real customers until all of these are true:
   window, acknowledgement target, stalled-job escalation threshold and after-hours fallback are
   recorded in the private evidence log.
 - The new/stalled/safety-job alert path has been tested. As of migration `0054_alert_escalation`,
-  `alerts` is a real table and `GET/POST /provider/alerts*` is a real dispatcher inbox (see §9) —
-  but the cron that generates the time-threshold alert types (`stalled_job`, `stuck_offer`) only
-  fires if `CRON_SECRET` is set in the production secret manager AND the Vercel cron in
-  `apps/intake-web/vercel.json` is actually deployed and firing. Confirm both before treating
-  alerting as unattended-ready; manual polling is still the fallback for a time-boxed, continuously
-  staffed internal pilot.
+  `alerts` is a real table and `GET/POST /provider/alerts*` is a real dispatcher inbox (see §9).
+  ⚠️ **But the time-threshold alert types (`stalled_job`, `stuck_offer`) are generated only by
+  `/cron/dispatch-sweep`, which runs once per day at 08:00 UTC.** They do not appear intraday, even
+  when `CRON_SECRET` is set and the cron is firing. **During a staffed window the alert inbox is not
+  a live monitoring surface — dispatchers must poll the queue** (`GET /provider/queue`), which
+  refreshes offer expiry and auto-close inline on every read. See §3.1 for the required cadence.
+  Inline-fired alert types (`new_job`, `safety_flag`, `customer_help_request`, `delivery_failure`)
+  are unaffected and do appear immediately.
 - Rollback owners have access to Vercel and the production database.
 - Privacy/security review is complete: see [`PRIVACY-SECURITY-REVIEW.md`](PRIVACY-SECURITY-REVIEW.md).
 - Production readiness checklist is complete: see [`PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md).
 - End-to-end smoke test has passed with synthetic data: see [`E2E-SMOKE-TEST.md`](E2E-SMOKE-TEST.md).
+
+### 3.1 Staffed-window polling contract (substitutes for automated paging)
+
+A continuously staffed, time-boxed pilot may run without reliable unattended paging **only** under
+this contract. Reliable paging remains a hard gate before any unattended or extended-hours window.
+
+| Parameter | Value |
+|---|---|
+| Monitored surface | `GET /provider/queue` in provider-web — **not** the alert inbox (see §3) |
+| Maximum polling interval | **10 minutes** |
+| Acknowledgement target | **15 minutes** from job creation to dispatcher action |
+| Backup takeover trigger | Primary misses **two consecutive poll cycles** (20 minutes) |
+| Loss-of-coverage stop rule | Neither primary nor backup has polled within **30 minutes** → disable the channel for the remainder of the window |
+
+Each poll must also check for **confirmed scheduled appointments that are now due**. The automatic
+activation path (`activate_due_scheduled_jobs`) runs only in the once-daily 08:00 UTC sweep, so a
+due appointment will otherwise sit undispatched for up to ~24h. Scheduled jobs are visible in the
+provider queue; activate them manually with `POST /provider/queue/{job_id}/activate-schedule`.
+
+**Required rehearsal before the window opens:** leave one synthetic job deliberately unattended past
+the acknowledgement target and prove the backup dispatcher detected it *by queue poll* and took
+over. Record timestamps in the private evidence log.
+
+**Recovery credentials.** `POST /admin/jobs/{id}/resolve` is strictly tenant-scoped and has no
+cross-tenant platform override by design — `platform_admin` **cannot** recover a pilot job. Both the
+primary and the backup dispatcher must hold working owning-org `dispatcher`/`provider_admin`
+credentials, demonstrated against a synthetic job before the window opens. Without this the
+escalation path terminates in nothing.
 
 ---
 
@@ -233,9 +272,11 @@ and can open the **recovery workspace** (`/recovery`).
    **override reason** before sending. One 90-second offer goes out; on expiry the job returns
    to MetroKey's queue.
 
-> **Pilot-only behavior:** busy is currently an advisory flag that a dispatcher can override with
-> a reason. This is not the approved production contract. Before broader launch, an active job must
-> be a non-overridable global capacity lock across every company affiliation.
+> **Status (corrected):** the global capacity lock **is implemented**. `accept_dispatch_offer`
+> (`api/store.py`) takes a transaction-scoped `pg_advisory_xact_lock` keyed to the technician and
+> enforces a global single-active-job invariant in the same statement, closing the write-skew race
+> where two concurrent accepts for different jobs could double-book one technician. Candidate
+> *ranking* still treats busy as advisory for display; *acceptance* does not.
 
 ### Step 3 — Technician accepts (tech PWA)
 1. Open **`https://tech.cluexp.com`**, sign in as the assigned technician.
@@ -252,8 +293,10 @@ even when affiliated with several companies. Acceptance starts a hard-busy inter
 `completed_pending_customer`. Same-company and other-company dispatchers must not send another
 immediate offer; foreign companies see only tenant-safe unavailability. Accepting one idle-state
 offer must atomically supersede every other pending offer to that technician and return those jobs
-to their owning queues. The current backend does not yet fully enforce this cross-job transaction;
-it is a P0 broader-launch gate in [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1.
+to their owning queues. The global single-active-job invariant and the concurrent-accept race are
+enforced (advisory lock + same-statement `NOT EXISTS` guard in `accept_dispatch_offer`); the
+remaining gap is the atomic supersede-every-other-pending-offer step, which is still a
+broader-launch gate in [`EXECUTION-PLAN.md`](EXECUTION-PLAN.md) §11.1.
 
 ### Step 4 — Field lifecycle (with secure arrival PIN)
 
@@ -397,7 +440,7 @@ notes as the audit trail; escalate any job that cannot be safely recovered throu
 |---|---|
 | Real payment | None — demo charge/finalize routes are removed (`410`) |
 | SMS / email / push | Twilio transactional SMS and Expo push foundations exist; provider configuration, monitoring, and native device acceptance still block unattended real-customer widening. Managed email/newsletters are not built. |
-| Dispatcher alert inbox | Implemented (migration `0054`): `alerts` table, `GET/POST /provider/alerts*` (dispatcher/provider_admin, tenant-scoped), read-only `GET /admin/alerts` for platform ops. `new_job`, `safety_flag`, `customer_help_request`, and `delivery_failure` fire inline off their existing mutation paths; `stalled_job`/`stuck_offer` are evaluated in `/cron/dispatch-sweep`. **Operational, not code, gaps remain:** per-org `staffed_fallback_phone` is not provisioned for any real org yet, nothing pages a human off an `alerts` row (it is a pull inbox, not a push escalation), and the sweep only actually runs if the Vercel cron is deployed with `CRON_SECRET` set. |
+| Dispatcher alert inbox | Implemented (migration `0054`): `alerts` table, `GET/POST /provider/alerts*` (dispatcher/provider_admin, tenant-scoped), read-only `GET /admin/alerts` for platform ops. `new_job`, `safety_flag`, `customer_help_request`, and `delivery_failure` fire inline off their existing mutation paths; `stalled_job`/`stuck_offer` are evaluated in `/cron/dispatch-sweep`. **Gaps remain:** (1) ⚠️ `staffed_fallback_phone` is an **unimplemented column** — migration `0054` creates it but no application code reads or writes it, so provisioning a value delivers nothing; name a specific human + number in the runbook instead. (2) Nothing pages a human off an `alerts` row (pull inbox, not push escalation). (3) `stalled_job`/`stuck_offer` are generated only by the once-daily 08:00 UTC sweep, so they do not appear intraday — poll `GET /provider/queue`, not the inbox. |
 | Job messaging / masked call | Job messaging, delivery records, masked calls, and CRM calls are implemented; production configuration, monitoring, and deployed browser acceptance remain. Attachments and managed campaign/email messaging are not built. |
 | Live map / ETA | Coarse, clearly-labelled estimate (no continuous tracking) |
 | Technician GPS | Foreground/manual — PWA must be open |

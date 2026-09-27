@@ -537,8 +537,17 @@ async def clean_metro_key_demo(conn) -> dict[str, Any]:
     notes/reviews/payments + the demo customers those jobs created) in an FK-safe
     way. The Metro Key **company and technicians are preserved**.
 
-    A "Metro Key job" = any job whose origin / customer-owner / fulfillment org is
-    Metro Key, or that carries an offer to (or owned by) Metro Key.
+    A "Metro Key job" = a job that (a) is reachable from Metro Key -- its origin /
+    customer-owner / fulfillment org, or an offer to (or owned by) Metro Key -- AND
+    (b) carries the ``detail->>'demo_seed_ref'`` marker written by a demo seeder.
+
+    The marker is load-bearing, not cosmetic. `metro-key` is also a live pilot
+    channel, so org-reachability alone does not distinguish a synthetic job from a
+    real customer job, and this function hard-deletes jobs *and* their customers.
+    Matching on the marker (the same rule ``seed_florida_demo_jobs`` uses) means an
+    unmarked job is never deleted. No current seeder writes Metro Key jobs, so this
+    correctly cleans nothing on that tenant rather than guessing -- a demo job that
+    predates the marker must be closed per-job via ``POST /admin/jobs/{id}/resolve``.
     """
     cur = await conn.execute("select id from organizations where slug = %s", (METRO_SLUG,))
     row = await cur.fetchone()
@@ -552,11 +561,12 @@ async def clean_metro_key_demo(conn) -> dict[str, Any]:
         " from jobs j"
         " left join dispatch_offers o on o.job_id = j.id"
         " left join technicians t on t.id = o.technician_id"
-        " where j.origin_org_id = %s"
+        " where nullif(j.detail ->> 'demo_seed_ref', '') is not null"
+        "   and (j.origin_org_id = %s"
         "    or j.customer_owner_org_id = %s"
         "    or j.fulfillment_org_id = %s"
         "    or o.organization_id = %s"
-        "    or t.primary_organization_id = %s",
+        "    or t.primary_organization_id = %s)",
         (metro_id, metro_id, metro_id, metro_id, metro_id),
     )
     rows = await cur.fetchall()
