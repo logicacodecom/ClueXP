@@ -11,7 +11,7 @@ Secondary-agent review completed: yes
 Author agents: Claude Code
 Reviewer agent: Codex
 Review scope: spec
-Reviewed head: 8d2269fed1a11aba5ac2ca1cc87b46da60eddfa8
+Reviewed head: d217114f1d6362ba9d9a3275a0d21038f031183a
 Review result: changes-requested
 Merge owner: Claude Code
 
@@ -39,7 +39,7 @@ Merge owner: Claude Code
 
 - [x] Tests are listed in `plan.md` and mapped to tasks.
 - [x] Settings snapshot, read-back, and rollback are defined.
-- [x] Codex review attempt completed (T003): changes-requested; implementation remains blocked pending revisions and approval.
+- [x] Codex revision 2 re-review completed (T003): changes-requested; implementation remains blocked pending revisions and approval.
 
 ## T003 Review Ownership And Findings
 
@@ -102,3 +102,76 @@ Coverage of every prior P1/P2 finding:
 | 10 — tests/trust boundaries | Partial: integration suite planned and declaration risk explicit; R2/R3/R5/R8 close missing evidence. |
 
 No P0 findings. Four P1 and four P2 findings. Implementation remains blocked on an approved spec revision; T003 has a completed review attempt with changes requested, not an approval. No application tests were run because this is a design review. Validation consisted of inspecting the exact git objects, current policy/CI code, health implementation, PR/protection API read-backs, and official GitHub API/concurrency documentation. The review checklist is the only repository surface owned/edited by Codex for this task; spec/plan/tasks remain Claude-owned.
+
+## T003 Revision 2 Re-review
+
+Codex retains exclusive ownership of this checklist for the user-assigned re-review. Earlier findings below/above are historical; this section and the top Review Record state the current result.
+
+# T003 re-review — spec 004 revision 2
+
+Verdict: **changes-requested**
+
+Reviewed head: `d217114f1d6362ba9d9a3275a0d21038f031183a` (PR #82).
+Reviewer: Codex, independent of Claude Code's spec authorship. Date: 2026-09-27.
+Scope: spec.md, plan.md, tasks.md; supporting existing policy, CI, health consumers and read-only GitHub settings. No implementation, merge, or settings change.
+
+Revision 2 substantially improves the design. The bounded Review Record, current-head/API reads, governing-feature A/M-only evidence exception, git-object reads for committed local targets, preflight-only working-tree mode, executable deployment compatibility requirements, canonical-doc sweep and two-PR bootstrap scope address the core of the prior review. Different-family independence, PO-authorized rollback and the Cidex correction remain settled. The following concrete integration gaps still prevent approval.
+
+1. **P1 — Incident state does not invalidate existing green checks or queued auto-merges.**
+   References: FR-010/011/013; plan Script Design step 6; T012/T014/T016.
+   The gate checks open incidents only when one of its PR/push events runs. Opening/closing a deploy-incident does not trigger those events; adding/removing incident-fix is also absent from the trigger list. Thus a PR green before an incident stays green and can auto-merge during the incident, potentially much later than the acknowledged short body-edit race. Conversely an incident-fix label does not unblock a red run without an explicit rerun. Re-fetching PR.updated_at cannot detect an unrelated issue change.
+
+   Amendment: define an executable invalidation/recheck and auto-merge-disarm mechanism for incident creation, closure/reopen, and exception-label changes; recheck incident state before gate success and immediately before manual merge/arming. Identify which trusted actor performs those actions and its minimum permissions, and define behavior on API/rate-limit/issue-creation failure. If the incident gate is instead an agent-enforced policy, say so explicitly and make Hermes/merge-owner monitoring and disarming operational rather than claiming required checks automatically freeze all PRs. Do not rely solely on an issues event from a workflow-created issue: GITHUB_TOKEN-generated issue events do not start another workflow. PR jobs should have read-only API access; limit issues:write to the trusted main diagnostic/release jobs, and specify post-deploy-verify permissions. Add tests for an already-green/auto-merge-armed PR when an incident opens, incident-fix label removal, recovery closure, and API failures. Source: [GitHub workflow triggering](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+
+2. **P1 — Adding revision breaks the existing scheduled MCP health monitor.**
+   References: FR-013; T015/T016; existing `.github/workflows/mcp-production-health.yml` health step.
+   The scheduled monitor asserts the entire response equals `{"status":"ok"}`. Every successful response with the new revision field fails this assertion. The plan does not include updating that workflow, so the new release would deliberately break the current production alarm. This is a concrete consumer compatibility issue, not a hypothetical schema concern.
+
+   Amendment: include the monitor in T015/T016 and change it to parse JSON and assert status semantically, with tests for revision present/null, malformed JSON and unhealthy responses. Preserve the separate list_services semantic check. Update the two MCP ASGI tests that also assert exact JSON (already broadly covered by T015, but name them in the acceptance evidence). The revision field is additive only for consumers that allow additional keys.
+
+3. **P2 — T031's revoked-approval acceptance test contradicts FR-006.**
+   References: FR-006, Acceptance Criteria, plan Rollout step 4, T031.
+   FR-006 explicitly allows a non-risky PR with a well-formed changes-requested record because only grammar is checked. Therefore a conventional harmless/docs-only PR cannot demonstrate that revoking approval fails the gate. A well-formed spec review requesting changes also does not block under FR-006, even when its record says review required=yes; this needs to be deliberate and transparent.
+
+   Amendment: use a harmless but CLASSIFIED-RISKY test PR (for example an innocuous policy comment plus the required complete artifacts and real independent review) for revoked/stale/old-event tests, and keep it unmerged during the negative steps. Alternatively require full semantic validation whenever a record declares review required=yes, including specs-only PRs. Choose one rule and align fixtures and acceptance text. Explicitly state the enforcement status of spec-only changes-requested, so a reviewer marker is not presented as an enforced block when it is advisory. This review's implementation-blocked verdict remains an engineering instruction regardless of today's path classifier.
+
+4. **P1 — Settings response equality and the restore app_id are not executable as written.**
+   References: plan Canonical Settings Payloads procedure steps 2–4, Restore PUT; T033.
+   A successful protection GET/PUT response is not equal to the request payload: it contains URLs, derived contexts and nested objects such as enforce_admins.enabled. The literal equality required by the plan will report a mismatch even when the update succeeded, immediately invoking restoration. The restore request uses app_id:null, but the documented writable field is an integer; -1 is the documented value for accepting any app. Omitting it can instead auto-select the last app, which would not restore the current unbound policy.
+
+   Amendment: define one canonical projection from API responses to policy values (strip URL fields, normalize enabled objects, sort check arrays, normalize unrestricted app bindings, compare explicit bypass/restriction fields). Compare preflight drift and post-update state using that projection; retain raw JSON for audit. Use app_id:-1 in the restore request for the currently unbound sdlc-policy and verify its normalized read-back. Set empty bypass allowances explicitly or assert they remain empty. Define restoration for partial failure, including repository auto-merge PATCH/read-back failure. Make the no-merge window remain active throughout recovery and distinguish emergency rule restoration from the later CODEOWNERS/code revert. Add request/response fixtures, including a successful API response that MUST NOT trigger rollback. The intended five bound checks and non-null zero-review object are otherwise appropriate. Source: [GitHub branch-protection REST schema](https://docs.github.com/en/rest/branches/branch-protection#update-branch-protection).
+
+5. **P1 — New enforcement helpers are outside the existing risky-path classifier.**
+   References: plan Enforcement surfaces; T010/T012/T013.
+   The current classifier names check-sdlc-policy.py and its existing unit-test file individually. It does not match the newly proposed `.github/scripts/sdlc_github.py` or `test_check_sdlc_policy_git.py`. A later helper-only change to PR metadata, incident queries or API failure handling would therefore skip mandatory artifacts and independent review. I evaluated the actual classifier from the reviewed git object in memory: both paths returned risky=False.
+
+   Amendment: extend the risky policy family to every policy/incident/deploy-verification helper and its tests, preferably a deliberate directory/pattern convention rather than another incomplete filename list. Include classifier tests for helper-only modification/deletion/rename and any release decision script introduced by T016. Preserve the rule that enforcement changes cannot silently exempt themselves.
+
+6. **P2 — Release ancestry polling still needs its runtime and skipped-build cases defined.**
+   References: FR-013; plan Release and Verification Matrix; T016/T034.
+   A production revision response is a reasonable lightweight attribution mechanism, and VERCEL_GIT_COMMIT_SHA is documented at runtime. But a newer descendant deployed after this workflow's checkout may not exist in its local git object database. merge-base then fails despite a valid superseding deployment. The plan also still omits docs-only/ignored builds: if either Vercel project skips the acceptance docs commit, its older healthy revision will create an incident after 20 minutes and block further work. Whether builds are skipped is not verified here.
+
+   Amendment: specify full checkout plus bounded refreshing of origin/main as new reported revisions appear; validate SHA format and origin/main ancestry before interpreting it, and distinguish unavailable objects/API errors from a true non-descendant. State and verify the deployment prerequisite that both projects build every main commit, OR define an auditable skipped-build/unchanged-project exemption based on deployment metadata or affected build inputs. Record both observed revisions and smoke outcomes for successes too. Define cache handling and verify attribution remains valid around smoke requests. Tests must cover a descendant initially missing locally, one project skipped, one project older/null, unrelated branch SHA, and superseding merges. Confirm system-variable exposure in the actual Vercel projects during authorized execution; do not infer it solely from the variable name. Source: [Vercel system variables](https://vercel.com/docs/environment-variables/system-environment-variables).
+
+7. **P2 — Nonempty commit-to-PR lookup does not prove the push was an authorized PR merge.**
+   References: FR-009 push diagnostics; plan Script Design step 3.
+   The plan treats any associated PR as accounting for the push, without requiring a merged PR targeting this repository's main or covering the full introduced range. A direct push associated with an open/unmerged PR, or a multi-commit push containing an extra unaccounted commit, must not become accounted solely because the tip has a PR association. The endpoint can return open as well as merged associations depending on commit state.
+
+   Amendment: define merged/base-repository/base-ref checks and range accounting for supported squash, merge and rebase strategies; handle eventual-consistency/API failure with bounded retry and an explicit diagnostic result. Link bootstrap and PO-authorized exception evidence rather than silently treating those as ordinary merges. Add open-PR, wrong-base, partial-range and API-error fixtures. These remain post-push diagnostics, never prevention. Source: [GitHub commit-to-PR API](https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit).
+
+Prior R1–R8 disposition:
+
+| Prior finding | Revision 2 result |
+| --- | --- |
+| R1 release attribution/incident handling | Revision field and failure issue address the central problem; findings 1, 2 and 6 remain. |
+| R2 current metadata/merge intent | Core API re-fetch and head matching addressed; residual body race honestly retained. Incident invalidation is a new integration gap (finding 1); live proof must use finding 3's corrected fixture. |
+| R3 local freshness/content source | Addressed at design level: committed target via git show, preflight-only working tree, governing-feature regular-file exception. Unrestricted checklist content is explicitly an accepted evidence-only trust boundary. |
+| R4 grammar/boundaries | Addressed at design level; implement fence/boundary/unknown/duplicate tests. Deprecated-key removal remains a separate reviewed policy change, not a runtime check of whether T034 is ticked. |
+| R5 push diagnostics | All-zero and diagnostic-only semantics addressed; association coverage needs finding 7. |
+| R6 transition/restore | Bootstrap scope, freeze, inventory and old-settings test addressed; executable normalization/restore needs finding 4. |
+| R7 deploy compatibility tests | Addressed in FR-012 and template/review requirements. No unrelated migrations are required for governance work. |
+| R8 verification/reconciliation | Matrix and canonical sweep addressed; extend coverage for findings 1–7, especially helper-only risk and a classified-risky revocation fixture. |
+
+No P0 findings. Four P1 and three P2 findings. The architecture is implementable; these are bounded corrections, not a request for a different identity model or a human review gate. T003 remains changes-requested and implementation must await approval of the amended spec.
+
+Validation: fetched and reviewed exact d217114 git objects; inspected existing health consumers and classifier; ran in-memory classifier probes (two uncovered paths) and reproduced exact-response incompatibility; read-only protection API confirmed the response shape and current unbound sdlc-policy app; checked official platform docs. No application test suite was run because no implementation was changed. Only the reviewer-owned checklist and PR-body verdict are updated, plus the requested temporary report. Historical review text remains historical; the top Review Record is authoritative for this re-review.
