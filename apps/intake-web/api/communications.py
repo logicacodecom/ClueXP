@@ -222,6 +222,20 @@ def get_communications_provider() -> CommunicationsProvider:
     return NoopCommunicationsProvider()
 
 
+def get_platform_sms_provider() -> CommunicationsProvider:
+    """Resolve the ClueXP platform SMS sender without enabling provider voice.
+
+    Keeping this selector separate ensures COMMUNICATIONS_PROVIDER can remain
+    ``noop`` while a future, explicitly authorized rollout enables only the
+    digital verification channel.
+    """
+    provider = os.environ.get("CLUEXP_SMS_PROVIDER", "noop").strip().lower()
+    if provider == "twilio":
+        if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"):
+            return TwilioCommunicationsProvider()
+    return NoopCommunicationsProvider()
+
+
 def inbound_forward_twiml(
     *,
     primary_number: str | None,

@@ -31,16 +31,13 @@ npm run build --workspace @cluexp/console-web
 - `NEXT_PUBLIC_CLUEXP_API_BASE_URL` set consistently for provider, technician, and ops web proxies.
 - Google Maps server key configured only where geocoding/reverse-geocoding is expected.
 - Supabase storage URL/service key configured only server-side.
-- Twilio communications, if enabled:
-  - `COMMUNICATIONS_PROVIDER=twilio`; rollback is `COMMUNICATIONS_PROVIDER=noop`.
-  - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_DEFAULT_FROM_NUMBER`, and
-    `TWILIO_WEBHOOK_BASE_URL` set only server-side.
-  - Provider-web Settings assigns an already-purchased Twilio number plus
-    primary/backup forwarding numbers in E.164 format.
-  - Twilio voice webhooks point to `/api/twilio/voice/incoming` and
-    `/api/twilio/voice/status`.
-  - Twilio messaging webhooks point to `/api/twilio/sms/incoming` and
-    `/api/twilio/sms/status`.
+- Provider communications remain disabled with `COMMUNICATIONS_PROVIDER=noop`; do not configure
+  provider-number assignment, voice callbacks, forwarding, or call-center operation.
+- ClueXP digital verification SMS remains disabled until its separate rollout gate:
+  `CLUEXP_SMS_PROVIDER=noop`, `CLUEXP_VERIFICATION_SMS_ENABLED=false`,
+  `CLUEXP_SMS_STATUS_WEBHOOK_ENABLED=false`,
+  `CLUEXP_A2P_REGISTERED=false`, and `CLUEXP_PHONE_VERIFICATION_REQUIRED=false`.
+- Twilio credentials and the future `CLUEXP_VERIFICATION_FROM_NUMBER` remain server-side only.
   - Transactional SMS is enabled only after A2P 10DLC registration is approved.
   - Call recording remains disabled until consent and jurisdiction policy exist.
 
@@ -99,23 +96,37 @@ Before treating the MCP server as publicly launched/listed in any assistant plat
 
 ## Alerting (migration 0054)
 
-Before enabling real customer traffic for a company whose dispatcher relies on the alert inbox
-(`GET /provider/alerts`) instead of manual polling, confirm:
+### Digital verification SMS scope
 
-- Real Twilio number set on `organization_phone_settings.twilio_number` for the org — a
-  demo/fake fallback number must never be active for an org taking real traffic.
-- A2P registration gate: `a2p_registered = true` before `sms_enabled = true`; sending on an
-  unregistered number risks carrier filtering, which would show up as false `delivery_failure`
-  alert noise rather than a real product signal.
-- `sms_enabled` correctness matches what the org actually pays for/has agreed to.
-- Opt-out behavior verified: a `STOP` reply is honored (`communication_opt_outs`) and does not
-  itself generate a `delivery_failure` alert (it is a deliberate customer choice, not a failure).
-- ⚠️ **`staffed_fallback_phone` is an unimplemented column — do not treat it as a gate.** Migration
-  `0054` adds it to `organization_phone_settings`, but **no application code reads or writes it**
-  (the only repository references are that migration and documentation). Provisioning a value
-  satisfies a checkbox and delivers nothing. Until a consumer exists, the escalation destination for
-  `critical`-severity alerts (currently `safety_flag`) must be named in the pilot runbook as a
-  **specific human and phone number**, not a database column.
+ClueXP currently targets digital intake channels only. Providers operate their own phone lines and call centers; ClueXP does not provision or answer provider calls. The ClueXP platform number is reserved for phone verification and secure intake-link delivery and must not be assigned to an organization.
+
+Before any verification SMS rollout:
+
+- Keep `COMMUNICATIONS_PROVIDER=noop`; provider voice/SMS routes remain dormant.
+- Apply migration `0060_intake_phone_verification` only after explicit production-DDL authorization.
+- Verify the ClueXP A2P Brand and Campaign are complete.
+- Deploy with `CLUEXP_SMS_PROVIDER=noop`, `CLUEXP_VERIFICATION_SMS_ENABLED=false`, `CLUEXP_A2P_REGISTERED=false`, `CLUEXP_PHONE_VERIFICATION_REQUIRED=false`, and `CLUEXP_SMS_STATUS_WEBHOOK_ENABLED=false` first.
+- Activate delivery-status callbacks only after fresh explicit authorization; SMS enablement alone leaves them off.
+- Separately authorize the exact platform sender and activation of `CLUEXP_SMS_PROVIDER=twilio` plus the verification/A2P flags.
+- Never enable required verification before the sender path is healthy; doing so would block intake completion.
+- Verify expiry, one-time consumption, resend limits, opt-out behavior, delivery callbacks, cross-device resume, and dispatch deferral with an explicitly authorized test target.
+- Do not configure voice callbacks, provider-number assignment, marketing messages, or conversational SMS as part of this rollout.
+
+### Provider communications foundations are deferred
+
+The provider Twilio number, voice forwarding, masked calling, provider alert SMS, and staffed
+fallback fields remain implemented foundations only. They are not current launch gates and must
+remain dormant with `COMMUNICATIONS_PROVIDER=noop`. Do not assign the shared ClueXP number to an
+organization or configure provider voice/SMS callbacks. A future product decision and separately
+authorized production plan must define provider-owned numbers, A2P, consent, opt-out, staffing,
+and monitoring before any of these paths can carry traffic.
+
+For the in-product dispatcher alert inbox (`GET /provider/alerts`), confirm:
+
+- ⚠️ **`staffed_fallback_phone` is a deferred, unconsumed column — do not treat it as a gate.**
+  Migration `0054` adds it to `organization_phone_settings`, but no application code reads or writes
+  it. The escalation destination for `critical`-severity alerts (currently `safety_flag`) must be
+  named in the pilot runbook as a **specific human and phone number**, not a database column.
 - Cron wired with correct secret handling: `apps/intake-web/vercel.json` declares
   `{ "path": "/api/cron/dispatch-sweep", "schedule": "0 8 * * *" }`, and `CRON_SECRET` is set
   in the Vercel project's Production environment variables. Vercel automatically sends
@@ -138,8 +149,6 @@ Before enabling real customer traffic for a company whose dispatcher relies on t
     queue. See `PILOT-OPERATIONS.md` for the required polling cadence.
   - `reap_stale_technicians` — a technician whose heartbeat died stays offerable for up to 24h.
   - `poll_push_receipts` — push delivery state resolves at most daily.
-- No demo/fake number fallback for any org taking real traffic — `TWILIO_DEFAULT_FROM_NUMBER`
-  should only ever be hit for orgs that are explicitly still in the internal/synthetic pilot.
 
 ## Release gate
 

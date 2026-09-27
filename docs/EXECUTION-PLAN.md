@@ -55,7 +55,7 @@
 | Live customer cutover | `[~]` | All §3.2 items complete; `metro-key` is armed (`dispatch_cutover_enabled=true`). **As of 2026-06-21 the global kill-switch is OFF** (`global_settings.dispatch_cutover_global_off=false`, DB-backed via migration 0024) — so cutover is **live** for `metro-key`: new branded intakes enter the provider queue. **Authenticated end-to-end prod smoke run 2026-07-12 — passed** (see §3.3); found a real 3-day-stale unassigned job in the process, see §10. |
 | Fulfillment lifecycle | `[x]` | Full lifecycle wired end-to-end: intake→token→tracking→technician→confirm/review/dispute/close. All error states + EN/ES complete (`87f6c4e`/`8ba6b62`) |
 | Financial closeout + operational settlements | `[~]` records/workflow only | Itemized technician closeout, provider financial defaults, provider-tech agreement rules, settlement calculations, settlement periods (`draft → locked → paid`), CSV export, and technician earnings visibility are implemented in code. These are operational accounting records — **no real payment processing, no authorization hold, no capture, refund, payroll, bank transfer, or processor-backed payout**. “Paid” means the provider marked external payment complete |
-| Notifications | `[~]` | Operations/customer messaging, masked calls, Twilio SMS/voice, Expo push registration/receipts, and native background-location foundations are implemented; production alert ownership, monitoring, provider configuration, and native device acceptance remain |
+| Notifications | `[~]` | Digital customer verification SMS is implemented on the feature branch behind disabled-by-default ClueXP platform gates; production remains off pending review, A2P, migration/deployment authorization, and live-test authorization. Provider phone/call-center operation and marketing SMS are out of current scope. Expo push and in-product messaging foundations remain separate. |
 | CI | `[x]` | CI includes PostgreSQL 16 migration checks, Postgres RLS/store integration tests, and public `/v1` OpenAPI drift checks; latest local verification for the API-hostname work passed the focused public API suite, full non-Postgres API suite, OpenAPI check, TypeScript check, and Next production build |
 
 Current production migration head: **`0059_job_origin_client`** (applied 2026-08-24 after Codex
@@ -73,7 +73,7 @@ dispatch-authorization evidence, `0058` widened `governance_events` entity types
 service requests have no owner org, so nothing previously recorded which external client created one,
 blocking read/cancel authorization on them (ADR-8).
 
-Current repository migration head matches production: **`0059_job_origin_client`**. Recent slices:
+Current repository migration head is **`0060_intake_phone_verification`**; production remains at **`0059_job_origin_client`**. `0060` is unapplied and must not be promoted without fresh Human production-DDL authorization. Recent production-applied slices:
 the Tier 2 Network Router MVP's `POST /v1/service-requests/{id}/dispatch-authorizations`
 (private_partner queue-only fork; network fork runs deterministic eligibility+ranking and sends at
 most one offer via the existing `_send_targeted_offer(dispatch_org_id=None)` seam, no auto re-offer),
@@ -569,7 +569,7 @@ directly from Stripe to the provider, never through ClueXP.
 
 - [ ] Enforce compliance document validity in technician/organization eligibility (feeds the provider candidates view — expired docs surface as an `ineligible` signal for the dispatcher).
 - [ ] Jurisdiction-specific licensing and insurance rules.
-- [ ] Customer phone verification and returning-customer history policy.
+- [~] Customer phone verification: ClueXP-owned, hashed, expiring, single-use intake links and dispatch deferral are implemented on `feat/cluexp-digital-verification-sms`; production flags default off. Independent review, production DDL/deployment authorization, completed ClueXP A2P Brand/Campaign, environment activation, and live acceptance remain. Returning-customer history policy is still deferred.
 - [ ] PII/media retention and deletion audit.
 - [ ] Event archival and backup restore drills.
 - [~] Sentry/error tracking, health endpoint, uptime checks and alerting — `GET /healthz`
@@ -640,9 +640,8 @@ communications foundations, scheduling/partnership controls, technician reservat
 4. **Resolve the stale job found by the smoke test** — a real intake with no contact info
    captured, multiple days unassigned in `metro-key`'s queue (private evidence log has the
    record) — close it via the recovery workspace/`POST /admin/jobs/{id}/resolve`, and **confirm
-   `NEXT_PUBLIC_DISPATCH_PHONE` is set to a real staffed number in the intake-web production
-   env** (the safety-flag "Call dispatch now" screen falls back to a placeholder
-   `+1 800-555-1234` if unset — unverified from this environment).
+   the owning provider has documented its own external customer-escalation process.** ClueXP has
+   no shared dispatch-number fallback and does not operate the provider's call center.
 5. ~~Execute the Sprint 3.3 pilot matrix~~ **[DONE 2026-07-13 — 15/16 rows passed against
    production with the real `metro-key` demo accounts; only the 72h auto-close *timer* is
    unexecuted (the underlying state transition is proven elsewhere). Detail in
@@ -650,9 +649,9 @@ communications foundations, scheduling/partnership controls, technician reservat
    §10), then widen channel by channel. Rollback path (`PATCH
    dispatch_cutover_global_off=true`) is itself now proven, not just documented.
 6. **Scheduling/partnership/CRM browser acceptance:** run a deployed browser QA pass across
-   customer scheduling, provider scheduling actions, partner offer/approval flows, CRM reads/updates,
-   transactional CRM SMS, and masked CRM calls. The Aug 14 review gaps are fixed in code, but
-   pilot sign-off still needs evidence.
+   customer scheduling, provider scheduling actions, partner offer/approval flows, and CRM
+   reads/updates. Provider SMS and masked calls are deferred foundations outside the current
+   digital-channel launch scope.
 7. **Sprint 4/5 remaining items:** Google Routes ETA if required, shared cross-app timeline depth,
    durable alerting, communications monitoring/configuration, and native physical-device QA.
 
@@ -663,10 +662,10 @@ communications foundations, scheduling/partnership controls, technician reservat
    then test the new/stalled/safety alert and escalation path with evidence. Polling/manual queue
    watching is acceptable only for a time-boxed, continuously staffed internal pilot — not for
    unattended real-customer traffic.
-2. **Production notifications:** deliver and monitor critical dispatcher alerts, technician offers,
-   and customer tracking/status messages with consent, retry/failure visibility and a documented
-   manual fallback. Twilio and Expo foundations exist; the remaining gate is operational delivery,
-   configuration, monitoring, and acceptance evidence.
+2. **Production notifications:** deliver and monitor critical in-product/push dispatcher alerts and
+   technician offers with retry/failure visibility and a documented manual fallback. ClueXP phone
+   verification SMS has its own A2P, consent, deployment, activation, and live-test gates; provider
+   SMS and voice foundations remain dormant.
 3. **Real payments:** not required for a clearly disclosed non-commercial/internal pilot that uses
    advisory collection records only. Before marketing or using a real card flow, complete the
    provider-owned Stripe Connect direct-charge paths in Sprint 6. The provider is merchant of
@@ -677,7 +676,7 @@ readiness variant.
 
 ## 10. Active Decisions and Risks
 
-- `[!]` **Dispatcher availability risk + SLA gap — CONFIRMED IN PRODUCTION 2026-07-12:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. The 2026-07-12 prod smoke test found a real (non-test), multi-day-stale `metro-key` job with **zero dispatcher action** and a safety flag set, with no customer contact info captured — incident specifics are intentionally not recorded in this public repo (private evidence log only, per the safety rule below); ask the human/Claude for detail. This also surfaced that the safety-flag real-time phone escape hatch (`NEXT_PUBLIC_DISPATCH_PHONE`) needs verification that it points to a real, staffed number rather than the code default placeholder. **For the pilot:** was assumed acceptable because pilot dispatch is "dedicated and controlled" — this incident shows that assumption doesn't hold once a branded channel is live and unattended. **Before widening (now more urgent):** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), the customer-facing message for long waits, and verify the safety-flag phone escape hatch.
+- `[!]` **Dispatcher availability risk + SLA gap — CONFIRMED IN PRODUCTION 2026-07-12:** in the provider-managed model, a customer waiting in `pending_dispatch` is invisible to technicians until the **owning company's** dispatcher acts. If no dispatcher is online, jobs sit indefinitely — there is currently no escalation threshold, queue alert, or after-hours fallback. The 2026-07-12 prod smoke test found a real (non-test), multi-day-stale `metro-key` job with **zero dispatcher action** and a safety flag set, with no customer contact info captured — incident specifics are intentionally not recorded in this public repo (private evidence log only, per the safety rule below); ask the human/Claude for detail. **For the pilot:** was assumed acceptable because pilot dispatch is "dedicated and controlled" — this incident shows that assumption doesn't hold once a branded channel is live and unattended. **Before widening (now more urgent):** define acknowledgement time target, on-call expectations, an auto-escalation rule (e.g. if a job stays `pending_dispatch` > N minutes, alert), the customer-facing message for long waits, and require each provider to document its own external customer-escalation process.
 - `[x]` **Six operational tunables are DB-backed (`global_settings`, migrations `0023`+`0024`).**
   Each is resolved **at request time** via `api/settings.py`'s generic `resolve(store, key)` with a
   tolerant `DB → env → hardcoded` chain (~30s cache), and is runtime-editable by a `platform_admin`
@@ -760,17 +759,18 @@ Bottom tabs: Jobs/Home · Map · Messages · Activity · Account. (Slices T1–T
   within the web threat model; native encrypted storage), retry/failure, unread sync, delivery/read
   acknowledgement, quick replies, privacy-safe push, release/reassignment permissions, and
   completion/dispute-window retention. _(Contract: `SYSTEM-DESIGN.md` §18.2.1; ties to §5 comms.)_
-- [x] Voice/masked call first slice — Twilio provider abstraction, no-op fallback,
-  provider phone settings, verified webhooks, inbound forwarding, call history,
-  and masked outbound call audit preserve the same job/tenant authorization
-  boundary. Provider plan: [`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
+- [x] Voice/masked call foundation implemented but dormant — Twilio provider abstraction,
+  no-op fallback, provider phone settings, verified webhooks, inbound forwarding, call history,
+  and masked outbound call audit preserve the same job/tenant authorization boundary. Current
+  product scope does not activate or launch it; `COMMUNICATIONS_PROVIDER=noop` remains required.
+  Historical provider plan: [`MASKED-VOICE-PROVIDER-PLAN.md`](MASKED-VOICE-PROVIDER-PLAN.md).
 - [ ] Deferred communications expansion — partner-owned Twilio/Telnyx/Plivo
   subscriptions are a future enterprise option, separate from the launch model
   of ClueXP-managed provider credentials plus partner-scoped phone/routing
   settings.
-- [~] Transactional SMS — selected lifecycle/customer reminder purposes create
-  idempotent delivery records and handle Twilio callbacks plus STOP/START; real
-  sends require provider SMS enablement and A2P 10DLC readiness.
+- [~] ClueXP phone-verification SMS — hashed, expiring, single-use intake links, affirmative
+  versioned consent, global/per-intake send limits, and dispatch deferral are implemented behind
+  disabled platform gates. Provider lifecycle/reminder SMS remains a dormant legacy foundation.
 - [ ] Production push/sound/alarm delivery strategy with APNs/FCM acknowledgement monitoring,
   privacy-safe lock-screen copy and polling fallback; native background GPS. _(§5/§8.)_
 - [ ] Activity pagination/date range as volume grows; keep "collected" separate from

@@ -29,6 +29,7 @@ from api import storage
 from api.auth import create_access_token, decode_access_token
 from api.communications import (
     get_communications_provider,
+    get_platform_sms_provider,
     inbound_forward_twiml,
     normalize_e164,
     public_request_url,
@@ -318,10 +319,6 @@ async def unhandled_error_detail(request: Request, exc: Exception) -> JSONRespon
         {"detail": "An unexpected error occurred.", "error_id": error_id},
         status_code=500,
     )
-
-
-# OTP is deferred this sprint (no frontend gate); best-effort, demo-only.
-otp_codes: dict[UUID, str] = {}
 
 
 def _arrival_pin_hash(job_id: UUID, pin: str) -> str:
@@ -3299,6 +3296,7 @@ async def channel_info(slug: str) -> dict[str, Any]:
         "organization_name": origin.get("organization_name"),
         "dispatch_phone": origin.get("dispatch_phone"),
         "show_estimate": show_estimate,
+        "phone_verification_required": config.CLUEXP_PHONE_VERIFICATION_REQUIRED,
     }
 
 
@@ -3339,6 +3337,7 @@ async def create_ticket(response: Response, payload: dict[str, Any] | None = Non
             status_code=403,
             detail="Intake must be opened from a provider company link.",
         )
+    origin = {**origin, "intake_channel_slug": raw_slug}
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
@@ -3364,7 +3363,7 @@ async def create_ticket(response: Response, payload: dict[str, Any] | None = Non
     channel_on = bool(origin and origin.get("dispatch_cutover_enabled"))
     global_off = await runtime_settings.resolve(store, "dispatch_cutover_global_off")
     cutover = channel_on and not global_off
-    if cutover:
+    if cutover and not config.CLUEXP_PHONE_VERIFICATION_REQUIRED:
         # Put the job on the company's operational ladder. No offer is created
         # here — the company's dispatcher assigns via POST /provider/queue/{id}/assign.
         await store.set_job_status(ticket.ticket_id, "pending_dispatch")
@@ -3381,6 +3380,8 @@ async def create_ticket(response: Response, payload: dict[str, Any] | None = Non
         if token:
             env.tracking_token = token
             env.tracking_path = f"/t/{token}"
+    elif cutover:
+        await log_transition(ticket, "awaiting_phone_verification")
     return env
 
 
@@ -3495,6 +3496,23 @@ async def parse_provider_job_text(
     return {"success": True, "result": result}
 
 
+@app.get("/tickets/resume", response_model=TicketEnvelope)
+async def resume_intake_ticket(request: Request) -> TicketEnvelope:
+    """Resume the intake associated with the HttpOnly capability cookie.
+
+    The public redirect never exposes a raw job UUID. The browser asks the
+    backend to resolve the restored capability instead.
+    """
+    capability = request.cookies.get(INTAKE_CAPABILITY_COOKIE)
+    job_id = await store.resolve_tracking_token(capability or "") if capability else None
+    if not job_id:
+        raise HTTPException(status_code=404, detail="Intake session not found")
+    ticket = await store.get(UUID(str(job_id)))
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Intake session not found")
+    return await envelope(ticket)
+
+
 @app.get("/tickets/{ticket_id}", response_model=TicketEnvelope)
 async def get_ticket(ticket_id: UUID, request: Request) -> TicketEnvelope:
     await latency()
@@ -3510,6 +3528,172 @@ async def patch_ticket(ticket_id: UUID, payload: dict[str, Any], request: Reques
     await save(updated)
     await log_transition(updated, "patched")
     return await envelope(updated)
+
+
+def _phone_verification_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+PHONE_VERIFICATION_CONSENT_VERSION = "transactional-verification-v1"
+
+
+class PhoneVerificationSendRequest(BaseModel):
+    consent_accepted: Literal[True]
+    consent_version: Literal["transactional-verification-v1"]
+
+
+def _phone_verification_message(link: str) -> str:
+    minutes = max(1, config.PHONE_VERIFICATION_TTL_SECONDS // 60)
+    return (
+        "ClueXP: Verify your phone and continue your service request: "
+        f"{link} This link expires in {minutes} minutes. Reply STOP to opt out."
+    )
+
+
+@app.post("/tickets/{ticket_id}/phone-verification")
+async def send_phone_verification(
+    ticket_id: UUID,
+    payload: PhoneVerificationSendRequest,
+    request: Request,
+) -> dict[str, Any]:
+    ticket = await require_intake_ticket(ticket_id, request)
+    phone_e164 = normalize_e164(ticket.customer_phone)
+    if not phone_e164:
+        raise HTTPException(status_code=422, detail="Enter a valid mobile phone number")
+
+    current = await store.get_intake_phone_verification_status(
+        job_id=ticket_id, phone_e164=phone_e164
+    )
+    if current.get("verified"):
+        return {"sent": False, "verified": True, "expires_in": 0}
+
+    from_number = normalize_e164(os.environ.get("CLUEXP_VERIFICATION_FROM_NUMBER"))
+    provider = get_platform_sms_provider()
+    if not (
+        config.CLUEXP_VERIFICATION_SMS_ENABLED
+        and config.CLUEXP_A2P_REGISTERED
+        and from_number
+        and provider.name
+    ):
+        raise HTTPException(status_code=503, detail="Phone verification is not available")
+    if await store.is_sms_opted_out(phone_e164):
+        raise HTTPException(status_code=409, detail="This phone has opted out of ClueXP SMS")
+
+    since = datetime.now(timezone.utc) - timedelta(
+        seconds=config.PHONE_VERIFICATION_RESEND_WINDOW_SECONDS
+    )
+    activation = await store.get_intake_activation_context(ticket_id)
+    slug = str((activation or {}).get("intake_channel_slug") or "")
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise HTTPException(status_code=409, detail="Intake channel is unavailable")
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _phone_verification_token_hash(raw_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=config.PHONE_VERIFICATION_TTL_SECONDS
+    )
+    created = await store.create_intake_phone_verification(
+        job_id=ticket_id,
+        phone_e164=phone_e164,
+        token_hash=token_hash,
+        intake_channel_slug=slug,
+        expires_at=expires_at,
+        consent_version=payload.consent_version,
+        since=since,
+        job_limit=config.PHONE_VERIFICATION_RESEND_MAX,
+        phone_limit=config.PHONE_VERIFICATION_PHONE_RESEND_MAX,
+    )
+    if not created:
+        raise HTTPException(status_code=429, detail="Verification message limit reached")
+    # Keep the raw token in the URL fragment so browsers and hosting access logs
+    # never send or record it as part of the request path. The first-party verify
+    # page removes the fragment and submits the token in a same-origin POST body.
+    link = f"{config.CUSTOMER_INTAKE_BASE_URL}/verify#{raw_token}"
+    result = await run_in_threadpool(
+        provider.send_sms,
+        to_number=phone_e164,
+        from_number=from_number,
+        body=_phone_verification_message(link),
+        status_callback_url=(
+            _twilio_status_callback_url("/api/twilio/sms/status")
+            if config.CLUEXP_SMS_STATUS_WEBHOOK_ENABLED
+            else None
+        ),
+    )
+    org_id = (activation or {}).get("customer_owner_org_id")
+    request_hash = hashlib.sha256(
+        f"phone-verification:{ticket_id}:{token_hash}".encode("utf-8")
+    ).hexdigest()
+    await store.create_sms_delivery(
+        organization_id=str(org_id) if org_id else None,
+        job_id=str(ticket_id),
+        recipient_type="customer",
+        to_number=phone_e164,
+        from_number=from_number,
+        purpose="phone_verification",
+        request_hash=request_hash,
+        provider=result.provider,
+        provider_message_sid=result.provider_message_sid,
+        provider_status=result.provider_status,
+        error_code=result.error_code,
+        metadata={"channel": "cluexp_verification"},
+    )
+    if not result.sent:
+        await store.supersede_intake_phone_verification(token_hash)
+        raise HTTPException(status_code=503, detail="Verification message could not be sent")
+    await store.supersede_other_intake_phone_verifications(
+        job_id=ticket_id, keep_token_hash=token_hash
+    )
+    await log_transition(ticket, "phone_verification_sent")
+    return {
+        "sent": True,
+        "verified": False,
+        "expires_in": config.PHONE_VERIFICATION_TTL_SECONDS,
+    }
+
+
+@app.get("/tickets/{ticket_id}/phone-verification")
+async def phone_verification_status(ticket_id: UUID, request: Request) -> dict[str, Any]:
+    ticket = await require_intake_ticket(ticket_id, request)
+    phone_e164 = normalize_e164(ticket.customer_phone)
+    if not phone_e164:
+        return {"verified": False, "verified_at": None}
+    status = await store.get_intake_phone_verification_status(
+        job_id=ticket_id, phone_e164=phone_e164
+    )
+    return {"verified": bool(status.get("verified")), "verified_at": status.get("verified_at")}
+
+
+class PhoneVerificationConsumeRequest(BaseModel):
+    token: str
+
+
+@app.post("/phone-verification/consume")
+async def consume_phone_verification(
+    payload: PhoneVerificationConsumeRequest,
+) -> JSONResponse:
+    token = payload.token
+    if not 32 <= len(token) <= 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
+    consumed = await store.consume_intake_phone_verification(
+        _phone_verification_token_hash(token)
+    )
+    if not consumed or not consumed.get("tracking_token"):
+        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
+    slug = str(consumed.get("intake_channel_slug") or "")
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
+    response = JSONResponse({"redirect_path": f"/o/{slug}?verified=1"})
+    response.set_cookie(
+        INTAKE_CAPABILITY_COOKIE,
+        str(consumed["tracking_token"]),
+        httponly=True,
+        secure=config.IS_PRODUCTION,
+        samesite="strict",
+        max_age=12 * 60 * 60,
+        path="/",
+    )
+    return response
 
 
 @app.post("/tickets/{ticket_id}/photo-intent", response_model=PhotoIntentResponse)
@@ -3631,6 +3815,16 @@ async def commit(ticket_id: UUID, request: Request) -> TicketEnvelope:
         raise HTTPException(status_code=409, detail="Price acceptance required")
     if not estimate_required and not terms_accepted:
         raise HTTPException(status_code=409, detail="Request terms acceptance required")
+    activation = await store.get_intake_activation_context(ticket_id)
+    if config.CLUEXP_PHONE_VERIFICATION_REQUIRED:
+        phone_e164 = normalize_e164(ticket.customer_phone)
+        if not phone_e164:
+            raise HTTPException(status_code=409, detail="Phone verification required")
+        verification = await store.get_intake_phone_verification_status(
+            job_id=ticket_id, phone_e164=phone_e164
+        )
+        if not verification.get("verified"):
+            raise HTTPException(status_code=409, detail="Phone verification required")
     if ticket.urgency == Urgency.SCHEDULED:
         if ticket.service_appointment is None or ticket.service_appointment.requested_start is None:
             raise HTTPException(status_code=409, detail="Requested appointment window required")
@@ -3653,6 +3847,39 @@ async def commit(ticket_id: UUID, request: Request) -> TicketEnvelope:
         ticket.status = TicketStatus.PARTIAL if ticket.unresolved_fields else TicketStatus.COMPLETE
         await save(ticket)
     await log_transition(ticket, "committed")
+    if (
+        config.CLUEXP_PHONE_VERIFICATION_REQUIRED
+        and ticket.urgency != Urgency.SCHEDULED
+        and activation
+        and activation.get("dispatch_cutover_enabled")
+        and activation.get("status") not in {
+            STATUS_PENDING_DISPATCH,
+            STATUS_ASSIGNED,
+            STATUS_EN_ROUTE,
+            STATUS_ARRIVED,
+            STATUS_IN_PROGRESS,
+            STATUS_COMPLETED_PENDING,
+            STATUS_COMPLETED_CONFIRMED,
+            STATUS_COMPLETED_AUTO_CLOSED,
+            STATUS_CANCELLED,
+        }
+        and not await runtime_settings.resolve(store, "dispatch_cutover_global_off")
+    ):
+        transitioned = await store.set_job_status(
+            ticket_id,
+            STATUS_PENDING_DISPATCH,
+            expected_current=str(activation.get("status")),
+        )
+        if transitioned:
+            await _create_alert_best_effort(
+                activation.get("customer_owner_org_id"),
+                alert_type="new_job",
+                severity="info",
+                job_id=ticket_id,
+                payload={"source": "verified_digital_intake"},
+                log_name="alert_new_verified_job_failed",
+            )
+            await log_transition(ticket, "dispatch_cutover_after_phone_verification")
     env = await envelope(ticket)
     if token:
         env.tracking_token = token
@@ -3662,23 +3889,20 @@ async def commit(ticket_id: UUID, request: Request) -> TicketEnvelope:
 
 @app.post("/tickets/{ticket_id}/otp/send")
 async def send_otp(ticket_id: UUID, request: Request) -> dict[str, str]:
-    await latency()
-    await require_intake_ticket(ticket_id, request)
-    code = str(random.randint(100000, 999999))
-    otp_codes[ticket_id] = code
-    return {"dev_code": code, "message": "Code sent"}
+    raise HTTPException(
+        status_code=410,
+        detail="Removed. Use the secure phone-verification link flow.",
+    )
 
 
 @app.post("/tickets/{ticket_id}/otp/verify", response_model=TicketEnvelope)
 async def verify_otp(
     ticket_id: UUID, payload: dict[str, Any], request: Request
 ) -> TicketEnvelope:
-    await latency()
-    ticket = await require_intake_ticket(ticket_id, request)
-    if otp_codes.get(ticket_id) != str(payload.get("code", "")):
-        raise HTTPException(status_code=400, detail="Code did not match")
-    await log_transition(ticket, "otp_verified")
-    return await envelope(ticket)
+    raise HTTPException(
+        status_code=410,
+        detail="Removed. Use the secure phone-verification link flow.",
+    )
 
 
 @app.post("/tickets/{ticket_id}/dispatch")

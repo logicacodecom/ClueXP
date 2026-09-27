@@ -6136,6 +6136,7 @@ def test_channel_info_returns_provider_dispatch_phone(monkeypatch):
         "organization_name": "Metro Key Partners",
         "dispatch_phone": "+15551234567",
         "show_estimate": True,
+        "phone_verification_required": False,
     }
 
 

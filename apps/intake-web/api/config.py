@@ -42,6 +42,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # How long a targeted dispatcher offer lives before it expires and the job
 # returns to pending_dispatch for the dispatcher to re-assign.
 #
@@ -126,6 +133,21 @@ CUSTOMER_INTAKE_BASE_URL = (
     or os.environ.get("NEXT_PUBLIC_INTAKE_BASE_URL")
     or "https://intake.cluexp.com"
 ).rstrip("/")
+
+# --- ClueXP-owned digital phone verification ---
+# These gates are deliberately independent of COMMUNICATIONS_PROVIDER, which
+# controls the older provider voice/SMS integration. All defaults fail safe and
+# cannot send or require verification in an existing deployment.
+CLUEXP_VERIFICATION_SMS_ENABLED = _bool("CLUEXP_VERIFICATION_SMS_ENABLED", False)
+CLUEXP_A2P_REGISTERED = _bool("CLUEXP_A2P_REGISTERED", False)
+CLUEXP_PHONE_VERIFICATION_REQUIRED = _bool("CLUEXP_PHONE_VERIFICATION_REQUIRED", False)
+CLUEXP_SMS_STATUS_WEBHOOK_ENABLED = _bool("CLUEXP_SMS_STATUS_WEBHOOK_ENABLED", False)
+PHONE_VERIFICATION_TTL_SECONDS = _int("PHONE_VERIFICATION_TTL_SECONDS", 15 * 60)
+PHONE_VERIFICATION_RESEND_MAX = _int("PHONE_VERIFICATION_RESEND_MAX", 3)
+PHONE_VERIFICATION_PHONE_RESEND_MAX = _int("PHONE_VERIFICATION_PHONE_RESEND_MAX", 5)
+PHONE_VERIFICATION_RESEND_WINDOW_SECONDS = _int(
+    "PHONE_VERIFICATION_RESEND_WINDOW_SECONDS", 60 * 60
+)
 
 # --- api.cluexp.com hostname facade ---
 # Host header allowlist for Starlette's TrustedHostMiddleware. Unset -> "*"
