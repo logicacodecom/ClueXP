@@ -15,7 +15,7 @@
 - [x] T001 Claude: draft the plan; Codex plan review 2026-09-27 returned changes-requested. All
   recommendations were accepted by the PO (PO-9).
 - [x] T002 Claude: write spec 004 rev 1.
-- [ ] T003 [R] Codex: review spec 004.
+- [x] T003 [R] Codex: review spec 004.
   - 2026-09-27: rev 1 `8d2269f` → changes-requested (R1–R8).
   - Claude revised it as rev 2, addressing R1 (FR-013 attribution and incidents), R2 (FR-010/FR-011
     current metadata), R3 (FR-004/FR-009 modes, freshness, narrowed evidence), R4 (FR-001 grammar),
@@ -31,7 +31,8 @@
     - 4: canonical projection, `app_id: -1` restore, partial-failure procedure;
     - 5: `.github/scripts/**` classified risky;
     - 6: containment via the compare API, the build-every-commit prerequisite, success recording.
-  - Re-review pending.
+  - 2026-09-27: rev 3 `404bc52` → **approve**, no blockers. Codex listed seven implementation-time
+    acceptance obligations (verdict in `checklists/sdlc-policy.md`); they apply to T010–T036.
 
 ## Tasks — Implementation (after T003 approve)
 
