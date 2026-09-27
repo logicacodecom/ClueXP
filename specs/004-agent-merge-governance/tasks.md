@@ -36,24 +36,24 @@
 
 ## Tasks — Implementation (after T003 approve)
 
-- [ ] T010 Claude: `entries()`/`classify()`/`artifact_dirs()` status-aware (FR-007, FR-008).
-- [ ] T011 Claude: `parse_record()` grammar, agent normalization, strict keys (FR-001, FR-002, FR-003,
+- [x] T010 Claude: `entries()`/`classify()`/`artifact_dirs()` status-aware (FR-007, FR-008).
+- [x] T011 Claude: `parse_record()` grammar, agent normalization, strict keys (FR-001, FR-002, FR-003,
   FR-006).
-- [ ] T012 Claude: target resolution and modes, freshness, scope, record-declared validation, success
+- [x] T012 Claude: target resolution and modes, freshness, scope, record-declared validation, success
   re-fetch (FR-004, FR-005, FR-006, FR-009, FR-010) with `sdlc_github.py`; set the
   `.github/scripts/**` risky pattern.
-- [ ] T013 Claude: unit plus git-integration suites covering the plan Verification Matrix.
-- [ ] T014 Claude: `sdlc-policy.yml` (the only `sdlc-policy` producer; assertions and both suites
+- [x] T013 Claude: unit plus git-integration suites covering the plan Verification Matrix.
+- [x] T014 Claude: `sdlc-policy.yml` (the only `sdlc-policy` producer; assertions and both suites
   moved), and remove the job from `ci.yml`.
-- [ ] T015 Claude: `revision` on intake and MCP `/healthz`, with tests; update the MCP ASGI exact-JSON
+- [x] T015 Claude: `revision` on intake and MCP `/healthz`, with tests; update the MCP ASGI exact-JSON
   tests and `mcp-production-health.yml` to a semantic status check, with tests.
-- [ ] T016 Claude: `post-deploy-verify.yml` plus `post_deploy_verify.py` (FR-013) with mocked-compare
+- [x] T016 Claude: `post-deploy-verify.yml` plus `post_deploy_verify.py` (FR-013) with mocked-compare
   tests; `protection_projection.py` with fixtures (plan).
-- [ ] T020 Claude: policy text (FR-011, FR-012, FR-014, FR-015, FR-016, NFR-001, NFR-003).
-- [ ] T021 Claude: canonical doc and runbook sweep; fix active text, annotate history.
-- [ ] T022 Claude: templates (checklist review record plus FR-012 items, tasks `[R]`, PR template);
+- [x] T020 Claude: policy text (FR-011, FR-012, FR-014, FR-015, FR-016, NFR-001, NFR-003).
+- [x] T021 Claude: canonical doc and runbook sweep; fix active text, annotate history.
+- [x] T022 Claude: templates (checklist review record plus FR-012 items, tasks `[R]`, PR template);
   delete `.github/CODEOWNERS`.
-- [ ] T023 Claude: `specs/000` annotations (T012, T017, T022 historical; T025 resolved; T026
+- [x] T023 Claude: `specs/000` annotations (T012, T017, T022 historical; T025 resolved; T026
   superseded).
 - [ ] T024 [R] Codex: independent review at the exact head.
 - [ ] T025 Claude: merge after Codex approve and green CI (agent merge; PO-6 revised, no human

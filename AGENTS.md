@@ -2,31 +2,33 @@
 
 ## Authority
 
-- Human is Product Owner and retains product/business authority.
-- Codex is Engineering Lead and final technical reviewer.
-- Claude Code is a delegated specialist, critic, second-opinion reviewer, and bounded implementation agent.
+- Human is Product Owner only: product/business authority, risk acceptance, and the production authorizations in `.specify/memory/constitution.md`. The Human is not a code reviewer or PR approval gate.
+- Hermes is the engineering orchestrator and accountable engineering lead: coordination, disagreement resolution, and deploy-incident ownership.
+- Codex is architect, lead engineer, implementer, and reviewer.
+- Claude Code is implementer and reviewer.
+- Other agents may work when useful.
 - Orca worktrees are the active coordination surface for new work. Orca schedules work and manages resources; it does not make product or architecture decisions.
-- CI/tests are objective gates. Passing CI does not replace Codex review for delegated work.
+- CI/tests are objective gates. Passing CI does not replace independent secondary-agent review for risky changes.
 
 ## Required workflow
 
-1. Codex interprets the requested engineering outcome and owns the implementation plan.
-2. Codex classifies tasks by risk, context, dependency, and expected effort.
-3. For material feature, API, database, production policy, launch, or AI-agent integration work, Codex creates or verifies Spec Kit artifacts under `specs/` before implementation, following `.specify/memory/constitution.md`.
-4. Codex may execute directly or delegate a bounded task to Claude.
-5. Changes involving database migrations, authentication/authorization, RLS or tenant isolation, cross-tenant data, dispatch routing/state/offer lifecycle, public API or MCP contracts, payment/billing semantics, production/security secrets or configuration, GitHub Actions/SDLC enforcement, or production runbooks/deployment workflows require review by a secondary agent who did not author the change.
-6. The secondary reviewer records the required/completed status, reviewer agent, and result in the pull-request body or the feature's local SDLC checklist as defined in `docs/AI-SDLC-WORKFLOW.md`.
+1. Hermes (or Codex acting as lead for a task) interprets the requested engineering outcome and owns the implementation plan.
+2. Tasks are classified by risk, context, dependency, and expected effort.
+3. For material feature, API, database, production policy, launch, or AI-agent integration work, Spec Kit artifacts under `specs/` are created or verified before implementation, following `.specify/memory/constitution.md`.
+4. Any agent may execute directly or delegate a bounded task to another agent.
+5. Changes involving database migrations, authentication/authorization, RLS or tenant isolation, cross-tenant data, dispatch routing/state/offer lifecycle, public API or MCP contracts, payment/billing semantics, production/security secrets or configuration, GitHub Actions/SDLC enforcement, or production runbooks/deployment workflows require review by a secondary agent from a different agent family than every author.
+6. The reviewer records the `## Review Record` (authors, reviewer, scope, reviewed head, result, merge owner) in the pull-request body as defined in `.specify/memory/constitution.md`.
 7. For important design decisions Codex may invoke a controlled discussion/critique loop with Claude.
 8. Claude returns findings/work plus assumptions, files touched, tests run, unresolved risks, and recommended next action.
-9. Codex reviews delegated output, resolves disagreements, integrates/fixes as needed, and performs final technical review.
-10. Human approval remains mandatory where existing ClueXP rules require it, especially production DDL/deployments and product-scope decisions.
+9. Any agent merges, or arms auto-merge, once the constitution's merge gates pass; Hermes resolves engineering disagreements and escalates only Product Owner categories.
+10. Human approval (Product Owner authorization) is required only for the categories listed in `.specify/memory/constitution.md`; there is no human code review or PR approval.
 
 ## Discussion modes
 
 - `discuss`: Codex proposes; Claude critiques/extends; Codex resolves.
 - `critique`: Claude actively searches for failure modes and weak assumptions in a Codex proposal.
 - `second-opinion`: Claude analyzes independently before seeing Codex's conclusion when practical.
-- `review`: Claude reviews code/design; Codex adjudicates and performs final review.
+- `review`: an agent from a different family reviews code/design and records the Review Record; Hermes adjudicates disagreements.
 - `debate`: bounded multi-round disagreement for consequential decisions. Default maximum: 2 response rounds after the initial proposal. Escalate unresolved material disagreement to Human.
 
 Do not run open-ended agent debates.
@@ -55,8 +57,9 @@ Do not run open-ended agent debates.
 
 - Preserve all existing ClueXP trust-state/API-contract rules.
 - Never commit secrets or provider credentials.
-- No production DDL, production promotion, or deployment without explicit Human authorization.
+- No production DDL/migrations, activation, out-of-band promotion/rollback, secret/domain/platform change, or real send/transaction without explicit Product Owner authorization. Merging to `main` is the normal production deployment and must be safe live.
 - Use isolated branches/worktrees for concurrent agents. One writer per surface at a time.
-- Team policy forbids direct pushes to `main`. GitHub branch protection enforces pull requests, code-owner review, one approval, conversation resolution, and the required `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server` checks for non-admin contributors. Organization admins retain an emergency bypass until the Human chooses to enable `enforce_admins`.
-- Delegated work is not complete until Codex has reviewed it and required tests/CI are green.
+- Direct pushes to `main` are forbidden. GitHub branch protection enforces pull requests, the required `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server` checks on up-to-date branches, conversation resolution, and `enforce_admins` (no admin bypass). No human approval is required.
+- Before merging or arming auto-merge, check for open `deploy-incident` issues; while one is open only `incident-fix` PRs merge, and Hermes disarms queued auto-merges.
+- Work is not complete until required tests/CI are green and, for risky changes, an independent agent has recorded `approve` at the current head.
 - Do not merge agent-authored implementation until the pull request links the relevant Spec Kit artifacts or explains why the change is exempt.

@@ -3223,6 +3223,16 @@ def test_healthz_ok():
     assert r.json().get("status") == "ok"
 
 
+def test_healthz_reports_deployed_revision(monkeypatch):
+    from starlette.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_SHA", "b" * 40)
+    assert client.get("/healthz").json() == {"status": "ok", "revision": "b" * 40}
+    monkeypatch.delenv("VERCEL_GIT_COMMIT_SHA")
+    assert client.get("/healthz").json() == {"status": "ok", "revision": None}
+
+
 def test_ops_flags_admin_only():
     from starlette.testclient import TestClient
     from api.main import app, store as app_store

@@ -12,16 +12,29 @@
 - Exempt from Spec Kit: no
 - If exempt, why: 
 
-## Ownership And Review
+## Ownership
 
-- Owner: 
-- Delegated agent work: none
-- Codex final review needed: yes
-- Secondary-agent review required: no
-- Secondary-agent review completed: no
-- Reviewer agent:
-- Review result:
-- Human approval needed: no
+- Author agents: 
+- Merge owner: 
+- Product Owner decision required: no; category: ; evidence: ; target: 
+  (only: product scope/risk, production activation, DDL/migrations, out-of-band promotion/rollback,
+  real sends or dispatch/payment transactions, domain/secret/platform changes)
+
+<!--
+Risky changes (see the constitution) need an independent review from a different agent family.
+The REVIEWER adds this block to the PR body (outside any code fence) for the head they reviewed:
+
+```text
+## Review Record
+Secondary-agent review required: yes
+Author agents: Claude Code
+Reviewer agent: Codex
+Review scope: implementation
+Reviewed head: <40-character commit SHA>
+Review result: approve
+Merge owner: Claude Code
+```
+-->
 
 ## Verification
 
@@ -36,7 +49,8 @@
 - [ ] No secrets, credentials, private customer evidence, or unmasked sensitive operational data committed
 - [ ] Tenant isolation and trust-state/API-contract rules preserved
 - [ ] Tenant/RLS evidence is linked or marked not applicable
-- [ ] No production DDL, deployment, platform submission, real dispatch/cancel/payment/SMS/voice/push action without explicit Human authorization
+- [ ] Safe to deploy on merge: works against the current production schema/config; new capabilities default off and fail closed; migrations additive (tests against the applied production revision when adding migrations/config)
+- [ ] No production DDL, activation, platform/secret change, real send, or dispatch/cancel/payment action without explicit Product Owner authorization
 
 ## Notes
 

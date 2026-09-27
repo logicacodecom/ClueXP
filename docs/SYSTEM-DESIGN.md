@@ -1488,7 +1488,11 @@ How code goes from a branch to production (Vercel + Supabase + GitHub). Infra/ru
   is connected (`logicacodecom/ClueXP`) → pushes to `main` auto-deploy. Supabase project ref:
   `gzgrkzvhotjolvcbqiku`.
 - **Trunk-based:** `main` is always deployable + protected; short-lived branches off it; open a PR;
-  CI must be green before merge. Production DDL / prod promotion needs explicit human authorization.
+  CI must be green before merge. No human code review or PR approval: agents merge once the gates in
+  `.specify/memory/constitution.md` pass (independent different-family review for risky paths).
+  Merging to `main` is the production deployment (`cluexp-intake`, `cluexp-mcp-server`, and the
+  console apps); `post-deploy-verify` attributes each release. Production DDL, activation, and
+  out-of-band promotion/rollback need explicit Product Owner authorization (specs/004).
 - `.github/workflows/` changes need the GitHub `workflow` OAuth scope (or the web UI).
 
 **CI gate (must pass before merge):** Python `pytest` (`apps/intake-web/api/tests`), Alembic

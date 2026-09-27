@@ -23,7 +23,9 @@ OPENAI_APPS_CHALLENGE_TOKEN_ENV = "OPENAI_APPS_CHALLENGE_TOKEN"
 
 
 async def healthz(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+    # `revision` = deployed git commit (Vercel system variable; null for non-git deploys),
+    # used by post-deploy verification to attribute a release (specs/004 FR-013).
+    return JSONResponse({"status": "ok", "revision": os.environ.get("VERCEL_GIT_COMMIT_SHA") or None})
 
 
 async def openai_apps_challenge(request: Request) -> Response:

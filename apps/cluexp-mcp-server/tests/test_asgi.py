@@ -31,11 +31,21 @@ def test_allowed_hosts_include_production_and_vercel_runtime_hosts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_healthz_is_public(monkeypatch):
+    monkeypatch.delenv("VERCEL_GIT_COMMIT_SHA", raising=False)
     transport = httpx.ASGITransport(app=asgi.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
         response = await client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "revision": None}
+
+
+@pytest.mark.asyncio
+async def test_healthz_reports_deployed_revision(monkeypatch):
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_SHA", "a" * 40)
+    transport = httpx.ASGITransport(app=asgi.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
+        response = await client.get("/healthz")
+    assert response.json() == {"status": "ok", "revision": "a" * 40}
 
 
 @pytest.mark.asyncio
@@ -44,7 +54,8 @@ async def test_vercel_rewritten_healthz_path_is_public(monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local") as client:
         response = await client.get("/api/healthz")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
+    assert "revision" in response.json()
 
 
 @pytest.mark.asyncio

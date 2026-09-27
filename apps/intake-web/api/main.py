@@ -4600,8 +4600,10 @@ async def ops_fleet(
 async def healthz() -> dict[str, Any]:
     """Unauthenticated liveness/deploy smoke check. A 200 here confirms the app
     booted — which in production also means the fail-secure ARRIVAL_PIN_SECRET
-    check passed (startup raises otherwise). Exposes no secrets or tenant data."""
-    return {"status": "ok"}
+    check passed (startup raises otherwise). Exposes no secrets or tenant data.
+    `revision` is the deployed git commit (Vercel system variable; null for non-git
+    deploys) so post-deploy verification can attribute a release (specs/004 FR-013)."""
+    return {"status": "ok", "revision": os.environ.get("VERCEL_GIT_COMMIT_SHA") or None}
 
 
 def _request_id(request: Request) -> str:

@@ -243,3 +243,33 @@ Rollback: the restoration order above; a revert PR for code.
 
 None blocking. The `app_id` binding and `count: 0` are documented by GitHub; T033 validates by
 read-back and restores on mismatch.
+
+## Implementation Notes (2026-09-27)
+
+- **Gate:** `check-sdlc-policy.py` keeps the risk-pattern table, with the SDLC family now
+  `.github/scripts/**`.
+  - Adds status-aware `--raw -z` diff parsing (`Entry`), the strict fence-aware `## Review Record`
+    parser, family normalization, independence/scope/freshness checks, and four modes: PR (API
+    re-fetch, obsolete/metadata-changed), push (diagnostics only), `--base/--head` (reads head
+    content), `--working-tree` (preflight).
+  - `sdlc_github.py` is the stdlib API client.
+- **Tests:**
+  - `test_check_sdlc_policy.py`: 29 unit tests (grammar fixtures from §Grammar Examples, modes with a
+    mocked API);
+  - `test_check_sdlc_policy_git.py`: 12 tests against real temporary repos;
+  - `test_post_deploy_verify.py`: 9 tests;
+  - `test_protection_projection.py`: 5 tests, using the real 2026-09-27 before/after read-backs as
+    fixtures (URLs redacted). They prove the live settings project equal to the intended PUT, and the
+    `app_id: -1` restore equal to the original snapshot.
+- **Health checks:** the monitor and post-deploy verification share `post_deploy_verify.py`'s parsers.
+  The monitor now checks out the repo and calls `post_deploy_verify.py health|list-services`.
+- **Vercel prerequisites** (verified via the project API, 2026-09-27): both `cluexp-intake` and
+  `cluexp-mcp-server` have `autoExposeSystemEnvs: true` (so `VERCEL_GIT_COMMIT_SHA` is available), no
+  ignored-build-step command, and production branch `main`.
+- **Templates:** the PR and checklist templates carry the Review Record as a fenced, commented
+  example, so an unfilled template never fails grammar validation.
+- **Canonical sweep (T021):** active policy updated in `SYSTEM-DESIGN.md` (trunk-based bullet).
+  Historical "applied after explicit Human authorization" records are left unchanged.
+- **Observed risk:** Vercel preview builds on PR #82 failed with a plan build rate limit. If production
+  builds are rate-limited, `post-deploy-verify` reports "not attributed" and opens a
+  `deploy-incident`, by design.

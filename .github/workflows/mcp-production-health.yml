@@ -5,69 +5,23 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   health:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+
+      # Semantic check (specs/004 FR-013): status must be "ok"; the additive `revision`
+      # field (deployed commit, or null) is allowed. Shared, unit-tested parser.
       - name: Check public health endpoint
-        run: |
-          set -euo pipefail
-          response="$(curl --fail --silent --show-error --max-time 15 https://mcp.cluexp.com/healthz)"
-          test "$response" = '{"status":"ok"}'
+        run: python .github/scripts/post_deploy_verify.py health https://mcp.cluexp.com/healthz
 
-      # specs/003: /mcp is public, read-only discovery (cutover 2026-09-27). A real tool
-      # call is the only meaningful check: a broken /v1 key still answers HTTP 200 with an
-      # error inside the tool result, which a health or status-code probe cannot see. Any
-      # non-200 (including a 401 from an accidental rollback to the old sign-in build) fails.
+      # specs/003: /mcp is public, read-only discovery. A real tool call is the only
+      # meaningful check: a broken /v1 key still answers HTTP 200 with an error inside the
+      # tool result. Any non-200 (including a 401 from a rollback to the old sign-in build) fails.
       - name: Check MCP list_services
-        run: |
-          set -euo pipefail
-
-          status="$(
-            curl --silent --show-error --max-time 15 \
-              --output /tmp/mcp-tool.txt \
-              --write-out "%{http_code}" \
-              -X POST https://mcp.cluexp.com/mcp \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json, text/event-stream" \
-              -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_services","arguments":{}}}'
-          )"
-          if [ "$status" != "200" ]; then
-            echo "::error::MCP tool call: expected 200, got $status" >&2
-            cat /tmp/mcp-tool.txt >&2 || true
-            exit 1
-          fi
-
-          if ! summary="$(
-            python3 - /tmp/mcp-tool.txt <<'PY'
-          import json
-          import sys
-
-          raw = open(sys.argv[1], encoding="utf-8").read()
-          # Streamable HTTP answers as SSE ("data: {...}") or plain JSON.
-          payloads = [line[len("data:"):].strip() for line in raw.splitlines() if line.startswith("data:")]
-          try:
-              message = json.loads(payloads[-1] if payloads else raw)
-          except (IndexError, json.JSONDecodeError) as exc:
-              sys.exit(f"unparseable MCP response: {exc}")
-
-          result = message.get("result") if isinstance(message, dict) else None
-          if not isinstance(result, dict) or result.get("isError"):
-              sys.exit(f"tool call failed: {message.get('error') if isinstance(message, dict) else message!r}")
-          content = result.get("structuredContent")
-          if not isinstance(content, dict):
-              sys.exit("tool result has no structuredContent")
-          if "error" in content:
-              sys.exit(f"list_services returned API error {content.get('error')!r} (status {content.get('status_code')})")
-          categories = content.get("data")
-          if not isinstance(categories, list) or not categories:
-              sys.exit("list_services returned an empty service catalog")
-          print(f"{len(categories)} service categories")
-          PY
-          )"; then
-            echo "::error::MCP list_services check failed" >&2
-            cat /tmp/mcp-tool.txt >&2 || true
-            exit 1
-          fi
-          echo "MCP public discovery OK: list_services returned $summary." >> "$GITHUB_STEP_SUMMARY"
+        run: python .github/scripts/post_deploy_verify.py list-services https://mcp.cluexp.com/mcp

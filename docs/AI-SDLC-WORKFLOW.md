@@ -40,11 +40,14 @@ Still-open work is not copied wholesale into this SDLC setup spec. Product backl
 
 ## Decision Queue
 
-These items need Mohamed or repository-admin direction before changing files outside this SDLC scaffolding:
+Settled by the Product Owner on 2026-09-27 (specs/004): no human code review or PR approval,
+`enforce_admins` on, and no GitHub Production-environment reviewers for normal merge
+deployments (merge = deploy; real-world operations stay Product Owner authorizations).
 
-- Decide whether organization admins retain the current emergency branch-protection bypass or enable `enforce_admins`.
-- Configure required reviewers or equivalent approval protection on the GitHub Production environments; branch protection does not configure deployment-environment approvals.
-- Triage the redacted historical Gitleaks findings and decide which credentials require restriction or rotation before enabling a full-history required scan.
+Still open:
+
+- Triage the redacted historical Gitleaks findings and decide which credentials require restriction
+  or rotation before enabling a full-history required scan.
 
 ## Spec Kit Flow
 
@@ -93,11 +96,17 @@ Changes outside those paths can still be material when they alter user-visible b
 
 ## AI Agent Roles
 
-Codex is the engineering lead. Codex owns the implementation plan, scope control, integration, final technical review, and merge recommendation.
+- **Human**: Product Owner only (product scope, risk acceptance, the production authorizations in
+  the constitution). Not a code reviewer or PR approval gate.
+- **Hermes**: engineering orchestrator and accountable lead. Coordinates work through Orca, resolves
+  engineering disagreements (bounded to two debate rounds), owns deploy incidents.
+- **Codex**: architect, lead engineer, implementer, reviewer.
+- **Claude Code**: implementer, reviewer.
+- **Other agents** (Copilot and others): optional workers following the same constitution, canonical
+  docs, PR Review Record, and CI gates.
 
-Claude Code is a delegated specialist. Claude may implement bounded tasks, critique plans, review risky changes, and surface disagreement. Claude does not make final architecture, product, production, or merge decisions.
-
-Copilot or other coding agents must follow the same constitution, canonical docs, PR checklist, and CI gates. Agent output is not complete until reviewed by Codex and accepted by the Human where required.
+Any agent may merge once the merge gates pass. For risky changes the reviewer must be from a
+different agent family than every author.
 
 ## Planning And Handoff Rules
 
@@ -118,50 +127,84 @@ When a handoff or review note says work is complete, future agents must verify a
 - Use separate Orca worktrees for parallel tasks. Before editing, record the writer and owned files/surface in `tasks.md` or Orca task/worktree state; do not assign overlapping writable surfaces concurrently.
 - Mark parallel-safe tasks with `[P]` in `tasks.md`.
 - Mark Human-gated tasks with `[H]` in `tasks.md`.
-- Mark Codex final review with `[R]` in `tasks.md`.
+- Mark independent secondary review (different agent family) with `[R]` in `tasks.md`.
 - Delegated work must report scope, assumptions, files changed, tests run, risks, and recommended next action.
 
 ## Review And Approval Gates
 
-CI must pass before merge. Codex final review is required before merging delegated or agent-authored implementation.
+There is no human code review and no human PR approval (specs/004). PRs are the only path to `main`
+and serve as the CI and audit container.
 
-An independent secondary-agent review is mandatory when any non-discretionary risky path is touched. The secondary reviewer must not be the author/implementer: Claude Code normally reviews Codex-authored work, Codex reviews Claude-authored work, and another explicitly identified agent may review either. Record these exact fields in the PR body:
+An independent secondary-agent review is mandatory when any non-discretionary risky path is touched.
+The reviewer must be from a **different agent family** than every author and records exactly one
+block in the PR body:
 
 ```text
+## Review Record
 Secondary-agent review required: yes
-Secondary-agent review completed: yes
-Reviewer agent: Claude Code|Codex|Other
+Author agents: Claude Code
+Reviewer agent: Codex
+Review scope: implementation
+Reviewed head: <40-character commit SHA reviewed>
 Review result: approve
+Merge owner: Claude Code
 ```
 
-For `--working-tree` or local base/head checks where a PR body is unavailable, put the same completed markers in `specs/<feature>/checklists/sdlc-policy.md`. A `changes-requested` result is valid review status but does not satisfy the merge gate; resolve the findings and obtain `approve`. CI verifies the markers, but reviewer independence remains an auditable team-policy assertion because Codex and Claude Code are workflow roles rather than GitHub identities. CODEOWNERS routes the repository's valid Human accounts, and required code-owner review is enabled in branch protection.
+Agents are `Claude Code`, `Codex`, `Hermes`, or `Other: <name>`. The `sdlc-policy` gate re-fetches the
+current PR body and head from the API. It fails when:
 
-Human approval is mandatory before:
+- a key is missing, duplicate, or unknown, or there isn't exactly one block;
+- the reviewer and an author share a family;
+- the result is not `approve`;
+- a spec-scope approval is used on implementation changes;
+- anything other than the governing feature's `checklists/*.md` changed after `Reviewed head`;
+- the run is obsolete, or the body changed during evaluation.
 
-- production DDL or production migrations;
-- production deployment, promotion, or rollback;
-- external platform submissions or public app listing changes;
-- domain, Vercel, Supabase, or production secret changes;
-- real dispatch, cancellation, payment, refund, SMS/voice send, push notification, or provider/customer-impacting workflow;
-- product-scope or architecture decisions that change ClueXP's approved model.
+A record that declares `required: yes` is always fully validated, even on spec-only PRs.
+`--working-tree` runs are preflight only and never satisfy review.
+
+Merge: any agent may merge, or arm auto-merge (`gh pr merge --squash --match-head-commit <sha>`), when:
+
+- required checks are green on the up-to-date head;
+- conversations are resolved;
+- the record passes;
+- `gh issue list --label deploy-incident --state open` is empty (only `incident-fix` PRs merge during
+  an incident).
+
+Re-run `sdlc-policy` for the current head before arming auto-merge. An author may be the merge owner
+after independent approval.
+
+Merge = deploy: see the constitution for deploy-safety rules. `post-deploy-verify` confirms both
+Vercel projects serve the merged commit and smoke-checks them; a failure opens a `deploy-incident`
+issue that Hermes acknowledges, disarming queued auto-merges.
+
+Human approval (Product Owner authorization) is required only for the categories in the
+constitution: product scope and risk; production activation; production DDL/migrations; out-of-band
+promotion or rollback (including Vercel instant rollback); agent-triggered real sends or
+dispatch/cancel/payment/refund transactions; domain, secret, or external-platform changes.
+
+Trust boundary: all agents share one GitHub identity, so reviewer identity and independence are
+recorded declarations, not authenticated. GitHub enforces checks, PR-only `main`, and
+`enforce_admins`.
 
 ## CI Gates
 
-Required GitHub Actions jobs for ordinary PRs:
+Required checks on `main` (strict, bound to GitHub Actions):
 
 - `secret-scan`
-- `sdlc-policy`
+- `sdlc-policy` (its own workflow, `.github/workflows/sdlc-policy.yml`; runs on PR opened,
+  synchronize, reopened, edited, and ready_for_review, and as post-merge diagnostics on push to `main`)
 - `web`
 - `api`
 - `mcp-server`
 
-GitHub branch protection currently requires strict/up-to-date `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server` checks, code-owner review, one approving PR review with stale approvals dismissed, and conversation resolution. It blocks force pushes, branch deletion, and direct/unrestricted pushes for non-admin contributors. Organization admins retain an emergency bypass because `enforce_admins` is off.
-
 The required `secret-scan` job scans only commits introduced by the PR or push with the official Gitleaks v8.30.1 container. GitHub native secret scanning and push protection are also enabled. Full-history Gitleaks is not yet a merge gate because a redacted baseline scan found four historical findings requiring Human triage; do not expose their values in docs or agent output.
 
-Scheduled production health is informative for operations and should not be the only merge gate:
+Post-merge and scheduled (not merge gates):
 
-- `mcp-production-health`
+- `post-deploy-verify`: release attribution and smoke on every push to `main`; opens
+  `deploy-incident` issues.
+- `mcp-production-health`: every 30 minutes, semantic health plus a real `list_services` call.
 
 ## Recommended Orca Commands
 
@@ -201,20 +244,22 @@ orca worktree set --worktree active --workspace-status in-review --json
 
 ## GitHub Branch And Environment Protection
 
-Current `main` protection includes:
+Current `main` protection (applied and read back 2026-09-27, specs/004):
 
-- require pull request before merge;
-- require at least one approving review;
-- require code-owner review;
-- dismiss stale approvals when new commits are pushed;
-- require conversation resolution;
-- require status checks: `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server`;
-- require branches to be up to date before merge;
-- block force pushes and deletions;
-- restrict direct pushes to `main`;
-- leave `enforce_admins` off for the current emergency admin bypass.
+- pull request required, with **0** required approvals and code-owner review off;
+- dismiss stale approvals;
+- conversation resolution required;
+- required status checks `secret-scan`, `sdlc-policy`, `web`, `api`, and `mcp-server`, bound to GitHub
+  Actions, on up-to-date branches;
+- force pushes and deletions blocked;
+- `enforce_admins` **on**: no admin bypass, including for the account agents use;
+- repository auto-merge allowed.
 
-Production environments currently have no GitHub protection rules; configure required reviewers or equivalent manual approval before treating GitHub Environments as a production deployment gate. Contributors and agents must always treat `main` as PR-only, including when an admin account technically permits bypass.
+The canonical PUT and restore payloads and the projection helper
+(`.github/scripts/protection_projection.py`) are in `specs/004-agent-merge-governance/plan.md`.
+Settings changes are Product Owner authorizations. There is no `.github/CODEOWNERS`. GitHub
+Production environments are not used as a deployment gate: merging to `main` is the production
+deployment.
 
 ## Secrets And Blockers
 

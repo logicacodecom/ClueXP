@@ -1,0 +1,30 @@
+name: post-deploy-verify
+
+# specs/004 FR-013: merge = deploy. After each push to main, wait until BOTH Vercel
+# projects serve a revision containing the pushed commit (GitHub compare API), then
+# smoke-check. On failure, open/comment a `deploy-incident` issue; Hermes owns it and
+# merge owners must not merge (except `incident-fix`) while one is open (FR-011).
+# Not a pre-merge check. The only job allowed to write issues.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: post-deploy-verify-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: attribute release and smoke-check both projects
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: python .github/scripts/post_deploy_verify.py verify --pushed "$PUSH_AFTER"
