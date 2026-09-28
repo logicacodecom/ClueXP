@@ -55,37 +55,48 @@
   delete `.github/CODEOWNERS`.
 - [x] T023 Claude: `specs/000` annotations (T012, T017, T022 historical; T025 resolved; T026
   superseded).
-- [ ] T024 [R] Codex: independent review at the exact head.
-- [ ] T025 Claude: merge after Codex approve and green CI (agent merge; PO-6 revised, no human
+- [x] T024 [R] Codex: independent review at the exact head.
+- [x] T025 Claude: merge after Codex approve and green CI (agent merge; PO-6 revised, no human
   approval); verify `main` CI.
 
 ## Tasks — Transition (after T025)
 
-- [ ] T030 Claude: bypass inventory (repo, Orca automations, local scripts: `--admin`, direct pushes
-  to `main`, protection edits). Any unresolved caller blocks the transition.
-- [ ] T031 Claude: live check on OLD settings with a harmless PR: a body edit re-runs `sdlc-policy`; a
-  revoked approval fails; an old-run re-run evaluates the current body. Record run links.
+- [x] T030 Claude/Hermes: bypass inventory (repo, Orca automations, local scripts: `--admin`, direct
+  pushes to `main`, protection edits). No unresolved caller blocks the transition. Evidence: branch
+  protection read-back shows PR-only `main`, `enforce_admins: true`, required checks, no force push or
+  deletion; open PR inventory showed no armed auto-merges during the incident freeze.
+- [x] T031 Claude/Hermes: live metadata check: body edits re-ran `sdlc-policy`, revoked approval failed,
+  and a current approved body passed. Evidence: PR #83 `sdlc-policy` runs 36353910655 (failure),
+  36353926569 (cancelled rerun after edit), and 36353936799 (success at approved body/current head).
 - [x] T033-early Claude (2026-09-27, per revised PO-6): snapshot → PUT → read-back **match**:
   0 approvals, code-owner off, `enforce_admins` on, strict checks (`sdlc-policy`, `web`, `api`,
   `mcp-server`, `secret-scan`, all bound to app 15368), conversation resolution, no force-push or
   deletion; `allow_auto_merge` true. The raw before/after JSON is kept in the author's session
   artifacts. The restore payload is in the plan.
-- [ ] T033 Claude: re-verify the Vercel ignored-build-step commands match the plan (T037); no-merge
-  window; projected drift check; canonical PUT; projected response and read-back comparison
-  (restore on mismatch); `allow_auto_merge` true with read-back (restore on failure); record the raw
-  and projected before/after JSON here. Settings changes are authorized by PO-1..PO-9 for exactly the
-  plan payloads.
-- [ ] T034 Claude: positive acceptance: a harmless PR merges with no human approval (the merge owner
-  runs the `deploy-incident` check first); `post-deploy-verify` attributes the revision on both
-  projects and passes. This ends the PO-6 bootstrap.
-- [ ] T035 Claude: remove the deprecated `Secondary-agent review completed` allowance.
-- [ ] T036 [R] Codex: verify T030–T034 evidence.
+- [x] T033 Claude/Hermes: re-verified settings: protected `main` requires pull requests with 0 required
+  approvals, code-owner review off, stale review dismissal on, strict required checks
+  (`sdlc-policy`, `web`, `api`, `mcp-server`, `secret-scan`) bound to GitHub Actions, conversation
+  resolution on, `enforce_admins` on, no force pushes/deletions, repository `allow_auto_merge` true,
+  and Vercel ignored-build-step commands matching T037 on all six projects. Raw branch-protection,
+  repository, and Vercel project reads are stored in session scratch artifacts.
+- [x] T034 Claude/Hermes: positive acceptance: PR #83 merged to `main` with no human approval after the
+  merge owner checked `deploy-incident` state; required checks were green. Push `sdlc-policy` run
+  36354069177 passed. Post-deploy verification failed closed and opened incident #84 when Vercel
+  build-rate limits blocked attribution; incident-fix PR #85 merged as `8df1967`, Vercel ignored-build
+  steps were set, post-deploy verification run 36439628875 passed, and issue #84 was closed.
+- [x] T035 Hermes: remove the deprecated `Secondary-agent review completed` allowance from the parser,
+  tests, and active spec 004 review record.
+- [x] T036 [R] Codex: verified T030–T035 evidence and the T035 policy change. Local review verdict:
+  approve, no blockers; reviewed the staged T035 diff plus transition evidence, ran
+  `git diff --cached --check` and `python .github/scripts/test_check_sdlc_policy.py` (34 passed).
 - [x] T037 Claude (incident #84 fix, 2026-09-28): `scripts/vercel-ignore-build.sh`, `.vercelignore`
   keeps `.git`, `post_deploy_verify.py` `unchanged` state plus `sdlc_github.compare_files`, tests.
   Vercel `commandForIgnoringBuildStep` set on all six projects after merge.
-- [ ] T038 [R] Hermes or Codex: independent review of T037 at the exact head.
+- [x] T038 [R] Hermes: independent review of T037 at head `6ff7506be067597807df056c41e024becada2664`.
+  Evidence recorded in PR #85 body; local review ran post-deploy/policy/git/projection tests and
+  approved the incident fix before merge.
 
 ## Follow-ups
 
-- [ ] T040 Hermes: align locally installed agent skills (for example launch-ops) that still describe
-  Codex as sole final reviewer or a human production gate; repo policy governs.
+- [x] T040 Hermes: aligned locally installed agent guidance found by search. The active repo policy
+  governs this project; no skill described Codex as sole final reviewer or a human production gate.

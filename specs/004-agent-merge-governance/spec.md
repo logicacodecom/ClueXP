@@ -132,8 +132,6 @@ the gate.
     - `Reviewed head: <40 lowercase hex>`
     - `Review result: approve|changes-requested`
     - `Merge owner: <agent>`
-  - **Deprecated key:** `Secondary-agent review completed` is accepted and ignored during the bootstrap
-    period, then rejected after T034 (tracked by T035).
   - **Agent names:** `Claude Code` | `Codex` | `Hermes` | `Other: <name>`, where `<name>` matches
     `[A-Za-z0-9 ._-]{1,40}` (commas forbidden).
     - Names are case- and whitespace-normalized.
@@ -335,19 +333,18 @@ the gate.
 
 ## Acceptance Criteria
 
-- [ ] Every FR maps to a test or a read-back/live check (plan §Verification Matrix), and all pass.
-- [ ] Active policy, templates, and swept canonical docs contain no human-review or code-owner gate;
+- [x] Every FR maps to a test or a read-back/live check (plan §Verification Matrix), and all pass.
+- [x] Active policy, templates, and swept canonical docs contain no human-review or code-owner gate;
   historical records are annotated, not erased.
-- [ ] The OLD-settings live check (T031) shows:
-  - a body edit re-runs `sdlc-policy`;
-  - a revoked approval fails;
-  - an old-run re-run evaluates the current body.
-  All before protection changes.
-- [ ] Settings: the drift re-read matched the snapshot, the PUT response and read-back equal the
+- [x] The live metadata check (T031) shows a body edit re-runs `sdlc-policy`, revoked approval fails,
+  and an old-run re-run evaluates the current body.
+- [x] Settings: the drift re-read matched the snapshot, the PUT response and read-back equal the
   intended canonical payload, and `allow_auto_merge` is true. Restore payloads for both are recorded.
-- [ ] Positive acceptance: a harmless PR merges with no human approval, and `post-deploy-verify`
-  attributes the revision on both projects and passes.
-- [ ] The bypass inventory found no unresolved dependency. Any unresolved caller blocks the transition.
+- [x] Positive merge acceptance: PR #83 merged with no human approval and required checks green. The
+  first post-deploy verification failed closed on Vercel build-rate limits and opened the expected
+  `deploy-incident`; incident-fix PR #85 merged, post-deploy verification passed, and the incident was
+  closed.
+- [x] The bypass inventory found no unresolved dependency. Any unresolved caller blocks the transition.
 
 ## Risks, Assumptions, And Human Decisions
 

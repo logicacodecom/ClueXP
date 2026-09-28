@@ -133,8 +133,6 @@ RECORD_KEYS = {
     "review result",
     "merge owner",
 }
-# Accepted and ignored during the transition; removed by specs/004 T035.
-DEPRECATED_KEYS = {"secondary-agent review completed"}
 KNOWN_FAMILIES = {"claude code", "codex", "hermes"}
 OTHER_ALIASES = {"claude": "claude code", "claude code": "claude code", "codex": "codex", "hermes": "hermes"}
 OTHER_NAME_RE = re.compile(r"[a-z0-9 ._-]{1,40}")
@@ -355,8 +353,6 @@ def parse_record(text: str) -> dict:
             continue
         key, value = stripped.split(":", 1)
         key = " ".join(key.strip().lower().split())
-        if key in DEPRECATED_KEYS:
-            continue
         if key not in RECORD_KEYS:
             raise PolicyError(f"unknown review record key: {key!r}")
         if key in raw:

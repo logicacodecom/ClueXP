@@ -7,7 +7,6 @@
 ## Review Record
 
 Secondary-agent review required: yes
-Secondary-agent review completed: yes
 Author agents: Claude Code
 Reviewer agent: Codex
 Review scope: spec
@@ -166,7 +165,7 @@ Prior R1–R8 disposition:
 | R1 release attribution/incident handling | Revision field and failure issue address the central problem; findings 1, 2 and 6 remain. |
 | R2 current metadata/merge intent | Core API re-fetch and head matching addressed; residual body race honestly retained. Incident invalidation is a new integration gap (finding 1); live proof must use finding 3's corrected fixture. |
 | R3 local freshness/content source | Addressed at design level: committed target via git show, preflight-only working tree, governing-feature regular-file exception. Unrestricted checklist content is explicitly an accepted evidence-only trust boundary. |
-| R4 grammar/boundaries | Addressed at design level; implement fence/boundary/unknown/duplicate tests. Deprecated-key removal remains a separate reviewed policy change, not a runtime check of whether T034 is ticked. |
+| R4 grammar/boundaries | Addressed at design level; implement fence/boundary/unknown/duplicate tests. Deprecated-key removal was completed in T035 after transition evidence. |
 | R5 push diagnostics | All-zero and diagnostic-only semantics addressed; association coverage needs finding 7. |
 | R6 transition/restore | Bootstrap scope, freeze, inventory and old-settings test addressed; executable normalization/restore needs finding 4. |
 | R7 deploy compatibility tests | Addressed in FR-012 and template/review requirements. No unrelated migrations are required for governance work. |

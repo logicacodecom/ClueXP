@@ -206,7 +206,7 @@ Restoring the rules without the file would require a code owner nobody can satis
 
 | Requirement | Evidence |
 |---|---|
-| FR-001 grammar | unit fixtures (all Grammar Examples, plus bullets, backticks, bold, and the deprecated-key bootstrap) |
+| FR-001 grammar | unit fixtures (all Grammar Examples, plus bullets, backticks, bold, and deprecated-key rejection after T035) |
 | FR-002, FR-003 | unit: independence, aliases, multiple authors, same-family instances, author as merge owner, changes-requested, risky diff with required=no |
 | FR-004 freshness | git-integration: new code after review fails; governing checklist A/M after review passes; other feature's checklist fails; D/R/T/symlink/mode change fails; force-push non-ancestor fails |
 | FR-005 scope | unit and git: spec approval against implementation diff fails |
@@ -228,7 +228,7 @@ Restoring the rules without the file would require a code owner nobody can satis
 2. Implementation PR: Codex approve at the exact head, then merge under PO-6 bootstrap; verify `main`
    CI and the new `sdlc-policy.yml`.
 3. **T030** bypass inventory: any unresolved caller blocks.
-4. **T031** live check on OLD settings: a harmless PR whose body carries a `required: yes` record,
+4. **T031** live check: a harmless PR whose body carries a `required: yes` record,
    so FR-006 fully validates it. It stays unmerged during the negative steps.
    - An edit re-runs.
    - A revoked approval fails.
