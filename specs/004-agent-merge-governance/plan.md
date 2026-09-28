@@ -216,7 +216,7 @@ Restoring the rules without the file would require a code owner nobody can satis
 | FR-010 | unit with a mocked API: obsolete head, metadata changed between fetches, empty or missing body, old-event re-run evaluates current; live T031 on OLD settings |
 | FR-011 incident rule | operational (agent-enforced). The documented merge-owner and Hermes steps are verified in T034: `gh issue list` before merging; `--disable-auto` on incident. Not a required-check test. |
 | FR-012 | template items present (T022); reviewer checklist item; enforced through review, not the script |
-| FR-013 | unit: both health endpoints return `revision`; the monitor's semantic check (revision present/null, malformed JSON, `status != ok`); `post_deploy_verify.py` with a mocked compare API (identical, ahead, a superseding descendant missing locally, a one-project null or older revision, an unrelated-branch SHA, a compare API error → `unknown`, timeout → issue, issue-creation failure → red). Live on the T034 acceptance merge. |
+| FR-013 | unit: both health endpoints return `revision`; the monitor's semantic check (revision present/null, malformed JSON, `status != ok`); `post_deploy_verify.py` with a mocked compare API (identical, ahead, a superseding descendant missing locally, a one-project null or older revision, an unrelated-branch SHA, a compare API error → `unknown`, an older revision with unchanged watched inputs → `unchanged` (a watched change → `no`, a truncated diff → `unknown`), timeout → issue, issue-creation failure → red). Live on the T034 acceptance merge. |
 | Risky helpers | classifier: modify, delete, or rename of any `.github/scripts/**` file, including `sdlc_github.py`, `post_deploy_verify.py`, `protection_projection.py`, and the git test file, is risky |
 | Settings projection | unit fixtures: a GET response and a successful PUT response project equal to the intent; app `null`/`-1` both map to `any`; a real drift is detected |
 | FR-014–FR-016, NFR-003 | T020/T021 sweep evidence; CI greps |
@@ -264,8 +264,11 @@ read-back and restores on mismatch.
 - **Health checks:** the monitor and post-deploy verification share `post_deploy_verify.py`'s parsers.
   The monitor now checks out the repo and calls `post_deploy_verify.py health|list-services`.
 - **Vercel prerequisites** (verified via the project API, 2026-09-27): both `cluexp-intake` and
-  `cluexp-mcp-server` have `autoExposeSystemEnvs: true` (so `VERCEL_GIT_COMMIT_SHA` is available), no
-  ignored-build-step command, and production branch `main`.
+  `cluexp-mcp-server` have `autoExposeSystemEnvs: true` (so `VERCEL_GIT_COMMIT_SHA` is available) and
+  production branch `main`. Amended 2026-09-28 (incident #84): all six projects set
+  `commandForIgnoringBuildStep` to `bash ../../scripts/vercel-ignore-build.sh <paths>`: intake and the
+  four consoles watch `. ../../packages ../../package.json ../../package-lock.json ../../.vercelignore`;
+  MCP watches `. ../../.vercelignore`. `.vercelignore` no longer strips `.git`, which the step needs.
 - **Templates:** the PR and checklist templates carry the Review Record as a fenced, commented
   example, so an unfilled template never fails grammar validation.
 - **Canonical sweep (T021):** active policy updated in `SYSTEM-DESIGN.md` (trunk-based bullet).

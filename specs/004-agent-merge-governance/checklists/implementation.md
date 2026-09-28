@@ -102,3 +102,9 @@ Requested next action: Claude fixes findings 1–3 and adds the regression cases
 ## T024 Re-review
 
 Codex re-reviewed implementation head `df3db425f7ff4486a05a36b3c730b36090b7ecc9` and approves. The three prior findings are fixed and covered by regression tests: CommonMark fence matching, identity-preserving protection projection, and fresh attribution checks around smoke. The four requested suites pass: policy 34, git integration 12, post-deploy 14, and projection 9 (69 total). Remaining T031/T034–T036 transition evidence is post-review operational work and does not block this implementation approval.
+
+## T038 Incident #84 fix review (option A: build only changed projects)
+
+Pending independent review (Hermes or Codex) of T037. Scope: `scripts/vercel-ignore-build.sh`,
+`.vercelignore`, `.github/scripts/post_deploy_verify.py`, `.github/scripts/sdlc_github.py`,
+`.github/scripts/test_post_deploy_verify.py`, and the FR-013 amendment.

@@ -55,6 +55,19 @@ class ContainsTests(unittest.TestCase):
         self.assertEqual("no", PDV.contains(PUSHED, "abc", MAIN, compare_table))
         self.assertEqual("no", PDV.contains(PUSHED, BRANCH, MAIN, compare_table))  # descendant, not on main
 
+    def test_skipped_build_with_unchanged_inputs(self) -> None:
+        watched = PDV.WATCHED["cluexp-mcp-server"]
+        older_main = lambda base, head: {(PUSHED, OLDER): "behind", (OLDER, MAIN): "ahead"}.get((base, head), "diverged")
+        docs_only = lambda base, head: ["specs/004/tasks.md", "apps/intake-web/x.py"]
+        mcp_touched = lambda base, head: ["apps/cluexp-mcp-server/server.py"]
+        self.assertEqual("unchanged", PDV.contains(PUSHED, OLDER, MAIN, older_main, docs_only, watched))
+        self.assertEqual("no", PDV.contains(PUSHED, OLDER, MAIN, older_main, mcp_touched, watched))
+        self.assertEqual("no", PDV.contains(PUSHED, OLDER, MAIN, older_main, lambda b, h: [".vercelignore"], watched))
+        self.assertEqual("unknown", PDV.contains(PUSHED, OLDER, MAIN, older_main, lambda b, h: None, watched))
+        self.assertEqual("no", PDV.contains(PUSHED, OLDER, MAIN, older_main))  # no diff source: never skipped
+        off_main = lambda base, head: {(PUSHED, OLDER): "behind"}.get((base, head), "diverged")
+        self.assertEqual("no", PDV.contains(PUSHED, OLDER, MAIN, off_main, docs_only, watched))
+
     def test_api_error_is_unknown(self) -> None:
         def boom(base: str, head: str) -> str:
             raise RuntimeError("rate limited")
@@ -63,7 +76,7 @@ class ContainsTests(unittest.TestCase):
 
 class VerifyTests(unittest.TestCase):
     def run_verify(self, revisions: list[dict[str, str | None]], *, mcp: str = OK_LIST, healthy: bool = True,
-                   during_smoke: dict[str, str | None] | None = None):
+                   during_smoke: dict[str, str | None] | None = None, changed=None, compare=compare_table):
         seq = iter(revisions)
         current: dict[str, str | None] = {}
         clock = [0.0]
@@ -82,7 +95,7 @@ class VerifyTests(unittest.TestCase):
             return mcp
 
         current.update(next(seq))
-        return PDV.verify(PUSHED, fetch=fetch, post_mcp=post_mcp, compare=compare_table,
+        return PDV.verify(PUSHED, fetch=fetch, post_mcp=post_mcp, compare=compare, changed=changed,
                           main_head=lambda: MAIN, timeout=90, interval=30, sleep=sleep, clock=lambda: clock[0])
 
     def test_rollback_during_smoke_is_not_verified(self) -> None:
@@ -119,6 +132,14 @@ class VerifyTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("MCP smoke failed", lines[-1])
 
+    def test_project_skipped_with_unchanged_inputs_verifies(self) -> None:
+        def cmp(base: str, head: str) -> str:
+            return "ahead" if (base, head) == (OLDER, MAIN) else compare_table(base, head)
+        ok, lines = self.run_verify([{"cluexp-intake": PUSHED, "cluexp-mcp-server": OLDER}],
+                                    changed=lambda b, h: ["apps/intake-web/main.py"], compare=cmp)
+        self.assertTrue(ok, lines)
+        self.assertTrue(any("contains pushed: unchanged" in line for line in lines), lines)
+
     def test_attributed_but_unhealthy_fails(self) -> None:
         ok, lines = self.run_verify([{"cluexp-intake": PUSHED, "cluexp-mcp-server": PUSHED}], healthy=False)
         self.assertFalse(ok)
@@ -136,6 +157,7 @@ class CliTests(unittest.TestCase):
 
         fake = types.ModuleType("sdlc_github")
         fake.compare_status = lambda a, b: "identical"
+        fake.compare_files = lambda a, b: []
         fake.request = lambda method, path: {"sha": MAIN}
         fake.repo = lambda: "o/r"
         fake.open_incident = open_incident

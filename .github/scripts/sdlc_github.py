@@ -57,6 +57,14 @@ def compare_status(base: str, head: str) -> str:
     return str(result.get("status", "unknown"))
 
 
+def compare_files(base: str, head: str) -> list[str] | None:
+    """Files changed from base to head, or None when GitHub truncates the list (300 files)."""
+    result = request("GET", f"/repos/{repo()}/compare/{base}...{head}?per_page=300")
+    assert isinstance(result, dict)
+    files = [f["filename"] for f in result.get("files") or []]
+    return None if len(files) >= 300 else files
+
+
 def open_incident(title: str, body: str, label: str = "deploy-incident") -> str:
     """Comment on the open incident for this title, or create one. Returns the issue URL."""
     try:
