@@ -61,8 +61,10 @@
   still live it falls back to PR #75's 401 auth-boundary contract. Verified: pre-cutover branch against
   live production (green, `oauth` mode); public branch against a local server (OK, bad key, and empty
   catalog cases).
-- [ ] T018 Claude: preview deploy; manual scenario in Claude (no-auth custom connector) and ChatGPT
+- [x] T018 Claude: preview deploy; manual scenario in Claude (no-auth custom connector) and ChatGPT
   developer mode; link-preview and private-window checks; log grep for test address.
+  - 2026-09-28: Product Owner ran the in-product scenario in Claude and confirmed it works. ChatGPT is
+    not required for acceptance (PO decision); it stays a follow-up.
   - 2026-09-27 (partial): protocol-level acceptance against production `https://mcp.cluexp.com/mcp`,
     with no credentials:
     - `initialize` works, and `tools/list` returns exactly two read-only tools;
