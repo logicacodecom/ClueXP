@@ -70,7 +70,7 @@
   `mcp-server`, `secret-scan`, all bound to app 15368), conversation resolution, no force-push or
   deletion; `allow_auto_merge` true. The raw before/after JSON is kept in the author's session
   artifacts. The restore payload is in the plan.
-- [ ] T033 Claude: re-verify that both Vercel projects have no ignored-build-step command; no-merge
+- [ ] T033 Claude: re-verify the Vercel ignored-build-step commands match the plan (T037); no-merge
   window; projected drift check; canonical PUT; projected response and read-back comparison
   (restore on mismatch); `allow_auto_merge` true with read-back (restore on failure); record the raw
   and projected before/after JSON here. Settings changes are authorized by PO-1..PO-9 for exactly the
@@ -80,6 +80,10 @@
   projects and passes. This ends the PO-6 bootstrap.
 - [ ] T035 Claude: remove the deprecated `Secondary-agent review completed` allowance.
 - [ ] T036 [R] Codex: verify T030–T034 evidence.
+- [x] T037 Claude (incident #84 fix, 2026-09-28): `scripts/vercel-ignore-build.sh`, `.vercelignore`
+  keeps `.git`, `post_deploy_verify.py` `unchanged` state plus `sdlc_github.compare_files`, tests.
+  Vercel `commandForIgnoringBuildStep` set on all six projects after merge.
+- [ ] T038 [R] Hermes or Codex: independent review of T037 at the exact head.
 
 ## Follow-ups
 

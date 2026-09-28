@@ -244,9 +244,15 @@ the gate.
 - **FR-013 Release attribution and post-deploy verification.**
   - **Revision on health endpoints:** intake `/api/healthz` and MCP `/healthz` add
     `"revision": <VERCEL_GIT_COMMIT_SHA or null>`. This is additive; the existing `status` stays.
-  - **Prerequisite:** both Vercel projects build every `main` commit. Neither has an
-    ignored-build-step command (verified 2026-09-27 via the project API; re-verified in T033). Adding
-    one later would require updating this workflow.
+  - **Build skipping (amended 2026-09-28, incident #84):** every Vercel project runs
+    `scripts/vercel-ignore-build.sh <paths>` as its ignored-build step. It skips a build only when
+    none of the project's input paths changed since its last successful deployment
+    (`VERCEL_GIT_PREVIOUS_SHA`); any doubt builds. This keeps docs-only merges from spending the
+    Hobby-plan daily deployment quota.
+  - **Unchanged projects:** a project serving an older `main` revision is attributed as `unchanged`
+    when GitHub's compare API shows none of its watched paths (`WATCHED` in `post_deploy_verify.py`,
+    kept in sync with the project's ignored-build paths) changed between that revision and the pushed
+    commit. A truncated file list (300+) is `unknown`, never success.
   - **`post-deploy-verify.yml`**, triggered on push to `main` and separate from the five pre-merge
     checks.
     - It polls both endpoints for up to 20 minutes until each reports a revision that contains the

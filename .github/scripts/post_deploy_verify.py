@@ -27,7 +27,13 @@ PROJECTS = {
     "cluexp-intake": "https://intake.cluexp.com/api/healthz",
     "cluexp-mcp-server": "https://mcp.cluexp.com/healthz",
 }
-MCP_URL = "https://mcp.cluexp.com/mcp"
+# Inputs each project's Vercel ignored-build step watches (scripts/vercel-ignore-build.sh).
+# Keep in sync with the projects' commandForIgnoringBuildStep.
+WATCHED = {
+    "cluexp-intake": ("apps/intake-web/", "packages/", "package.json", "package-lock.json", ".vercelignore"),
+    "cluexp-mcp-server": ("apps/cluexp-mcp-server/", ".vercelignore"),
+}
+MCP_URL ="https://mcp.cluexp.com/mcp"
 LIST_SERVICES = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_services", "arguments": {}}}
 
 
@@ -70,18 +76,32 @@ def parse_list_services(raw: str) -> tuple[bool, str]:
     return True, f"{len(categories)} service categories"
 
 
-def contains(pushed: str, revision: str | None, main_head: str, compare: Callable[[str, str], str]) -> str:
-    """yes | no | unknown: does `revision` include `pushed` and belong to main?"""
+def contains(pushed: str, revision: str | None, main_head: str, compare: Callable[[str, str], str],
+             changed: Callable[[str, str], list[str] | None] | None = None, watched: tuple[str, ...] = ()) -> str:
+    """yes | unchanged | no | unknown.
+
+    yes: `revision` includes `pushed` and belongs to main. unchanged: `revision` is an older
+    main commit and none of the project's watched inputs changed up to `pushed`, so the
+    ignored-build step legitimately skipped this project.
+    """
     if not revision or not SHA_RE.fullmatch(revision):
         return "no"
     try:
-        if compare(pushed, revision) not in {"identical", "ahead"}:
+        status = compare(pushed, revision)
+        if status == "behind" and changed and watched:
+            files = changed(revision, pushed)
+            if files is None:
+                return "unknown"  # truncated diff: cannot prove the inputs are unchanged
+            if any(f == w or f.startswith(w) for f in files for w in watched):
+                return "no"
+            status = "unchanged"
+        elif status not in {"identical", "ahead"}:
             return "no"
         if compare(revision, main_head) not in {"identical", "ahead"}:
             return "no"  # descendant of pushed but not on main (e.g. a branch deployment)
     except Exception:  # noqa: BLE001 - API/network failure is "unknown", never success
         return "unknown"
-    return "yes"
+    return "unchanged" if status == "unchanged" else "yes"
 
 
 # --- I/O ---
@@ -113,21 +133,21 @@ def observe(fetch: Callable[[str], str]) -> dict[str, tuple[bool, str | None, st
     return out
 
 
-def _sample(pushed, fetch, compare, main_head):
+def _sample(pushed, fetch, compare, main_head, changed=None):
     observed = observe(fetch)
     try:
         head = main_head()
     except Exception:  # noqa: BLE001 - an unknown main head never counts as success
         head = None
     states = {
-        name: (contains(pushed, rev, head, compare) if head else "unknown")
+        name: (contains(pushed, rev, head, compare, changed, WATCHED.get(name, ())) if head else "unknown")
         for name, (_, rev, _) in observed.items()
     }
     return observed, states
 
 
 def _attributed(observed, states) -> bool:
-    return all(s == "yes" for s in states.values()) and all(h for h, _, _ in observed.values())
+    return all(s in {"yes", "unchanged"} for s in states.values()) and all(h for h, _, _ in observed.values())
 
 
 def _describe(observed, states, label: str) -> list[str]:
@@ -144,6 +164,7 @@ def verify(
     post_mcp: Callable[[str], str],
     compare: Callable[[str, str], str],
     main_head: Callable[[], str],
+    changed: Callable[[str, str], list[str] | None] | None = None,
     timeout: float = 1200,
     interval: float = 30,
     sleep: Callable[[float], None] = time.sleep,
@@ -158,13 +179,13 @@ def verify(
     deadline = clock() + timeout
     notes: list[str] = []
     while True:
-        before, before_states = _sample(pushed, fetch, compare, main_head)
+        before, before_states = _sample(pushed, fetch, compare, main_head, changed)
         if _attributed(before, before_states):
             try:
                 mcp_ok, mcp_detail = parse_list_services(post_mcp(MCP_URL))
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 mcp_ok, mcp_detail = False, f"unreachable: {exc}"
-            after, after_states = _sample(pushed, fetch, compare, main_head)
+            after, after_states = _sample(pushed, fetch, compare, main_head, changed)
             lines = [f"pushed commit: {pushed}"] + notes + _describe(before, before_states, "before smoke")
             lines += [f"- mcp list_services: {mcp_detail}"] + _describe(after, after_states, "after smoke")
             if not _attributed(after, after_states):
@@ -178,7 +199,7 @@ def verify(
             return True, lines + ["RESULT: verified"]
         if clock() >= deadline:
             lines = [f"pushed commit: {pushed}"] + notes + _describe(before, before_states, "final")
-            if all(s == "yes" for s in before_states.values()):
+            if all(s in {"yes", "unchanged"} for s in before_states.values()):
                 return False, lines + ["RESULT: attributed but unhealthy"]
             return False, lines + ["RESULT: release not attributed (build failed/queued/rate-limited, rollback-paused, or unknown)"]
         sleep(interval)
@@ -219,6 +240,7 @@ def main() -> int:
         fetch=http_get,
         post_mcp=http_post_mcp,
         compare=sdlc_github.compare_status,
+        changed=sdlc_github.compare_files,
         main_head=lambda: sdlc_github.request("GET", f"/repos/{sdlc_github.repo()}/commits/main")["sha"],
         timeout=args.timeout,
     )
