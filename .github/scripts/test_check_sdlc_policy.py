@@ -99,9 +99,9 @@ class GrammarTests(unittest.TestCase):
         text = record().replace("- Review result: approve", "* **Review result**: `approve`")
         self.assertEqual("approve", POLICY.parse_record(text)["result"])
 
-    def test_deprecated_completed_key_is_ignored(self) -> None:
+    def test_deprecated_completed_key_is_rejected(self) -> None:
         text = record().replace("- Review result", "- Secondary-agent review completed: yes\n- Review result")
-        self.assertEqual("approve", POLICY.parse_record(text)["result"])
+        self.assertInvalid(text, "unknown review record key")
 
     def assertInvalid(self, text: str, fragment: str) -> None:
         with self.assertRaises(POLICY.PolicyError) as ctx:

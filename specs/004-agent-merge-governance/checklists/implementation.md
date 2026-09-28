@@ -16,7 +16,7 @@ here for local `--base/--head` checks.
 - [x] Vercel prerequisites verified (auto-exposed system env vars, no build-skip, production branch
   `main`).
 - [x] Settings already switched (T033-early) and projected equal to intent via real fixtures.
-- [ ] T031 live metadata check, T034 acceptance merge with post-deploy attribution, T035, T036
+- [x] T031 live metadata check, T034 acceptance merge with post-deploy attribution, T035, T036
   (transition, after merge).
 
 ## Codex Implementation-Time Obligations (from the T003 approve)
@@ -105,6 +105,16 @@ Codex re-reviewed implementation head `df3db425f7ff4486a05a36b3c730b36090b7ecc9`
 
 ## T038 Incident #84 fix review (option A: build only changed projects)
 
-Pending independent review (Hermes or Codex) of T037. Scope: `scripts/vercel-ignore-build.sh`,
-`.vercelignore`, `.github/scripts/post_deploy_verify.py`, `.github/scripts/sdlc_github.py`,
-`.github/scripts/test_post_deploy_verify.py`, and the FR-013 amendment.
+Hermes independently reviewed T037 at head `6ff7506be067597807df056c41e024becada2664` and approved.
+Scope: `scripts/vercel-ignore-build.sh`, `.vercelignore`, `.github/scripts/post_deploy_verify.py`,
+`.github/scripts/sdlc_github.py`, `.github/scripts/test_post_deploy_verify.py`, and the FR-013
+amendment. Evidence is recorded in PR #85.
+
+## T036 Transition review
+
+Codex independently reviewed the staged T035/transition diff and approved with no blockers. Files
+reviewed: `AGENTS.md`, `.specify/memory/constitution.md`, the specs/004 spec/plan/tasks/checklist,
+`.github/scripts/check-sdlc-policy.py`, `.github/scripts/test_check_sdlc_policy.py`, and all staged
+changes. Commands run: `git diff --cached --stat`, `git diff --cached`, `git diff --cached --check`,
+`python .github/scripts/test_check_sdlc_policy.py` (34 passed), and a repository-wide deprecated-key
+search. The PR Review Record must name the resulting commit SHA as the reviewed head.
