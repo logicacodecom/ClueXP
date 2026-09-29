@@ -883,6 +883,9 @@ class Store:
     async def resolve_alert(self, alert_id: UUID | str) -> dict | None:  # pragma: no cover
         return None
 
+    async def mark_alert_escalated(self, alert_id: UUID | str, payload_update: dict | None = None) -> dict | None:  # pragma: no cover
+        return None
+
     async def list_all_alerts(self, status: str | None = None) -> list[dict]:  # pragma: no cover
         return []
 
@@ -5665,15 +5668,15 @@ class InMemoryStore(Store):
         if alerts is None:
             alerts = self._alerts = {}
         job_id_str = str(job_id) if job_id is not None else None
-        # Duplicate-prevention: skip creating a new OPEN alert for the same
-        # (org, job, type) that already has one open. Simple check-then-skip,
+        # Duplicate-prevention: skip creating a new unresolved alert for the same
+        # (org, job, type) that already has one open/acknowledged. Simple check-then-skip,
         # not a DB constraint here — matches the Postgres partial unique index.
         for row in alerts.values():
             if (
                 row["organization_id"] == str(organization_id)
                 and row["job_id"] == job_id_str
                 and row["alert_type"] == alert_type
-                and row["status"] == "open"
+                and row["status"] != "resolved"
             ):
                 return dict(row)
         rec = {
@@ -5709,6 +5712,8 @@ class InMemoryStore(Store):
         row = getattr(self, "_alerts", {}).get(str(alert_id))
         if row is None:
             return None
+        if row.get("status") != "open":
+            return dict(row)
         row["status"] = "acknowledged"
         row["acknowledged_by"] = user_id
         row["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
@@ -5718,8 +5723,20 @@ class InMemoryStore(Store):
         row = getattr(self, "_alerts", {}).get(str(alert_id))
         if row is None:
             return None
+        if row.get("status") == "resolved":
+            return dict(row)
         row["status"] = "resolved"
         row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        return dict(row)
+
+    async def mark_alert_escalated(self, alert_id: UUID | str, payload_update: dict | None = None) -> dict | None:
+        row = getattr(self, "_alerts", {}).get(str(alert_id))
+        if row is None or row.get("status") != "open" or row.get("escalated_at"):
+            return None
+        payload = dict(row.get("payload") or {})
+        payload.update(payload_update or {})
+        row["payload"] = payload
+        row["escalated_at"] = datetime.now(timezone.utc).isoformat()
         return dict(row)
 
     async def list_all_alerts(self, status: str | None = None) -> list[dict]:
@@ -14087,6 +14104,15 @@ class PostgresStore(Store):
             # failure) fall back to check-then-skip since there is no unique
             # constraint to lean on for those.
             if job_id is not None:
+                unresolved_cur = await conn.execute(
+                    f"select {self._ALERT_COLS} from alerts"
+                    " where organization_id = %s and job_id = %s and alert_type = %s and status <> 'resolved'"
+                    " order by created_at desc limit 1",
+                    (str(organization_id), str(job_id), alert_type),
+                )
+                unresolved = await unresolved_cur.fetchone()
+                if unresolved is not None:
+                    return self._alert_row(unresolved)
                 cur = await conn.execute(
                     "insert into alerts (organization_id, job_id, alert_type, severity, payload)"
                     " values (%s, %s, %s, %s, %s)"
@@ -14108,7 +14134,7 @@ class PostgresStore(Store):
                 return self._alert_row(existing)
             existing_cur = await conn.execute(
                 f"select {self._ALERT_COLS} from alerts"
-                " where organization_id = %s and job_id is null and alert_type = %s and status = 'open'"
+                " where organization_id = %s and job_id is null and alert_type = %s and status <> 'resolved'"
                 " limit 1",
                 (str(organization_id), alert_type),
             )
@@ -14153,20 +14179,40 @@ class PostgresStore(Store):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "update alerts set status = 'acknowledged', acknowledged_by = %s, acknowledged_at = now()"
-                " where id = %s"
+                " where id = %s and status = 'open'"
                 f" returning {self._ALERT_COLS}",
                 (str(user_id), str(alert_id)),
             )
             row = await cur.fetchone()
+            if row is None:
+                current = await conn.execute(f"select {self._ALERT_COLS} from alerts where id = %s", (str(alert_id),))
+                row = await current.fetchone()
         return self._alert_row(row) if row is not None else None
 
     async def resolve_alert(self, alert_id: UUID | str) -> dict | None:
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "update alerts set status = 'resolved', resolved_at = now()"
-                " where id = %s"
+                " where id = %s and status <> 'resolved'"
                 f" returning {self._ALERT_COLS}",
                 (str(alert_id),),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                current = await conn.execute(f"select {self._ALERT_COLS} from alerts where id = %s", (str(alert_id),))
+                row = await current.fetchone()
+        return self._alert_row(row) if row is not None else None
+
+    async def mark_alert_escalated(self, alert_id: UUID | str, payload_update: dict | None = None) -> dict | None:
+        from psycopg.types.json import Jsonb
+
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update alerts"
+                " set escalated_at = now(), payload = coalesce(payload, '{}'::jsonb) || %s"
+                " where id = %s and status = 'open' and escalated_at is null"
+                f" returning {self._ALERT_COLS}",
+                (Jsonb(payload_update or {}), str(alert_id)),
             )
             row = await cur.fetchone()
         return self._alert_row(row) if row is not None else None

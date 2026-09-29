@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
 from starlette.testclient import TestClient
 
 from twilio.request_validator import RequestValidator
@@ -295,3 +296,272 @@ def test_duplicate_open_alert_is_not_created_twice():
         if a["job_id"] == jid and a["alert_type"] == "customer_help_request" and a["status"] == "open"
     ]
     assert len(matching) == 1
+
+
+def test_dispatch_alert_sweep_escalates_unacknowledged_open_alert_once(monkeypatch):
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    app_store._organization_settings = getattr(app_store, "_organization_settings", {})
+    app_store._organization_settings[(org, "dispatch_ack_sla_minutes")] = {"value": 5}
+    app_store._alerts = {}
+    alert_id = str(uuid4())
+    app_store._alerts[alert_id] = {
+        "id": alert_id,
+        "organization_id": org,
+        "job_id": jid,
+        "alert_type": "safety_flag",
+        "severity": "critical",
+        "status": "open",
+        "payload": {},
+        "created_at": (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(),
+        "acknowledged_by": None,
+        "acknowledged_at": None,
+        "resolved_at": None,
+        "escalated_at": None,
+    }
+
+    first = asyncio.run(_evaluate_dispatch_alerts())
+    second = asyncio.run(_evaluate_dispatch_alerts())
+
+    alert = app_store._alerts[alert_id]
+    assert first["escalated"] == 1
+    assert second["escalated"] == 0
+    assert alert["status"] == "open"
+    assert alert["escalated_at"] is not None
+    escalation = alert["payload"]["escalation"]
+    assert escalation["ack_sla_minutes"] == 5
+    assert escalation["delivery_policy"] == {
+        "first_line_recipients": "dispatchers",
+        "backup_recipients": "provider_admins",
+        "configured_channels": ["provider_inbox", "browser_notification"],
+        "fallback_channels": ["email", "sms"],
+        "fallback_status": "disabled_pending_authorization",
+    }
+    assert escalation["delivery_attempts"] == []
+    assert "first_line_recipients" not in escalation
+    assert "configured_channels" not in escalation
+
+
+def test_acknowledged_alert_suppresses_duplicate_open_alert_creation():
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    app_store._alerts = {}
+    existing = asyncio.run(app_store.create_alert(org, "stalled_job", "warning", job_id=jid, payload={"source": "first"}))
+    acked = asyncio.run(app_store.acknowledge_alert(existing["id"], "dispatcher-1"))
+
+    second = asyncio.run(app_store.create_alert(org, "stalled_job", "warning", job_id=jid, payload={"source": "second"}))
+
+    matching = [
+        a for a in app_store._alerts.values()
+        if a["job_id"] == jid and a["alert_type"] == "stalled_job"
+    ]
+    assert acked is not None
+    assert second["id"] == existing["id"]
+    assert len(matching) == 1
+    assert matching[0]["status"] == "acknowledged"
+
+
+def test_acknowledge_does_not_reopen_resolved_alert_or_overwrite_first_ack():
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    app_store._alerts = {}
+    alert = asyncio.run(app_store.create_alert(org, "safety_flag", "critical", job_id=jid))
+    first = asyncio.run(app_store.acknowledge_alert(alert["id"], "dispatcher-1"))
+    second = asyncio.run(app_store.acknowledge_alert(alert["id"], "dispatcher-2"))
+    resolved = asyncio.run(app_store.resolve_alert(alert["id"]))
+    after_resolve_ack = asyncio.run(app_store.acknowledge_alert(alert["id"], "dispatcher-3"))
+
+    assert first is not None
+    assert second is not None
+    assert resolved is not None
+    assert after_resolve_ack is not None
+    assert second["acknowledged_by"] == "dispatcher-1"
+    assert after_resolve_ack["status"] == "resolved"
+    assert after_resolve_ack["acknowledged_by"] == "dispatcher-1"
+
+
+def test_dispatch_alert_sweep_does_not_escalate_acknowledged_or_fresh_alerts(monkeypatch):
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    old_jid = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    fresh_jid = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    app_store._organization_settings = getattr(app_store, "_organization_settings", {})
+    app_store._organization_settings[(org, "dispatch_ack_sla_minutes")] = {"value": 5}
+    app_store._alerts = {}
+    old_alert_id = str(uuid4())
+    fresh_alert_id = str(uuid4())
+    old_created = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
+    app_store._alerts[old_alert_id] = {
+        "id": old_alert_id,
+        "organization_id": org,
+        "job_id": old_jid,
+        "alert_type": "safety_flag",
+        "severity": "critical",
+        "status": "acknowledged",
+        "payload": {},
+        "created_at": old_created,
+        "acknowledged_by": "dispatcher-1",
+        "acknowledged_at": old_created,
+        "resolved_at": None,
+        "escalated_at": None,
+    }
+    app_store._alerts[fresh_alert_id] = {
+        "id": fresh_alert_id,
+        "organization_id": org,
+        "job_id": fresh_jid,
+        "alert_type": "new_job",
+        "severity": "info",
+        "status": "open",
+        "payload": {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "acknowledged_by": None,
+        "acknowledged_at": None,
+        "resolved_at": None,
+        "escalated_at": None,
+    }
+
+    counts = asyncio.run(_evaluate_dispatch_alerts())
+
+    assert counts["escalated"] == 0
+    assert app_store._alerts[old_alert_id]["escalated_at"] is None
+    assert app_store._alerts[fresh_alert_id]["escalated_at"] is None
+
+
+def test_dispatch_alert_sweep_continues_stalled_detection_when_one_alert_escalation_fails(monkeypatch):
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    old_alert_job_id = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    stalled_job_id = _seed_job(tid, org, status=STATUS_PENDING_DISPATCH)
+    app_store._job_created_at = getattr(app_store, "_job_created_at", {})
+    app_store._job_created_at[stalled_job_id] = (datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat()
+    app_store._organization_settings = getattr(app_store, "_organization_settings", {})
+    app_store._organization_settings[(org, "dispatch_ack_sla_minutes")] = {"value": 5}
+    app_store._organization_settings[(org, "dispatch_stalled_minutes")] = {"value": 30}
+    app_store._alerts = {}
+    alert_id = str(uuid4())
+    app_store._alerts[alert_id] = {
+        "id": alert_id,
+        "organization_id": org,
+        "job_id": old_alert_job_id,
+        "alert_type": "safety_flag",
+        "severity": "critical",
+        "status": "open",
+        "payload": {},
+        "created_at": (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(),
+        "acknowledged_by": None,
+        "acknowledged_at": None,
+        "resolved_at": None,
+        "escalated_at": None,
+    }
+
+    async def fail_escalation(*_args, **_kwargs):
+        raise RuntimeError("simulated escalation write failure")
+
+    monkeypatch.setattr(app_store, "mark_alert_escalated", fail_escalation)
+
+    counts = asyncio.run(_evaluate_dispatch_alerts())
+
+    assert counts["escalated"] == 0
+    assert counts["stalled_job"] >= 1
+    stalled_alerts = [
+        alert for alert in app_store._alerts.values()
+        if alert["job_id"] == stalled_job_id and alert["alert_type"] == "stalled_job"
+    ]
+    assert len(stalled_alerts) == 1
+
+
+def test_dispatch_alert_escalation_is_default_off_until_production_activation(monkeypatch):
+    monkeypatch.delenv("DISPATCH_ALERT_ESCALATION_ENABLED", raising=False)
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status=STATUS_ASSIGNED)
+    app_store._organization_settings = getattr(app_store, "_organization_settings", {})
+    app_store._organization_settings[(org, "dispatch_ack_sla_minutes")] = {"value": 5}
+    app_store._alerts = {}
+    alert_id = str(uuid4())
+    app_store._alerts[alert_id] = {
+        "id": alert_id,
+        "organization_id": org,
+        "job_id": jid,
+        "alert_type": "safety_flag",
+        "severity": "critical",
+        "status": "open",
+        "payload": {},
+        "created_at": (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(),
+        "acknowledged_by": None,
+        "acknowledged_at": None,
+        "resolved_at": None,
+        "escalated_at": None,
+    }
+
+    counts = asyncio.run(_evaluate_dispatch_alerts())
+
+    assert counts["escalated"] == 0
+    assert app_store._alerts[alert_id]["escalated_at"] is None
+    assert app_store._alerts[alert_id]["payload"] == {}
+
+
+def _seed_stale_open_alert(org: str, job_id: str | None, alert_type: str, minutes: int = 6) -> str:
+    alert_id = str(uuid4())
+    app_store._alerts[alert_id] = {
+        "id": alert_id, "organization_id": org, "job_id": job_id,
+        "alert_type": alert_type, "severity": "warning", "status": "open", "payload": {},
+        "created_at": (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(),
+        "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "escalated_at": None,
+    }
+    return alert_id
+
+
+@pytest.mark.parametrize("alert_type", ["new_job", "stalled_job", "stuck_offer"])
+@pytest.mark.parametrize("job_status", [STATUS_ASSIGNED, STATUS_SCHEDULED_CONFIRMED, "completed_confirmed", "cancelled"])
+def test_dispatch_lifecycle_alert_not_escalated_once_job_left_pending_dispatch(monkeypatch, alert_type, job_status):
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status=job_status)
+    app_store._alerts = {}
+    alert_id = _seed_stale_open_alert(org, jid, alert_type)
+
+    counts = asyncio.run(_evaluate_dispatch_alerts())
+
+    assert counts["escalated"] == 0
+    assert app_store._alerts[alert_id]["escalated_at"] is None
+    assert app_store._alerts[alert_id]["status"] == "open"
+
+
+@pytest.mark.parametrize("alert_type", ["new_job", "stalled_job", "stuck_offer"])
+def test_dispatch_lifecycle_alert_escalates_while_job_pending_dispatch(monkeypatch, alert_type):
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status=STATUS_PENDING_DISPATCH)
+    app_store._alerts = {}
+    alert_id = _seed_stale_open_alert(org, jid, alert_type)
+
+    counts = asyncio.run(_evaluate_dispatch_alerts())
+
+    assert counts["escalated"] == 1
+    assert app_store._alerts[alert_id]["escalated_at"] is not None
+
+
+@pytest.mark.parametrize("alert_type", ["safety_flag", "customer_help_request", "delivery_failure"])
+def test_non_lifecycle_alert_escalates_regardless_of_job_status(monkeypatch, alert_type):
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    org = str(uuid4())
+    tid, _ = _register_tech()
+    jid = _seed_job(tid, org, status="completed_confirmed")
+    app_store._alerts = {}
+    job_alert = _seed_stale_open_alert(org, jid, alert_type)
+    orgless_job_alert = _seed_stale_open_alert(org, None, alert_type)
+
+    counts = asyncio.run(_evaluate_dispatch_alerts())
+
+    assert counts["escalated"] == 2
+    assert app_store._alerts[job_alert]["escalated_at"] is not None
+    assert app_store._alerts[orgless_job_alert]["escalated_at"] is not None

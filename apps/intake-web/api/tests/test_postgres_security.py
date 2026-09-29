@@ -601,3 +601,111 @@ def test_origin_channel_attribution_round_trips_and_is_write_once():
 
     assert first["origin_channel"] == "ai_assistant"
     assert later["origin_channel"] == "ai_assistant"
+async def _pg_seed_org_job(store: PostgresStore, status: str) -> tuple[str, str]:
+    org_id = uuid4()
+    async with await store._connect() as conn:
+        await conn.execute(
+            "insert into organizations (id, display_name, status) values (%s, 'Alert Org', 'active')",
+            (org_id,),
+        )
+    ticket = Ticket()
+    await store.save(ticket, {"origin_org_id": org_id, "customer_owner_org_id": org_id})
+    await store.set_job_status(ticket.ticket_id, status)
+    return str(org_id), str(ticket.ticket_id)
+
+
+async def _pg_backdate_alert(store: PostgresStore, alert_id: str, minutes: int = 10) -> None:
+    async with await store._connect() as conn:
+        await conn.execute(
+            "update alerts set created_at = now() - make_interval(mins => %s) where id = %s",
+            (minutes, alert_id),
+        )
+
+
+def test_postgres_alert_dedupe_ack_resolve_and_escalation_sql():
+    async def exercise() -> None:
+        store = PostgresStore(DSN)
+        org_id, job_id = await _pg_seed_org_job(store, "pending_dispatch")
+
+        first = await store.create_alert(org_id, "stalled_job", "warning", job_id=job_id, payload={"source": "first"})
+        assert first["status"] == "open"
+
+        # Escalation merges into payload, stamps once, and only while open.
+        escalated = await store.mark_alert_escalated(first["id"], {"escalation": {"ack_sla_minutes": 5}})
+        assert escalated["escalated_at"] is not None
+        assert escalated["payload"] == {"source": "first", "escalation": {"ack_sla_minutes": 5}}
+        assert await store.mark_alert_escalated(first["id"], {"escalation": {"ack_sla_minutes": 99}}) is None
+
+        # Ack is conditional: first ack wins, a repeat ack returns the current row unchanged.
+        acked = await store.acknowledge_alert(first["id"], str(uuid4()))
+        assert acked["status"] == "acknowledged"
+        again = await store.acknowledge_alert(first["id"], str(uuid4()))
+        assert again["acknowledged_by"] == acked["acknowledged_by"]
+        assert again["acknowledged_at"] == acked["acknowledged_at"]
+
+        # An acknowledged alert still suppresses a duplicate for the same (org, job, type).
+        duplicate = await store.create_alert(org_id, "stalled_job", "warning", job_id=job_id, payload={"source": "second"})
+        assert duplicate["id"] == first["id"]
+        async with await store._connect() as conn:
+            cur = await conn.execute(
+                "select count(*) from alerts where organization_id = %s and job_id = %s and alert_type = 'stalled_job'",
+                (org_id, job_id),
+            )
+            assert (await cur.fetchone())[0] == 1
+
+        # Resolve is idempotent; ack cannot reopen; escalation skips non-open rows.
+        resolved = await store.resolve_alert(first["id"])
+        assert resolved["status"] == "resolved"
+        assert (await store.resolve_alert(first["id"]))["resolved_at"] == resolved["resolved_at"]
+        assert (await store.acknowledge_alert(first["id"], str(uuid4())))["status"] == "resolved"
+        assert await store.mark_alert_escalated(first["id"], {"escalation": {}}) is None
+
+        # Once resolved, a new alert for the same (org, job, type) may open.
+        reopened = await store.create_alert(org_id, "stalled_job", "warning", job_id=job_id)
+        assert reopened["id"] != first["id"]
+        assert reopened["status"] == "open"
+
+        # Job-less alerts dedupe against unresolved rows too.
+        orgless = await store.create_alert(org_id, "delivery_failure", "warning")
+        await store.acknowledge_alert(orgless["id"], str(uuid4()))
+        assert (await store.create_alert(org_id, "delivery_failure", "warning"))["id"] == orgless["id"]
+
+        # Missing alerts stay not-found.
+        missing = str(uuid4())
+        assert await store.acknowledge_alert(missing, str(uuid4())) is None
+        assert await store.resolve_alert(missing) is None
+        assert await store.mark_alert_escalated(missing, {}) is None
+
+    asyncio.run(exercise())
+
+
+def test_postgres_sweep_escalates_only_actionable_dispatch_lifecycle_alerts(monkeypatch):
+    from api import main
+
+    monkeypatch.setenv("DISPATCH_ALERT_ESCALATION_ENABLED", "1")
+    _, store = _pg_app_client(monkeypatch)
+
+    async def exercise() -> dict[str, dict]:
+        pending_org, pending_job = await _pg_seed_org_job(store, "pending_dispatch")
+        assigned_org, assigned_job = await _pg_seed_org_job(store, "assigned")
+        alerts = {
+            "pending_new_job": await store.create_alert(pending_org, "new_job", "info", job_id=pending_job),
+            "assigned_new_job": await store.create_alert(assigned_org, "new_job", "info", job_id=assigned_job),
+            "assigned_stuck_offer": await store.create_alert(assigned_org, "stuck_offer", "warning", job_id=assigned_job),
+            "assigned_safety": await store.create_alert(assigned_org, "safety_flag", "critical", job_id=assigned_job),
+        }
+        for alert in alerts.values():
+            await _pg_backdate_alert(store, alert["id"])
+        await main._evaluate_dispatch_alerts()
+        async with await store._connect() as conn:
+            rows = {}
+            for key, alert in alerts.items():
+                cur = await conn.execute("select escalated_at from alerts where id = %s", (alert["id"],))
+                rows[key] = (await cur.fetchone())[0]
+        return rows
+
+    escalated = asyncio.run(exercise())
+    assert escalated["pending_new_job"] is not None
+    assert escalated["assigned_new_job"] is None
+    assert escalated["assigned_stuck_offer"] is None
+    assert escalated["assigned_safety"] is not None
