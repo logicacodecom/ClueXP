@@ -4,10 +4,9 @@
 **Reviewer**: `Codex`
 **Date**: `2026-09-27`
 
-Secondary-agent review required: yes
-Secondary-agent review completed: yes
-Reviewer agent: Claude Code
-Review result: approve
+Final secondary-agent review required: yes
+Final secondary-agent review completed: no
+Eligible final reviewer: Hermes or an uninvolved `Other` family, because Codex and Claude both authored this diff
 
 ## Requirements Quality
 
@@ -34,15 +33,18 @@ Review result: approve
 
 ## Secondary Review Markers
 
-These markers must be completed before merge or recorded in the PR body after independent review:
+The earlier Claude review informed implementation fixes but is not the merge-valid review because Claude authored T014/T016. The exact final commit must receive a different-family review recorded in the PR body:
 
 ```text
 Secondary-agent review required: yes
-Secondary-agent review completed: yes
-Reviewer agent: Claude Code
+Author agents: Codex, Claude Code
+Reviewer agent: Hermes
+Review scope: implementation
+Reviewed head: <40-character commit SHA>
 Review result: approve
+Merge owner: Codex
 ```
 
 A `changes-requested` result blocks merge until findings are resolved and a secondary reviewer records `approve`.
 
-The exact integrated commit and final independent result are recorded in the pull request's required `Review Record`; this checklist preserves the earlier Claude implementation review.
+The exact integrated commit and final independent result are recorded in the pull request's required `Review Record`.

@@ -8712,6 +8712,7 @@ async def _require_org_job(org_id: str, job_id: UUID) -> dict[str, Any]:
 @app.get("/provider/alerts")
 async def provider_list_alerts(
     status: str | None = None,
+    limit: int | None = None,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """The company's own alert inbox, optionally filtered by status. Scoped to
@@ -8719,7 +8720,9 @@ async def provider_list_alerts(
     org_id = _require_dispatch_org(session)
     if status is not None and status not in {"open", "acknowledged", "resolved"}:
         raise HTTPException(status_code=422, detail="status must be one of open, acknowledged, resolved")
-    return {"alerts": await store.list_alerts(org_id, status=status)}
+    if limit is not None and not 1 <= limit <= 200:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 200")
+    return {"alerts": await store.list_alerts(org_id, status=status, limit=limit)}
 
 
 async def _require_org_alert(org_id: str, alert_id: UUID) -> dict[str, Any]:

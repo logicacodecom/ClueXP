@@ -601,6 +601,8 @@ def test_origin_channel_attribution_round_trips_and_is_write_once():
 
     assert first["origin_channel"] == "ai_assistant"
     assert later["origin_channel"] == "ai_assistant"
+
+
 async def _pg_seed_org_job(store: PostgresStore, status: str) -> tuple[str, str]:
     org_id = uuid4()
     async with await store._connect() as conn:
@@ -626,6 +628,25 @@ def test_postgres_alert_dedupe_ack_resolve_and_escalation_sql():
     async def exercise() -> None:
         store = PostgresStore(DSN)
         org_id, job_id = await _pg_seed_org_job(store, "pending_dispatch")
+
+        concurrent = await asyncio.gather(*[
+            store.create_alert(org_id, "new_job", "info", job_id=job_id)
+            for _ in range(8)
+        ])
+        assert len({row["id"] for row in concurrent}) == 1
+        concurrent_id = concurrent[0]["id"]
+        await store.acknowledge_alert(concurrent_id, str(uuid4()))
+        after_ack = await asyncio.gather(*[
+            store.create_alert(org_id, "new_job", "info", job_id=job_id)
+            for _ in range(8)
+        ])
+        assert {row["id"] for row in after_ack} == {concurrent_id}
+
+        jobless = await asyncio.gather(*[
+            store.create_alert(org_id, "delivery_failure", "warning")
+            for _ in range(8)
+        ])
+        assert len({row["id"] for row in jobless}) == 1
 
         first = await store.create_alert(org_id, "stalled_job", "warning", job_id=job_id, payload={"source": "first"})
         assert first["status"] == "open"
@@ -666,7 +687,7 @@ def test_postgres_alert_dedupe_ack_resolve_and_escalation_sql():
         assert reopened["status"] == "open"
 
         # Job-less alerts dedupe against unresolved rows too.
-        orgless = await store.create_alert(org_id, "delivery_failure", "warning")
+        orgless = jobless[0]
         await store.acknowledge_alert(orgless["id"], str(uuid4()))
         assert (await store.create_alert(org_id, "delivery_failure", "warning"))["id"] == orgless["id"]
 

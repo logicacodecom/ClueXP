@@ -107,6 +107,31 @@ def test_owning_provider_can_list_and_ack_its_own_alert():
     assert resolved.json()["alert"]["status"] == "resolved"
 
 
+def test_provider_resolved_alerts_are_ordered_by_resolution_time_and_limited():
+    client = TestClient(app)
+    org = str(uuid4())
+    _, provider_h = _register_dispatcher(org)
+    app_store._alerts = {}
+    expected_ids: list[str] = []
+    for day in range(1, 4):
+        alert_id = str(uuid4())
+        expected_ids.append(alert_id)
+        app_store._alerts[alert_id] = {
+            "id": alert_id, "organization_id": org, "job_id": None, "alert_type": "delivery_failure",
+            "severity": "warning", "status": "resolved", "payload": {},
+            "created_at": f"2026-08-0{4 - day}T00:00:00+00:00",
+            "acknowledged_by": None, "acknowledged_at": None,
+            "resolved_at": f"2026-08-0{day}T00:00:00+00:00", "escalated_at": None,
+        }
+
+    response = client.get("/provider/alerts?status=resolved&limit=2", headers=provider_h)
+
+    assert response.status_code == 200, response.text
+    assert [row["id"] for row in response.json()["alerts"]] == list(reversed(expected_ids))[:2]
+    assert client.get("/provider/alerts?status=resolved&limit=0", headers=provider_h).status_code == 422
+    assert client.get("/provider/alerts?status=resolved&limit=201", headers=provider_h).status_code == 422
+
+
 def test_foreign_provider_gets_404_on_ack_and_resolve():
     client = TestClient(app)
     org = str(uuid4())

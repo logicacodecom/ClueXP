@@ -204,14 +204,22 @@ function MessageInbox() {
         fetch("/api/provider/jobs/history", { cache: "no-store" }),
         fetch("/api/provider/alerts?status=open", { cache: "no-store" }),
         fetch("/api/provider/alerts?status=acknowledged", { cache: "no-store" }),
-        fetch("/api/provider/alerts?status=resolved", { cache: "no-store" }),
+        fetch("/api/provider/alerts?status=resolved&limit=5", { cache: "no-store" }),
       ]);
       if (!activeRes.ok) throw new Error(`Could not load active jobs (${activeRes.status})`);
+      if (!openAlertsRes.ok || !acknowledgedAlertsRes.ok || !resolvedAlertsRes.ok) {
+        const failedStatus = [openAlertsRes, acknowledgedAlertsRes, resolvedAlertsRes]
+          .find((response) => !response.ok)?.status;
+        throw new Error(`Could not load dispatcher alerts (${failedStatus ?? "unknown error"})`);
+      }
       const activeJobs = ((await activeRes.json()) as ProviderJob[]).map((job) => ({ ...job, finished_at: null }));
       const historyJobs = historyRes.ok ? ((await historyRes.json()) as ProviderJob[]) : [];
       const openAlertsBody = openAlertsRes.ok ? ((await openAlertsRes.json()) as { alerts?: ProviderAlert[] }) : {};
       const acknowledgedAlertsBody = acknowledgedAlertsRes.ok ? ((await acknowledgedAlertsRes.json()) as { alerts?: ProviderAlert[] }) : {};
       const resolvedAlertsBody = resolvedAlertsRes.ok ? ((await resolvedAlertsRes.json()) as { alerts?: ProviderAlert[] }) : {};
+      const recentResolved = [...(resolvedAlertsBody.alerts ?? [])]
+        .sort((a, b) => new Date(b.resolved_at ?? 0).getTime() - new Date(a.resolved_at ?? 0).getTime())
+        .slice(0, 5);
       const jobs = dedupeJobs([...activeJobs, ...historyJobs]).slice(0, 40);
       const loadedThreads = (await Promise.all(
         jobs.flatMap((job) => [fetchThread(job, "customer"), fetchThread(job, "operations")])
@@ -226,7 +234,7 @@ function MessageInbox() {
       setAlerts([
         ...(openAlertsBody.alerts ?? []),
         ...(acknowledgedAlertsBody.alerts ?? []),
-        ...(resolvedAlertsBody.alerts ?? []).slice(0, 5),
+        ...recentResolved,
       ]);
       setState("ready");
     } catch (cause) {
@@ -309,7 +317,10 @@ function MessageInbox() {
   const helpTotal = threads.filter((thread) => thread.helpRequested).length;
   const customerTotal = threads.filter((thread) => thread.channel === "customer").length;
   const activeAlerts = alerts.filter((alert) => alert.status !== "resolved");
-  const recentResolvedAlerts = alerts.filter((alert) => alert.status === "resolved").slice(0, 5);
+  const recentResolvedAlerts = alerts
+    .filter((alert) => alert.status === "resolved")
+    .sort((a, b) => new Date(b.resolved_at ?? 0).getTime() - new Date(a.resolved_at ?? 0).getTime())
+    .slice(0, 5);
   const customerHelpAlerts = activeAlerts.filter((alert) => alert.alert_type === "customer_help_request");
   const escalatedAlerts = activeAlerts.filter((alert) => Boolean(alert.escalated_at));
   const loading = state === "loading";

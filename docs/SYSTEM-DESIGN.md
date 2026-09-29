@@ -264,13 +264,19 @@ The cron endpoint no longer re-dispatches. It performs maintenance only:
 3. reap_stale_technicians()       — signs off technicians with a dead heartbeat  CRON ONLY
 4. activate_due_scheduled_jobs()  — scheduled_confirmed → pending_dispatch       CRON ONLY
 5. poll_push_receipts()           — resolves push delivery, retires dead tokens  CRON ONLY
-6. _evaluate_dispatch_alerts()    — creates stalled_job / stuck_offer alerts     CRON ONLY
+6. _evaluate_dispatch_alerts()    — creates threshold alerts and, behind a
+                                    default-off gate, stamps eligible SLA breaches CRON ONLY
 ```
 ⚠️ **Only (1) and (2) run inline on queue reads.** Items (3)-(6) have the cron as their *only*
 caller, so on the current daily schedule each runs at most once per 24h. The cron is **not**
 optional and must not be described as one: without it, time-threshold alerts are never generated,
 due scheduled appointments are not auto-activated, offline technicians stay offerable, and push
 receipts never resolve. See §8.2 for the operational consequences.
+
+`DISPATCH_ALERT_ESCALATION_ENABLED` defaults off. When explicitly enabled, the same sweep marks an
+eligible open, unacknowledged alert escalated once and records intended future recipient-role metadata.
+It does not implement staffed schedules, role-targeted delivery, after-hours fallback, or external
+SMS/email/push sends. The daily cron cannot meet the approved five-minute acknowledgement target.
 
 ### 4.5 Partial Unique Index (Race Protection)
 
@@ -471,7 +477,7 @@ Customer affordances are driven by `customer_actions(status)`:
 
 ### 7.1 Where Migrations Live
 
-`packages/db/` — Alembic migrations. **Current repository head: `0060_intake_phone_verification`; verified production head: `0059_job_origin_client`.** `0060` is unapplied and requires separate Human production-DDL authorization. It adds hashed, expiring, single-use digital-intake verification records plus the exact verified phone on `jobs`. Earlier landmarks: `0010` fulfillment cutover; `0013` arrival verification; `0047` job messages; `0048` job call sessions; `0049` push receipts; `0050` provider communications foundations; `0054` alert escalation; `0055` default-deny RLS; `0056`–`0059` public API and external-client request ownership.
+`packages/db/` — Alembic migrations. **Current repository head: `0062_dispatch_alert_sla_defaults`; verified production head: `0059_job_origin_client` (last recorded).** `0060`–`0062` remain unapplied until separately authorized production DDL. `0060` adds hashed, expiring, single-use digital-intake verification records plus the exact verified phone on `jobs`; `0061` adds AI-assistant listing opt-in; `0062` adds unresolved-alert uniqueness indexes and conditionally changes the untouched DB-backed stalled threshold from 15 to 30 minutes. Earlier landmarks: `0010` fulfillment cutover; `0013` arrival verification; `0047` job messages; `0048` job call sessions; `0049` push receipts; `0050` provider communications foundations; `0054` alert escalation; `0055` default-deny RLS; `0056`–`0059` public API and external-client request ownership.
 
 The `PostgresStore.startup()` method in `store.py` also runs `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS` guards so the API boots cleanly even if a migration is behind.
 
@@ -714,7 +720,7 @@ rejects sub-daily cron schedules.
 3. `reap_stale_technicians()` — signs off technicians whose presence heartbeat has gone stale
 4. `activate_due_scheduled_jobs()` — `scheduled_confirmed` → `pending_dispatch` within a 90-minute horizon
 5. `poll_push_receipts()` — resolves outstanding push receipts, retires dead device tokens
-6. `_evaluate_dispatch_alerts()` — creates `stalled_job` / `stuck_offer` alert rows
+6. `_evaluate_dispatch_alerts()` — creates `stalled_job` / `stuck_offer` rows and, only when `DISPATCH_ALERT_ESCALATION_ENABLED` is explicitly enabled, stamps eligible open alerts escalated once
 
 ⚠️ **Note (corrected):** only (1) and (2) also run inline on `GET /provider/queue` and
 `GET /ops/queue`. Operations (3)-(6) run **only** here, so on a daily schedule they occur at most
@@ -722,6 +728,11 @@ once per 24h and the cron cannot be disabled without breaking them. Operational 
 
 - `stalled_job` / `stuck_offer` alerts are not produced intraday, so **the dispatcher alert inbox is
   not a live monitoring surface** — poll the queue endpoints instead.
+- The default-off escalation marker also runs only on this schedule. It cannot enforce a five-minute
+  acknowledgement target in production until a separate scheduler decision is implemented and authorized.
+- Escalation metadata names the future dispatcher/provider-admin policy but performs no role-targeted,
+  after-hours, SMS, email, or push delivery. Browser notifications are local to an authorized provider user
+  with the Messages page open and do not prove delivery.
 - A due scheduled appointment is not auto-dispatched until the next 08:00 UTC run (up to ~24h late).
   Dispatchers must activate it manually via `POST /provider/queue/{job_id}/activate-schedule`;
   `scheduled_confirmed` jobs are visible in the provider queue.
@@ -764,6 +775,7 @@ All environment variables for `intake-web`. Set in Vercel project dashboard unde
 | `SUPABASE_URL` | — | Supabase project URL for storage signed URLs. |
 | `SUPABASE_SERVICE_ROLE_KEY` | — | Service-role key for storage operations. Legacy fallback `SUPABASE_SERVICE_KEY` is still read if the role-key name is absent. Server-only — never expose to the browser. |
 | `CRON_SECRET` | `""` outside production | Bearer secret for `POST /cron/dispatch-sweep`. Because production declares the sweep cron, production refuses missing, short, and known-placeholder values. |
+| `DISPATCH_ALERT_ESCALATION_ENABLED` | unset / false | Default-off gate for durable alert SLA-breach stamping during the dispatch sweep. Enabling it requires separate Human authorization and a scheduler decision; it does not enable SMS/email/push delivery. |
 | `ALLOWED_ORIGINS` | `*` outside production, closed in production when unset | Comma-separated list of allowed CORS origins. Set explicitly for approved browser clients; leave empty to keep production browser CORS closed. |
 | `TRUSTED_HOSTS` | `*` | Comma-separated host allowlist. Production should include `api.cluexp.com`, `intake.cluexp.com`, the Vercel app host, and approved preview hosts. |
 | `API_ONLY_HOSTNAMES` | `api.cluexp.com` | Comma-separated hostnames that may serve only `/v1` and must opaque-404 website/internal paths. |

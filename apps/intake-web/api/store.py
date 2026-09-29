@@ -871,7 +871,9 @@ class Store:
     ) -> dict:  # pragma: no cover
         raise NotImplementedError
 
-    async def list_alerts(self, organization_id: str, status: str | None = None) -> list[dict]:  # pragma: no cover
+    async def list_alerts(
+        self, organization_id: str, status: str | None = None, limit: int | None = None
+    ) -> list[dict]:  # pragma: no cover
         return []
 
     async def get_alert(self, alert_id: UUID | str) -> dict | None:  # pragma: no cover
@@ -5669,8 +5671,9 @@ class InMemoryStore(Store):
             alerts = self._alerts = {}
         job_id_str = str(job_id) if job_id is not None else None
         # Duplicate-prevention: skip creating a new unresolved alert for the same
-        # (org, job, type) that already has one open/acknowledged. Simple check-then-skip,
-        # not a DB constraint here — matches the Postgres partial unique index.
+        # (org, job, type) that already has one open/acknowledged. The in-memory
+        # event loop has no await in this critical section; Postgres serializes
+        # the key and migration 0062 adds matching unresolved-row indexes.
         for row in alerts.values():
             if (
                 row["organization_id"] == str(organization_id)
@@ -5696,13 +5699,17 @@ class InMemoryStore(Store):
         alerts[rec["id"]] = rec
         return dict(rec)
 
-    async def list_alerts(self, organization_id: str, status: str | None = None) -> list[dict]:
+    async def list_alerts(
+        self, organization_id: str, status: str | None = None, limit: int | None = None
+    ) -> list[dict]:
         rows = [
             dict(row) for row in getattr(self, "_alerts", {}).values()
             if row["organization_id"] == str(organization_id)
             and (status is None or row["status"] == status)
         ]
-        return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+        timestamp_key = "resolved_at" if status == "resolved" else "created_at"
+        rows = sorted(rows, key=lambda r: r.get(timestamp_key) or "", reverse=True)
+        return rows[:limit] if limit is not None else rows
 
     async def get_alert(self, alert_id: UUID | str) -> dict | None:
         row = getattr(self, "_alerts", {}).get(str(alert_id))
@@ -14098,11 +14105,12 @@ class PostgresStore(Store):
         from psycopg.types.json import Jsonb
 
         async with await self._connect() as conn:
-            # Duplicate-prevention: the partial unique index only covers
-            # job_id IS NOT NULL rows, so job-scoped alerts upsert-ignore via
-            # ON CONFLICT; job-less alerts (e.g. an org-level delivery
-            # failure) fall back to check-then-skip since there is no unique
-            # constraint to lean on for those.
+            # Serialize creation for one logical alert key. This keeps the
+            # check-and-insert sequence safe both before and after migration
+            # 0062 adds unresolved-alert unique indexes, including job-less
+            # organization alerts.
+            lock_key = f"alert:{organization_id}:{job_id or '<none>'}:{alert_type}"
+            await conn.execute("select pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,))
             if job_id is not None:
                 unresolved_cur = await conn.execute(
                     f"select {self._ALERT_COLS} from alerts"
@@ -14127,10 +14135,13 @@ class PostgresStore(Store):
                     return self._alert_row(row)
                 cur = await conn.execute(
                     f"select {self._ALERT_COLS} from alerts"
-                    " where organization_id = %s and job_id = %s and alert_type = %s and status = 'open'",
+                    " where organization_id = %s and job_id = %s and alert_type = %s and status <> 'resolved'"
+                    " order by created_at desc limit 1",
                     (str(organization_id), str(job_id), alert_type),
                 )
                 existing = await cur.fetchone()
+                if existing is None:
+                    raise RuntimeError("alert insert lost without an unresolved winner")
                 return self._alert_row(existing)
             existing_cur = await conn.execute(
                 f"select {self._ALERT_COLS} from alerts"
@@ -14150,19 +14161,32 @@ class PostgresStore(Store):
             row = await cur.fetchone()
             return self._alert_row(row)
 
-    async def list_alerts(self, organization_id: str, status: str | None = None) -> list[dict]:
+    async def list_alerts(
+        self, organization_id: str, status: str | None = None, limit: int | None = None
+    ) -> list[dict]:
+        order_by = "resolved_at desc nulls last, created_at desc" if status == "resolved" else "created_at desc"
         async with await self._connect() as conn:
             if status:
+                params: list[object] = [str(organization_id), status]
+                limit_sql = ""
+                if limit is not None:
+                    limit_sql = " limit %s"
+                    params.append(limit)
                 cur = await conn.execute(
                     f"select {self._ALERT_COLS} from alerts"
-                    " where organization_id = %s and status = %s order by created_at desc",
-                    (str(organization_id), status),
+                    f" where organization_id = %s and status = %s order by {order_by}{limit_sql}",
+                    params,
                 )
             else:
+                params = [str(organization_id)]
+                limit_sql = ""
+                if limit is not None:
+                    limit_sql = " limit %s"
+                    params.append(limit)
                 cur = await conn.execute(
                     f"select {self._ALERT_COLS} from alerts"
-                    " where organization_id = %s order by created_at desc",
-                    (str(organization_id),),
+                    f" where organization_id = %s order by {order_by}{limit_sql}",
+                    params,
                 )
             rows = await cur.fetchall()
         return [self._alert_row(r) for r in rows]
