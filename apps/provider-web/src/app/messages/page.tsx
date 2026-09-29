@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Badge,
@@ -65,7 +65,9 @@ type ProviderAlert = {
   payload?: Record<string, unknown> | null;
   created_at: string | null;
   acknowledged_at?: string | null;
+  acknowledged_by?: string | null;
   resolved_at?: string | null;
+  escalated_at?: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -139,6 +141,20 @@ function alertLabel(alertType: string): string {
   return labels[alertType] ?? alertType.replaceAll("_", " ");
 }
 
+function alertStateLabel(alert: ProviderAlert): string {
+  if (alert.status === "resolved") return "Resolved";
+  if (alert.escalated_at) return "Escalated";
+  if (alert.status === "acknowledged") return "Acknowledged";
+  return "Open";
+}
+
+function alertStateVariant(alert: ProviderAlert): "success" | "warn" | "danger" | "outline" {
+  if (alert.status === "resolved") return "success";
+  if (alert.escalated_at) return "danger";
+  if (alert.status === "acknowledged") return "warn";
+  return alert.severity === "critical" ? "danger" : "warn";
+}
+
 function latestTimestamp(thread: InboxThread): number {
   const value = thread.latest?.created_at;
   return value ? new Date(value).getTime() || 0 : 0;
@@ -176,20 +192,26 @@ function MessageInbox() {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const [alertActionId, setAlertActionId] = useState<string | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
+  );
+  const notifiedAlertEvents = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setState("loading");
     setError(null);
     try {
-      const [activeRes, historyRes, alertsRes] = await Promise.all([
+      const [activeRes, historyRes, openAlertsRes, acknowledgedAlertsRes] = await Promise.all([
         fetch("/api/provider/jobs", { cache: "no-store" }),
         fetch("/api/provider/jobs/history", { cache: "no-store" }),
         fetch("/api/provider/alerts?status=open", { cache: "no-store" }),
+        fetch("/api/provider/alerts?status=acknowledged", { cache: "no-store" }),
       ]);
       if (!activeRes.ok) throw new Error(`Could not load active jobs (${activeRes.status})`);
       const activeJobs = ((await activeRes.json()) as ProviderJob[]).map((job) => ({ ...job, finished_at: null }));
       const historyJobs = historyRes.ok ? ((await historyRes.json()) as ProviderJob[]) : [];
-      const alertsBody = alertsRes.ok ? ((await alertsRes.json()) as { alerts?: ProviderAlert[] }) : {};
+      const openAlertsBody = openAlertsRes.ok ? ((await openAlertsRes.json()) as { alerts?: ProviderAlert[] }) : {};
+      const acknowledgedAlertsBody = acknowledgedAlertsRes.ok ? ((await acknowledgedAlertsRes.json()) as { alerts?: ProviderAlert[] }) : {};
       const jobs = dedupeJobs([...activeJobs, ...historyJobs]).slice(0, 40);
       const loadedThreads = (await Promise.all(
         jobs.flatMap((job) => [fetchThread(job, "customer"), fetchThread(job, "operations")])
@@ -201,7 +223,7 @@ function MessageInbox() {
           return latestTimestamp(b) - latestTimestamp(a);
         });
       setThreads(loadedThreads);
-      setAlerts(alertsBody.alerts ?? []);
+      setAlerts([...(openAlertsBody.alerts ?? []), ...(acknowledgedAlertsBody.alerts ?? [])]);
       setState("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load messages");
@@ -216,7 +238,11 @@ function MessageInbox() {
       const response = await fetch(`/api/provider/alerts/${encodeURIComponent(alertId)}/${action}`, { method: "POST" });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail?.message || body.detail || `Could not ${action} alert`);
-      setAlerts((current) => current.filter((alert) => alert.id !== alertId));
+      const updated = (body.alert ?? null) as ProviderAlert | null;
+      setAlerts((current) => {
+        if (!updated || action === "resolve") return current.filter((alert) => alert.id !== alertId);
+        return current.map((alert) => (alert.id === alertId ? updated : alert));
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : `Could not ${action} alert`);
     } finally {
@@ -237,6 +263,34 @@ function MessageInbox() {
     };
   }, [load]);
 
+  useEffect(() => {
+    if (notificationPermission !== "granted" || typeof window === "undefined" || !("Notification" in window)) return;
+    for (const alert of alerts) {
+      if (alert.status !== "open") continue;
+      const notificationKey = alert.escalated_at ? `${alert.id}:escalated:${alert.escalated_at}` : `${alert.id}:open`;
+      if (notifiedAlertEvents.current.has(notificationKey)) continue;
+      notifiedAlertEvents.current.add(notificationKey);
+      const suffix = alert.escalated_at ? " escalated" : " needs acknowledgement";
+      try {
+        new Notification(`${alertLabel(alert.alert_type)}${suffix}`, {
+          body: alert.job_id ? `Job ${alert.job_id.slice(0, 8)} · ${alert.severity}` : alert.severity,
+          tag: `cluexp-alert-${notificationKey}`,
+        });
+      } catch {
+        // Android Chrome forbids the Notification constructor; the durable inbox still shows the alert.
+      }
+    }
+  }, [alerts, notificationPermission]);
+
+  const requestNotifications = useCallback(async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+  }, []);
+
   const filteredThreads = useMemo(() => {
     if (filter === "all") return threads;
     if (filter === "help") return threads.filter((thread) => thread.helpRequested);
@@ -246,7 +300,9 @@ function MessageInbox() {
   const unreadTotal = threads.reduce((total, thread) => total + thread.unreadCount, 0);
   const helpTotal = threads.filter((thread) => thread.helpRequested).length;
   const customerTotal = threads.filter((thread) => thread.channel === "customer").length;
-  const customerHelpAlerts = alerts.filter((alert) => alert.alert_type === "customer_help_request");
+  const activeAlerts = alerts.filter((alert) => alert.status !== "resolved");
+  const customerHelpAlerts = activeAlerts.filter((alert) => alert.alert_type === "customer_help_request");
+  const escalatedAlerts = activeAlerts.filter((alert) => Boolean(alert.escalated_at));
   const loading = state === "loading";
 
   return (
@@ -256,10 +312,17 @@ function MessageInbox() {
         title="Messages"
         description="Dispatcher inbox for job-scoped customer and technician threads. Opening a job marks that thread read."
         actions={
-          <Button disabled={loading} onClick={() => void load()} variant="outline">
-            <RefreshCw className={loading ? "animate-spin" : undefined} />
-            {loading ? "Refreshing" : "Refresh"}
-          </Button>
+          <>
+            <Button disabled={loading} onClick={() => void load()} variant="outline">
+              <RefreshCw className={loading ? "animate-spin" : undefined} />
+              {loading ? "Refreshing" : "Refresh"}
+            </Button>
+            {notificationPermission === "default" ? (
+              <Button disabled={loading} onClick={() => void requestNotifications()} variant="outline">
+                Enable browser alerts
+              </Button>
+            ) : null}
+          </>
         }
       />
 
@@ -272,29 +335,37 @@ function MessageInbox() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard icon={MessageSquare} label="Open threads" value={loading ? "-" : String(threads.length)} />
         <StatCard icon={CircleHelp} intent={customerHelpAlerts.length > 0 || helpTotal > 0 ? "warn" : "neutral"} label="Help requests" value={loading ? "-" : String(Math.max(helpTotal, customerHelpAlerts.length))} />
+        <StatCard icon={AlertTriangle} intent={escalatedAlerts.length > 0 ? "danger" : "neutral"} label="Escalated alerts" value={loading ? "-" : String(escalatedAlerts.length)} />
         <StatCard icon={UserRound} label="Customer threads" value={loading ? "-" : String(customerTotal)} />
         <StatCard icon={Send} intent={unreadTotal > 0 ? "info" : "neutral"} label="Unread" value={loading ? "-" : String(unreadTotal)} />
       </div>
 
-      {customerHelpAlerts.length > 0 ? (
+      {activeAlerts.length > 0 ? (
         <Card className="border-warn/40 bg-warn/10">
           <CardHeader>
             <div>
-              <CardTitle className="flex items-center gap-2"><AlertTriangle className="size-4" />Open customer help alerts</CardTitle>
-              <CardDescription>Durable alerts created from customer help requests. Acknowledge when dispatch has picked it up; resolve after reply or closure.</CardDescription>
+              <CardTitle className="flex items-center gap-2"><AlertTriangle className="size-4" />Dispatcher alerts</CardTitle>
+              <CardDescription>Durable provider-owned alerts. Acknowledge when dispatch has picked it up; resolve after reply, recovery, or closure.</CardDescription>
             </div>
-            <Badge variant="warn">{customerHelpAlerts.length} open</Badge>
+            <Badge variant={escalatedAlerts.length > 0 ? "danger" : "warn"}>{activeAlerts.length} active</Badge>
           </CardHeader>
           <CardContent className="space-y-3">
-            {customerHelpAlerts.map((alert) => (
-              <div className="flex flex-col gap-3 rounded-md border border-warn/35 bg-background p-3 sm:flex-row sm:items-center sm:justify-between" key={alert.id}>
+            {activeAlerts.map((alert) => (
+              <div className={`flex flex-col gap-3 rounded-md border bg-background p-3 sm:flex-row sm:items-center sm:justify-between ${alert.escalated_at ? "border-destructive/45" : "border-warn/35"}`} key={alert.id}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="warn">{alertLabel(alert.alert_type)}</Badge>
+                    <Badge variant={alertStateVariant(alert)}>{alertStateLabel(alert)}</Badge>
                     <Badge variant="outline">{alert.severity}</Badge>
                     <span className="text-xs text-muted-foreground">{alert.created_at ? new Date(alert.created_at).toLocaleString() : "No timestamp"}</span>
                   </div>
-                  <p className="mt-2 text-sm text-muted-foreground">Customer asked dispatch for help on this job.</p>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {alert.alert_type === "customer_help_request" ? "Customer asked dispatch for help on this job." : "Backend-created operational alert for this provider-owned job."}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    {alert.acknowledged_at ? <span>Acknowledged {new Date(alert.acknowledged_at).toLocaleString()}{alert.acknowledged_by ? ` by ${alert.acknowledged_by}` : ""}</span> : <span>Awaiting acknowledgement</span>}
+                    {alert.escalated_at ? <span className="font-medium text-destructive">Escalated {new Date(alert.escalated_at).toLocaleString()}</span> : null}
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {alert.job_id ? (
@@ -302,7 +373,7 @@ function MessageInbox() {
                       <Link href={`/jobs/${encodeURIComponent(alert.job_id)}`}>Open job</Link>
                     </Button>
                   ) : null}
-                  <Button disabled={alertActionId === alert.id} onClick={() => void updateAlert(alert.id, "ack")} size="sm" variant="outline">
+                  <Button disabled={alertActionId === alert.id || alert.status === "acknowledged"} onClick={() => void updateAlert(alert.id, "ack")} size="sm" variant="outline">
                     {alertActionId === alert.id ? "Saving" : "Acknowledge"}
                   </Button>
                   <Button disabled={alertActionId === alert.id} onClick={() => void updateAlert(alert.id, "resolve")} size="sm">

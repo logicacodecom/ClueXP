@@ -3956,6 +3956,9 @@ async def create_offers(ticket_id: UUID) -> None:
     )
 
 
+_DISPATCH_LIFECYCLE_ALERT_TYPES = frozenset({"new_job", "stalled_job", "stuck_offer"})
+
+
 async def _evaluate_dispatch_alerts() -> dict[str, int]:
     """Alert (0054): stalled_job / stuck_offer are threshold-based, so they need
     the sweep (unlike new_job/safety_flag/customer_help_request/delivery_failure,
@@ -3967,9 +3970,67 @@ async def _evaluate_dispatch_alerts() -> dict[str, int]:
     stalled_minutes threshold. Upgrade to a real offer-accepted-at timestamp
     if stuck_offer needs its own SLA distinct from stalled_job.
     """
-    counts = {"stalled_job": 0, "stuck_offer": 0}
-    jobs = await store.get_ops_queue(org_id=None)
+    counts = {"stalled_job": 0, "stuck_offer": 0, "escalated": 0}
     now_dt = datetime.now(tz=timezone.utc)
+    ack_settings_cache: dict[str, int] = {}
+
+    escalation_enabled = os.getenv("DISPATCH_ALERT_ESCALATION_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    jobs = await store.get_ops_queue(org_id=None)
+    # Dispatch-lifecycle alerts are only actionable while their job still waits
+    # in the dispatch ladder; safety/help/delivery alerts always stay escalatable.
+    pending_job_ids = {str(job.get("id")) for job in jobs if job.get("status") == "pending_dispatch"}
+
+    for alert in (await store.list_all_alerts(status="open") if escalation_enabled else []):
+        if alert.get("escalated_at") or alert.get("acknowledged_at"):
+            continue
+        if alert.get("alert_type") in _DISPATCH_LIFECYCLE_ALERT_TYPES and str(alert.get("job_id")) not in pending_job_ids:
+            continue
+        org_id = str(alert.get("organization_id") or "")
+        if not org_id:
+            continue
+        created_at = alert.get("created_at")
+        if not created_at:
+            continue
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_minutes = (now_dt - created_at).total_seconds() / 60
+        try:
+            if org_id not in ack_settings_cache:
+                ack_settings_cache[org_id] = int(await runtime_settings.resolve_org(store, org_id, "dispatch_ack_sla_minutes"))
+            ack_sla_minutes = ack_settings_cache[org_id]
+            if age_minutes < ack_sla_minutes:
+                continue
+            updated = await store.mark_alert_escalated(
+                alert["id"],
+                {
+                    "escalation": {
+                        "ack_sla_minutes": ack_sla_minutes,
+                        "age_minutes": int(age_minutes),
+                        "delivery_policy": {
+                            "first_line_recipients": "dispatchers",
+                            "backup_recipients": "provider_admins",
+                            "configured_channels": ["provider_inbox", "browser_notification"],
+                            "fallback_channels": ["email", "sms"],
+                            "fallback_status": "disabled_pending_authorization",
+                        },
+                        # Browser notifications are local to an open provider console.
+                        # Do not record them as durable delivery attempts until a
+                        # server-observable delivery provider exists.
+                        "delivery_attempts": [],
+                    }
+                },
+            )
+        except Exception:
+            logger.exception("dispatch alert escalation failed alert_id=%s org_id=%s", alert.get("id"), org_id)
+            continue
+        if updated is not None:
+            counts["escalated"] += 1
+
     settings_cache: dict[str, int] = {}
     for job in jobs:
         # Scheduled/partner rows also appear in the provider queue, but their
@@ -4063,7 +4124,7 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
         alert_counts = await _evaluate_dispatch_alerts()
     except Exception:
         logger.exception("dispatch_alert_sweep_failed")
-        alert_counts = {"stalled_job": 0, "stuck_offer": 0}
+        alert_counts = {"stalled_job": 0, "stuck_offer": 0, "escalated": 0}
     return {
         "expired_offers": expired,
         "auto_closed": auto_closed,

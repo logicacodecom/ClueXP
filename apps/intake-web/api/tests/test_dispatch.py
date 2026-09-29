@@ -6346,7 +6346,7 @@ def test_dispatch_settings_default_before_any_override():
     body = client.get("/provider/settings/dispatch", headers=H).json()
     assert body == {
         "ack_sla_minutes": {"value": 5, "is_override": False, "platform_default": 5},
-        "stalled_minutes": {"value": 15, "is_override": False, "platform_default": 15},
+        "stalled_minutes": {"value": 30, "is_override": False, "platform_default": 30},
         "distance_unit": {"value": "mi", "is_override": False, "platform_default": "mi"},
         "operations_refresh_seconds": {"value": 30, "is_override": False, "platform_default": 30},
     }
@@ -6378,7 +6378,7 @@ def test_dispatch_settings_override_and_clear():
     assert r.status_code == 200
     body = r.json()
     assert body["ack_sla_minutes"] == {"value": 10, "is_override": True, "platform_default": 5}
-    assert body["stalled_minutes"] == {"value": 30, "is_override": True, "platform_default": 15}
+    assert body["stalled_minutes"] == {"value": 30, "is_override": True, "platform_default": 30}
     assert body["distance_unit"] == {"value": "km", "is_override": True, "platform_default": "mi"}
     assert body["operations_refresh_seconds"] == {"value": 45, "is_override": True, "platform_default": 30}
 
@@ -6414,8 +6414,8 @@ def test_dispatch_settings_rejects_ack_above_stalled_and_out_of_range():
     H = {"Authorization": f"Bearer {access}"}
     client = TestClient(app)
 
-    # ack_sla_minutes (20) > stalled_minutes default (15) -> rejected.
-    r = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": 20}, headers=H)
+    # ack_sla_minutes (40) > stalled_minutes default (30) -> rejected.
+    r = client.patch("/provider/settings/dispatch", json={"ack_sla_minutes": 40}, headers=H)
     assert r.status_code == 422
 
     # Out of the per-key allowed range.

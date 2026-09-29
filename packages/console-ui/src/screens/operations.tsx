@@ -71,7 +71,7 @@ function positiveMinutes(value: string | undefined, fallback: number): number {
 }
 
 const ACK_SLA_MINUTES = positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_ACK_SLA_MINUTES, 5);
-const STALLED_MINUTES = Math.max(ACK_SLA_MINUTES, positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 15));
+const STALLED_MINUTES = Math.max(ACK_SLA_MINUTES, positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 30));
 const LOCATION_STALE_MINUTES = positiveMinutes(process.env.NEXT_PUBLIC_LOCATION_STALE_MINUTES, 15);
 const OPERATIONS_REFRESH_SECONDS = positiveMinutes(process.env.NEXT_PUBLIC_OPERATIONS_REFRESH_SECONDS, 30);
 const AUTO_SCAN_IDLE_MS = 25_000;

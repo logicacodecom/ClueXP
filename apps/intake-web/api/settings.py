@@ -140,7 +140,7 @@ SETTINGS: dict[str, SettingSpec] = {
         description="Minutes before an unassigned job is flagged stalled in the "
         "dispatch queue.",
         env="DISPATCH_STALLED_MINUTES",
-        fallback=15,
+        fallback=30,
         validate=_int_range(1, 1440),
         org_overridable=True,
     ),

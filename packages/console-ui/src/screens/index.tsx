@@ -237,7 +237,7 @@ const DISPATCH_ACK_SLA_MINUTES = positiveMinutes(
 );
 const DISPATCH_STALLED_MINUTES = Math.max(
   DISPATCH_ACK_SLA_MINUTES,
-  positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 15),
+  positiveMinutes(process.env.NEXT_PUBLIC_DISPATCH_STALLED_MINUTES, 30),
 );
 
 type QueueRisk = "normal" | "ack_breached" | "stalled" | "critical";
