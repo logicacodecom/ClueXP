@@ -330,7 +330,7 @@ Implemented on `feat/003-phase1-provider-discovery`. Deviations from the plan te
   verification return. The UI calls it on every commit screen and keeps the confirm button disabled
   until it answers (Codex T019 R2).
 - **Pre-fill entry (FR-010):** the plan's open-question fallback. Parsing lives in the pure module
-  `src/app/ai-handoff.ts` (tested by `node --test apps/intake-web/scripts/ai-handoff.test.mjs`). The
+  `src/app/intake-handoff.ts` (tested by `node --test apps/intake-web/scripts/intake-handoff.test.mjs`). The
   branded intake reads the fragment, pre-fills the address, highlights the matching service option
   (none for skills without an intake bucket), and starts a fresh request. The customer's first tap
   creates the ticket with the pre-filled location and `intake_source=ai_assistant`; the location step

@@ -6207,6 +6207,48 @@ def test_branded_ticket_creation_still_works(monkeypatch):
     assert response.json()["ticket"]["access_type"] == "vehicle"
 
 
+def test_website_handoff_intake_lands_in_the_selected_providers_queue(monkeypatch):
+    # ClueXP Website handoff: the browser sends only the channel slug and an
+    # allow-listed source label; ownership comes from server-side slug resolution.
+    org, other_org = str(uuid4()), str(uuid4())
+    client, app_store, token = _client_for_dispatcher(org)
+    _, _, other_token = _client_for_dispatcher(other_org)
+
+    async def fake_resolve(slug):
+        return {
+            "intake_channel_id": str(uuid4()),
+            "origin_org_id": org,
+            "customer_owner_org_id": org,
+            "dispatch_cutover_enabled": True,
+            "organization_name": "Bay Locks",
+            "dispatch_phone": "+15551234567",
+        } if slug == "bay-locks" else None
+
+    # Terms-based commit (no price step) keeps the test on ownership, not pricing.
+    asyncio.run(app_store.upsert_organization_setting(org, "intake_show_estimate", False, "boolean", None))
+    monkeypatch.setattr(app_store, "resolve_intake_channel", fake_resolve)
+    created = client.post("/tickets", json={
+        "intake_channel": "bay-locks", "access_type": "home", "intake_source": "cluexp_website",
+        "organization_id": other_org,  # never trusted from the browser
+    })
+    assert created.status_code == 200, created.text
+    ticket_id = created.json()["ticket"]["ticket_id"]
+    assert app_store._job_org[ticket_id] == org
+    assert app_store._job_origin_channel[ticket_id] == "cluexp_website"
+
+    client.patch(f"/tickets/{ticket_id}", json={
+        "location": {"raw_text": "123 Main St, Tampa, FL", "lat": 27.95, "lng": -82.46, "geocode_confidence": "high"},
+        "cancellation_policy": {"accepted_by_customer": True, "accepted_at": "2026-10-03T12:00:00Z"},
+    })
+    committed = client.post(f"/tickets/{ticket_id}/commit")
+    assert committed.status_code == 200, committed.text
+
+    own = client.get("/provider/queue", headers={"Authorization": f"Bearer {token}"}).json()
+    other = client.get("/provider/queue", headers={"Authorization": f"Bearer {other_token}"}).json()
+    assert ticket_id in [j["id"] for j in own]
+    assert ticket_id not in [j["id"] for j in other]
+
+
 def test_hidden_estimate_blocks_quote_but_allows_terms_based_commit(monkeypatch):
     from starlette.testclient import TestClient
     from api.main import app, store as app_store
