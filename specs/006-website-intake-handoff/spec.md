@@ -32,7 +32,9 @@ Legacy `src=website` is accepted and normalized to `cluexp_website`.
   one fits, the situation chip. The customer still taps to confirm.
 - **FR-003**: `address` (≤300 chars) prefills the address field as unconfirmed customer text. It is never
   sent as a ticket location and never sent to autocomplete/geocode until the customer edits it, presses
-  "Find this address", or shares GPS. The safety step refuses to proceed on an unconfirmed handoff address.
+  "Find this address", or shares GPS. The safety step refuses "Everyone is safe" on an unconfirmed handoff
+  address; a safety concern (person/pet inside, medical, unsafe) always records its flag and hands off
+  immediately, without sending the unconfirmed address.
 - **FR-004**: `zip` is a display hint only. It never becomes a location; no coordinates are inferred from it.
   `lat`/`lng` on Website links are ignored. Only coordinate-trusted sources (`ai_assistant`) supply a location.
 - **FR-005**: `notes` (≤500 chars) prefills additional details; sent only when the customer continues that step.

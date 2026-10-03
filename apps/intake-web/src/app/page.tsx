@@ -899,16 +899,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 ]}
                 onSelect={(value) =>
                   run(async () => {
+                    const unsafe = value !== "none";
                     const hasCoordinates = ticket?.location?.lat != null && ticket.location.lng != null;
-                    if (!hasCoordinates && needsAddressConfirmation) {
+                    if (!hasCoordinates && needsAddressConfirmation && !unsafe) {
                       throw new Error("Please confirm the exact address first: find it, edit it, or share GPS.");
                     }
+                    // A safety concern never waits on address confirmation; an unconfirmed
+                    // handoff address is simply not sent with it.
                     const location = hasCoordinates
                       ? ticket!.location!
-                      : await geocodeAddress(form.address || ticket?.location?.raw_text || "");
+                      : needsAddressConfirmation
+                        ? null
+                        : await geocodeAddress(form.address || ticket?.location?.raw_text || "");
                     await patch({
-                      location,
-                      safety_flag: { present: value !== "none", type: value, advised_emergency_services: value !== "none" }
+                      ...(location ? { location } : {}),
+                      safety_flag: { present: unsafe, type: value, advised_emergency_services: unsafe }
                     });
                     if (value !== "none") await handoff("safety");
                     else setScreen("schedule");
