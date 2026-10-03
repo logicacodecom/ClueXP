@@ -2,10 +2,10 @@
 
 import { CalendarClock, Car, Clock3, Home, LoaderCircle, MapPin, Network, Phone, Store, UserRound } from "lucide-react";
 import { LanguageSelect, useLocale } from "@cluexp/app-core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Ticket, TicketEnvelope, TicketGuards } from "@/types/schema.generated";
-import { type AiPrefill, parseAiPrefill, shouldAutocomplete } from "./ai-handoff";
+import { type HandoffPrefill, parseHandoff, shouldAutocomplete } from "./intake-handoff";
 
 type Screen =
   | "opener"
@@ -347,9 +347,11 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     scheduleEnd: scheduleWindow.end,
   });
   const [authorityRole, setAuthorityRole] = useState<string | null>(null);
-  const [aiPrefill, setAiPrefill] = useState<AiPrefill | null>(null);
+  const [handoffPrefill, setHandoffPrefill] = useState<HandoffPrefill | null>(null);
   const [providerAvailable, setProviderAvailable] = useState<boolean | null | "pending">(null);
-  const addressTypedByCustomer = useRef(false);
+  // True once the address field holds text the customer typed or explicitly
+  // confirmed; only then may it leave the browser (autocomplete/geocode).
+  const [addressTypedByCustomer, setAddressTypedByCustomer] = useState(false);
 
   const iconFor = useMemo(
     () => ({
@@ -604,7 +606,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (new URLSearchParams(window.location.search).get("verified") === "1") return;
-    if (parseAiPrefill(window.location.hash)) return; // an assistant handoff starts a fresh request
+    if (parseHandoff(window.location.hash)) return; // a handoff starts a fresh request
     const raw = window.localStorage.getItem(sessionKey);
     if (!raw) return;
     let saved: { ticketId?: string; screen?: Screen; savedAt?: number };
@@ -633,12 +635,12 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
 
   useEffect(() => {
     if (!organizationSlug) return;
-    const prefill = parseAiPrefill(window.location.hash);
+    const prefill = parseHandoff(window.location.hash);
     if (!prefill) return;
     window.localStorage.removeItem(sessionKey);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
-    setAiPrefill(prefill);
-    setForm((current) => ({ ...current, address: prefill.location.raw_text }));
+    setHandoffPrefill(prefill);
+    setForm((current) => ({ ...current, address: prefill.address, notes: prefill.notes }));
   }, [organizationSlug, sessionKey]);
 
   // Commit-step re-check (FR-013). The server answers only for assistant-sourced
@@ -694,7 +696,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
   // Debounced Places autocomplete. Selection performs the single geocode call.
   useEffect(() => {
     const addr = form.address.trim();
-    if (!shouldAutocomplete(addr, addressTypedByCustomer.current)) {
+    if (!shouldAutocomplete(addr, addressTypedByCustomer)) {
       setPlacePredictions([]);
       setPlacesLoading(false);
       return;
@@ -711,7 +713,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
       }
     }, 350);
     return () => clearTimeout(t);
-  }, [form.address]);
+  }, [form.address, addressTypedByCustomer]);
 
   // Persist the active ticket id + screen so the session survives a reload.
   useEffect(() => {
@@ -743,10 +745,12 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
         <>
           <AgentMessage
             support={
-              aiPrefill
-                ? `From your assistant: ${aiPrefill.location.raw_text}.${
-                    aiPrefill.accessType ? " The highlighted option matches what you asked for; tap it to continue." : ""
-                  } You can change the location in the next steps.`
+              handoffPrefill
+                ? `${handoffPrefill.source === "ai_assistant" ? "From your assistant" : "From ClueXP"}: ${
+                    handoffPrefill.address || (handoffPrefill.zip ? `near ${handoffPrefill.zip}` : "your request")
+                  }.${
+                    handoffPrefill.accessType ? " The highlighted option matches what you asked for; tap it to continue." : ""
+                  } You can ${handoffPrefill.location ? "change" : "confirm"} the location in the next steps.`
                 : "A few structured answers help us route the right access specialist without inventing details."
             }
           >
@@ -760,8 +764,8 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               ["other", "Something else", "Talk with a person"]
             ].map(([value, label, hint]) => (
               <button
-                className={aiPrefill?.accessType === value ? "choice active" : "choice"}
-                aria-pressed={aiPrefill?.accessType === value ? true : undefined}
+                className={handoffPrefill?.accessType === value ? "choice active" : "choice"}
+                aria-pressed={handoffPrefill?.accessType === value ? true : undefined}
                 key={value}
                 type="button"
                 onClick={() =>
@@ -770,8 +774,13 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                       method: "POST",
                       body: JSON.stringify(
                         withIntakeChannel(
-                          aiPrefill
-                            ? { access_type: value, location: aiPrefill.location, intake_source: "ai_assistant" }
+                          handoffPrefill
+                            ? {
+                                access_type: value,
+                                intake_source: handoffPrefill.source,
+                                // Only coordinate-trusted sources send a location; others confirm it in the location step.
+                                ...(handoffPrefill.location ? { location: handoffPrefill.location } : {})
+                              }
                             : { access_type: value }
                         )
                       )
@@ -801,7 +810,7 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
         <>
           <AgentMessage>Which situation fits best?</AgentMessage>
           <ChipSelect
-            value={ticket?.situation}
+            value={ticket?.situation ?? handoffPrefill?.situation}
             options={[
               { value: "locked_out", label: "Locked out" },
               { value: "lost_key", label: "Lost key" },
@@ -822,6 +831,10 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
     }
 
     if (screen === "location") {
+      // A handed-off address without trusted coordinates is unconfirmed customer
+      // text: it never leaves the browser until the customer confirms or edits it.
+      const needsAddressConfirmation =
+        Boolean(handoffPrefill && !handoffPrefill.location && form.address.trim()) && !addressTypedByCustomer;
       return (
         <>
           <AgentMessage support="Use GPS if you can. A typed address is fine too.">
@@ -845,10 +858,18 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
               placeholder="Address or nearby landmark"
               value={form.address}
               onChange={(event) => {
-                addressTypedByCustomer.current = true;
+                setAddressTypedByCustomer(true);
                 setForm({ ...form, address: event.target.value });
               }}
             />
+            {needsAddressConfirmation ? (
+              <div className="panel">
+                <p className="fine">This address hasn&apos;t been confirmed yet. Find it to pick the exact match, edit it, or share GPS.</p>
+                <button className="secondary" type="button" onClick={() => setAddressTypedByCustomer(true)}>
+                  <MapPin size={16} /> Find this address
+                </button>
+              </div>
+            ) : null}
             {placesLoading ? <p className="fine">Checking address matches...</p> : null}
             {placePredictions.length ? (
               <div className="panel" role="listbox" aria-label="Address suggestions">
@@ -878,12 +899,21 @@ export function IntakeFlow({ organizationName, organizationSlug }: IntakeBrandin
                 ]}
                 onSelect={(value) =>
                   run(async () => {
-                    const location = ticket?.location?.lat != null && ticket.location.lng != null
-                      ? ticket.location
-                      : await geocodeAddress(form.address || ticket?.location?.raw_text || "");
+                    const unsafe = value !== "none";
+                    const hasCoordinates = ticket?.location?.lat != null && ticket.location.lng != null;
+                    if (!hasCoordinates && needsAddressConfirmation && !unsafe) {
+                      throw new Error("Please confirm the exact address first: find it, edit it, or share GPS.");
+                    }
+                    // A safety concern never waits on address confirmation; an unconfirmed
+                    // handoff address is simply not sent with it.
+                    const location = hasCoordinates
+                      ? ticket!.location!
+                      : needsAddressConfirmation
+                        ? null
+                        : await geocodeAddress(form.address || ticket?.location?.raw_text || "");
                     await patch({
-                      location,
-                      safety_flag: { present: value !== "none", type: value, advised_emergency_services: value !== "none" }
+                      ...(location ? { location } : {}),
+                      safety_flag: { present: unsafe, type: value, advised_emergency_services: unsafe }
                     });
                     if (value !== "none") await handoff("safety");
                     else setScreen("schedule");

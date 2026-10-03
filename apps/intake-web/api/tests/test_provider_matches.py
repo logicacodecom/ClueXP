@@ -239,7 +239,14 @@ def _branded_channel(monkeypatch, store, org_id="abc"):
     monkeypatch.setattr(store, "resolve_intake_channel", resolve)
 
 
-@pytest.mark.parametrize("source,expected", [("ai_assistant", "ai_assistant"), ("forged", None), (None, None)])
+@pytest.mark.parametrize("source,expected", [
+    ("ai_assistant", "ai_assistant"),
+    ("cluexp_website", "cluexp_website"),
+    ("website", None),  # the browser normalizes legacy `src=website` before sending
+    ("forged", None),
+    (["ai_assistant"], None),
+    (None, None),
+])
 def test_ticket_attribution_is_allow_listed(app, monkeypatch, source, expected):
     _, store, client, _, _ = app
     _branded_channel(monkeypatch, store)

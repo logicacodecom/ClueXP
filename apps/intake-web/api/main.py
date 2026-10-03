@@ -3400,6 +3400,11 @@ async def _create_alert_best_effort(
         logger.exception(log_name, extra={"job_id": str(job_id), "alert_type": alert_type})
 
 
+# Inbound handoff sources a branded intake may attribute (mirrors SOURCES in
+# src/app/intake-handoff.ts). Anything else is recorded as no source.
+INTAKE_SOURCES = frozenset({"ai_assistant", "cluexp_website"})
+
+
 @app.post("/tickets", response_model=TicketEnvelope)
 async def create_ticket(response: Response, payload: dict[str, Any] | None = None) -> TicketEnvelope:
     await latency()
@@ -3417,8 +3422,9 @@ async def create_ticket(response: Response, payload: dict[str, Any] | None = Non
     origin = {**origin, "intake_channel_slug": raw_slug}
     # Client-supplied attribution for conversion analytics only (specs/003 FR-012):
     # an allow-listed label, never used for authorization or routing.
-    if (payload or {}).get("intake_source") == "ai_assistant":
-        origin["origin_channel"] = "ai_assistant"
+    intake_source = (payload or {}).get("intake_source")
+    if isinstance(intake_source, str) and intake_source in INTAKE_SOURCES:
+        origin["origin_channel"] = intake_source
     ticket = Ticket.model_validate(sanitize_client_payload(payload))
     await save(ticket, origin)
     await log_transition(ticket, "created")
