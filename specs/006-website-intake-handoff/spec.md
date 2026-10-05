@@ -4,7 +4,7 @@
 **Spec Directory**: `specs/006-website-intake-handoff`
 **Created**: `2026-10-03`
 **Owner**: `Claude implementer; secondary review by a non-Claude agent`
-**Status**: `implemented for review; no migration, config, or production activation`
+**Status**: `shipped 2026-10-03 (PR #90, merge 603361b); browser QA (T006) open`
 
 ## Summary
 
