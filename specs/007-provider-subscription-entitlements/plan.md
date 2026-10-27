@@ -1,6 +1,6 @@
 # Implementation Plan: Provider Subscription Entitlements
 
-**Spec**: `specs/006-provider-subscription-entitlements/spec.md`  
+**Spec**: `specs/007-provider-subscription-entitlements/spec.md`
 **Branch**: `logicacodecom/feat-006-provider-subscription-entitlements`  
 **Owner**: `Codex`  
 **Review Mode**: `Claude review`
@@ -29,7 +29,12 @@ Provider-web adds BFF routes and a Billing page. It shows trial/active/grace/blo
 - `provider_admin` can mutate billing; `dispatcher` can read billing status only.
 - Webhooks verify the signature over raw bytes before parsing or writing.
 - Stripe Customer reference is unique per ClueXP organization when non-null.
-- Event application is idempotent by Stripe event ID and monotonic by Stripe event creation time.
+- Event application is idempotent by Stripe event ID. Every relevant event triggers a current
+  subscription read filtered by configured Price and test/live mode; delivery timestamps are audit
+  data, not an ordering mechanism.
+- Checkout validates the Price, refuses a non-terminal existing subscription, uses stable
+  idempotency keys, and grants the trial only before the first subscription.
+- The first `past_due` observation anchors grace; retries do not extend it, and recovery clears it.
 - Entitlement states are `disabled`, `entitled`, `grace`, and `blocked`; Stripe's raw status is retained separately.
 - Billing does not mutate organization trust/compliance state or job state.
 - Enforcement applies only to new-business entry points and provider eligibility, not historical reads or existing-job wind-down.

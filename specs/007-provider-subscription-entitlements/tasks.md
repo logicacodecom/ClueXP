@@ -1,7 +1,7 @@
 # Tasks: Provider Subscription Entitlements
 
-**Spec**: `specs/006-provider-subscription-entitlements/spec.md`  
-**Plan**: `specs/006-provider-subscription-entitlements/plan.md`  
+**Spec**: `specs/007-provider-subscription-entitlements/spec.md`
+**Plan**: `specs/007-provider-subscription-entitlements/plan.md`
 **Owner**: `Codex lead; Claude Code independent reviewer`
 
 ## Conventions
@@ -18,13 +18,13 @@
 ## Tasks
 
 - [x] T001 [Codex] Create/clarify Spec Kit artifacts and record Product Owner billing decisions.
-- [ ] T002 [Codex] Add the additive billing-state/webhook-ledger migration and store contracts.
-- [ ] T003 [Codex] Add Stripe configuration, gateway, entitlement policy, and verified event normalization.
-- [ ] T004 [Codex] Add provider billing status, Checkout, Portal, and webhook API routes.
-- [ ] T005 [Codex] Apply centralized enforcement to new provider intake and shared network/discovery eligibility while preserving wind-down actions.
-- [ ] T006 [Codex] Add provider-web session fields, Billing page, BFF routes, navigation, and blocked/grace messaging.
-- [ ] T007 [Codex] Add unit/integration, tenant-isolation, idempotency, stale-event, role, and enforcement tests.
-- [ ] T008 [Codex] Update canonical architecture/execution docs and configuration/runbook guidance.
+- [x] T002 [Codex] Add the additive billing-state/webhook-ledger migration and store contracts.
+- [x] T003 [Codex] Add Stripe configuration, gateway, entitlement policy, and verified event normalization.
+- [x] T004 [Codex] Add provider billing status, Checkout, Portal, and webhook API routes.
+- [x] T005 [Codex] Apply centralized enforcement to new provider intake and shared network/discovery eligibility while preserving wind-down actions.
+- [x] T006 [Codex] Add provider-web session fields, Billing page, BFF routes, navigation, and blocked/grace messaging.
+- [x] T007 [Codex] Add unit/integration, tenant-isolation, idempotency, stale-event, role, and enforcement tests.
+- [x] T008 [Codex] Update canonical architecture/execution docs and configuration/runbook guidance.
 - [ ] T009 [Codex] Verify the sandbox Price through Stripe API and set `tax_behavior=exclusive` only in sandbox, subject to connected-account confirmation.
 - [ ] T010 [Codex] Run focused and broad API tests, typecheck, provider build, migration checks, OpenAPI drift, and secret scan.
 - [ ] T011 [R] Claude Code independent review: verify implementation, specs, migration, auth/tenant boundaries, Stripe semantics, UI behavior, tests, and unresolved risks at the exact committed head.

@@ -161,3 +161,24 @@ TRUSTED_HOSTS = [h.strip() for h in _trusted_hosts_env.split(",") if h.strip()] 
 # an opaque JSON 404 instead of reaching internal routes or the Next.js app.
 _api_only_hosts_env = os.environ.get("API_ONLY_HOSTNAMES", "api.cluexp.com").strip()
 API_ONLY_HOSTNAMES = {h.strip().lower() for h in _api_only_hosts_env.split(",") if h.strip()}
+
+# --- provider subscription billing ---
+# These independent switches keep deployment, sandbox verification, and eventual
+# enforcement separate. Both default off, including in production.
+PROVIDER_BILLING_ENABLED = _bool("PROVIDER_BILLING_ENABLED", False)
+PROVIDER_BILLING_ENFORCEMENT_ENABLED = _bool(
+    "PROVIDER_BILLING_ENFORCEMENT_ENABLED", False
+)
+STRIPE_BILLING_API_KEY = os.environ.get("STRIPE_BILLING_API_KEY", "").strip()
+STRIPE_BILLING_WEBHOOK_SECRET = os.environ.get(
+    "STRIPE_BILLING_WEBHOOK_SECRET", ""
+).strip()
+STRIPE_PROVIDER_PRICE_ID = os.environ.get("STRIPE_PROVIDER_PRICE_ID", "").strip()
+STRIPE_PORTAL_CONFIGURATION_ID = os.environ.get(
+    "STRIPE_PORTAL_CONFIGURATION_ID", ""
+).strip()
+PROVIDER_BILLING_TRIAL_DAYS = _int("PROVIDER_BILLING_TRIAL_DAYS", 30)
+PROVIDER_BILLING_GRACE_DAYS = _int("PROVIDER_BILLING_GRACE_DAYS", 7)
+CLUEXP_PROVIDER_BASE_URL = os.environ.get(
+    "CLUEXP_PROVIDER_BASE_URL", "https://partners.cluexp.com"
+).rstrip("/")

@@ -6,3 +6,4 @@ psycopg[binary]>=3.2.0
 httpx2>=0.1.0
 python-multipart>=0.0.9  # required by the /technicians/me/photo multipart upload (File/UploadFile)
 twilio==9.8.0
+stripe==15.6.0

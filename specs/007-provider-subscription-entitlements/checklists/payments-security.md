@@ -1,6 +1,6 @@
 # Provider Subscription Payments And Security Checklist
 
-**Feature**: `specs/006-provider-subscription-entitlements`  
+**Feature**: `specs/007-provider-subscription-entitlements`
 **Owner**: `Claude Code reviewer`  
 **Status**: `pending implementation review`
 
@@ -17,7 +17,13 @@
 - [ ] Entitlement is webhook-driven, not success-page-driven.
 - [ ] Customer Portal is organization-scoped and provider-admin-only.
 - [ ] Webhooks verify Stripe signatures against raw request bytes.
-- [ ] Event IDs are idempotent and older events cannot overwrite newer state.
+- [ ] Event IDs are idempotent and relevant events reconcile current Stripe state rather than trusting delivery order.
+- [ ] Reconciled subscriptions match the configured Price and test/live mode before granting access.
+- [ ] Existing non-terminal subscriptions cannot open another Checkout; Customer and Checkout creation are idempotent.
+- [ ] A 30-day trial is granted only before the organization's first subscription.
+- [ ] Grace starts on the first `past_due` observation and retries do not extend it.
+- [ ] `incomplete`, `incomplete_expired`, `unpaid`, `paused`, and `canceled` fail closed.
+- [ ] Customer Portal configuration is pinned or manually verified to prevent plan/quantity changes and immediate cancellation.
 - [ ] Unknown Stripe Customers cannot be assigned through untrusted metadata.
 - [ ] Cancellation-at-period-end remains entitled through the paid period.
 
@@ -35,6 +41,7 @@
 - [ ] Flags default off and existing production behavior is unchanged without configuration/migration.
 - [ ] New-business gates are server-side and cover provider intake plus shared network/discovery eligibility.
 - [ ] Sign-in, billing management, history, and in-progress completion remain available when blocked.
+- [ ] Every new-business entry point is classified; voice/SMS and safety paths are not stranded.
 - [ ] Disabled/incomplete Stripe configuration fails closed for billing mutations without blocking existing traffic.
 
 ## Migration And Operations

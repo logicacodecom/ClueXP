@@ -111,6 +111,16 @@ export interface AuthSession {
   surface: "platform" | "provider" | "technician" | "customer";
   organization_name?: string;
   organization_status?: string;
+  billing_entitlement?: {
+    state: "disabled" | "entitled" | "grace" | "blocked";
+    subscription_status: string;
+    can_receive_new_business: boolean;
+    current_period_end?: string | null;
+    grace_ends_at?: string | null;
+    cancel_at_period_end: boolean;
+    billing_enabled: boolean;
+    enforcement_enabled: boolean;
+  } | null;
   technician?: {
     id: string;
     status: string;

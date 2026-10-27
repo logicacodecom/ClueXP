@@ -44,6 +44,14 @@ from api.communications import (
     verify_twilio_signature,
 )
 from api import config
+from api.billing import (
+    BillingConfigurationError,
+    StripeBillingGateway,
+    TERMINAL_STATUSES,
+    entitlement_summary,
+    normalize_event,
+    verify_webhook,
+)
 from api.job_text_parser import MAX_INPUT_LENGTH, PARSER_VERSION, parse_job_text
 from api.service_catalog import active_skill_codes, normalize_skill_code
 from api import settings as runtime_settings
@@ -1381,6 +1389,27 @@ def _provider_organization_id(session: dict[str, Any]) -> UUID:
     return UUID(str(organization_id))
 
 
+async def require_provider_new_business(session: dict[str, Any]) -> None:
+    """Block only new value creation when billing enforcement is active."""
+    if not (
+        config.PROVIDER_BILLING_ENABLED
+        and config.PROVIDER_BILLING_ENFORCEMENT_ENABLED
+    ):
+        return
+    organization_id = _provider_organization_id(session)
+    summary = entitlement_summary(
+        await store.get_organization_billing(str(organization_id))
+    )
+    if not summary["can_receive_new_business"]:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "provider_subscription_required: An active provider subscription "
+                "is required for new business. Manage billing at /billing."
+            ),
+        )
+
+
 async def envelope(ticket: Ticket) -> TicketEnvelope:
     response_ticket = ticket.model_copy(deep=True)
     for photo in response_ticket.photos:
@@ -1532,6 +1561,113 @@ async def require_session(authorization: str | None = Header(default=None)) -> d
 def require_any_role(session: dict[str, Any], allowed: set[str]) -> None:
     if not allowed.intersection(set(session.get("roles", []))):
         raise HTTPException(status_code=403, detail="Insufficient role")
+
+
+@app.get("/provider/billing")
+async def provider_billing_status(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    require_any_role(session, {"provider_admin", "dispatcher"})
+    if not config.PROVIDER_BILLING_ENABLED:
+        return {
+            **entitlement_summary(None),
+            "can_manage": "provider_admin" in set(session.get("roles", [])),
+            "has_customer": False,
+        }
+    organization_id = _provider_organization_id(session)
+    record = await store.get_organization_billing(str(organization_id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return {
+        **entitlement_summary(record),
+        "can_manage": "provider_admin" in set(session.get("roles", [])),
+        "has_customer": bool(record.get("billing_customer_ref")),
+    }
+
+
+async def _billing_customer(
+    session: dict[str, Any], gateway: StripeBillingGateway
+) -> tuple[str, str, dict[str, Any]]:
+    require_any_role(session, {"provider_admin"})
+    if session.get("organization_status") != "active":
+        raise HTTPException(status_code=409, detail="Organization must be active")
+    organization_id = str(_provider_organization_id(session))
+    record = await store.get_organization_billing(organization_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    customer_ref = record.get("billing_customer_ref")
+    if not customer_ref:
+        customer_ref = await gateway.create_customer(
+            organization_id, str(record.get("display_name") or session.get("organization_name") or "ClueXP Provider")
+        )
+        record = await store.set_organization_billing_customer(organization_id, customer_ref)
+        if record is None:
+            raise HTTPException(status_code=409, detail="Unable to link billing customer")
+    return organization_id, customer_ref, record
+
+
+@app.post("/provider/billing/checkout-session")
+async def provider_billing_checkout(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, str]:
+    require_any_role(session, {"provider_admin"})
+    try:
+        gateway = StripeBillingGateway()
+        organization_id, customer_ref, record = await _billing_customer(session, gateway)
+        status = str(record.get("subscription_status") or "none").lower()
+        if status not in TERMINAL_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail="An existing subscription must be managed in the Billing Portal.",
+            )
+        return {"url": await gateway.create_checkout(
+            organization_id,
+            customer_ref,
+            previous_subscription_ref=record.get("stripe_subscription_ref"),
+        )}
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/provider/billing/portal-session")
+async def provider_billing_portal(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, str]:
+    require_any_role(session, {"provider_admin"})
+    try:
+        gateway = StripeBillingGateway()
+        _, customer_ref, _ = await _billing_customer(session, gateway)
+        return {"url": await gateway.create_portal(customer_ref)}
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/webhooks/stripe")
+async def stripe_billing_webhook(
+    request: Request,
+    stripe_signature: str | None = Header(default=None, alias="Stripe-Signature"),
+) -> dict[str, str]:
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe signature")
+    try:
+        event = verify_webhook(await request.body(), stripe_signature)
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook") from exc
+    normalized = normalize_event(dict(event))
+    outcome = "ignored_event_type"
+    if normalized is not None and normalized.get("customer_ref"):
+        gateway = StripeBillingGateway(webhook_sync=True)
+        current = await gateway.current_subscription(
+            str(normalized["customer_ref"]), normalized
+        )
+        outcome = (
+            await store.apply_stripe_billing_event(current)
+            if current is not None
+            else "ignored_unrelated_subscription"
+        )
+    return {"received": "true", "outcome": outcome}
 
 
 def _enum_or_default(enum_type, value: str, default):
@@ -2665,6 +2801,7 @@ async def ensure_provider_intake_channel(
 ) -> dict[str, Any]:
     """Ensure the company has a branded intake slug, generating a unique one from its
     name if missing. Tenant-scoped to the caller's org. Returns {slug}."""
+    await require_provider_new_business(session)
     organization_id = _provider_organization_id(session)
     result = await store.ensure_intake_channel(organization_id)
     if result is None:
@@ -3419,6 +3556,18 @@ async def create_ticket(response: Response, payload: dict[str, Any] | None = Non
             status_code=403,
             detail="Intake must be opened from a provider company link.",
         )
+    origin_org_id = origin.get("customer_owner_org_id") or origin.get("origin_org_id")
+    if (
+        config.PROVIDER_BILLING_ENABLED
+        and config.PROVIDER_BILLING_ENFORCEMENT_ENABLED
+        and origin_org_id
+    ):
+        billing = await store.get_organization_billing(str(origin_org_id))
+        if not entitlement_summary(billing)["can_receive_new_business"]:
+            raise HTTPException(
+                status_code=503,
+                detail="This provider is not accepting new requests right now.",
+            )
     origin = {**origin, "intake_channel_slug": raw_slug}
     # Client-supplied attribution for conversion analytics only (specs/003 FR-012):
     # an allow-listed label, never used for authorization or routing.
@@ -3479,6 +3628,7 @@ async def create_provider_request(
 ) -> TicketEnvelope:
     await latency()
     require_any_role(session, {"provider_admin", "dispatcher"})
+    await require_provider_new_business(session)
     try:
         geocoded = await geocode(payload.address)
     except Exception:
@@ -4189,6 +4339,50 @@ async def _evaluate_dispatch_alerts() -> dict[str, int]:
 # Not in the OpenAPI schema: a CRON_SECRET-protected internal endpoint is not part
 # of any client contract, and publishing it under two methods produced colliding
 # operation IDs (one operation is generated per method, sharing the function name).
+async def _reconcile_provider_billing() -> dict[str, int | str]:
+    """Daily backstop for missed webhooks; remains active when UI billing is disabled."""
+    if not config.STRIPE_BILLING_API_KEY or not config.STRIPE_PROVIDER_PRICE_ID:
+        return {"state": "not_configured", "checked": 0, "applied": 0}
+    gateway = StripeBillingGateway(webhook_sync=True)
+    checked = 0
+    applied = 0
+    for organization in await store.list_billing_organizations():
+        customer_ref = str(organization["billing_customer_ref"])
+        checked += 1
+        try:
+            observed_at = int(datetime.now(timezone.utc).timestamp())
+            trigger = {
+                "event_id": "reconcile_pending",
+                "event_type": "internal.subscription_reconciliation",
+                "created": observed_at,
+                "customer_ref": customer_ref,
+                "subscription_ref": None,
+                "subscription_status": None,
+                "current_period_end": None,
+                "cancel_at_period_end": None,
+            }
+            current = await gateway.current_subscription(customer_ref, trigger)
+            if current is None:
+                continue
+            fingerprint = hashlib.sha256(
+                "|".join(str(current.get(key) or "") for key in (
+                    "subscription_ref", "subscription_status", "current_period_end",
+                    "cancel_at_period_end",
+                )).encode("utf-8")
+            ).hexdigest()[:16]
+            current["event_id"] = (
+                f"reconcile:{organization['id']}:{observed_at // 300}:{fingerprint}"
+            )
+            if await store.apply_stripe_billing_event(current) == "applied":
+                applied += 1
+        except Exception:
+            logger.exception(
+                "provider_billing_reconciliation_failed",
+                extra={"organization_id": organization["id"]},
+            )
+    return {"state": "ok", "checked": checked, "applied": applied}
+
+
 @app.api_route("/cron/dispatch-sweep", methods=["GET", "POST"], include_in_schema=False)
 async def dispatch_sweep(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     """Cleanup-only sweep — no re-dispatch. Secret-protected via
@@ -4242,6 +4436,11 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
     except Exception:
         logger.exception("dispatch_alert_sweep_failed")
         alert_counts = {"stalled_job": 0, "stuck_offer": 0, "escalated": 0}
+    try:
+        billing_reconciliation = await _reconcile_provider_billing()
+    except Exception:
+        logger.exception("provider_billing_reconciliation_sweep_failed")
+        billing_reconciliation = {"state": "failed", "checked": 0, "applied": 0}
     return {
         "expired_offers": expired,
         "auto_closed": auto_closed,
@@ -4249,6 +4448,7 @@ async def dispatch_sweep(authorization: str | None = Header(default=None)) -> di
         "signed_off_technicians": len(signed_off),
         "push_receipts": receipts,
         "alerts": alert_counts,
+        "provider_billing": billing_reconciliation,
     }
 
 
@@ -4817,6 +5017,14 @@ async def _network_eligibility_snapshot() -> tuple[
     technicians = await store.list_available_technicians()
     org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
     org_status = await store.get_organizations_status(org_ids)
+    if (
+        config.PROVIDER_BILLING_ENABLED
+        and config.PROVIDER_BILLING_ENFORCEMENT_ENABLED
+    ):
+        billing = await store.get_organizations_billing(org_ids)
+        for organization_id in org_ids:
+            if not entitlement_summary(billing.get(organization_id))["can_receive_new_business"]:
+                org_status[organization_id] = "subscription_blocked"
     org_capabilities = {
         oid: set(await store.list_organization_capabilities(oid))
         for oid, status in org_status.items()
@@ -4874,7 +5082,6 @@ async def public_v1_coverage_checks(
             request_id,
             detail=f"Unknown service_skill: {payload.service_skill!r}",
         )
-
     if idempotency_key:
         reservation = await store.begin_or_get_external_api_mutation(
             client_id, idempotency_key, request_hash, "POST", "/v1/coverage-checks",
@@ -5094,6 +5301,11 @@ async def public_v1_create_service_request(
     request_hash = hashlib.sha256(payload.model_dump_json().encode("utf-8")).hexdigest()
     skill = normalize_skill_code(payload.service_skill) or payload.service_skill
     catalog = await store.list_service_catalog(active_only=True)
+    org_id = (
+        str(client["organization_id"])
+        if payload.dispatch_scope == "private_partner" and client.get("organization_id")
+        else None
+    )
 
     if payload.dispatch_scope == "private_partner" and not client.get("organization_id"):
         raise public_api_error(
@@ -5103,6 +5315,20 @@ async def public_v1_create_service_request(
     if skill not in active_skill_codes(catalog):
         raise public_api_error(
             422, "unknown_service_skill", request_id, detail=f"Unknown service_skill: {payload.service_skill!r}",
+        )
+    if (
+        org_id
+        and config.PROVIDER_BILLING_ENABLED
+        and config.PROVIDER_BILLING_ENFORCEMENT_ENABLED
+        and not entitlement_summary(
+            await store.get_organization_billing(org_id)
+        )["can_receive_new_business"]
+    ):
+        raise public_api_error(
+            402,
+            "provider_subscription_required",
+            request_id,
+            detail="The partner organization is not accepting new requests.",
         )
 
     if idempotency_key:
@@ -5122,7 +5348,6 @@ async def public_v1_create_service_request(
         if reservation["state"] == "done":
             return PublicServiceRequestResponse.model_validate(reservation["response"])
 
-    org_id = str(client["organization_id"]) if payload.dispatch_scope == "private_partner" else None
     ticket = Ticket(
         channel="mobile_web",
         status=TicketStatus.DRAFT,
@@ -6435,6 +6660,7 @@ async def provider_request_partnership(
     payload: OrganizationPartnershipRequestPayload,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    await require_provider_new_business(session)
     org_id = _require_dispatch_org(session)
     if str(payload.partner_org_id) == str(org_id):
         raise HTTPException(status_code=422, detail="Choose a different partner organization")
@@ -6454,6 +6680,7 @@ async def provider_accept_partnership(
     requester_org_id: UUID,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    await require_provider_new_business(session)
     org_id = _require_dispatch_org(session)
     result = await store.accept_organization_partnership(
         str(requester_org_id),
@@ -6645,6 +6872,7 @@ async def provider_accept_partner_dispatch(
     job_id: UUID,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    await require_provider_new_business(session)
     org_id = _require_dispatch_org(session)
     jobs = await store.get_ops_queue(org_id=org_id)
     job = next((j for j in jobs if str(j["id"]) == str(job_id)), None)

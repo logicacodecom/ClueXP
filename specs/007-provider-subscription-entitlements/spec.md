@@ -1,7 +1,7 @@
 # Feature Specification: Provider Subscription Entitlements
 
 **Feature Branch**: `logicacodecom/feat-006-provider-subscription-entitlements`  
-**Spec Directory**: `specs/006-provider-subscription-entitlements`  
+**Spec Directory**: `specs/007-provider-subscription-entitlements`
 **Created**: `2026-10-26`  
 **Owner**: `Codex`  
 **Status**: `clarified`
@@ -59,7 +59,8 @@ The approved launch offer is **ClueXP Provider Access at $419 USD per month**, w
 ### Edge And Failure Scenarios
 
 - A missing or invalid webhook signature receives a non-success response and changes no state.
-- Replayed or out-of-order events are idempotent and cannot roll state backward based on an older Stripe event timestamp.
+- Replayed events are idempotent. Relevant events trigger a fresh Stripe subscription read, so
+  delivery order and same-second event timestamps never determine entitlement.
 - A Stripe event for an unknown Customer is recorded safely without cross-tenant assignment.
 - A dispatcher cannot create Checkout or Portal sessions; those actions require `provider_admin`.
 - A browser-supplied organization ID, Price ID, success URL, or return URL is ignored; all are server-derived.
@@ -75,9 +76,9 @@ The approved launch offer is **ClueXP Provider Access at $419 USD per month**, w
 - **FR-002**: Checkout fulfillment and entitlement changes MUST be driven by verified webhooks, never by a success-page redirect.
 - **FR-003**: The server MUST create Stripe Customer Portal Sessions only for the authenticated provider organization and only for a `provider_admin`.
 - **FR-004**: Stripe secret/restricted keys and webhook secrets MUST be loaded only from server-side environment configuration and MUST never be returned, logged, or committed.
-- **FR-005**: The system MUST persist Stripe Customer and Subscription references, normalized subscription status, Stripe event timestamp, current-period end, grace deadline, and cancel-at-period-end state per organization.
+- **FR-005**: The system MUST persist Stripe Customer and Subscription references, normalized subscription status, last observed event timestamp, current-period end, grace deadline, and cancel-at-period-end state per organization.
 - **FR-006**: Webhook processing MUST verify signatures against the raw request body and MUST be idempotent by Stripe event ID.
-- **FR-007**: Older Stripe events MUST NOT overwrite state produced by a newer event for the same organization.
+- **FR-007**: Relevant Stripe events MUST be treated as reconciliation triggers. Entitlement MUST be written from the current Stripe subscription matching the configured Price and mode, not inferred from event delivery order.
 - **FR-008**: Entitled states MUST include `active`, `trialing`, and `past_due` before the seven-day grace deadline.
 - **FR-009**: `organization.status` MUST remain the trust/compliance lifecycle and MUST NOT be changed because of billing state.
 - **FR-010**: With enforcement disabled, subscription state MUST NOT block any existing provider, dispatch, intake, public API, or MCP workflow.
@@ -88,6 +89,8 @@ The approved launch offer is **ClueXP Provider Access at $419 USD per month**, w
 - **FR-015**: The configured Price MUST be verified as `$419.00 USD`, monthly, active, and tax behavior `exclusive` before any production tax or billing activation.
 - **FR-016**: Automatic tax MUST remain disabled until Logicacode confirms active registrations and separately authorizes production tax activation.
 - **FR-017**: Stripe Connect and customer job-payment flows MUST remain behaviorally separate from this Logicacode-to-provider SaaS subscription.
+- **FR-018**: Checkout MUST reject an organization that already has a non-terminal subscription, use stable Customer and Checkout idempotency keys, and grant the trial only when no prior subscription reference exists.
+- **FR-019**: Checkout MUST fail closed unless the configured Price is active, `$419.00 USD`, monthly, `exclusive`, and in the same test/live mode as the server key.
 
 ### Non-Functional Requirements
 
@@ -107,6 +110,24 @@ The approved launch offer is **ClueXP Provider Access at $419 USD per month**, w
 - **Payments/closeout**: This feature charges providers for ClueXP SaaS access only. Existing job closeout/settlement records remain advisory and separate.
 - **External side effects**: Sandbox Stripe Customer, Checkout Session, Portal Session, and subscription events only during verification. No live transaction is authorized.
 
+### Enforcement Matrix
+
+The start boundary is creation of the provider-owned service request. Once created, the request is
+in progress and may be completed even if billing later becomes blocked.
+
+| Entry point | Enforcement decision |
+|---|---|
+| Public branded `POST /tickets` | Block before creating a ticket; return a generic provider-unavailable message that does not disclose billing state. |
+| Provider `POST /provider/requests` | Block before geocoding or persistence. |
+| Provider intake-channel creation | Block creation; existing history and billing remain available. |
+| Private-partner `POST /v1/service-requests` | Block before idempotency reservation or persistence. Public request creation without a provider owner is unchanged. |
+| Provider partnership request/accept | Block because it creates future network capacity. |
+| Partner-dispatch accept | Block because it accepts new business. |
+| Provider discovery and shared network routing | Exclude blocked organizations through the shared eligibility snapshot. |
+| Draft update/commit, scheduling, assignment, offer acceptance, arrival, completion, closeout | Allow as wind-down for a request created before the block. |
+| Billing, sign-in, history, invoices, Customer Portal | Always allow to the existing authorized role. |
+| Inbound voice/SMS and safety escalation | Do not gate at the transport endpoint; never strand safety or existing-job communications. New-job creation from these channels must resolve the owning provider and apply the same creation guard before enforcement activation. |
+
 ## ClueXP-Specific Checks
 
 - **Trust-state rule**: `organization.status` remains independent; `subscription_status` cannot make an unapproved organization active.
@@ -119,7 +140,7 @@ The approved launch offer is **ClueXP Provider Access at $419 USD per month**, w
 
 - [ ] A provider administrator can create a sandbox Checkout Session for the configured monthly Price and 30-day trial.
 - [ ] A provider administrator with a Stripe Customer can create a sandbox Customer Portal Session; a dispatcher cannot.
-- [ ] Valid signed webhook fixtures update only the mapped organization, and invalid/replayed/stale events do not corrupt state.
+- [ ] Valid signed webhook fixtures reconcile only the mapped organization, and invalid/replayed/out-of-order events do not corrupt state.
 - [ ] Active, trialing, grace, blocked, and disabled-enforcement decisions have deterministic tests.
 - [ ] Enforcement tests prove new intake/network eligibility is blocked while history and in-progress completion remain reachable.
 - [ ] Provider-web builds and presents billing state/actions without exposing secrets.
@@ -128,7 +149,7 @@ The approved launch offer is **ClueXP Provider Access at $419 USD per month**, w
 
 ## Risks, Assumptions, And Human Decisions
 
-- **Risks**: Incorrect webhook ordering could revoke valid access; broad route gating could strand active jobs; incorrect tax setup could silently collect no tax; missing migration/config could cause production failures if not guarded.
+- **Risks**: Failed reconciliation could leave stale access; broad route gating could strand active jobs; incorrect tax setup could silently collect no tax; missing migration/config could cause production failures if not guarded.
 - **Assumptions**: Stripe Price `price_1UUxmtQiiIMhyzQxb3AieWB8` belongs to the ClueXP Development sandbox and represents $419 USD monthly. Its tax behavior is currently unverified/unspecified and will be set to `exclusive` through the sandbox API before tax testing.
 - **Human decisions completed**: $419 USD monthly; processing costs included in price; tax exclusive; 30-day trial; 7-day grace; subscription required for new business; blocked providers retain billing/history/in-progress completion access.
 - **Human decisions/authorizations still needed**: production migration execution; production Stripe restricted key and webhook secret; live Price verification/creation; live webhook registration; production billing activation; enforcement activation; tax registrations, product tax code, and automatic-tax activation.
