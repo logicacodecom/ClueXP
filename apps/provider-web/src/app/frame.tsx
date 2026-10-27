@@ -75,7 +75,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
       surfaceLabel="PROVIDER CONSOLE"
     >
       <MockAuthBoundary allowedRoles={["provider_admin", "dispatcher"]} session={session}>
-        {session.billing_entitlement?.state === "grace" || session.billing_entitlement?.state === "blocked" ? (
+        {session.billing_entitlement?.enforcement_enabled && (session.billing_entitlement.state === "grace" || session.billing_entitlement.state === "blocked") ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="status">
             <span>{session.billing_entitlement.state === "blocked" ? "Subscription action is required before accepting new business." : "Your subscription payment needs attention during the grace period."}</span>
             <Link className="font-semibold underline underline-offset-4" href="/billing">Manage billing</Link>

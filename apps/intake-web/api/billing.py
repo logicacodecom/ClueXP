@@ -1,8 +1,6 @@
 """Stripe-hosted provider billing and server-authoritative entitlements."""
 from __future__ import annotations
 
-import secrets
-import string
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +12,15 @@ TERMINAL_STATUSES = {"none", "canceled", "incomplete_expired"}
 
 class BillingConfigurationError(RuntimeError):
     pass
+
+
+def is_stripe_error(exc: Exception) -> bool:
+    """Identify provider failures without exposing Stripe details to callers."""
+    try:
+        from stripe import StripeError
+    except ImportError:
+        return False
+    return isinstance(exc, StripeError)
 
 
 def _iso(value: Any) -> str | None:
@@ -122,7 +129,6 @@ class StripeBillingGateway:
         previous_subscription_ref: str | None,
     ) -> str:
         await self.verify_price()
-        suffix = "".join(secrets.choice(string.ascii_lowercase) for _ in range(8))
         subscription_data: dict[str, Any] = {
             "metadata": {"cluexp_organization_id": organization_id}
         }
@@ -141,7 +147,6 @@ class StripeBillingGateway:
                     "&session_id={CHECKOUT_SESSION_ID}"
                 ),
                 "cancel_url": f"{config.CLUEXP_PROVIDER_BASE_URL}/billing?checkout=cancelled",
-                "integration_identifier": f"cluexp_provider_{suffix}",
             },
             options={
                 "idempotency_key": (

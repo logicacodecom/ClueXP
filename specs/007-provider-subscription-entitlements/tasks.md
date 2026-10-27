@@ -26,7 +26,7 @@
 - [x] T007 [Codex] Add unit/integration, tenant-isolation, idempotency, stale-event, role, and enforcement tests.
 - [x] T008 [Codex] Update canonical architecture/execution docs and configuration/runbook guidance.
 - [ ] T009 [Codex] Verify the sandbox Price through Stripe API and set `tax_behavior=exclusive` only in sandbox, subject to connected-account confirmation.
-- [ ] T010 [Codex] Run focused and broad API tests, typecheck, provider build, migration checks, OpenAPI drift, and secret scan.
+- [x] T010 [Codex] Run focused and broad API tests, typecheck, provider build, migration checks, OpenAPI drift, and secret scan.
 - [ ] T011 [R] Claude Code independent review: verify implementation, specs, migration, auth/tenant boundaries, Stripe semantics, UI behavior, tests, and unresolved risks at the exact committed head.
 - [ ] T012 [Codex] Resolve review findings, rerun verification, and obtain final different-family approval at the updated head.
 - [ ] T013 [Codex] Open a PR with the Spec Kit links and exact machine-readable Review Record; verify no open deploy incident before any merge action.
@@ -37,11 +37,11 @@
 
 ## Verification
 
-- [ ] Billing-disabled startup and existing provider behavior pass without Stripe configuration or the new migration applied.
-- [ ] Signed webhook, duplicate, stale-event, unknown-customer, and cross-tenant tests pass.
-- [ ] Checkout/Portal role and server-owned URL/Price tests pass.
-- [ ] New-business enforcement and in-progress wind-down tests pass.
-- [ ] Provider-web type/build checks pass.
-- [ ] API suite, Postgres security checks when available, and OpenAPI drift checks pass.
-- [ ] Secret scan finds no Stripe credentials or webhook secrets.
+- [x] Billing-disabled startup and existing provider behavior pass without Stripe configuration or the new migration applied.
+- [x] Signed webhook, duplicate, stale-event, unknown-customer, and cross-tenant tests pass.
+- [x] Checkout/Portal role and server-owned URL/Price tests pass.
+- [x] New-business enforcement and in-progress wind-down tests pass.
+- [x] Provider-web type/build checks pass.
+- [x] API suite, Postgres security checks when available, and OpenAPI drift checks pass.
+- [x] Secret scan finds no Stripe credentials or webhook secrets.
 - [ ] Independent reviewer records `approve` at the current 40-character head.

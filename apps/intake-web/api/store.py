@@ -940,6 +940,11 @@ class Store:
     ) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def begin_stripe_billing_reconciliation(
+        self, customer_ref: str
+    ) -> int | None:  # pragma: no cover
+        raise NotImplementedError
+
     async def apply_stripe_billing_event(self, event: dict) -> str:  # pragma: no cover
         raise NotImplementedError
 
@@ -1892,6 +1897,7 @@ class InMemoryStore(Store):
                 "subscription_grace_ends_at": None,
                 "subscription_cancel_at_period_end": False,
                 "subscription_event_created_at": None,
+                "billing_reconciliation_generation": 0,
             }
         }
         self._stripe_webhook_events: set[str] = set()
@@ -2082,6 +2088,19 @@ class InMemoryStore(Store):
         org["billing_customer_ref"] = customer_ref
         return dict(org)
 
+    async def begin_stripe_billing_reconciliation(
+        self, customer_ref: str
+    ) -> int | None:
+        org = next(
+            (o for o in self._organizations.values() if o.get("billing_customer_ref") == customer_ref),
+            None,
+        )
+        if not org:
+            return None
+        generation = int(org.get("billing_reconciliation_generation") or 0) + 1
+        org["billing_reconciliation_generation"] = generation
+        return generation
+
     async def apply_stripe_billing_event(self, event: dict) -> str:
         if event["event_id"] in self._stripe_webhook_events:
             return "duplicate"
@@ -2092,6 +2111,13 @@ class InMemoryStore(Store):
         )
         if not org:
             return "ignored_unknown_customer"
+        reconciliation_generation = event.get("reconciliation_generation")
+        if (
+            reconciliation_generation is not None
+            and reconciliation_generation
+            != org.get("billing_reconciliation_generation")
+        ):
+            return "superseded"
         event_at = datetime.fromtimestamp(event["created"], timezone.utc)
         if event.get("subscription_ref"):
             org["stripe_subscription_ref"] = event["subscription_ref"]
@@ -7011,6 +7037,20 @@ class PostgresStore(Store):
             row = await cur.fetchone()
         return await self.get_organization_billing(organization_id) if row else None
 
+    async def begin_stripe_billing_reconciliation(
+        self, customer_ref: str
+    ) -> int | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set billing_reconciliation_generation ="
+                " billing_reconciliation_generation + 1"
+                " where billing_customer_ref = %s"
+                " returning billing_reconciliation_generation",
+                (customer_ref,),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else None
+
     async def apply_stripe_billing_event(self, event: dict) -> str:
         event_at = datetime.fromtimestamp(event["created"], timezone.utc)
         period_end = (
@@ -7028,7 +7068,8 @@ class PostgresStore(Store):
             if await inserted.fetchone() is None:
                 return "duplicate"
             cur = await conn.execute(
-                "select id, subscription_event_created_at, subscription_grace_ends_at"
+                "select id, subscription_event_created_at, subscription_grace_ends_at,"
+                " billing_reconciliation_generation"
                 " from organizations where billing_customer_ref = %s for update",
                 (event.get("customer_ref"),),
             )
@@ -7036,6 +7077,18 @@ class PostgresStore(Store):
             if row is None:
                 outcome = "ignored_unknown_customer"
             else:
+                reconciliation_generation = event.get("reconciliation_generation")
+                if (
+                    reconciliation_generation is not None
+                    and reconciliation_generation != row[3]
+                ):
+                    outcome = "superseded"
+                    await conn.execute(
+                        "update stripe_webhook_events set organization_id = %s, outcome = %s"
+                        " where event_id = %s",
+                        (row[0], outcome, event["event_id"]),
+                    )
+                    return outcome
                 grace_end = row[2]
                 status = event.get("subscription_status")
                 if status == "past_due" and grace_end is None:

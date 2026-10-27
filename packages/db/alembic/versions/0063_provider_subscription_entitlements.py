@@ -23,7 +23,8 @@ def upgrade() -> None:
           ADD COLUMN IF NOT EXISTS subscription_grace_ends_at timestamptz,
           ADD COLUMN IF NOT EXISTS subscription_cancel_at_period_end boolean NOT NULL DEFAULT false,
           ADD COLUMN IF NOT EXISTS subscription_event_created_at timestamptz,
-          ADD COLUMN IF NOT EXISTS subscription_updated_at timestamptz;
+          ADD COLUMN IF NOT EXISTS subscription_updated_at timestamptz,
+          ADD COLUMN IF NOT EXISTS billing_reconciliation_generation bigint NOT NULL DEFAULT 0;
 
         CREATE UNIQUE INDEX IF NOT EXISTS uq_organizations_billing_customer_ref
           ON organizations (billing_customer_ref) WHERE billing_customer_ref IS NOT NULL;
@@ -61,6 +62,7 @@ def downgrade() -> None:
         DROP INDEX IF EXISTS uq_organizations_stripe_subscription_ref;
         DROP INDEX IF EXISTS uq_organizations_billing_customer_ref;
         ALTER TABLE organizations
+          DROP COLUMN IF EXISTS billing_reconciliation_generation,
           DROP COLUMN IF EXISTS subscription_updated_at,
           DROP COLUMN IF EXISTS subscription_event_created_at,
           DROP COLUMN IF EXISTS subscription_cancel_at_period_end,

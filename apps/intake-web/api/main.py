@@ -49,6 +49,7 @@ from api.billing import (
     StripeBillingGateway,
     TERMINAL_STATUSES,
     entitlement_summary,
+    is_stripe_error,
     normalize_event,
     verify_webhook,
 )
@@ -1627,6 +1628,12 @@ async def provider_billing_checkout(
         )}
     except BillingConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        if is_stripe_error(exc):
+            raise HTTPException(
+                status_code=502, detail="Stripe billing is temporarily unavailable"
+            ) from exc
+        raise
 
 
 @app.post("/provider/billing/portal-session")
@@ -1640,6 +1647,12 @@ async def provider_billing_portal(
         return {"url": await gateway.create_portal(customer_ref)}
     except BillingConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        if is_stripe_error(exc):
+            raise HTTPException(
+                status_code=502, detail="Stripe billing is temporarily unavailable"
+            ) from exc
+        raise
 
 
 @app.post("/webhooks/stripe")
@@ -1658,15 +1671,28 @@ async def stripe_billing_webhook(
     normalized = normalize_event(dict(event))
     outcome = "ignored_event_type"
     if normalized is not None and normalized.get("customer_ref"):
-        gateway = StripeBillingGateway(webhook_sync=True)
-        current = await gateway.current_subscription(
-            str(normalized["customer_ref"]), normalized
-        )
-        outcome = (
-            await store.apply_stripe_billing_event(current)
-            if current is not None
-            else "ignored_unrelated_subscription"
-        )
+        try:
+            customer_ref = str(normalized["customer_ref"])
+            generation = await store.begin_stripe_billing_reconciliation(customer_ref)
+            if generation is None:
+                outcome = await store.apply_stripe_billing_event(normalized)
+            else:
+                normalized["reconciliation_generation"] = generation
+                gateway = StripeBillingGateway(webhook_sync=True)
+                current = await gateway.current_subscription(customer_ref, normalized)
+                outcome = (
+                    await store.apply_stripe_billing_event(current)
+                    if current is not None
+                    else "ignored_unrelated_subscription"
+                )
+        except BillingConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            if is_stripe_error(exc):
+                raise HTTPException(
+                    status_code=502, detail="Stripe billing is temporarily unavailable"
+                ) from exc
+            raise
     return {"received": "true", "outcome": outcome}
 
 
@@ -4015,7 +4041,9 @@ async def provider_availability(ticket_id: UUID, request: Request) -> dict[str, 
     access_type = ticket.access_type.value if ticket.access_type else None
     job = {"access_type": access_type, "lat": location.lat, "lng": location.lng}
     skill = required_skill_for_job(job)
-    technicians, org_status, org_capabilities = await _network_eligibility_snapshot()
+    technicians, org_status, org_capabilities = await _network_eligibility_snapshot(
+        enforce_billing=False
+    )
     if not org_eligible(org_id, skill, org_status, org_capabilities):
         return {"eligible": False}
     own = [t for t in technicians if org_id in {str(o) for o in t.get("org_ids") or []}]
@@ -4361,6 +4389,10 @@ async def _reconcile_provider_billing() -> dict[str, int | str]:
                 "current_period_end": None,
                 "cancel_at_period_end": None,
             }
+            generation = await store.begin_stripe_billing_reconciliation(customer_ref)
+            if generation is None:
+                continue
+            trigger["reconciliation_generation"] = generation
             current = await gateway.current_subscription(customer_ref, trigger)
             if current is None:
                 continue
@@ -5009,7 +5041,7 @@ async def require_public_coverage_check(request: Request) -> dict[str, Any]:
     return await require_public_api_client(request, "coverage:check")
 
 
-async def _network_eligibility_snapshot() -> tuple[
+async def _network_eligibility_snapshot(*, enforce_billing: bool = True) -> tuple[
     list[dict[str, Any]], dict[str, str], dict[str, set[str]]
 ]:
     """Available technicians plus their organizations' status and capabilities.
@@ -5018,7 +5050,8 @@ async def _network_eligibility_snapshot() -> tuple[
     org_ids = sorted({oid for tech in technicians for oid in (tech.get("org_ids") or [])})
     org_status = await store.get_organizations_status(org_ids)
     if (
-        config.PROVIDER_BILLING_ENABLED
+        enforce_billing
+        and config.PROVIDER_BILLING_ENABLED
         and config.PROVIDER_BILLING_ENFORCEMENT_ENABLED
     ):
         billing = await store.get_organizations_billing(org_ids)
