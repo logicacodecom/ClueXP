@@ -1,6 +1,6 @@
 """provider subscription entitlements
 
-Revision ID: 0063_provider_subscription_entitlements
+Revision ID: 0063_provider_billing
 Revises: 0062_dispatch_alert_sla_defaults
 Create Date: 2026-10-26
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0063_provider_subscription_entitlements"
+revision = "0063_provider_billing"
 down_revision = "0062_dispatch_alert_sla_defaults"
 branch_labels = None
 depends_on = None
