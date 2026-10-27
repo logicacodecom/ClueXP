@@ -926,6 +926,28 @@ class Store:
     async def get_user_session(self, user_id: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
 
+    async def get_organization_billing(self, organization_id: str) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def get_organizations_billing(self, organization_ids: list[str]) -> dict[str, dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def list_billing_organizations(self) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def set_organization_billing_customer(
+        self, organization_id: str, customer_ref: str
+    ) -> dict | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def begin_stripe_billing_reconciliation(
+        self, customer_ref: str
+    ) -> int | None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def apply_stripe_billing_event(self, event: dict) -> str:  # pragma: no cover
+        raise NotImplementedError
+
     async def register_technician(self, data: dict) -> dict:  # pragma: no cover
         raise NotImplementedError
 
@@ -1869,8 +1891,16 @@ class InMemoryStore(Store):
             "org-metro": {
                 "id": "org-metro", "display_name": "Metro Key Partners",
                 "status": "active", "service_postal_codes": [],
+                "billing_customer_ref": None, "stripe_subscription_ref": None,
+                "subscription_status": "none",
+                "subscription_current_period_end": None,
+                "subscription_grace_ends_at": None,
+                "subscription_cancel_at_period_end": False,
+                "subscription_event_created_at": None,
+                "billing_reconciliation_generation": 0,
             }
         }
+        self._stripe_webhook_events: set[str] = set()
         for category in default_service_catalog():
             cat = {k: v for k, v in category.items() if k != "skills"}
             self._service_categories[cat["code"]] = cat
@@ -2026,6 +2056,90 @@ class InMemoryStore(Store):
         orgs = getattr(self, "_organizations", {})
         return {oid: orgs[oid]["status"] for oid in org_ids if oid in orgs}
 
+    async def get_organization_billing(self, organization_id: str) -> dict | None:
+        org = self._organizations.get(str(organization_id))
+        return dict(org) if org else None
+
+    async def get_organizations_billing(self, organization_ids: list[str]) -> dict[str, dict]:
+        return {
+            oid: dict(self._organizations[oid])
+            for oid in organization_ids
+            if oid in self._organizations
+        }
+
+    async def list_billing_organizations(self) -> list[dict]:
+        return [
+            dict(org) for org in self._organizations.values()
+            if org.get("billing_customer_ref")
+        ]
+
+    async def set_organization_billing_customer(
+        self, organization_id: str, customer_ref: str
+    ) -> dict | None:
+        org = self._organizations.get(str(organization_id))
+        if not org:
+            return None
+        existing = next(
+            (o for o in self._organizations.values() if o.get("billing_customer_ref") == customer_ref),
+            None,
+        )
+        if existing and existing is not org:
+            raise ValueError("Stripe customer is already assigned")
+        org["billing_customer_ref"] = customer_ref
+        return dict(org)
+
+    async def begin_stripe_billing_reconciliation(
+        self, customer_ref: str
+    ) -> int | None:
+        org = next(
+            (o for o in self._organizations.values() if o.get("billing_customer_ref") == customer_ref),
+            None,
+        )
+        if not org:
+            return None
+        generation = int(org.get("billing_reconciliation_generation") or 0) + 1
+        org["billing_reconciliation_generation"] = generation
+        return generation
+
+    async def apply_stripe_billing_event(self, event: dict) -> str:
+        if event["event_id"] in self._stripe_webhook_events:
+            return "duplicate"
+        self._stripe_webhook_events.add(event["event_id"])
+        org = next(
+            (o for o in self._organizations.values() if o.get("billing_customer_ref") == event.get("customer_ref")),
+            None,
+        )
+        if not org:
+            return "ignored_unknown_customer"
+        reconciliation_generation = event.get("reconciliation_generation")
+        if (
+            reconciliation_generation is not None
+            and reconciliation_generation
+            != org.get("billing_reconciliation_generation")
+        ):
+            return "superseded"
+        event_at = datetime.fromtimestamp(event["created"], timezone.utc)
+        if event.get("subscription_ref"):
+            org["stripe_subscription_ref"] = event["subscription_ref"]
+        if event.get("subscription_status"):
+            org["subscription_status"] = event["subscription_status"]
+            if event["subscription_status"] == "past_due" and not org.get("subscription_grace_ends_at"):
+                org["subscription_grace_ends_at"] = (
+                    event_at + timedelta(days=config.PROVIDER_BILLING_GRACE_DAYS)
+                ).isoformat()
+            elif event["subscription_status"] != "past_due":
+                org["subscription_grace_ends_at"] = None
+        if event.get("current_period_end"):
+            org["subscription_current_period_end"] = datetime.fromtimestamp(
+                event["current_period_end"], timezone.utc
+            ).isoformat()
+        if event.get("cancel_at_period_end") is not None:
+            org["subscription_cancel_at_period_end"] = bool(event["cancel_at_period_end"])
+        previous = org.get("subscription_event_created_at")
+        previous_at = datetime.fromisoformat(str(previous)) if previous else event_at
+        org["subscription_event_created_at"] = max(previous_at, event_at).isoformat()
+        return "applied"
+
     async def create_dispatch_authorization(
         self,
         job_id: UUID,
@@ -2162,12 +2276,15 @@ class InMemoryStore(Store):
         return True
 
     async def get_user_session(self, user_id: str) -> dict | None:
+        from api.billing import entitlement_summary
+
         user = self.users.get(user_id)
         if not user:
             return None
         tech = next((t for t in getattr(self, "_technicians", []) if str(t.get("id")) == str(user_id)), None)
         if tech:
             tech["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+        org = self._organizations.get(str(user.get("active_organization_id")))
         return {
             "user": {
                 "id": user["id"],
@@ -2178,6 +2295,8 @@ class InMemoryStore(Store):
             "roles": user["roles"],
             "active_organization_id": user["active_organization_id"],
             "organization_name": user["organization_name"],
+            "organization_status": org.get("status") if org else None,
+            "billing_entitlement": entitlement_summary(org) if org else None,
             "technician": (
                 {
                     "id": str(tech["id"]),
@@ -6866,6 +6985,137 @@ class PostgresStore(Store):
             rows = await cur.fetchall()
         return {str(r[0]): r[1] for r in rows}
 
+    async def get_organization_billing(self, organization_id: str) -> dict | None:
+        rows = await self.get_organizations_billing([organization_id])
+        return rows.get(str(organization_id))
+
+    async def get_organizations_billing(self, organization_ids: list[str]) -> dict[str, dict]:
+        if not organization_ids:
+            return {}
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, display_name, status, billing_customer_ref, stripe_subscription_ref,"
+                " subscription_status, subscription_current_period_end, subscription_grace_ends_at,"
+                " subscription_cancel_at_period_end, subscription_event_created_at"
+                " from organizations where id = any(%s::uuid[])",
+                ([str(o) for o in organization_ids],),
+            )
+            rows = await cur.fetchall()
+        return {
+            str(r[0]): {
+                "id": str(r[0]), "display_name": r[1], "status": r[2],
+                "billing_customer_ref": r[3], "stripe_subscription_ref": r[4],
+                "subscription_status": r[5], "subscription_current_period_end": r[6],
+                "subscription_grace_ends_at": r[7],
+                "subscription_cancel_at_period_end": r[8],
+                "subscription_event_created_at": r[9],
+            }
+            for r in rows
+        }
+
+    async def list_billing_organizations(self) -> list[dict]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "select id, billing_customer_ref from organizations"
+                " where billing_customer_ref is not null"
+            )
+            rows = await cur.fetchall()
+        return [
+            {"id": str(row[0]), "billing_customer_ref": row[1]} for row in rows
+        ]
+
+    async def set_organization_billing_customer(
+        self, organization_id: str, customer_ref: str
+    ) -> dict | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set billing_customer_ref = %s, subscription_updated_at = now()"
+                " where id = %s and (billing_customer_ref is null or billing_customer_ref = %s)"
+                " returning id",
+                (customer_ref, organization_id, customer_ref),
+            )
+            row = await cur.fetchone()
+        return await self.get_organization_billing(organization_id) if row else None
+
+    async def begin_stripe_billing_reconciliation(
+        self, customer_ref: str
+    ) -> int | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "update organizations set billing_reconciliation_generation ="
+                " billing_reconciliation_generation + 1"
+                " where billing_customer_ref = %s"
+                " returning billing_reconciliation_generation",
+                (customer_ref,),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else None
+
+    async def apply_stripe_billing_event(self, event: dict) -> str:
+        event_at = datetime.fromtimestamp(event["created"], timezone.utc)
+        period_end = (
+            datetime.fromtimestamp(event["current_period_end"], timezone.utc)
+            if event.get("current_period_end") else None
+        )
+        async with await self._connect() as conn:
+            inserted = await conn.execute(
+                "insert into stripe_webhook_events"
+                " (event_id, event_type, stripe_created_at, customer_ref, outcome)"
+                " values (%s, %s, %s, %s, 'processing')"
+                " on conflict (event_id) do nothing returning event_id",
+                (event["event_id"], event["event_type"], event_at, event.get("customer_ref")),
+            )
+            if await inserted.fetchone() is None:
+                return "duplicate"
+            cur = await conn.execute(
+                "select id, subscription_event_created_at, subscription_grace_ends_at,"
+                " billing_reconciliation_generation"
+                " from organizations where billing_customer_ref = %s for update",
+                (event.get("customer_ref"),),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                outcome = "ignored_unknown_customer"
+            else:
+                reconciliation_generation = event.get("reconciliation_generation")
+                if (
+                    reconciliation_generation is not None
+                    and reconciliation_generation != row[3]
+                ):
+                    outcome = "superseded"
+                    await conn.execute(
+                        "update stripe_webhook_events set organization_id = %s, outcome = %s"
+                        " where event_id = %s",
+                        (row[0], outcome, event["event_id"]),
+                    )
+                    return outcome
+                grace_end = row[2]
+                status = event.get("subscription_status")
+                if status == "past_due" and grace_end is None:
+                    grace_end = event_at + timedelta(days=config.PROVIDER_BILLING_GRACE_DAYS)
+                elif status and status != "past_due":
+                    grace_end = None
+                await conn.execute(
+                    "update organizations set"
+                    " stripe_subscription_ref = coalesce(%s, stripe_subscription_ref),"
+                    " subscription_status = coalesce(%s, subscription_status),"
+                    " subscription_current_period_end = coalesce(%s, subscription_current_period_end),"
+                    " subscription_grace_ends_at = %s,"
+                    " subscription_cancel_at_period_end = coalesce(%s, subscription_cancel_at_period_end),"
+                    " subscription_event_created_at = greatest(coalesce(subscription_event_created_at, %s), %s),"
+                    " subscription_updated_at = now()"
+                    " where id = %s",
+                    (event.get("subscription_ref"), status, period_end, grace_end,
+                     event.get("cancel_at_period_end"), event_at, event_at, row[0]),
+                )
+                outcome = "applied"
+            await conn.execute(
+                "update stripe_webhook_events set organization_id = %s, outcome = %s"
+                " where event_id = %s",
+                (row[0] if row else None, outcome, event["event_id"]),
+            )
+        return outcome
+
     async def create_dispatch_authorization(
         self,
         job_id: UUID,
@@ -7124,6 +7374,8 @@ class PostgresStore(Store):
             return await self._session_for_user(conn, user_id)
 
     async def _session_for_user(self, conn, user_id: str) -> dict | None:
+        from api.billing import entitlement_summary
+
         cur = await conn.execute(
             "select id, email, phone, display_name, locale from users"
             " where id = %s and status = 'active'",
@@ -7137,9 +7389,15 @@ class PostgresStore(Store):
             (user_id,),
         )
         roles = [row[0] for row in await cur.fetchall()]
+        billing_columns = (
+            ", o.billing_customer_ref, o.stripe_subscription_ref, o.subscription_status,"
+            " o.subscription_current_period_end, o.subscription_grace_ends_at,"
+            " o.subscription_cancel_at_period_end"
+            if config.PROVIDER_BILLING_ENABLED else ""
+        )
         cur = await conn.execute(
-            "select m.organization_id, o.display_name, o.status"
-            " from user_organization_memberships m"
+            "select m.organization_id, o.display_name, o.status" + billing_columns
+            + " from user_organization_memberships m"
             " left join organizations o on o.id = m.organization_id"
             " where m.user_id = %s and m.status = 'active'"
             " order by m.created_at"
@@ -7196,6 +7454,16 @@ class PostgresStore(Store):
             "active_organization_id": str(org_row[0]) if org_row else None,
             "organization_name": org_row[1] if org_row else None,
             "organization_status": org_row[2] if org_row else None,
+            "billing_entitlement": entitlement_summary({
+                "billing_customer_ref": org_row[3],
+                "stripe_subscription_ref": org_row[4],
+                "subscription_status": org_row[5],
+                "subscription_current_period_end": org_row[6],
+                "subscription_grace_ends_at": org_row[7],
+                "subscription_cancel_at_period_end": org_row[8],
+            }) if org_row and config.PROVIDER_BILLING_ENABLED else (
+                entitlement_summary(None) if org_row else None
+            ),
             "technician": {
                 "id": str(tech_row[0]),
                 "status": tech_row[1],

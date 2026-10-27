@@ -360,7 +360,35 @@ with full Stripe Dashboard access (Standard-account behavior):
 The existing `job_payment_reports` record remains advisory until this direct-charge ledger is
 implemented. It is not proof that money moved.
 
-### 5.2c Finished-Job History
+### 5.2c Provider SaaS Subscription Billing
+
+The ClueXP Provider Access subscription is payment from a provider company to Logicacode for use
+of ClueXP. It is separate from provider-to-customer job payments and does not use Stripe Connect.
+Stripe-hosted Checkout starts the subscription and applies the 30-day trial; Stripe-hosted Customer
+Portal handles payment-method changes, invoices, and end-of-period cancellation.
+
+- The configured sandbox price is `$419 USD/month`; tax collection remains disabled until tax
+  registrations and product tax treatment are separately approved.
+- Stripe webhooks are reconciliation triggers, not ordered state deltas. Each relevant event reads
+  the Customer's current Stripe subscription matching the configured Price and test/live mode;
+  `stripe_webhook_events` provides idempotency and audit. The daily authenticated sweep performs
+  the same reconciliation as a missed-webhook backstop.
+- `active` and `trialing` are entitled. `past_due` receives a seven-day grace period. After grace,
+  enforcement blocks only new value creation: new intake, new partnership activity, accepting a new
+  partner dispatch, and inclusion in discovery/routing.
+- A blocked provider can still authenticate, manage billing, read history, and finish existing jobs.
+  Billing state never mutates organization trust/compliance status.
+- `PROVIDER_BILLING_ENABLED` controls the Stripe integration and UI. The independent
+  `PROVIDER_BILLING_ENFORCEMENT_ENABLED` switch controls entitlement enforcement. Both default
+  false, and production activation requires separate Product Owner authorization.
+- Stripe API keys and webhook secrets are server-only. Customer ownership is established by the
+  tenant-scoped organization-to-Stripe-customer mapping, not by client-supplied metadata.
+- Checkout validates `$419 USD`, monthly cadence, active state, exclusive tax behavior, and mode;
+  blocks duplicate non-terminal subscriptions; uses stable idempotency keys; and offers the trial
+  only before the first subscription. Portal configuration can be pinned with
+  `STRIPE_PORTAL_CONFIGURATION_ID`.
+
+### 5.2d Finished-Job History
 History covers `HISTORY_STATUSES` (`api/dispatch.py`): `completed_pending_customer` (so a job the
 tech just finished shows **immediately**, before the customer confirms) plus the terminal states
 `completed_confirmed`, `completed_auto_closed`, `cancelled`, `no_show`. (`disputed` stays in the

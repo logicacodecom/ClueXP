@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import psycopg
@@ -108,6 +109,53 @@ def test_postgres_store_executes_save_token_and_org_isolation_paths():
         assert {row["id"] for row in await store.get_ops_queue(str(org_b))} == {
             str(ticket_b.ticket_id)
         }
+
+    asyncio.run(exercise())
+
+
+def test_postgres_store_applies_billing_event_atomically_and_tenant_scoped():
+    async def exercise() -> None:
+        store = PostgresStore(DSN)
+        organization_id = uuid4()
+        customer_ref = f"cus_test_{uuid4().hex}"
+        async with await store._connect() as conn:
+            await conn.execute(
+                "insert into organizations"
+                " (id, display_name, status, billing_customer_ref, subscription_status)"
+                " values (%s, 'Billing Test Org', 'active', %s, 'none')",
+                (organization_id, customer_ref),
+            )
+
+        generation = await store.begin_stripe_billing_reconciliation(customer_ref)
+        assert generation is not None
+        event = {
+            "event_id": f"evt_test_{uuid4().hex}",
+            "event_type": "customer.subscription.updated",
+            "created": int(datetime.now(timezone.utc).timestamp()),
+            "customer_ref": customer_ref,
+            "subscription_ref": f"sub_test_{uuid4().hex}",
+            "subscription_status": "active",
+            "current_period_end": int(datetime.now(timezone.utc).timestamp()) + 3600,
+            "cancel_at_period_end": False,
+            "reconciliation_generation": generation,
+        }
+        assert await store.apply_stripe_billing_event(event) == "applied"
+        assert await store.apply_stripe_billing_event(event) == "duplicate"
+        record = await store.get_organization_billing(str(organization_id))
+        assert record is not None
+        assert record["billing_customer_ref"] == customer_ref
+        assert record["subscription_status"] == "active"
+        assert record["stripe_subscription_ref"] == event["subscription_ref"]
+
+        unknown = {
+            **event,
+            "event_id": f"evt_test_{uuid4().hex}",
+            "customer_ref": f"cus_unknown_{uuid4().hex}",
+        }
+        assert await store.apply_stripe_billing_event(unknown) == "ignored_unknown_customer"
+        unchanged = await store.get_organization_billing(str(organization_id))
+        assert unchanged is not None
+        assert unchanged["billing_customer_ref"] == customer_ref
 
     asyncio.run(exercise())
 

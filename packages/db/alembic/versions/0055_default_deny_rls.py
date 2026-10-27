@@ -71,6 +71,7 @@ RLS_TABLES = (
     "settlement_payments",
     "settlement_period_jobs",
     "settlement_periods",
+    "stripe_webhook_events",
     "technician_agreements",
     "technician_devices",
     "technician_documents",

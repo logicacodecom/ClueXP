@@ -3,7 +3,8 @@
 import { AppShell, MockAuthBoundary, defaultNav } from "@cluexp/console-ui";
 import type { NavItem } from "@cluexp/console-ui";
 import { useSession } from "@cluexp/app-core";
-import { CheckCircle2, ContactRound, Layers, LineChart, PhoneCall, Radar, Receipt, RotateCcw, Users as UsersIcon, Wallet } from "lucide-react";
+import { CheckCircle2, ContactRound, CreditCard, Layers, LineChart, PhoneCall, Radar, Receipt, RotateCcw, Users as UsersIcon, Wallet } from "lucide-react";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -58,6 +59,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     { ...reportsNav, label: "Payments", href: "/financial/payments", icon: Wallet, group: "Financial" },
     { ...reportsNav, label: "Settlement runs", href: "/financial/settlements", icon: Layers, group: "Financial" },
     // Admin
+    { ...byHref("/settings"), label: "Billing", href: "/billing", icon: CreditCard },
     byHref("/settings"),
     byHref("/audit"),
     ...(session.user.roles.includes("provider_admin") ? [{ ...byHref("/settings"), label: "Users", href: "/users" }] : []),
@@ -73,6 +75,12 @@ export function AppFrame({ children }: { children: ReactNode }) {
       surfaceLabel="PROVIDER CONSOLE"
     >
       <MockAuthBoundary allowedRoles={["provider_admin", "dispatcher"]} session={session}>
+        {session.billing_entitlement?.enforcement_enabled && (session.billing_entitlement.state === "grace" || session.billing_entitlement.state === "blocked") ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="status">
+            <span>{session.billing_entitlement.state === "blocked" ? "Subscription action is required before accepting new business." : "Your subscription payment needs attention during the grace period."}</span>
+            <Link className="font-semibold underline underline-offset-4" href="/billing">Manage billing</Link>
+          </div>
+        ) : null}
         {children}
       </MockAuthBoundary>
     </AppShell>

@@ -613,7 +613,9 @@ affiliation foundation; model in [`SYSTEM-DESIGN.md`](SYSTEM-DESIGN.md) §18.3.)
 
 - Additional service verticals.
 - Custom provider domains and richer channel attribution.
-- Provider subscriptions and billing.
+- Provider subscription billing is implemented behind default-off deployment and enforcement flags
+  (`specs/007-provider-subscription-entitlements/`). Sandbox verification and the independent
+  production migration, secret/webhook, activation, enforcement, and tax authorizations remain open.
 - Advanced organization-managed routing/capacity.
 - Native technician app for dependable background GPS and push.
 - Languages beyond EN/ES.
